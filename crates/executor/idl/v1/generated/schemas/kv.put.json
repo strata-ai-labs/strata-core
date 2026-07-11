@@ -1,0 +1,178 @@
+{
+  "$defs": {
+    "Bytes": {
+      "contentEncoding": "base64",
+      "description": "Binary payload encoded as a standard base64 string.",
+      "type": "string"
+    },
+    "CommitReceipt": {
+      "description": "Commit facts returned by mutating operations.",
+      "properties": {
+        "delete_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "durable": {
+          "type": "boolean"
+        },
+        "put_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "timestamp",
+        "durable",
+        "put_count",
+        "delete_count"
+      ],
+      "type": "object"
+    },
+    "MutationEffect": {
+      "description": "Normalized mutation effect facts.",
+      "properties": {
+        "affected_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "applied": {
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/MutationEffectKind"
+        },
+        "matched": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "applied",
+        "kind",
+        "matched",
+        "affected_count"
+      ],
+      "type": "object"
+    },
+    "MutationEffectKind": {
+      "description": "High-level mutation effect for idempotent and conditional operations.",
+      "oneOf": [
+        {
+          "const": "created",
+          "description": "A new logical entity was created.",
+          "type": "string"
+        },
+        {
+          "const": "updated",
+          "description": "An existing logical entity was updated.",
+          "type": "string"
+        },
+        {
+          "const": "deleted",
+          "description": "An existing logical entity was deleted.",
+          "type": "string"
+        },
+        {
+          "const": "unchanged",
+          "description": "The operation matched but left state unchanged.",
+          "type": "string"
+        },
+        {
+          "const": "not_found",
+          "description": "The operation did not match a visible entity.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/kv.put.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "kv.put",
+  "request": {
+    "additionalProperties": false,
+    "description": "Writes one KV entry.\n\n# Guaranteed semantics\n\n- **Atomic per key.** The write is a single engine commit: it either\n  applies fully (value plus a new commit version) or not at all. No\n  reader ever observes a partial or torn value.\n- **Read-after-write visibility.** Once the command returns success,\n  every subsequent read through any handle of the same database\n  observes this write (or a newer one) — including immediately, from\n  the handle that issued it. Acknowledged writes are never\n  transiently invisible.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "key": {
+        "$ref": "#/$defs/Bytes",
+        "description": "Key bytes."
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "kv_put",
+        "type": "string"
+      },
+      "value": {
+        "$ref": "#/$defs/Bytes",
+        "description": "Value bytes."
+      }
+    },
+    "required": [
+      "type",
+      "key",
+      "value"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Write acknowledgement.",
+    "properties": {
+      "data": {
+        "properties": {
+          "commit": {
+            "$ref": "#/$defs/CommitReceipt",
+            "description": "Commit receipt."
+          },
+          "effect": {
+            "$ref": "#/$defs/MutationEffect",
+            "description": "Mutation effect facts."
+          },
+          "key": {
+            "$ref": "#/$defs/Bytes",
+            "description": "Written key."
+          }
+        },
+        "required": [
+          "key",
+          "effect",
+          "commit"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "write_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

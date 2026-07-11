@@ -5,6 +5,7 @@ use super::{
 
 /// Vector collection facts.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct VectorCollectionInfo {
     name: String,
     dimension: u64,
@@ -46,6 +47,7 @@ impl VectorCollectionInfo {
 
 /// Vector value payload.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct VectorData {
     embedding: Vec<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -74,6 +76,7 @@ impl VectorData {
 
 /// Vector value with commit metadata.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct VectorVersionedData {
     key: String,
     data: VectorData,
@@ -128,6 +131,7 @@ impl VectorVersionedData {
 
 /// Vector history item.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct VectorHistoryItem {
     key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -192,6 +196,7 @@ impl VectorHistoryItem {
 
 /// Vector history result for one key.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct VectorHistoryResult {
     count: usize,
     items: Vec<VectorHistoryItem>,
@@ -224,6 +229,7 @@ impl VectorHistoryResult {
 
 /// One vector search match.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct VectorMatch {
     key: String,
     score: f32,
@@ -259,6 +265,7 @@ impl VectorMatch {
 
 /// One vector index artifact diagnostic.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct VectorIndexArtifactSource {
     artifact_id: String,
     status: String,
@@ -293,6 +300,7 @@ impl VectorIndexArtifactSource {
 
 /// Vector index planner diagnostics.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct VectorIndexDiagnostics {
     collection: String,
     manifest_status: String,
@@ -542,6 +550,7 @@ impl VectorIndexDiagnostics {
 
 /// Vector index search output.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct VectorIndexQueryResult {
     matches: Vec<VectorMatch>,
     diagnostics: VectorIndexDiagnostics,
@@ -569,6 +578,7 @@ impl VectorIndexQueryResult {
 
 /// Positional vector batch write/delete result.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct VectorBatchItemResult {
     applied: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -686,6 +696,7 @@ impl VectorBatchItemResult {
 
 /// Positional vector batch read result.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct VectorBatchGetItemResult {
     found: bool,
     value: Option<VectorVersionedData>,

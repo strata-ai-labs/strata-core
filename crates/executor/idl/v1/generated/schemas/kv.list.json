@@ -1,0 +1,214 @@
+{
+  "$defs": {
+    "Bytes": {
+      "contentEncoding": "base64",
+      "description": "Binary payload encoded as a standard base64 string.",
+      "type": "string"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/kv.list.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "kv.list",
+  "request": {
+    "additionalProperties": false,
+    "description": "Lists KV keys.",
+    "properties": {
+      "as_of": {
+        "description": "Optional timestamp in microseconds.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "cursor": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Bytes"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Optional key cursor."
+      },
+      "limit": {
+        "description": "Optional item limit. Defaults to 100.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "prefix": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Bytes"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Optional key prefix."
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "kv_list",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Paginated key list.",
+    "properties": {
+      "data": {
+        "description": "Shared pagination continuation facts.",
+        "properties": {
+          "cursor": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Bytes"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "items": {
+            "description": "Keys in this page.",
+            "items": {
+              "$ref": "#/$defs/Bytes"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "has_more"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "keys_page",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  },
+  "responses": [
+    {
+      "description": "Key list.",
+      "properties": {
+        "data": {
+          "description": "Shared pagination continuation facts.",
+          "properties": {
+            "cursor": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Bytes"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "has_more": {
+              "type": "boolean"
+            },
+            "items": {
+              "description": "Keys in this page.",
+              "items": {
+                "$ref": "#/$defs/Bytes"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "items",
+            "has_more"
+          ],
+          "type": "object"
+        },
+        "type": {
+          "const": "keys",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "data"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "Paginated key list.",
+      "properties": {
+        "data": {
+          "description": "Shared pagination continuation facts.",
+          "properties": {
+            "cursor": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Bytes"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "has_more": {
+              "type": "boolean"
+            },
+            "items": {
+              "description": "Keys in this page.",
+              "items": {
+                "$ref": "#/$defs/Bytes"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "items",
+            "has_more"
+          ],
+          "type": "object"
+        },
+        "type": {
+          "const": "keys_page",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "data"
+      ],
+      "type": "object"
+    }
+  ]
+}

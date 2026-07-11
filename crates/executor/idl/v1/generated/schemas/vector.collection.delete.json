@@ -1,0 +1,55 @@
+{
+  "$id": "https://stratadb.org/idl/v1/schemas/vector.collection.delete.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "vector.collection.delete",
+  "request": {
+    "additionalProperties": false,
+    "description": "Deletes a vector collection.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "collection": {
+        "description": "Collection name.",
+        "type": "string"
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "vector_delete_collection",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "collection"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Boolean result.",
+    "properties": {
+      "data": {
+        "type": "boolean"
+      },
+      "type": {
+        "const": "bool",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

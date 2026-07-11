@@ -128,6 +128,7 @@ thread_local! {
 
 /// Stable executor compatibility error class.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ExecutorErrorClass {
@@ -153,6 +154,7 @@ pub enum ExecutorErrorClass {
 
 /// Public V1 executor error status.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct ErrorStatus {
     class: ErrorClass,
     code: String,
@@ -308,6 +310,7 @@ impl ErrorStatus {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 struct RawErrorStatus {
     class: ErrorClass,
     code: String,
@@ -355,6 +358,7 @@ pub type ExecutorResult<T> = Result<T, ExecutorError>;
 
 /// Public executor error.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(transparent)]
 pub struct ExecutorError {
     status: ErrorStatus,

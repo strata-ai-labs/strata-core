@@ -5,6 +5,7 @@ use super::{
 
 /// Event record payload and chain facts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct EventData {
     sequence: u64,
     event_type: String,
@@ -67,6 +68,7 @@ impl EventData {
 
 /// Event record with commit metadata.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct EventVersionedData {
     event: EventData,
     version: u64,
@@ -101,6 +103,7 @@ impl EventVersionedData {
 
 /// Positional event batch append result.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct EventBatchAppendItemResult {
     sequence: Option<u64>,
     event_type: Option<String>,
@@ -223,6 +226,7 @@ impl EventBatchAppendItemResult {
 
 /// Event hash-chain verification result.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct EventChainVerification {
     #[serde(rename = "valid", alias = "is_valid")]
     is_valid: bool,

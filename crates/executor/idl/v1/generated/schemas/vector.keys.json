@@ -1,0 +1,101 @@
+{
+  "$id": "https://stratadb.org/idl/v1/schemas/vector.keys.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "vector.keys",
+  "request": {
+    "additionalProperties": false,
+    "description": "Lists vector keys.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "collection": {
+        "description": "Collection name.",
+        "type": "string"
+      },
+      "cursor": {
+        "description": "Optional key cursor.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "limit": {
+        "description": "Optional item limit. Defaults to 100.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "prefix": {
+        "description": "Optional key prefix.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "vector_list_keys",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "collection"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Paginated vector key list.",
+    "properties": {
+      "data": {
+        "description": "Shared pagination continuation facts.",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "items": {
+            "description": "Keys in this page.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "has_more"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "vector_key_page",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

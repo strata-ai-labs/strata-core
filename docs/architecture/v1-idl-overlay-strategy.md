@@ -1127,7 +1127,7 @@ Where the pipeline actually stands:
 | Resolved `command-index.json` + `cli-command-index.json` | ✅ generated |
 | Generic command runner (`strata command run --command-json`) | ✅ shipped in cli-next |
 | Runtime `CliCommandCatalog` | ✅ built, consumed only by its own tests |
-| JSON Schemas (schemars) | ❌ keystone gap (META-1) |
+| JSON Schemas (schemars) | ✅ built 2026-07-10: per-command documents in `generated/schemas/`, fixtures validate against them in `generate`/`check` |
 | CLI reads the catalog (help/explain/listing) | ❌ Slice 2 unlanded; clap tree is parallel and unguarded (META-4) |
 | Exhaustiveness + consumer + fixture-behavior guards | ❌ (META-3, DSGN-2) |
 | Lifecycle vocabulary beyond `stable\|transitional`; runtime version exposure | ❌ (EVOL-2/3) |

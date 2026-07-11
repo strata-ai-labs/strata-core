@@ -48,6 +48,7 @@ use crate::{EmbeddingEngine, RankingEngine};
 
 /// Runtime configuration for model execution.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 pub struct InferenceRuntimeConfig {
     /// Optional model directory override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,6 +68,7 @@ impl Default for InferenceRuntimeConfig {
 
 /// Model cache facts exposed for diagnostics.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 pub struct ModelCacheStatus {
     /// Cached generation model specs.
     pub generation_models: Vec<String>,
@@ -78,6 +80,7 @@ pub struct ModelCacheStatus {
 
 /// Provider/model capability facts.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 pub struct InferenceCapability {
     /// Provider kind.
     pub provider: ProviderKind,
@@ -105,6 +108,7 @@ pub struct InferenceCapability {
 
 /// Pull-model command output.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 pub struct PullModelOutput {
     /// Requested model spec.
     pub model: String,
@@ -114,6 +118,7 @@ pub struct PullModelOutput {
 
 /// Embedding request.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 pub struct EmbedRequest {
     /// Text to embed.
     pub text: String,
@@ -121,6 +126,7 @@ pub struct EmbedRequest {
 
 /// Batch embedding response.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 pub struct EmbedResponse {
     /// Ordered embedding item outcomes.
     pub items: Vec<EmbedRuntimeOutcome>,
@@ -130,6 +136,7 @@ pub struct EmbedResponse {
 
 /// Embedding item outcome.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum EmbedRuntimeOutcome {
     /// Successful embedding item.
@@ -148,6 +155,7 @@ pub enum EmbedRuntimeOutcome {
 
 /// Ranking request.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 pub struct RankRequest {
     /// Query text.
     pub query: String,
@@ -157,6 +165,7 @@ pub struct RankRequest {
 
 /// Ranking response.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 pub struct RankResponse {
     /// Ordered ranking item outcomes.
     pub items: Vec<RankRuntimeOutcome>,
@@ -164,6 +173,7 @@ pub struct RankResponse {
 
 /// Ranking item outcome.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum RankRuntimeOutcome {
     /// Successful ranking score.

@@ -1,0 +1,153 @@
+{
+  "$defs": {
+    "VectorData": {
+      "description": "Vector value payload.",
+      "properties": {
+        "embedding": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "metadata": true
+      },
+      "required": [
+        "embedding"
+      ],
+      "type": "object"
+    },
+    "VectorHistoryItem": {
+      "description": "Vector history item.",
+      "properties": {
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VectorData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "key": {
+          "type": "string"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tombstone": {
+          "type": "boolean"
+        },
+        "vector_revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "version",
+        "timestamp",
+        "tombstone"
+      ],
+      "type": "object"
+    },
+    "VectorHistoryResult": {
+      "description": "Vector history result for one key.",
+      "properties": {
+        "count": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/VectorHistoryItem"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "count",
+        "items"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/vector.history.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "vector.history",
+  "request": {
+    "additionalProperties": false,
+    "description": "Reads full vector history.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "collection": {
+        "description": "Collection name.",
+        "type": "string"
+      },
+      "key": {
+        "description": "Vector key.",
+        "type": "string"
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "vector_getv",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "collection",
+      "key"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Full vector history.",
+    "properties": {
+      "data": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/VectorHistoryResult"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "type": {
+        "const": "vector_version_history",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

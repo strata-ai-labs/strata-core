@@ -2,6 +2,7 @@ use super::{Deserialize, Serialize, Value};
 
 /// Vector distance metric exposed through the command boundary.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum VectorDistanceMetric {
     /// Cosine similarity.
@@ -15,6 +16,7 @@ pub enum VectorDistanceMetric {
 
 /// Scalar value used by vector metadata filters.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case", tag = "type", content = "value")]
 pub enum VectorScalar {
     /// JSON null.
@@ -53,6 +55,7 @@ impl From<&str> for VectorScalar {
 
 /// Vector metadata filter operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum VectorFilterOp {
     /// Top-level equality.
@@ -61,6 +64,7 @@ pub enum VectorFilterOp {
 
 /// One vector metadata filter condition.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct VectorFilterCondition {
     field: String,
     op: VectorFilterOp,
@@ -105,6 +109,7 @@ impl VectorFilterCondition {
 
 /// AND-composed vector metadata filter.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct VectorMetadataFilter {
     conditions: Vec<VectorFilterCondition>,
 }
@@ -128,6 +133,7 @@ impl VectorMetadataFilter {
 
 /// One vector batch upsert entry.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct BatchVectorEntry {
     key: String,
     vector: Vec<f32>,

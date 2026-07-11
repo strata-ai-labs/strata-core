@@ -1,0 +1,229 @@
+{
+  "$defs": {
+    "VectorFilterCondition": {
+      "description": "One vector metadata filter condition.",
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "op": {
+          "$ref": "#/$defs/VectorFilterOp"
+        },
+        "value": {
+          "$ref": "#/$defs/VectorScalar"
+        }
+      },
+      "required": [
+        "field",
+        "op",
+        "value"
+      ],
+      "type": "object"
+    },
+    "VectorFilterOp": {
+      "description": "Vector metadata filter operation.",
+      "oneOf": [
+        {
+          "const": "eq",
+          "description": "Top-level equality.",
+          "type": "string"
+        }
+      ]
+    },
+    "VectorMatch": {
+      "description": "One vector search match.",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "metadata": true,
+        "score": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "key",
+        "score"
+      ],
+      "type": "object"
+    },
+    "VectorMetadataFilter": {
+      "description": "AND-composed vector metadata filter.",
+      "properties": {
+        "conditions": {
+          "items": {
+            "$ref": "#/$defs/VectorFilterCondition"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "conditions"
+      ],
+      "type": "object"
+    },
+    "VectorScalar": {
+      "description": "Scalar value used by vector metadata filters.",
+      "oneOf": [
+        {
+          "description": "JSON null.",
+          "properties": {
+            "type": {
+              "const": "null",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Boolean scalar.",
+          "properties": {
+            "type": {
+              "const": "bool",
+              "type": "string"
+            },
+            "value": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Numeric scalar.",
+          "properties": {
+            "type": {
+              "const": "number",
+              "type": "string"
+            },
+            "value": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "String scalar.",
+          "properties": {
+            "type": {
+              "const": "string",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/vector.query.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "vector.query",
+  "request": {
+    "additionalProperties": false,
+    "description": "Runs vector search with the default engine planner.",
+    "properties": {
+      "as_of": {
+        "description": "Optional timestamp in microseconds.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "collection": {
+        "description": "Collection name.",
+        "type": "string"
+      },
+      "filter": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/VectorMetadataFilter"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Optional metadata filter."
+      },
+      "k": {
+        "description": "Maximum number of matches.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "query": {
+        "description": "Query embedding.",
+        "items": {
+          "format": "float",
+          "type": "number"
+        },
+        "type": "array"
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "vector_query",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "collection",
+      "query",
+      "k"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Vector search matches.",
+    "properties": {
+      "data": {
+        "items": {
+          "$ref": "#/$defs/VectorMatch"
+        },
+        "type": "array"
+      },
+      "type": {
+        "const": "vector_matches",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

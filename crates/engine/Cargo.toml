@@ -13,10 +13,13 @@ publish = false
 default = ["localfs"]
 localfs = ["strata-storage/localfs"]
 testkit = []
+# Derive JSON schemas on the public error vocabulary for IDL tooling only.
+wire-schemas = ["dep:schemars"]
 
 [dependencies]
 strata-core = { path = "../core" }
 strata-storage = { path = "../storage", default-features = false }
+schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

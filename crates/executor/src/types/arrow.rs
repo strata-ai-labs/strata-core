@@ -2,6 +2,7 @@ use super::{Deserialize, Serialize};
 
 /// Arrow file format selected for import/export.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ArrowFileFormat {
     /// Apache Parquet.
@@ -15,6 +16,7 @@ pub enum ArrowFileFormat {
 
 /// Product primitive targeted by Arrow import.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ArrowImportTarget {
     /// Import rows into the KV primitive.
@@ -27,6 +29,7 @@ pub enum ArrowImportTarget {
 
 /// Product primitive selected by Arrow export.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ArrowExportPrimitive {
     /// Export the KV primitive.
@@ -43,6 +46,7 @@ pub enum ArrowExportPrimitive {
 
 /// Arrow import summary.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct ArrowImportResult {
     target: ArrowImportTarget,
     file_path: String,
@@ -97,6 +101,7 @@ impl ArrowImportResult {
 
 /// Arrow export summary.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct ArrowExportResult {
     primitive: ArrowExportPrimitive,
     format: ArrowFileFormat,

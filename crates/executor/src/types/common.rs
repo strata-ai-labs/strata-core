@@ -64,6 +64,23 @@ impl<'de> Deserialize<'de> for Bytes {
     }
 }
 
+/// The custom serde impls above put base64 strings on the wire; the schema
+/// must say the same thing, so it is written by hand rather than derived.
+#[cfg(feature = "idl-tooling")]
+impl schemars::JsonSchema for Bytes {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Bytes".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "contentEncoding": "base64",
+            "description": "Binary payload encoded as a standard base64 string."
+        })
+    }
+}
+
 impl Bytes {
     /// Creates a byte payload.
     pub fn new(bytes: impl Into<Vec<u8>>) -> Self {
@@ -112,6 +129,7 @@ impl From<&str> for Bytes {
 
 /// Shared pagination continuation facts.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct PageInfo<C> {
     has_more: bool,
     cursor: Option<C>,
@@ -162,6 +180,7 @@ where
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
         struct RawPageInfo<C> {
             has_more: bool,
             cursor: Option<C>,
@@ -187,6 +206,7 @@ where
 
 /// Batch execution semantics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum BatchMode {
     /// The command is one atomic unit. Invalid operations fail the whole
@@ -199,6 +219,7 @@ pub enum BatchMode {
 
 /// Normalized batch-level outcome status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum BatchStatus {
     /// The batch completed without item-level errors or mixed apply/no-op
@@ -213,6 +234,7 @@ pub enum BatchStatus {
 
 /// Normalized positional item status within a batch response.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum BatchItemStatus {
     /// The item was accepted by the command.
@@ -225,6 +247,7 @@ pub enum BatchItemStatus {
 
 /// Shared positional item wrapper for all public batch responses.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct BatchItem<T> {
     index: u64,
     status: BatchItemStatus,
@@ -353,6 +376,7 @@ impl<T> std::ops::Deref for BatchItem<T> {
 
 /// Shared batch response wrapper for all public batch commands.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct BatchResult<T> {
     mode: BatchMode,
     status: BatchStatus,
@@ -495,6 +519,7 @@ fn shared_batch_commit<T>(items: &[BatchItem<T>]) -> Option<CommitReceipt> {
 
 /// Commit facts returned by mutating operations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct CommitReceipt {
     version: u64,
     timestamp: u64,
@@ -549,6 +574,7 @@ impl CommitReceipt {
 
 /// High-level mutation effect for idempotent and conditional operations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum MutationEffectKind {
     /// A new logical entity was created.
@@ -565,6 +591,7 @@ pub enum MutationEffectKind {
 
 /// Normalized mutation effect facts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct MutationEffect {
     applied: bool,
     kind: MutationEffectKind,
