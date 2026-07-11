@@ -85,6 +85,7 @@ use std::str::FromStr;
 
 /// A request for text generation, provider-agnostic.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 #[serde(default)]
 pub struct GenerateRequest {
     /// Input prompt text.
@@ -129,6 +130,7 @@ impl Default for GenerateRequest {
 
 /// The result of a generation request.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 pub struct GenerateResponse {
     /// Generated output text.
     pub text: String,
@@ -142,6 +144,7 @@ pub struct GenerateResponse {
 
 /// Why generation stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     /// Generation reached a stop token or stop sequence.
@@ -167,6 +170,7 @@ impl fmt::Display for StopReason {
 
 /// Which inference provider to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     /// Local GGUF model provider.

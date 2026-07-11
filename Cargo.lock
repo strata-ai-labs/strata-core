@@ -3630,6 +3630,7 @@ dependencies = [
  "rustyline",
  "serde",
  "serde_json",
+ "serde_yaml",
  "shlex",
  "strata-executor 1.0.0",
  "strata-hub",
@@ -3772,6 +3773,7 @@ name = "strata-inference"
 version = "1.0.0"
 dependencies = [
  "cmake",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.10.9",

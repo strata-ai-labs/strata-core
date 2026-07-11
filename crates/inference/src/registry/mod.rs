@@ -28,6 +28,7 @@ use crate::error::InferenceError;
 
 /// What a model is designed for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ModelTask {
     /// Embedding model.
@@ -85,6 +86,7 @@ pub struct CatalogEntry {
 
 /// Information about a resolved model.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 pub struct ModelInfo {
     /// Stable model catalog name.
     pub name: String,
