@@ -15,7 +15,7 @@ target/
 *.o
 *.so
 *.dylib
-crates/wasm-next/www/pkg/
+crates/wasm/www/pkg/
 /test
 .benchmark/
 benchmarks/results/
