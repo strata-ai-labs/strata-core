@@ -583,46 +583,14 @@ fn vector_invalid_inputs_are_engine_errors() {
 #[test]
 fn vector_missing_branch_errors_are_engine_owned() {
     let mut database = open_cache_database().expect("cache open succeeds");
-    let mut vectors = vector_service(&mut database, "missing", "default");
 
-    let error = vectors
-        .create_collection(collection("docs"), config(2, VectorDistanceMetric::Cosine))
-        .expect_err("create in missing branch rejected");
-    assert_eq!(error.class(), EngineErrorClass::NotFound);
-    assert_eq!(error.code(), "not_found.engine.branch");
-
-    let error = vectors
-        .upsert(
-            collection("docs"),
-            vector_key("a"),
-            embedding([1.0, 0.0]),
-            None,
-        )
-        .expect_err("upsert in missing branch rejected");
-    assert_eq!(error.class(), EngineErrorClass::NotFound);
-    assert_eq!(error.code(), "not_found.engine.branch");
-
-    let error = vectors
-        .get(&collection("docs"), &vector_key("a"))
-        .expect_err("get in missing branch rejected");
-    assert_eq!(error.class(), EngineErrorClass::NotFound);
-    assert_eq!(error.code(), "not_found.engine.branch");
-
-    let error = vectors
-        .query(&collection("docs"), &embedding([1.0, 0.0]), 0, None)
-        .expect_err("zero-limit query in missing branch rejected");
-    assert_eq!(error.class(), EngineErrorClass::NotFound);
-    assert_eq!(error.code(), "not_found.engine.branch");
-
-    let error = vectors
-        .batch_upsert(&collection("docs"), &[])
-        .expect_err("empty batch upsert in missing branch rejected");
-    assert_eq!(error.class(), EngineErrorClass::NotFound);
-    assert_eq!(error.code(), "not_found.engine.branch");
-
-    let error = vectors
-        .batch_delete(&collection("docs"), &[])
-        .expect_err("empty batch delete in missing branch rejected");
+    // Branch existence is validated at service construction, so a missing
+    // branch fails fast before any op — including reads and empty batches,
+    // which previously relied on each op path to re-check the branch.
+    let error = database
+        .vector(branch("missing"), space("default"))
+        .map(|_| ())
+        .expect_err("missing branch rejected at service construction");
     assert_eq!(error.class(), EngineErrorClass::NotFound);
     assert_eq!(error.code(), "not_found.engine.branch");
 }

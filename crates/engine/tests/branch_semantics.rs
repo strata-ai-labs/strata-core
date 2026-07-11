@@ -342,9 +342,8 @@ fn delete_and_recreate_advances_generation_without_resurrecting_rows() {
 
     let error = database
         .kv(branch("scratch"), space("default"))
-        .expect("deleted KV service opens")
-        .put(key(b"blocked"), value(b"blocked"))
-        .expect_err("deleted branch write rejected");
+        .map(|_| ())
+        .expect_err("deleted branch write rejected at service construction");
     assert_eq!(error.class(), EngineErrorClass::NotFound);
     assert_eq!(error.code(), "not_found.engine.branch");
 

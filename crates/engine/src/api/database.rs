@@ -261,6 +261,7 @@ impl Database {
     pub fn kv(&mut self, branch: BranchName, space: ProductSpace) -> EngineResult<KvService<'_>> {
         self.require_open()?;
         self.control.require_healthy()?;
+        self.require_branch(&branch)?;
         Ok(KvService::new(
             &mut self.persistence,
             &mut self.control,
@@ -277,6 +278,7 @@ impl Database {
     ) -> EngineResult<JsonService<'_>> {
         self.require_open()?;
         self.control.require_healthy()?;
+        self.require_branch(&branch)?;
         Ok(JsonService::new(
             &mut self.persistence,
             &mut self.control,
@@ -293,6 +295,7 @@ impl Database {
     ) -> EngineResult<VectorService<'_>> {
         self.require_open()?;
         self.control.require_healthy()?;
+        self.require_branch(&branch)?;
         Ok(VectorService::new(
             &mut self.persistence,
             &mut self.control,
@@ -310,6 +313,7 @@ impl Database {
     ) -> EngineResult<EventService<'_>> {
         self.require_open()?;
         self.control.require_healthy()?;
+        self.require_branch(&branch)?;
         Ok(EventService::new(
             &mut self.persistence,
             &mut self.control,
@@ -326,6 +330,7 @@ impl Database {
     ) -> EngineResult<GraphService<'_>> {
         self.require_open()?;
         self.control.require_healthy()?;
+        self.require_branch(&branch)?;
         Ok(GraphService::new(
             &mut self.persistence,
             &mut self.control,
@@ -524,6 +529,23 @@ impl Database {
         } else {
             Err(EngineError::closed_runtime(
                 "database handle is closed and cannot accept operations",
+            ))
+        }
+    }
+
+    /// Validates that the named branch exists before handing out a data
+    /// service. Branch existence is engine-owned (hard rule 7); enforcing it
+    /// at service construction keeps the check uniform — including for
+    /// operations that short-circuit before touching a branch record (an
+    /// empty batch) — and removes the per-op validation the executor used to
+    /// duplicate across every capability.
+    fn require_branch(&self, branch: &BranchName) -> EngineResult<()> {
+        if self.control.lookup_branch(branch).is_some() {
+            Ok(())
+        } else {
+            Err(EngineError::not_found(
+                "not_found.engine.branch",
+                format!("branch `{branch}` does not exist"),
             ))
         }
     }

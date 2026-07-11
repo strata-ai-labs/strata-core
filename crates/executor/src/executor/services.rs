@@ -11,10 +11,6 @@ impl Executor {
     ) -> ExecutorResult<strata_engine::KvService<'_>> {
         let branch = branch_name(branch, &self.default_branch)?;
         let space = product_space(space, &self.default_space)?;
-        {
-            let branches = self.database.branches()?;
-            branches.get(&branch)?;
-        }
         Ok(self.database.kv(branch, space)?)
     }
 
@@ -25,10 +21,6 @@ impl Executor {
     ) -> ExecutorResult<JsonService<'_>> {
         let branch = branch_name(branch, &self.default_branch)?;
         let space = product_space(space, &self.default_space)?;
-        {
-            let branches = self.database.branches()?;
-            branches.get(&branch)?;
-        }
         Ok(self.database.json(branch, space)?)
     }
 
@@ -39,10 +31,6 @@ impl Executor {
     ) -> ExecutorResult<VectorService<'_>> {
         let branch = branch_name(branch, &self.default_branch)?;
         let space = product_space(space, &self.default_space)?;
-        {
-            let branches = self.database.branches()?;
-            branches.get(&branch)?;
-        }
         Ok(self.database.vector(branch, space)?)
     }
 
@@ -53,10 +41,6 @@ impl Executor {
     ) -> ExecutorResult<EventService<'_>> {
         let branch = branch_name(branch, &self.default_branch)?;
         let space = product_space(space, &self.default_space)?;
-        {
-            let branches = self.database.branches()?;
-            branches.get(&branch)?;
-        }
         Ok(self.database.event(branch, space)?)
     }
 
@@ -67,10 +51,6 @@ impl Executor {
     ) -> ExecutorResult<GraphService<'_>> {
         let branch = branch_name(branch, &self.default_branch)?;
         let space = product_space(space, &self.default_space)?;
-        {
-            let branches = self.database.branches()?;
-            branches.get(&branch)?;
-        }
         Ok(self.database.graph(branch, space)?)
     }
 }
