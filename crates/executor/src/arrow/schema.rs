@@ -33,6 +33,9 @@ pub(crate) fn resolve_mapping(
         ArrowImportTarget::Json => resolve_json_document(schema, key_idx, value_column)?,
         ArrowImportTarget::Vector => resolve_vector_embedding(schema, key_idx, value_column)?,
     };
+    // `key_encoding` / `value_encoding` are optional metadata columns; a
+    // missing column (`index_of` returns Err) means "no encoding override",
+    // not a schema error, so the lookup collapses to `None`.
     let key_encoding_idx = schema.index_of("key_encoding").ok();
     let value_encoding_idx = schema.index_of("value_encoding").ok();
     Ok(ImportMapping {
@@ -225,6 +228,8 @@ fn resolve_vector_embedding(
     } else {
         ["embedding", "vector", "embeddings", "emb"]
             .iter()
+            // Probe known embedding column aliases; `.ok()` skips names that
+            // are absent so the first present alias wins.
             .find_map(|candidate| schema.index_of(candidate).ok())
             .ok_or_else(|| {
                 invalid_input(
@@ -297,6 +302,7 @@ fn format_columns(schema: &Schema) -> String {
 
 fn encoding_at(batch: &RecordBatch, index: Option<usize>, row: usize) -> Option<String> {
     index
+        // A cell that cannot be read as a string means "no per-row encoding".
         .and_then(|index| cell_to_string(batch.column(index).as_ref(), row).ok())
         .map(|value| value.trim().to_ascii_lowercase())
         .filter(|value| !value.is_empty())

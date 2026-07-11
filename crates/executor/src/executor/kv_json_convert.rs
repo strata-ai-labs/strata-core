@@ -51,6 +51,9 @@ pub(super) fn branch_cleanup_item(cleanup: BranchCleanupSummary) -> BranchCleanu
 }
 
 pub(super) fn usize_to_u64(value: usize) -> u64 {
+    // `usize` only exceeds `u64` on a >64-bit target, which Strata does not
+    // support; saturating to `u64::MAX` keeps counts monotonic on the
+    // theoretical overflow instead of panicking.
     u64::try_from(value).unwrap_or(u64::MAX)
 }
 
