@@ -21,6 +21,10 @@ pub enum InferenceError {
 
     /// Requested provider, model, or operation is unavailable.
     NotSupported(String),
+
+    /// The model spec itself is malformed (empty, missing model name, or an
+    /// unknown provider) — caller input error, not a provider outage.
+    InvalidSpec(String),
 }
 
 impl fmt::Debug for InferenceError {
@@ -46,6 +50,10 @@ impl fmt::Debug for InferenceError {
                 .debug_tuple("NotSupported")
                 .field(&redact_secrets(message))
                 .finish(),
+            Self::InvalidSpec(message) => formatter
+                .debug_tuple("InvalidSpec")
+                .field(&redact_secrets(message))
+                .finish(),
         }
     }
 }
@@ -63,6 +71,9 @@ impl fmt::Display for InferenceError {
             Self::Io(message) => write!(formatter, "IO error: {}", redact_secrets(message)),
             Self::NotSupported(message) => {
                 write!(formatter, "not supported: {}", redact_secrets(message))
+            }
+            Self::InvalidSpec(message) => {
+                write!(formatter, "invalid model spec: {}", redact_secrets(message))
             }
         }
     }
@@ -104,6 +115,12 @@ impl serde::Serialize for InferenceError {
                 "NotSupported",
                 &redact_secrets(message),
             ),
+            Self::InvalidSpec(message) => serializer.serialize_newtype_variant(
+                "InferenceError",
+                5,
+                "InvalidSpec",
+                &redact_secrets(message),
+            ),
         }
     }
 }
@@ -143,6 +160,7 @@ impl InferenceError {
             Self::Registry(message) => registry_code(message),
             Self::Io(_) => "inference.io_failure",
             Self::NotSupported(message) => not_supported_code(message),
+            Self::InvalidSpec(_) => "inference.invalid_request",
         }
     }
 
