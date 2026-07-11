@@ -116,6 +116,7 @@ commands:
   - id: vector.metadata.update
     kind: mutation.metadata_update
     title: Update vector metadata
+    cli_path: ["vector", "update-metadata"]
     input: Command::VectorUpdateMetadata
     output: Output::VectorMetadataUpdateResult
     result: VectorMetadataUpdate
@@ -173,6 +174,7 @@ commands:
   - id: vector.index.query
     kind: read.diagnostics
     title: Query vector index
+    cli_surface: wire
     input: Command::VectorIndexQuery
     output: Output::VectorIndexQuery
     result: VectorMatch

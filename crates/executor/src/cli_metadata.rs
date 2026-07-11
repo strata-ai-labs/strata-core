@@ -227,6 +227,9 @@ pub struct CliCommandEntry {
     pub path: Vec<String>,
     /// Display form of the CLI path.
     pub path_display: String,
+    /// Which surface implements the path: `verb` (real clap subcommand)
+    /// or `wire` (generic `command run`, MCP, SDKs only).
+    pub surface: String,
     /// Command family.
     pub family: String,
     /// Operation id within the family.

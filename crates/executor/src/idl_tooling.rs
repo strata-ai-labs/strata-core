@@ -17,6 +17,8 @@ const IDL_DIR: &str = "crates/executor/idl/v1";
 const FIXTURE_ROOT: &str = "crates/executor/tests/fixtures";
 const COMMAND_INDEX_FILE: &str = "command-index.json";
 const CLI_COMMAND_INDEX_FILE: &str = "cli-command-index.json";
+const UNCOVERED_COMMANDS_FILE: &str = "uncovered-commands.yaml";
+const CLI_SURFACES: &[&str] = &["verb", "wire"];
 const SUPPORTED_COMMAND_SCHEMA_VERSION: &str = "strata.idl.v1";
 const SUPPORTED_COMMAND_GENERATOR_VERSION: &str = "strata-executor-idl.1";
 const CLI_SCHEMA_VERSION: &str = "strata.cli.v1";
@@ -33,6 +35,7 @@ const COMMAND_SOURCE_FIELDS: &[&str] = &[
     "wire_status",
     "docs",
     "cli_path",
+    "cli_surface",
     "mcp_name",
     "feature",
     "access",
@@ -174,6 +177,9 @@ pub struct ResolvedCommand {
 pub struct CliInfo {
     /// CLI path segments.
     pub path: Vec<String>,
+    /// Which surface implements this path: a real clap verb (`verb`) or
+    /// the generic wire path only (`wire` — `command run`, MCP, SDKs).
+    pub surface: String,
 }
 
 /// Future MCP metadata.
@@ -270,6 +276,9 @@ pub struct CliCommandEntry {
     pub path: Vec<String>,
     /// Display form of the CLI path.
     pub path_display: String,
+    /// Which surface implements the path: `verb` (real clap subcommand)
+    /// or `wire` (generic `command run`, MCP, SDKs only).
+    pub surface: String,
     /// Command family.
     pub family: String,
     /// Operation id within the family.
@@ -331,6 +340,8 @@ struct LayerFields {
     docs: Option<String>,
     #[serde(default)]
     cli_path: Option<Vec<String>>,
+    #[serde(default)]
+    cli_surface: Option<String>,
     #[serde(default)]
     mcp_name: Option<String>,
     #[serde(default)]
@@ -396,6 +407,13 @@ struct CommandsFileSource {
     commands: Vec<CommandSource>,
 }
 
+/// `uncovered-commands.yaml`: the shrink-only exhaustiveness allowlist.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UncoveredCommandsSource {
+    uncovered: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CommandSource {
@@ -414,6 +432,8 @@ struct CommandSource {
     docs: Option<String>,
     #[serde(default)]
     cli_path: Option<Vec<String>>,
+    #[serde(default)]
+    cli_surface: Option<String>,
     #[serde(default)]
     mcp_name: Option<String>,
     #[serde(default)]
@@ -455,6 +475,7 @@ struct Prose {
 struct ResolvedLayer {
     docs: Option<String>,
     cli_path: Option<Vec<String>>,
+    cli_surface: Option<String>,
     mcp_name: Option<String>,
     feature: Option<String>,
     access: Option<String>,
@@ -473,6 +494,9 @@ impl ResolvedLayer {
         }
         if fields.cli_path.is_some() {
             self.cli_path.clone_from(&fields.cli_path);
+        }
+        if fields.cli_surface.is_some() {
+            self.cli_surface.clone_from(&fields.cli_surface);
         }
         if fields.mcp_name.is_some() {
             self.mcp_name.clone_from(&fields.mcp_name);
@@ -505,6 +529,9 @@ impl ResolvedLayer {
         }
         if command.cli_path.is_some() {
             self.cli_path.clone_from(&command.cli_path);
+        }
+        if command.cli_surface.is_some() {
+            self.cli_surface.clone_from(&command.cli_surface);
         }
         if command.mcp_name.is_some() {
             self.mcp_name.clone_from(&command.mcp_name);
@@ -630,6 +657,7 @@ pub fn resolve_index(repo_root: &Path) -> Result<CommandIndex> {
     }
 
     resolved.sort_by(|left, right| left.id.cmp(&right.id));
+    enforce_command_exhaustiveness(&idl_root, &command_refs, &resolved)?;
     Ok(CommandIndex {
         generated: true,
         schema_version: manifest.schema_version,
@@ -896,6 +924,7 @@ fn cli_entry_from_resolved(command: ResolvedCommand) -> Result<CliCommandEntry> 
     let entry = CliCommandEntry {
         id: command.id,
         path_display: cli_path_key(&command.cli.path),
+        surface: command.cli.surface,
         path: command.cli.path,
         family: command.family,
         op: command.op,
@@ -1092,6 +1121,14 @@ fn resolve_command(
     };
     validate_cli_path(&cli_path, &command.id)?;
 
+    let cli_surface = layer.cli_surface.unwrap_or_else(|| "verb".to_owned());
+    if !CLI_SURFACES.contains(&cli_surface.as_str()) {
+        return Err(invalid(format!(
+            "`{}` has unknown cli_surface `{cli_surface}`; expected one of {CLI_SURFACES:?}",
+            command.id
+        )));
+    }
+
     let mcp_name_template = layer
         .mcp_name
         .unwrap_or_else(|| "strata_{family}_{op_slug}".to_owned());
@@ -1127,7 +1164,10 @@ fn resolve_command(
         summary: prose.summary,
         description: prose.body,
         docs,
-        cli: CliInfo { path: cli_path },
+        cli: CliInfo {
+            path: cli_path,
+            surface: cli_surface,
+        },
         mcp: McpInfo {
             name: mcp_name,
             description: prose
@@ -1270,6 +1310,58 @@ fn extract_command_fields(text: &str) -> Vec<String> {
     fields
 }
 
+/// Exhaustiveness guard: every `Command` variant is either covered by a
+/// resolved IDL entry or listed in `uncovered-commands.yaml`. The list may
+/// only shrink — a listed variant that gains coverage must be removed, and
+/// a brand-new variant fails resolution until it is covered or listed.
+fn enforce_command_exhaustiveness(
+    idl_root: &Path,
+    command_refs: &BTreeSet<String>,
+    resolved: &[ResolvedCommand],
+) -> Result<()> {
+    let allowlist: UncoveredCommandsSource = read_yaml(&idl_root.join(UNCOVERED_COMMANDS_FILE))?;
+    let mut covered = BTreeSet::new();
+    for entry in resolved {
+        covered.insert(variant_name(&entry.input, "Command")?.to_owned());
+    }
+    enforce_exhaustiveness_lists(command_refs, &covered, &allowlist.uncovered)
+}
+
+fn enforce_exhaustiveness_lists(
+    command_refs: &BTreeSet<String>,
+    covered: &BTreeSet<String>,
+    allowlist: &[String],
+) -> Result<()> {
+    let mut listed = BTreeSet::new();
+    for reference in allowlist {
+        let name = variant_name(reference, "Command")?.to_owned();
+        if !command_refs.contains(&name) {
+            return Err(invalid(format!(
+                "uncovered-commands.yaml lists `{reference}` which is not a Command variant"
+            )));
+        }
+        if covered.contains(&name) {
+            return Err(invalid(format!(
+                "`{reference}` is covered by the IDL; remove it from uncovered-commands.yaml (the allowlist may only shrink)"
+            )));
+        }
+        if !listed.insert(name) {
+            return Err(invalid(format!(
+                "duplicate `{reference}` in uncovered-commands.yaml"
+            )));
+        }
+    }
+
+    for variant in command_refs {
+        if !covered.contains(variant) && !listed.contains(variant) {
+            return Err(invalid(format!(
+                "Command::{variant} has no resolved IDL entry and is not listed in uncovered-commands.yaml; cover it or list it explicitly"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn registered_error_map() -> BTreeMap<String, String> {
     public_error_code_entries()
         .map(|entry| {
@@ -1337,7 +1429,21 @@ fn enum_variants(path: &Path) -> Result<BTreeSet<String>> {
         source,
     })?;
     let mut variants = BTreeSet::new();
+    // Only lines inside the enum body count: the leading `use` block also
+    // indents type names by four spaces and must not read as variants.
+    let mut in_enum = false;
     for line in text.lines() {
+        if line.starts_with("pub enum ") {
+            in_enum = true;
+            continue;
+        }
+        if in_enum && line == "}" {
+            in_enum = false;
+            continue;
+        }
+        if !in_enum {
+            continue;
+        }
         if !line.starts_with("    ") || line.starts_with("        ") {
             continue;
         }
@@ -1792,6 +1898,44 @@ fn invalid(message: impl Into<String>) -> IdlError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn refs(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|n| (*n).to_owned()).collect()
+    }
+
+    #[test]
+    fn exhaustiveness_accepts_covered_plus_listed() {
+        let all = refs(&["KvPut", "KvGet", "GraphWcc"]);
+        let covered = refs(&["KvPut", "KvGet"]);
+        let listed = vec!["Command::GraphWcc".to_owned()];
+        assert!(enforce_exhaustiveness_lists(&all, &covered, &listed).is_ok());
+    }
+
+    #[test]
+    fn exhaustiveness_rejects_a_new_unlisted_variant() {
+        let all = refs(&["KvPut", "BrandNew"]);
+        let covered = refs(&["KvPut"]);
+        let error = enforce_exhaustiveness_lists(&all, &covered, &[]).unwrap_err();
+        assert!(error.to_string().contains("BrandNew"));
+    }
+
+    #[test]
+    fn exhaustiveness_shrinks_only() {
+        let all = refs(&["KvPut"]);
+        let covered = refs(&["KvPut"]);
+        let listed = vec!["Command::KvPut".to_owned()];
+        let error = enforce_exhaustiveness_lists(&all, &covered, &listed).unwrap_err();
+        assert!(error.to_string().contains("only shrink"));
+    }
+
+    #[test]
+    fn exhaustiveness_rejects_unknown_allowlist_names() {
+        let all = refs(&["KvPut"]);
+        let covered = refs(&["KvPut"]);
+        let listed = vec!["Command::Ghost".to_owned()];
+        let error = enforce_exhaustiveness_lists(&all, &covered, &listed).unwrap_err();
+        assert!(error.to_string().contains("Ghost"));
+    }
 
     #[test]
     fn placeholder_expansion_rejects_unknown_placeholders() {

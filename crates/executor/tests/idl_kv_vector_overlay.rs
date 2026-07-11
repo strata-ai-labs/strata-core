@@ -521,3 +521,44 @@ fn bytes_schema_stays_base64_on_the_wire() {
     assert_eq!(bytes["type"], serde_json::json!("string"));
     assert_eq!(bytes["contentEncoding"], serde_json::json!("base64"));
 }
+
+#[test]
+fn cli_surfaces_are_valid_and_batches_stay_wire_only() {
+    let index = resolve_default_index().expect("index resolves");
+    for command in &index.commands {
+        assert!(
+            command.cli.surface == "verb" || command.cli.surface == "wire",
+            "{} has surface {}",
+            command.id,
+            command.cli.surface
+        );
+        if command.batch != "none" {
+            assert_eq!(
+                command.cli.surface, "wire",
+                "{} is a batch command; batches have no clap verbs",
+                command.id
+            );
+        }
+    }
+}
+
+#[test]
+fn uncovered_allowlist_is_disjoint_from_coverage() {
+    let index = resolve_default_index().expect("index resolves");
+    let covered: BTreeSet<String> = index
+        .commands
+        .iter()
+        .map(|command| command.input.clone())
+        .collect();
+    let idl_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("idl/v1");
+    let text =
+        fs::read_to_string(idl_root.join("uncovered-commands.yaml")).expect("allowlist exists");
+    for line in text.lines() {
+        if let Some(entry) = line.trim().strip_prefix("- ") {
+            assert!(
+                !covered.contains(entry),
+                "{entry} is covered; the allowlist may only shrink"
+            );
+        }
+    }
+}

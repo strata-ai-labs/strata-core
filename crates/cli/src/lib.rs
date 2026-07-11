@@ -12,6 +12,8 @@ use serde_json::Value;
 use strata_executor::{Command, Executor, ExecutorError, GraphPropertyDef};
 
 mod agents;
+#[cfg(test)]
+mod catalog_guard;
 mod context;
 mod doctor;
 mod guidance;
