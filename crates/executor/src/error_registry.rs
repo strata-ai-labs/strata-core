@@ -251,15 +251,6 @@ const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
         EXECUTOR_SCHEMA,
     ),
     entry(
-        "not_found.executor.vector_collection",
-        ErrorClass::NotFound,
-        RetryPolicy::Never,
-        CommitOutcomeStatus::NotApplicable,
-        "The requested vector collection was not found.",
-        "Create the vector collection or retry with an existing collection name.",
-        EXECUTOR_SCHEMA,
-    ),
-    entry(
         "unavailable.executor.arrow_io",
         ErrorClass::Unavailable,
         RetryPolicy::AfterStateChange,

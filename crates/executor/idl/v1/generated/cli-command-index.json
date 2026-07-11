@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "9119720193fb3a65f8f0ac9f01a2617398988274010dada2df208b2c994a113a",
+    "checksum_sha256": "0212bb6b7dce940975d69ccb28740414b1c3787f6fa676e7dad4fa85f14c6f8e",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -6192,8 +6192,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_batch",
@@ -6258,8 +6258,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_batch",
@@ -6324,8 +6324,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_batch",
@@ -6401,8 +6401,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_dimension",
@@ -6467,8 +6467,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
         }
       ],
       "fixtures": {
@@ -6528,8 +6528,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
         }
       ],
       "fixtures": {
@@ -6589,8 +6589,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
         }
       ],
       "fixtures": {
@@ -6649,8 +6649,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
         }
       ],
       "fixtures": {
@@ -6709,8 +6709,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
         }
       ],
       "fixtures": {
@@ -6771,8 +6771,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
         }
       ],
       "fixtures": {
@@ -6833,8 +6833,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_filter",
@@ -6899,8 +6899,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
         }
       ],
       "fixtures": {
@@ -6961,8 +6961,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
         }
       ],
       "fixtures": {
@@ -7023,8 +7023,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
         }
       ],
       "fixtures": {
@@ -7086,8 +7086,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_filter",
@@ -7156,8 +7156,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
         }
       ],
       "fixtures": {
@@ -7218,8 +7218,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_filter",
@@ -7288,8 +7288,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_metadata_patch",
@@ -7354,8 +7354,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_dimension",

@@ -583,9 +583,6 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="invalid_argument.executor.vector_limit"></a>
 - `invalid_argument.executor.vector_limit`
 
-<a id="not_found.executor.vector_collection"></a>
-- `not_found.executor.vector_collection`
-
 <a id="unavailable.executor.arrow_io"></a>
 - `unavailable.executor.arrow_io`
 

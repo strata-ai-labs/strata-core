@@ -122,7 +122,7 @@ pub(super) fn require_vector_collection_info(
 ) -> ExecutorResult<EngineVectorCollectionInfo> {
     service.collection_info(collection)?.ok_or_else(|| {
         ExecutorError::not_found(
-            "not_found.executor.vector_collection",
+            "not_found.engine.vector_collection",
             "vector collection does not exist",
         )
     })

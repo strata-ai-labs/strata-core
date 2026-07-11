@@ -76,7 +76,7 @@ impl Executor {
         let mut service = self.vector_service(branch, space)?;
         let Some(info) = service.collection_info(&collection)? else {
             return Err(ExecutorError::not_found(
-                "not_found.executor.vector_collection",
+                "not_found.engine.vector_collection",
                 "vector collection does not exist",
             ));
         };

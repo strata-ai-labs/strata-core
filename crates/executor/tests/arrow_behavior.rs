@@ -246,7 +246,7 @@ fn vector_import_into_missing_collection_fails_instead_of_defaulting_a_metric() 
             collection: Some("missing".to_owned()),
         })
         .expect_err("import into a missing vector collection is rejected");
-    assert_eq!(error.code(), "not_found.executor.vector_collection");
+    assert_eq!(error.code(), "not_found.engine.vector_collection");
 }
 
 #[test]
