@@ -8,9 +8,13 @@
 // The llama.cpp C API speaks i32 lengths and mutable pointers; the casts
 // at this boundary are the interface, not accidents.
 #![allow(dead_code, missing_docs, unreachable_pub)]
-#![allow(clippy::cast_possible_wrap, clippy::ptr_as_ptr)]
+#![allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::ptr_as_ptr
+)]
 
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -146,6 +150,13 @@ pub struct LlamaBatch {
 
 const _: () = assert!(std::mem::size_of::<LlamaBatch>() == 56);
 
+/// Matches `struct llama_chat_message` from llama.h (two C-string pointers).
+#[repr(C)]
+pub struct LlamaChatMessage {
+    pub role: *const c_char,
+    pub content: *const c_char,
+}
+
 // ---------------------------------------------------------------------------
 // Statically linked extern "C" symbols
 // ---------------------------------------------------------------------------
@@ -254,6 +265,33 @@ extern "C" {
         grammar_str: *const c_char,
         grammar_root: *const c_char,
     ) -> LlamaSampler;
+    pub fn llama_sampler_init_typical(p: f32, min_keep: usize) -> LlamaSampler;
+    pub fn llama_sampler_init_temp_ext(t: f32, delta: f32, exponent: f32) -> LlamaSampler;
+    pub fn llama_sampler_init_penalties(
+        penalty_last_n: i32,
+        penalty_repeat: f32,
+        penalty_freq: f32,
+        penalty_present: f32,
+    ) -> LlamaSampler;
+    pub fn llama_sampler_init_mirostat(
+        n_vocab: i32,
+        seed: u32,
+        tau: f32,
+        eta: f32,
+        m: i32,
+    ) -> LlamaSampler;
+    pub fn llama_sampler_init_mirostat_v2(seed: u32, tau: f32, eta: f32) -> LlamaSampler;
+
+    // Chat templates
+    pub fn llama_model_chat_template(model: LlamaModel, name: *const c_char) -> *const c_char;
+    pub fn llama_chat_apply_template(
+        tmpl: *const c_char,
+        chat: *const LlamaChatMessage,
+        n_msg: usize,
+        add_ass: bool,
+        buf: *mut c_char,
+        length: i32,
+    ) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -617,6 +655,125 @@ impl LlamaCppApi {
             return Err("llama_sampler_init_grammar returned null (invalid grammar?)".to_string());
         }
         Ok(sampler)
+    }
+
+    pub fn sampler_init_typical(&self, p: f32, min_keep: usize) -> LlamaSampler {
+        unsafe { llama_sampler_init_typical(p, min_keep) }
+    }
+
+    pub fn sampler_init_temp_ext(&self, t: f32, delta: f32, exponent: f32) -> LlamaSampler {
+        unsafe { llama_sampler_init_temp_ext(t, delta, exponent) }
+    }
+
+    pub fn sampler_init_penalties(
+        &self,
+        penalty_last_n: i32,
+        penalty_repeat: f32,
+        penalty_freq: f32,
+        penalty_present: f32,
+    ) -> LlamaSampler {
+        unsafe {
+            llama_sampler_init_penalties(
+                penalty_last_n,
+                penalty_repeat,
+                penalty_freq,
+                penalty_present,
+            )
+        }
+    }
+
+    pub fn sampler_init_mirostat(
+        &self,
+        n_vocab: i32,
+        seed: u32,
+        tau: f32,
+        eta: f32,
+        m: i32,
+    ) -> LlamaSampler {
+        unsafe { llama_sampler_init_mirostat(n_vocab, seed, tau, eta, m) }
+    }
+
+    pub fn sampler_init_mirostat_v2(&self, seed: u32, tau: f32, eta: f32) -> LlamaSampler {
+        unsafe { llama_sampler_init_mirostat_v2(seed, tau, eta) }
+    }
+
+    // -----------------------------------------------------------------------
+    // Safe wrappers — chat templates
+    // -----------------------------------------------------------------------
+
+    /// Returns the model's embedded chat template (`name = None` for the
+    /// default), or `None` if the model has no template.
+    pub fn model_chat_template(&self, model: LlamaModel, name: Option<&str>) -> Option<String> {
+        let c_name = name.and_then(|n| CString::new(n).ok());
+        let name_ptr = c_name.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
+        let ptr = unsafe { llama_model_chat_template(model, name_ptr) };
+        if ptr.is_null() {
+            return None;
+        }
+        Some(unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
+    }
+
+    /// Applies a chat template (a jinja string or a built-in name like
+    /// `"chatml"`) to `messages`, returning the formatted prompt. `add_ass`
+    /// appends the assistant generation prefix.
+    pub fn chat_apply_template(
+        &self,
+        tmpl: &str,
+        messages: &[(String, String)],
+        add_ass: bool,
+    ) -> Result<String, String> {
+        // Keep the role/content CStrings alive for the duration of the calls.
+        let owned: Vec<(CString, CString)> = messages
+            .iter()
+            .map(|(role, content)| {
+                Ok((
+                    CString::new(role.as_str()).map_err(|e| format!("role null byte: {e}"))?,
+                    CString::new(content.as_str())
+                        .map_err(|e| format!("content null byte: {e}"))?,
+                ))
+            })
+            .collect::<Result<_, String>>()?;
+        let msgs: Vec<LlamaChatMessage> = owned
+            .iter()
+            .map(|(role, content)| LlamaChatMessage {
+                role: role.as_ptr(),
+                content: content.as_ptr(),
+            })
+            .collect();
+        let tmpl_c = CString::new(tmpl).map_err(|e| format!("template null byte: {e}"))?;
+
+        // First call sizes the buffer (returns the required length).
+        let needed = unsafe {
+            llama_chat_apply_template(
+                tmpl_c.as_ptr(),
+                msgs.as_ptr(),
+                msgs.len(),
+                add_ass,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if needed < 0 {
+            return Err(format!(
+                "llama_chat_apply_template failed ({needed}); template may be unsupported"
+            ));
+        }
+        let mut buf = vec![0u8; needed as usize + 1];
+        let written = unsafe {
+            llama_chat_apply_template(
+                tmpl_c.as_ptr(),
+                msgs.as_ptr(),
+                msgs.len(),
+                add_ass,
+                buf.as_mut_ptr() as *mut c_char,
+                buf.len() as i32,
+            )
+        };
+        if written < 0 {
+            return Err(format!("llama_chat_apply_template failed on write ({written})"));
+        }
+        let written = (written as usize).min(buf.len());
+        Ok(String::from_utf8_lossy(&buf[..written]).into_owned())
     }
 }
 

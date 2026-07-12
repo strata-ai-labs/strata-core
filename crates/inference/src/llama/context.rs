@@ -302,6 +302,11 @@ impl LlamaCppContext {
     }
 
     /// Clear the KV cache / memory state for a fresh inference.
+    /// The model's embedded chat template (`tokenizer.chat_template`), if any.
+    pub(crate) fn chat_template(&self) -> Option<String> {
+        self.api.model_chat_template(self.model, None)
+    }
+
     pub(crate) fn clear_memory(&self) {
         let mem = self.api.get_memory(self.ctx);
         self.api.memory_clear(mem, true);

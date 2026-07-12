@@ -366,6 +366,20 @@ impl InferenceRuntime {
         request: &crate::wire::ChatRequest,
     ) -> Result<crate::wire::ChatResponse, InferenceError> {
         request.validate()?;
+
+        #[cfg(feature = "local")]
+        {
+            let (provider, _model) = parse_model_spec(model_spec)?;
+            if provider == ProviderKind::Local {
+                let mut cache = self.lock_generation()?;
+                let engine = self.cached_generation_engine(&mut cache, model_spec)?;
+                let response = engine.generate_chat(request)?;
+                return Ok(crate::wire::ChatResponse::from_internal(model_spec, response));
+            }
+        }
+
+        // Cloud (or no local feature): bridge to the completion path until
+        // Phase C maps messages natively per provider.
         let internal = request.to_internal_generate();
         let response = self.generate(model_spec, &internal)?;
         Ok(crate::wire::ChatResponse::from_internal(model_spec, response))
