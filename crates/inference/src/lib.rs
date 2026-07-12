@@ -26,6 +26,7 @@ pub mod api;
 mod error;
 pub mod registry;
 pub mod runtime;
+pub mod wire;
 
 #[cfg(feature = "local")]
 mod llama;
@@ -61,6 +62,11 @@ pub use runtime::{
     EmbedRequest, EmbedResponse, EmbedRuntimeOutcome, InferenceCapability, InferenceRuntime,
     InferenceRuntimeConfig, ModelCacheStatus, PullModelOutput, RankRequest, RankResponse,
     RankRuntimeOutcome,
+};
+pub use wire::{
+    ChatChoice, ChatMessage, ChatRequest, ChatResponse, EmbedInput, EmbeddingItem,
+    EmbeddingsRequest, EmbeddingsResponse, FinishReason, InputType, Mirostat, ModelConfig, Pooling,
+    RerankRequest, RerankResponse, RerankResult, ResponseFormat, Role, Usage,
 };
 
 #[cfg(feature = "local")]

@@ -354,6 +354,56 @@ impl InferenceRuntime {
         }
     }
 
+    /// Runs a chat/generation request (the OpenAI-shaped body).
+    ///
+    /// Phase A bridges to [`Self::generate`] via
+    /// [`ChatRequest::to_internal_generate`]; phases B/C replace the bridge with
+    /// real chat templating and the full sampler chain. `model_config` is
+    /// accepted but not yet threaded into model loading.
+    pub fn chat(
+        &self,
+        model_spec: &str,
+        request: &crate::wire::ChatRequest,
+    ) -> Result<crate::wire::ChatResponse, InferenceError> {
+        request.validate()?;
+        let internal = request.to_internal_generate();
+        let response = self.generate(model_spec, &internal)?;
+        Ok(crate::wire::ChatResponse::from_internal(model_spec, response))
+    }
+
+    /// Runs an embeddings request (single or batch, OpenAI-shaped).
+    ///
+    /// Phase A bridges to [`Self::embed_batch`]; `dimensions`/`normalize`/
+    /// `input_type` are accepted but applied in a later phase.
+    pub fn embeddings(
+        &self,
+        model_spec: &str,
+        request: &crate::wire::EmbeddingsRequest,
+    ) -> Result<crate::wire::EmbeddingsResponse, InferenceError> {
+        let texts = request.input.to_vec();
+        let batch = self.embed_batch(model_spec, &texts)?;
+        let mut data = Vec::with_capacity(batch.items.len());
+        for (index, item) in batch.items.into_iter().enumerate() {
+            match item {
+                EmbedRuntimeOutcome::Ok { vector } => data.push(crate::wire::EmbeddingItem {
+                    index: index as u32,
+                    embedding: vector,
+                }),
+                EmbedRuntimeOutcome::Error { code, message } => {
+                    return Err(InferenceError::Provider(format!(
+                        "embedding item {index} failed [{code}]: {message}"
+                    )));
+                }
+            }
+        }
+        Ok(crate::wire::EmbeddingsResponse {
+            model: model_spec.to_string(),
+            dimension: batch.dimension,
+            data,
+            usage: crate::wire::Usage::default(),
+        })
+    }
+
     /// Tokenizes text with a local generation model.
     pub fn tokenize(
         &self,
