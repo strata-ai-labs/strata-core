@@ -22,7 +22,7 @@ pub(super) fn json_commands() -> Vec<Command> {
             key: "doc-a".to_owned(),
             path: "$.name".to_owned(),
         },
-        Command::JsonGetv {
+        Command::JsonHistory {
             branch: None,
             space: None,
             key: "doc-a".to_owned(),

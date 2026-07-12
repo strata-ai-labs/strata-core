@@ -76,7 +76,7 @@ const REQUIRED_EVENT: &[&str] = &[
     "event.batch_append",
     "event.get",
     "event.exists",
-    "event.len",
+    "event.count",
     "event.range",
     "event.range_time",
     "event.types",

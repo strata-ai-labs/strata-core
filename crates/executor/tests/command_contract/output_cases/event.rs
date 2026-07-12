@@ -17,7 +17,7 @@ pub(super) fn event_outputs() -> Vec<Output> {
             ],
             page: PageInfo::terminal(),
         },
-        Output::EventLength { count: 2 },
+        Output::EventCount { count: 2 },
         Output::EventTypeList {
             items: vec!["user.created".to_owned(), "user.updated".to_owned()],
             page: PageInfo::terminal(),

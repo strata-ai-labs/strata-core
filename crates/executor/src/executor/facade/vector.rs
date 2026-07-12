@@ -96,12 +96,12 @@ impl Executor {
     }
 
     /// Executes a default-branch vector history command.
-    pub fn vector_getv(
+    pub fn vector_history(
         &mut self,
         collection: impl Into<String>,
         key: impl Into<String>,
     ) -> ExecutorResult<Output> {
-        self.execute(Command::VectorGetv {
+        self.execute(Command::VectorHistory {
             branch: None,
             space: None,
             collection: collection.into(),

@@ -99,7 +99,7 @@ commands:
   - id: vector.history
     kind: read.history
     title: Read vector history
-    input: Command::VectorGetv
+    input: Command::VectorHistory
     output: Output::VectorVersionHistory
     result: VectorHistoryItem
     prose: commands/vector.history.md

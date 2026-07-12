@@ -317,7 +317,7 @@ impl Executor {
         Ok(Output::Bool(service.exists(&key)?))
     }
 
-    pub(super) fn execute_kv_getv(
+    pub(super) fn execute_kv_history(
         &mut self,
         branch: Option<&str>,
         space: Option<&str>,

@@ -1,7 +1,7 @@
 {
-  "$id": "https://stratadb.org/idl/v1/schemas/event.len.json",
+  "$id": "https://stratadb.org/idl/v1/schemas/event.count.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "command": "event.len",
+  "command": "event.count",
   "request": {
     "additionalProperties": false,
     "description": "Counts visible events.",
@@ -30,7 +30,7 @@
         ]
       },
       "type": {
-        "const": "event_len",
+        "const": "event_count",
         "type": "string"
       }
     },
@@ -40,7 +40,7 @@
     "type": "object"
   },
   "response": {
-    "description": "Event log length.",
+    "description": "Event log count.",
     "properties": {
       "data": {
         "properties": {
@@ -57,7 +57,7 @@
         "type": "object"
       },
       "type": {
-        "const": "event_length",
+        "const": "event_count",
         "type": "string"
       }
     },

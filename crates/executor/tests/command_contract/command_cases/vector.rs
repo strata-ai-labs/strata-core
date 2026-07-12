@@ -56,7 +56,7 @@ pub(super) fn vector_row_commands() -> Vec<Command> {
             key: "doc-a".to_owned(),
             as_of: Some(42),
         },
-        Command::VectorGetv {
+        Command::VectorHistory {
             branch: None,
             space: None,
             collection: "docs".to_owned(),

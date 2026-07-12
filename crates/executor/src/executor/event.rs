@@ -75,7 +75,7 @@ impl Executor {
         Ok(Output::Bool(service.exists(sequence)?))
     }
 
-    pub(super) fn execute_event_len(
+    pub(super) fn execute_event_count(
         &mut self,
         branch: Option<&str>,
         space: Option<&str>,
@@ -87,7 +87,7 @@ impl Executor {
         } else {
             service.len()?.count()
         };
-        Ok(Output::EventLength { count })
+        Ok(Output::EventCount { count })
     }
 
     #[allow(clippy::too_many_arguments)]

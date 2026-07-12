@@ -60,7 +60,7 @@ commands:
   - id: json.history
     kind: read.history
     title: Read JSON document history
-    input: Command::JsonGetv
+    input: Command::JsonHistory
     output: Output::JsonVersionHistory
     result: JsonHistoryItem
     prose: commands/json.history.md

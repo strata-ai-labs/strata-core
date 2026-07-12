@@ -169,7 +169,7 @@ impl Executor {
         )))
     }
 
-    pub(super) fn execute_vector_getv(
+    pub(super) fn execute_vector_history(
         &mut self,
         branch: Option<&str>,
         space: Option<&str>,

@@ -108,8 +108,8 @@ impl Executor {
             Command::KvExists { branch, space, key } => {
                 self.execute_kv_exists(branch.as_deref(), space.as_deref(), key)
             }
-            Command::KvGetv { branch, space, key } => {
-                self.execute_kv_getv(branch.as_deref(), space.as_deref(), key)
+            Command::KvHistory { branch, space, key } => {
+                self.execute_kv_history(branch.as_deref(), space.as_deref(), key)
             }
             Command::KvCount {
                 branch,
@@ -143,8 +143,8 @@ impl Executor {
                 key,
                 path,
             } => self.execute_json_delete(branch.as_deref(), space.as_deref(), &key, &path),
-            Command::JsonGetv { branch, space, key } => {
-                self.execute_json_getv(branch.as_deref(), space.as_deref(), key)
+            Command::JsonHistory { branch, space, key } => {
+                self.execute_json_history(branch.as_deref(), space.as_deref(), key)
             }
             Command::JsonExists { branch, space, key } => {
                 self.execute_json_exists(branch.as_deref(), space.as_deref(), key)
@@ -293,12 +293,12 @@ impl Executor {
             } => {
                 self.execute_vector_get(branch.as_deref(), space.as_deref(), collection, key, as_of)
             }
-            Command::VectorGetv {
+            Command::VectorHistory {
                 branch,
                 space,
                 collection,
                 key,
-            } => self.execute_vector_getv(branch.as_deref(), space.as_deref(), collection, key),
+            } => self.execute_vector_history(branch.as_deref(), space.as_deref(), collection, key),
             Command::VectorExists {
                 branch,
                 space,
@@ -469,11 +469,11 @@ impl Executor {
                 space,
                 sequence,
             } => self.execute_event_exists(branch.as_deref(), space.as_deref(), sequence),
-            Command::EventLen {
+            Command::EventCount {
                 branch,
                 space,
                 as_of,
-            } => self.execute_event_len(branch.as_deref(), space.as_deref(), as_of),
+            } => self.execute_event_count(branch.as_deref(), space.as_deref(), as_of),
             Command::EventRange {
                 branch,
                 space,

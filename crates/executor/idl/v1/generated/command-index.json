@@ -1258,6 +1258,65 @@
       }
     },
     {
+      "id": "event.count",
+      "family": "event",
+      "op": "count",
+      "kind": "read.status",
+      "title": "Count events",
+      "summary": "Count visible events in the log.",
+      "description": "Counts events visible in the selected branch and space. The optional timestamp counts the events visible at that commit time.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/event/count",
+      "cli": {
+        "path": [
+          "event",
+          "count"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_event_count",
+        "description": "Use this when the user wants the number of events in the event log, optionally at a historical point in time."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::EventCount",
+      "output": "Output::EventCount",
+      "outputs": [
+        "Output::EventCount"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusValue<u64>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/len.json",
+        "response": "responses/v1/event/len_two.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.count.md"
+      }
+    },
+    {
       "id": "event.exists",
       "family": "event",
       "op": "exists",
@@ -1372,65 +1431,6 @@
       "source": {
         "command": "crates/executor/idl/v1/commands/event.yaml",
         "prose": "commands/event.get.md"
-      }
-    },
-    {
-      "id": "event.len",
-      "family": "event",
-      "op": "len",
-      "kind": "read.status",
-      "title": "Count events",
-      "summary": "Count visible events in the log.",
-      "description": "Counts events visible in the selected branch and space. The optional timestamp counts the events visible at that commit time.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
-      "docs": "/docs/event/len",
-      "cli": {
-        "path": [
-          "event",
-          "len"
-        ],
-        "surface": "verb"
-      },
-      "mcp": {
-        "name": "strata_event_len",
-        "description": "Use this when the user wants the number of events in the event log, optionally at a historical point in time."
-      },
-      "feature": "core",
-      "access": "read",
-      "input": "Command::EventLen",
-      "output": "Output::EventLength",
-      "outputs": [
-        "Output::EventLength"
-      ],
-      "wire_status": "stable",
-      "response_model": "StatusValue<u64>",
-      "commit": "none",
-      "pagination": "none",
-      "batch": "none",
-      "errors": [
-        {
-          "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
-        },
-        {
-          "code": "not_found.engine.branch",
-          "docs": "https://stratadb.org/e/not_found.engine.branch"
-        },
-        {
-          "code": "invalid_argument.engine.product_space",
-          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
-        }
-      ],
-      "fixtures": {
-        "request": "requests/v1/event/len.json",
-        "response": "responses/v1/event/len_two.json",
-        "setup": [
-          "requests/v1/event/append.json",
-          "requests/v1/setup/event_append_updated.json"
-        ]
-      },
-      "source": {
-        "command": "crates/executor/idl/v1/commands/event.yaml",
-        "prose": "commands/event.len.md"
       }
     },
     {
@@ -5637,7 +5637,7 @@
       },
       "feature": "core",
       "access": "read",
-      "input": "Command::JsonGetv",
+      "input": "Command::JsonHistory",
       "output": "Output::JsonVersionHistory",
       "outputs": [
         "Output::JsonVersionHistory"
@@ -6702,7 +6702,7 @@
       },
       "feature": "core",
       "access": "read",
-      "input": "Command::KvGetv",
+      "input": "Command::KvHistory",
       "output": "Output::VersionHistory",
       "outputs": [
         "Output::VersionHistory"
@@ -8304,7 +8304,7 @@
       },
       "feature": "core",
       "access": "read",
-      "input": "Command::VectorGetv",
+      "input": "Command::VectorHistory",
       "output": "Output::VectorVersionHistory",
       "outputs": [
         "Output::VectorVersionHistory"

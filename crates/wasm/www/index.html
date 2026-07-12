@@ -235,7 +235,7 @@ const tours = {
     runCommand({ type: 'kv_put', key: b64('greeting'), value: b64('hello from your browser') });
     runCommand({ type: 'kv_put', key: b64('greeting'), value: b64('hello again — version 2') });
     runCommand({ type: 'kv_get', key: b64('greeting') }, 'Latest version:');
-    runCommand({ type: 'kv_getv', key: b64('greeting') }, 'And the versioned read — the value with its full commit provenance:');
+    runCommand({ type: 'kv_history', key: b64('greeting') }, 'And the versioned read — the value with its full commit provenance:');
   },
   branch() {
     say('<strong>Branch &amp; time travel.</strong> A Strata branch forks the whole database — cheap, copy-on-write, fully isolated. <code>as_of</code> reads any branch at any past commit timestamp.');

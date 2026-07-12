@@ -415,7 +415,7 @@ fn vector_mapping_row_commands() -> Vec<Command> {
             key: "map-a".to_owned(),
             as_of: None,
         },
-        Command::VectorGetv {
+        Command::VectorHistory {
             branch: None,
             space: None,
             collection: "map".to_owned(),
@@ -1249,7 +1249,7 @@ fn assert_vector_as_of_query_and_history(executor: &mut Executor) {
 
 fn assert_vector_history_shape(executor: &mut Executor, collection: &str, key: &str) {
     let Output::VectorVersionHistory(Some(history)) = executor
-        .execute(Command::VectorGetv {
+        .execute(Command::VectorHistory {
             branch: None,
             space: None,
             collection: collection.to_owned(),
@@ -2227,7 +2227,7 @@ fn get_vector_where(
 
 fn assert_vector_history_has_tombstone(executor: &mut Executor, collection: &str, key: &str) {
     let Output::VectorVersionHistory(Some(history)) = executor
-        .execute(Command::VectorGetv {
+        .execute(Command::VectorHistory {
             branch: None,
             space: None,
             collection: collection.to_owned(),

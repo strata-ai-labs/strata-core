@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "6af0802d875dc3e8053bacfa9560a88cbe70ab0ec791355db58f92ae60314c5e",
+    "checksum_sha256": "05c8096a58c09d699819e09ee246169f39704c66978aa6f34e2baa7ca689a723",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -52,9 +52,9 @@
       "commands": [
         "event.append",
         "event.batch_append",
+        "event.count",
         "event.exists",
         "event.get",
-        "event.len",
         "event.list",
         "event.range",
         "event.range_time",
@@ -1049,6 +1049,55 @@
       "wire_status": "stable"
     },
     {
+      "id": "event.count",
+      "path": [
+        "event",
+        "count"
+      ],
+      "path_display": "event count",
+      "surface": "verb",
+      "family": "event",
+      "op": "count",
+      "kind": "read.status",
+      "title": "Count events",
+      "summary": "Count visible events in the log.",
+      "description": "Counts events visible in the selected branch and space. The optional timestamp counts the events visible at that commit time.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/event/count",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::EventCount",
+      "outputs": [
+        "Output::EventCount"
+      ],
+      "response_model": "StatusValue<u64>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/len.json",
+        "response": "responses/v1/event/len_two.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ]
+      },
+      "wire_status": "stable"
+    },
+    {
       "id": "event.exists",
       "path": [
         "event",
@@ -1142,55 +1191,6 @@
           "requests/v1/event/append.json"
         ],
         "replay_skip": "wall-clock event timestamps are hashed into event content; outputs never reproduce (see engine next_event_timestamp)"
-      },
-      "wire_status": "stable"
-    },
-    {
-      "id": "event.len",
-      "path": [
-        "event",
-        "len"
-      ],
-      "path_display": "event len",
-      "surface": "verb",
-      "family": "event",
-      "op": "len",
-      "kind": "read.status",
-      "title": "Count events",
-      "summary": "Count visible events in the log.",
-      "description": "Counts events visible in the selected branch and space. The optional timestamp counts the events visible at that commit time.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
-      "docs": "/docs/event/len",
-      "feature": "core",
-      "access": "read",
-      "commit": "none",
-      "pagination": "none",
-      "batch": "none",
-      "input": "Command::EventLen",
-      "outputs": [
-        "Output::EventLength"
-      ],
-      "response_model": "StatusValue<u64>",
-      "errors": [
-        {
-          "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
-        },
-        {
-          "code": "not_found.engine.branch",
-          "docs": "https://stratadb.org/e/not_found.engine.branch"
-        },
-        {
-          "code": "invalid_argument.engine.product_space",
-          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
-        }
-      ],
-      "fixtures": {
-        "request": "requests/v1/event/len.json",
-        "response": "responses/v1/event/len_two.json",
-        "setup": [
-          "requests/v1/event/append.json",
-          "requests/v1/setup/event_append_updated.json"
-        ]
       },
       "wire_status": "stable"
     },
@@ -4924,7 +4924,7 @@
       "commit": "none",
       "pagination": "none",
       "batch": "none",
-      "input": "Command::JsonGetv",
+      "input": "Command::JsonHistory",
       "outputs": [
         "Output::JsonVersionHistory"
       ],
@@ -5829,7 +5829,7 @@
       "commit": "none",
       "pagination": "none",
       "batch": "none",
-      "input": "Command::KvGetv",
+      "input": "Command::KvHistory",
       "outputs": [
         "Output::VersionHistory"
       ],
@@ -7317,7 +7317,7 @@
       "commit": "none",
       "pagination": "none",
       "batch": "none",
-      "input": "Command::VectorGetv",
+      "input": "Command::VectorHistory",
       "outputs": [
         "Output::VectorVersionHistory"
       ],
@@ -7851,9 +7851,9 @@
       "branch.list": 8,
       "event.append": 13,
       "event.batch_append": 14,
-      "event.exists": 15,
-      "event.get": 16,
-      "event.len": 17,
+      "event.count": 15,
+      "event.exists": 16,
+      "event.get": 17,
       "event.list": 18,
       "event.range": 19,
       "event.range_time": 20,
@@ -7974,9 +7974,9 @@
       "describe": "admin.describe",
       "event append": "event.append",
       "event batch-append": "event.batch_append",
+      "event count": "event.count",
       "event exists": "event.exists",
       "event get": "event.get",
-      "event len": "event.len",
       "event list": "event.list",
       "event range": "event.range",
       "event range-time": "event.range_time",

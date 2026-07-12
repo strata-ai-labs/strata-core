@@ -2092,8 +2092,8 @@ mod tests {
     #[test]
     fn executor_variant_refs_resolve_to_wire_tags() {
         assert_eq!(
-            variant_wire_tag("Command::KvGetv", "Command").expect("command tag resolves"),
-            "kv_getv"
+            variant_wire_tag("Command::KvHistory", "Command").expect("command tag resolves"),
+            "kv_history"
         );
         assert_eq!(
             variant_wire_tag("Output::KeysPage", "Output").expect("output tag resolves"),

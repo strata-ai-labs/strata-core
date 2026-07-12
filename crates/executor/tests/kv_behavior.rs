@@ -400,7 +400,7 @@ fn command_to_output_mapping_is_explicit_for_every_variant() {
             space: None,
             key: bytes("map-a"),
         },
-        Command::KvGetv {
+        Command::KvHistory {
             branch: None,
             space: None,
             key: bytes("map-a"),
@@ -1139,7 +1139,7 @@ fn execute_sample(executor: &mut Executor, prefix: Option<&str>, count: u64) -> 
 
 fn assert_history_has_tombstone(executor: &mut Executor, key: &str) {
     match executor
-        .execute(Command::KvGetv {
+        .execute(Command::KvHistory {
             branch: None,
             space: None,
             key: bytes(key),
