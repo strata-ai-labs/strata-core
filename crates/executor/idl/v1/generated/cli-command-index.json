@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "56e2f461f56f3710b9aed2289855f59515c9948b77776caf5de16e516a8bc3c4",
+    "checksum_sha256": "6af0802d875dc3e8053bacfa9560a88cbe70ab0ec791355db58f92ae60314c5e",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -1846,6 +1846,10 @@
         {
           "code": "resource_exhausted.engine.graph_analytics_budget",
           "docs": "https://stratadb.org/e/resource_exhausted.engine.graph_analytics_budget"
+        },
+        {
+          "code": "invalid_argument.executor.graph_analytics_budget",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.graph_analytics_budget"
         }
       ],
       "fixtures": {
@@ -2056,6 +2060,10 @@
         {
           "code": "resource_exhausted.engine.graph_analytics_budget",
           "docs": "https://stratadb.org/e/resource_exhausted.engine.graph_analytics_budget"
+        },
+        {
+          "code": "invalid_argument.executor.graph_analytics_budget",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.graph_analytics_budget"
         }
       ],
       "fixtures": {
@@ -2364,6 +2372,10 @@
         {
           "code": "resource_exhausted.engine.graph_analytics_budget",
           "docs": "https://stratadb.org/e/resource_exhausted.engine.graph_analytics_budget"
+        },
+        {
+          "code": "invalid_argument.executor.graph_analytics_budget",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.graph_analytics_budget"
         }
       ],
       "fixtures": {
@@ -3216,6 +3228,10 @@
         {
           "code": "resource_exhausted.engine.graph_analytics_budget",
           "docs": "https://stratadb.org/e/resource_exhausted.engine.graph_analytics_budget"
+        },
+        {
+          "code": "invalid_argument.executor.graph_analytics_budget",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.graph_analytics_budget"
         }
       ],
       "fixtures": {
@@ -3478,6 +3494,10 @@
         {
           "code": "resource_exhausted.engine.graph_analytics_budget",
           "docs": "https://stratadb.org/e/resource_exhausted.engine.graph_analytics_budget"
+        },
+        {
+          "code": "invalid_argument.executor.graph_analytics_budget",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.graph_analytics_budget"
         }
       ],
       "fixtures": {
@@ -3543,6 +3563,10 @@
         {
           "code": "resource_exhausted.engine.graph_analytics_budget",
           "docs": "https://stratadb.org/e/resource_exhausted.engine.graph_analytics_budget"
+        },
+        {
+          "code": "invalid_argument.executor.graph_analytics_budget",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.graph_analytics_budget"
         }
       ],
       "fixtures": {
