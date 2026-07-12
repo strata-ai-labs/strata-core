@@ -585,6 +585,18 @@ fn json_command(command: JsonCommand, scope: &Scope) -> Result<Command, CliError
             limit,
             as_of,
         },
+        JsonCommand::Scan {
+            start,
+            cursor,
+            limit,
+        } => Command::JsonScan {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            // A cursor continues from the first unreturned document, so it maps
+            // to the inclusive scan start (clap rejects --start with --cursor).
+            start: cursor.or(start),
+            limit,
+        },
         JsonCommand::Exists { key } => Command::JsonExists {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
@@ -696,6 +708,20 @@ fn vector_command(command: VectorCommand, scope: &Scope) -> Result<Command, CliE
             cursor,
             limit,
             as_of: None,
+        },
+        VectorCommand::Scan {
+            collection,
+            start,
+            cursor,
+            limit,
+        } => Command::VectorScan {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            collection,
+            // A cursor continues from the first unreturned key, so it maps to
+            // the inclusive scan start (clap rejects --start with --cursor).
+            start: cursor.or(start),
+            limit,
         },
         VectorCommand::UpdateMetadata {
             collection,
