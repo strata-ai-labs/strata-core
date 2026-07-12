@@ -3,6 +3,8 @@
 //! Sends generation requests to `https://api.anthropic.com/v1/messages` and
 //! maps the response to [`GenerateResponse`].
 
+use crate::provider::cloud::{chat_turns, reject_local_only};
+use crate::wire::{ChatRequest, Role};
 use crate::{GenerateRequest, GenerateResponse, InferenceError, StopReason};
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -49,7 +51,21 @@ impl AnthropicProvider {
         }
 
         let body = build_request_json(&self.model, request);
+        self.post(body)
+    }
 
+    /// Generate from an OpenAI-shaped chat request, mapping messages natively
+    /// (system prompt hoisted, multi-turn and assistant prefill preserved).
+    pub(crate) fn generate_chat(
+        &self,
+        request: &ChatRequest,
+    ) -> Result<GenerateResponse, InferenceError> {
+        let body = build_chat_request_json(&self.model, request)?;
+        self.post(body)
+    }
+
+    /// Send a prepared request body and parse the response.
+    fn post(&self, body: String) -> Result<GenerateResponse, InferenceError> {
         let agent = ureq::Agent::new_with_config(
             ureq::config::Config::builder()
                 .timeout_global(Some(std::time::Duration::from_secs(30)))
@@ -60,7 +76,7 @@ impl AnthropicProvider {
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", API_VERSION)
             .header("content-type", "application/json")
-            .send(&body)
+            .send(body)
             .map_err(|e| map_http_error("Anthropic", e))?;
 
         let response_body = response.body_mut().read_to_string().map_err(|e| {
@@ -115,6 +131,86 @@ pub(crate) fn build_request_json(model: &str, request: &GenerateRequest) -> Stri
     // stop_tokens: silently ignored (token-level, local only)
 
     obj.to_string()
+}
+
+/// Build the Anthropic Messages API request JSON from an OpenAI-shaped chat
+/// request.
+///
+/// System-role turns are hoisted to the top-level `system` field; user and
+/// assistant turns become `messages` (assistant turns enable prefill). Unlike
+/// the legacy completion bridge, `top_p` is now sent when the caller sets it
+/// (the temperature/top_p mutual-exclusion is enforced up front instead of
+/// silently dropping the knob). Seed, penalties, logit_bias, and the llama.cpp
+/// extensions have no Anthropic equivalent and are ignored.
+pub(crate) fn build_chat_request_json(
+    model: &str,
+    request: &ChatRequest,
+) -> Result<String, InferenceError> {
+    reject_local_only(request, "Anthropic")?;
+
+    if request.response_format.is_some() {
+        return Err(InferenceError::Provider(
+            "Anthropic: `response_format` is not supported; prompt for JSON instead".to_string(),
+        ));
+    }
+    if request.temperature.is_some() && request.top_p.is_some() {
+        return Err(InferenceError::Provider(
+            "Anthropic: set `temperature` or `top_p`, not both".to_string(),
+        ));
+    }
+
+    let mut system = String::new();
+    let mut messages: Vec<serde_json::Value> = Vec::new();
+    for (role, content) in chat_turns(request) {
+        match role {
+            Role::System => {
+                if !system.is_empty() {
+                    system.push('\n');
+                }
+                system.push_str(&content);
+            }
+            Role::User => {
+                messages.push(serde_json::json!({"role": "user", "content": content}));
+            }
+            Role::Assistant => {
+                messages.push(serde_json::json!({"role": "assistant", "content": content}));
+            }
+            Role::Tool => {
+                return Err(InferenceError::Provider(
+                    "Anthropic: tool messages are not yet supported".to_string(),
+                ));
+            }
+        }
+    }
+
+    let max_tokens = request.max_tokens.unwrap_or(1024);
+    let mut obj = serde_json::json!({
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": messages,
+    });
+
+    if !system.is_empty() {
+        obj["system"] = serde_json::json!(system);
+    }
+    if let Some(temperature) = request.temperature {
+        obj["temperature"] = serde_json::json!(temperature);
+    }
+    // top_p is now forwarded (the fix): the mutual-exclusion with temperature is
+    // rejected above rather than silently dropped.
+    if let Some(top_p) = request.top_p {
+        obj["top_p"] = serde_json::json!(top_p);
+    }
+    if let Some(top_k) = request.top_k {
+        obj["top_k"] = serde_json::json!(top_k);
+    }
+    if let Some(stop) = &request.stop {
+        if !stop.is_empty() {
+            obj["stop_sequences"] = serde_json::json!(stop);
+        }
+    }
+
+    Ok(obj.to_string())
 }
 
 /// Parse the Anthropic Messages API response JSON into a `GenerateResponse`.
@@ -436,6 +532,139 @@ mod tests {
             json["messages"][0]["content"],
             "Hello \"world\" \n\ttab & <html>"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Chat request JSON building (Phase C)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn chat_json_system_hoisted_and_multi_turn_mapped() {
+        let req = ChatRequest {
+            messages: Some(vec![
+                crate::wire::ChatMessage::new(Role::System, "be terse"),
+                crate::wire::ChatMessage::new(Role::User, "hi"),
+                crate::wire::ChatMessage::new(Role::Assistant, "hello"),
+            ]),
+            ..Default::default()
+        };
+        let json_str = build_chat_request_json("claude-sonnet-4-20250514", &req).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        // System is hoisted out of `messages` into the top-level `system` field.
+        assert_eq!(json["system"], "be terse");
+        let messages = json["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2, "only user + assistant are messages");
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"], "hi");
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[1]["content"], "hello");
+        // Default max_tokens when the caller omits it.
+        assert_eq!(json["max_tokens"], 1024);
+    }
+
+    #[test]
+    fn chat_json_multiple_system_turns_joined() {
+        let req = ChatRequest {
+            messages: Some(vec![
+                crate::wire::ChatMessage::new(Role::System, "line one"),
+                crate::wire::ChatMessage::new(Role::System, "line two"),
+                crate::wire::ChatMessage::new(Role::User, "hi"),
+            ]),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json("m", &req).unwrap()).unwrap();
+        assert_eq!(json["system"], "line one\nline two");
+    }
+
+    #[test]
+    fn chat_json_prompt_becomes_single_user_turn() {
+        let req = ChatRequest {
+            prompt: Some("just this".into()),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json("m", &req).unwrap()).unwrap();
+        let messages = json["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"], "just this");
+        assert!(json.get("system").is_none());
+    }
+
+    #[test]
+    fn chat_json_sends_top_p_when_set() {
+        // The regression this phase fixes: top_p used to be silently dropped.
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            top_p: Some(0.9),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json("m", &req).unwrap()).unwrap();
+        let top_p = json["top_p"].as_f64().unwrap();
+        assert!((top_p - 0.9).abs() < 1e-6, "top_p must be sent: {json}");
+    }
+
+    #[test]
+    fn chat_json_temperature_and_top_p_together_errors() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            temperature: Some(0.7),
+            top_p: Some(0.9),
+            ..Default::default()
+        };
+        let err = build_chat_request_json("m", &req).unwrap_err();
+        assert!(matches!(err, InferenceError::Provider(_)), "err: {err}");
+    }
+
+    #[test]
+    fn chat_json_forwards_temperature_top_k_and_stop() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            temperature: Some(0.0),
+            top_k: Some(40),
+            stop: Some(vec!["STOP".into()]),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json("m", &req).unwrap()).unwrap();
+        assert_eq!(json["temperature"], 0.0);
+        assert_eq!(json["top_k"], 40);
+        assert_eq!(json["stop_sequences"][0], "STOP");
+    }
+
+    #[test]
+    fn chat_json_response_format_errors() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            response_format: Some(crate::wire::ResponseFormat::JsonObject),
+            ..Default::default()
+        };
+        let err = build_chat_request_json("m", &req).unwrap_err();
+        assert!(matches!(err, InferenceError::Provider(_)), "err: {err}");
+    }
+
+    #[test]
+    fn chat_json_grammar_rejected() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            grammar: Some("root ::= \"x\"".into()),
+            ..Default::default()
+        };
+        let err = build_chat_request_json("m", &req).unwrap_err();
+        assert!(matches!(err, InferenceError::Provider(_)), "err: {err}");
+    }
+
+    #[test]
+    fn chat_json_tool_message_errors() {
+        let req = ChatRequest {
+            messages: Some(vec![crate::wire::ChatMessage::new(Role::Tool, "result")]),
+            ..Default::default()
+        };
+        let err = build_chat_request_json("m", &req).unwrap_err();
+        assert!(matches!(err, InferenceError::Provider(_)), "err: {err}");
     }
 
     // -----------------------------------------------------------------------

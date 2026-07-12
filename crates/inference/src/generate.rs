@@ -14,9 +14,9 @@ use tracing::info;
 
 #[cfg(feature = "local")]
 use crate::provider::local::LocalProvider;
+use crate::wire::ChatRequest;
 #[cfg(feature = "local")]
 use crate::wire::ModelConfig;
-use crate::wire::ChatRequest;
 use crate::{GenerateRequest, GenerateResponse, InferenceError, ProviderKind};
 
 #[cfg(test)]
@@ -282,8 +282,8 @@ impl GenerationEngine {
     /// Generate from an OpenAI-shaped chat request.
     ///
     /// Local applies the model's chat template and the full sampler chain;
-    /// cloud providers bridge to the completion path until Phase C maps
-    /// messages natively.
+    /// cloud providers map messages natively (system prompt, multi-turn history,
+    /// assistant prefill) and forward every knob the provider supports.
     pub fn generate_chat(
         &mut self,
         request: &ChatRequest,
@@ -293,13 +293,13 @@ impl GenerationEngine {
             Provider::Local(p) => p.generate_chat(request),
 
             #[cfg(feature = "anthropic")]
-            Provider::Anthropic(p) => p.generate(&request.to_internal_generate()),
+            Provider::Anthropic(p) => p.generate_chat(request),
 
             #[cfg(feature = "openai")]
-            Provider::OpenAI(p) => p.generate(&request.to_internal_generate()),
+            Provider::OpenAI(p) => p.generate_chat(request),
 
             #[cfg(feature = "google")]
-            Provider::Google(p) => p.generate(&request.to_internal_generate()),
+            Provider::Google(p) => p.generate_chat(request),
         }
     }
 

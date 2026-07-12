@@ -356,10 +356,10 @@ impl InferenceRuntime {
 
     /// Runs a chat/generation request (the OpenAI-shaped body).
     ///
-    /// Phase A bridges to [`Self::generate`] via
-    /// [`ChatRequest::to_internal_generate`]; phases B/C replace the bridge with
-    /// real chat templating and the full sampler chain. `model_config` is
-    /// accepted but not yet threaded into model loading.
+    /// Local applies the model's chat template and the full sampler chain; cloud
+    /// providers map messages natively (system prompt, multi-turn history,
+    /// assistant prefill) and forward every knob the provider supports.
+    /// `model_config` is threaded into local model loading (cache-keyed).
     pub fn chat(
         &self,
         model_spec: &str,
@@ -367,7 +367,12 @@ impl InferenceRuntime {
     ) -> Result<crate::wire::ChatResponse, InferenceError> {
         request.validate()?;
 
-        #[cfg(feature = "local")]
+        #[cfg(any(
+            feature = "local",
+            feature = "anthropic",
+            feature = "openai",
+            feature = "google"
+        ))]
         {
             let (provider, _model) = parse_model_spec(model_spec)?;
             if provider == ProviderKind::Local {
@@ -378,15 +383,44 @@ impl InferenceRuntime {
                     request.model_config.as_ref(),
                 )?;
                 let response = engine.generate_chat(request)?;
-                return Ok(crate::wire::ChatResponse::from_internal(model_spec, response));
+                return Ok(crate::wire::ChatResponse::from_internal(
+                    model_spec, response,
+                ));
+            }
+
+            if !self.config.network_enabled {
+                return Err(InferenceError::NotSupported(
+                    "cloud generation requires network access".to_owned(),
+                ));
+            }
+            #[cfg(not(any(feature = "anthropic", feature = "openai", feature = "google")))]
+            {
+                Err(InferenceError::NotSupported(format!(
+                    "{provider} provider not enabled"
+                )))
+            }
+            #[cfg(any(feature = "anthropic", feature = "openai", feature = "google"))]
+            {
+                let mut engine = self.cloud_generation_engine(model_spec)?;
+                let response = engine.generate_chat(request)?;
+                Ok(crate::wire::ChatResponse::from_internal(
+                    model_spec, response,
+                ))
             }
         }
 
-        // Cloud (or no local feature): bridge to the completion path until
-        // Phase C maps messages natively per provider.
-        let internal = request.to_internal_generate();
-        let response = self.generate(model_spec, &internal)?;
-        Ok(crate::wire::ChatResponse::from_internal(model_spec, response))
+        #[cfg(not(any(
+            feature = "local",
+            feature = "anthropic",
+            feature = "openai",
+            feature = "google"
+        )))]
+        {
+            let _ = (model_spec, request);
+            Err(InferenceError::NotSupported(
+                "chat requires a provider feature".to_owned(),
+            ))
+        }
     }
 
     /// Runs an embeddings request (single or batch, OpenAI-shaped).
