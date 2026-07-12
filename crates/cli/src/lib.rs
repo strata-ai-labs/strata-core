@@ -534,6 +534,7 @@ fn kv_command(command: KvCommand, scope: &Scope) -> Result<Command, CliError> {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             prefix: prefix.map(bytes),
+            as_of: None,
         },
         KvCommand::Sample { prefix, count } => Command::KvSample {
             branch: scope.branch.clone(),
@@ -598,6 +599,7 @@ fn json_command(command: JsonCommand, scope: &Scope) -> Result<Command, CliError
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             prefix,
+            as_of: None,
         },
         JsonCommand::Sample { prefix, count } => Command::JsonSample {
             branch: scope.branch.clone(),
@@ -693,6 +695,7 @@ fn vector_command(command: VectorCommand, scope: &Scope) -> Result<Command, CliE
             prefix,
             cursor,
             limit,
+            as_of: None,
         },
         VectorCommand::UpdateMetadata {
             collection,
@@ -765,6 +768,7 @@ fn vector_command(command: VectorCommand, scope: &Scope) -> Result<Command, CliE
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             collection,
+            as_of: None,
         },
     })
 }

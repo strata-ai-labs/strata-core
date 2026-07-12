@@ -522,6 +522,7 @@ fn json_mapping_commands() -> Vec<Command> {
             branch: None,
             space: None,
             prefix: Some("map-".to_owned()),
+            as_of: None,
         },
         Command::JsonSample {
             branch: None,
@@ -1154,6 +1155,7 @@ fn missing_branch_json_commands() -> Vec<Command> {
             branch: Some("missing".to_owned()),
             space: None,
             prefix: None,
+            as_of: None,
         },
         Command::JsonSample {
             branch: Some("missing".to_owned()),
@@ -1273,6 +1275,7 @@ fn closed_handle_json_commands() -> Vec<Command> {
             branch: None,
             space: None,
             prefix: None,
+            as_of: None,
         },
         Command::JsonSample {
             branch: None,
@@ -1789,6 +1792,35 @@ fn execute_json_count(executor: &mut Executor, prefix: Option<&str>) -> u64 {
     execute_json_count_in(executor, None, None, prefix)
 }
 
+fn execute_json_count_as_of(executor: &mut Executor, prefix: Option<&str>, as_of: u64) -> u64 {
+    match executor
+        .execute(Command::JsonCount {
+            branch: None,
+            space: None,
+            prefix: prefix.map(str::to_owned),
+            as_of: Some(as_of),
+        })
+        .expect("JSON count as_of succeeds")
+    {
+        Output::Uint(count) => count,
+        output => panic!("unexpected JSON count output: {output:?}"),
+    }
+}
+
+#[test]
+fn json_count_as_of_returns_historical_count() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let first = write_json(&mut executor, None, None, "a", "$", json!({"n": 1}));
+    write_json(&mut executor, None, None, "b", "$", json!({"n": 2}));
+    write_json(&mut executor, None, None, "c", "$", json!({"n": 3}));
+    assert_eq!(execute_json_count(&mut executor, None), 3);
+    assert_eq!(
+        execute_json_count_as_of(&mut executor, None, first.timestamp),
+        1,
+        "count as_of the first write sees only the first document"
+    );
+}
+
 fn execute_json_count_in(
     executor: &mut Executor,
     branch: Option<&str>,
@@ -1800,6 +1832,7 @@ fn execute_json_count_in(
             branch: branch.map(str::to_owned),
             space: space.map(str::to_owned),
             prefix: prefix.map(str::to_owned),
+            as_of: None,
         })
         .expect("JSON count succeeds")
     {

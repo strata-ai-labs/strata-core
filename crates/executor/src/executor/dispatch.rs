@@ -115,7 +115,8 @@ impl Executor {
                 branch,
                 space,
                 prefix,
-            } => self.execute_kv_count(branch.as_deref(), space.as_deref(), prefix),
+                as_of,
+            } => self.execute_kv_count(branch.as_deref(), space.as_deref(), prefix, as_of),
             Command::KvSample {
                 branch,
                 space,
@@ -182,7 +183,8 @@ impl Executor {
                 branch,
                 space,
                 prefix,
-            } => self.execute_json_count(branch.as_deref(), space.as_deref(), prefix),
+                as_of,
+            } => self.execute_json_count(branch.as_deref(), space.as_deref(), prefix, as_of),
             Command::JsonSample {
                 branch,
                 space,
@@ -248,7 +250,8 @@ impl Executor {
                 branch,
                 space,
                 collection,
-            } => self.execute_vector_count(branch.as_deref(), space.as_deref(), collection),
+                as_of,
+            } => self.execute_vector_count(branch.as_deref(), space.as_deref(), collection, as_of),
             Command::VectorUpsert {
                 branch,
                 space,
@@ -292,6 +295,7 @@ impl Executor {
                 prefix,
                 cursor,
                 limit,
+                as_of,
             } => self.execute_vector_list_keys(
                 branch.as_deref(),
                 space.as_deref(),
@@ -299,6 +303,7 @@ impl Executor {
                 prefix,
                 cursor,
                 limit,
+                as_of,
             ),
             Command::VectorUpdateMetadata {
                 branch,

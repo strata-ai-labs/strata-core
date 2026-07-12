@@ -287,6 +287,13 @@ impl<'a> EventService<'a> {
     /// Forward ranges read `[start_seq, end_seq)`. Reverse ranges walk
     /// backward from `start_seq` and treat `end_seq` as an exclusive lower
     /// bound when present.
+    ///
+    /// This read is latest-only by design: it has no `as_of` (commit-timeline)
+    /// twin. Event's temporal reads are served by `as_of` on [`get`](Self::get)
+    /// / [`len`](Self::len) / [`list`](Self::list) plus the deliberately
+    /// separate event-domain [`range_by_time`](Self::range_by_time) axis, so a
+    /// commit-timeline `range_at` would be redundant. This is the one
+    /// intentional skip in the executor-audit `as_of` parity work (#40).
     pub fn range(
         &mut self,
         start_seq: EventSequence,

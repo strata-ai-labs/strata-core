@@ -116,6 +116,7 @@ impl Executor {
             branch: None,
             space: None,
             prefix,
+            as_of: None,
         })
     }
 

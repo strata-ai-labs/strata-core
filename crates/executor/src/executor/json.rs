@@ -273,10 +273,16 @@ impl Executor {
         branch: Option<&str>,
         space: Option<&str>,
         prefix: Option<String>,
+        as_of: Option<u64>,
     ) -> ExecutorResult<Output> {
         let prefix = optional_json_prefix(prefix)?;
         let mut service = self.json_service(branch, space)?;
-        Ok(Output::Uint(service.count(prefix.as_ref())?))
+        let count = if let Some(as_of) = as_of {
+            service.count_at(prefix.as_ref(), Timestamp::from_micros(as_of))?
+        } else {
+            service.count(prefix.as_ref())?
+        };
+        Ok(Output::Uint(count))
     }
 
     pub(super) fn execute_json_sample(

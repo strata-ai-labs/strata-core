@@ -510,6 +510,23 @@ impl<'a> JsonService<'a> {
 
     /// Counts latest visible documents by prefix.
     pub fn count(&mut self, prefix: Option<&JsonDocumentId>) -> EngineResult<u64> {
+        self.count_with_selector(prefix, ReadSelector::Latest)
+    }
+
+    /// Counts documents visible at a commit timestamp by prefix.
+    pub fn count_at(
+        &mut self,
+        prefix: Option<&JsonDocumentId>,
+        timestamp: Timestamp,
+    ) -> EngineResult<u64> {
+        self.count_with_selector(prefix, ReadSelector::AtTimestamp(timestamp))
+    }
+
+    fn count_with_selector(
+        &mut self,
+        prefix: Option<&JsonDocumentId>,
+        selector: ReadSelector,
+    ) -> EngineResult<u64> {
         let record = self.branch_record()?;
         let count = self
             .persistence
@@ -517,7 +534,7 @@ impl<'a> JsonService<'a> {
                 record.storage_branch_id(),
                 RowClass::Json,
                 self.scan_prefix(prefix),
-                ReadSelector::Latest,
+                selector,
                 None,
             )?
             .into_iter()

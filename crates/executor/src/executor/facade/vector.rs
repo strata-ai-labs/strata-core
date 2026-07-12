@@ -58,6 +58,7 @@ impl Executor {
             branch: None,
             space: None,
             collection: collection.into(),
+            as_of: None,
         })
     }
 
@@ -137,6 +138,7 @@ impl Executor {
             prefix,
             cursor,
             limit,
+            as_of: None,
         })
     }
 

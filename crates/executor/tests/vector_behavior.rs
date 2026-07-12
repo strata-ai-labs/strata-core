@@ -345,6 +345,7 @@ fn vector_mapping_collection_commands() -> Vec<Command> {
             branch: None,
             space: None,
             collection: "map".to_owned(),
+            as_of: None,
         },
     ]
 }
@@ -385,6 +386,7 @@ fn vector_mapping_row_commands() -> Vec<Command> {
             prefix: Some("map-".to_owned()),
             cursor: None,
             limit: Some(2),
+            as_of: None,
         },
         Command::VectorUpdateMetadata {
             branch: None,
@@ -597,6 +599,7 @@ fn not_found_vector_commands() -> Vec<Command> {
             branch: None,
             space: None,
             collection: "missing".to_owned(),
+            as_of: None,
         },
         Command::VectorGet {
             branch: Some("missing".to_owned()),
@@ -1471,6 +1474,7 @@ fn assert_vector_listing_metadata_and_query(executor: &mut Executor) {
             prefix: Some("doc".to_owned()),
             cursor: None,
             limit: Some(1),
+            as_of: None,
         })
         .expect("key list succeeds")
     else {
@@ -1871,12 +1875,67 @@ fn vector_count_in(
             branch: branch.map(str::to_owned),
             space: space.map(str::to_owned),
             collection: collection.to_owned(),
+            as_of: None,
         })
         .expect("count succeeds")
     else {
         panic!("unexpected count output");
     };
     count
+}
+
+fn vector_count_as_of(executor: &mut Executor, collection: &str, as_of: u64) -> u64 {
+    let Output::Uint(count) = executor
+        .execute(Command::VectorCount {
+            branch: None,
+            space: None,
+            collection: collection.to_owned(),
+            as_of: Some(as_of),
+        })
+        .expect("count as_of succeeds")
+    else {
+        panic!("unexpected count output");
+    };
+    count
+}
+
+fn list_vector_keys_as_of(executor: &mut Executor, collection: &str, as_of: u64) -> Vec<String> {
+    let Output::VectorKeyPage { items: keys, .. } = executor
+        .execute(Command::VectorListKeys {
+            branch: None,
+            space: None,
+            collection: collection.to_owned(),
+            prefix: None,
+            cursor: None,
+            limit: Some(100),
+            as_of: Some(as_of),
+        })
+        .expect("list keys as_of succeeds")
+    else {
+        panic!("unexpected list keys output");
+    };
+    keys
+}
+
+#[test]
+fn vector_count_and_list_keys_as_of_read_the_historical_snapshot() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    create_collection(&mut executor, "docs", VectorDistanceMetric::Cosine);
+    let first = upsert_vector(&mut executor, "docs", "a", vec![1.0, 0.0], json!({}));
+    upsert_vector(&mut executor, "docs", "b", vec![0.0, 1.0], json!({}));
+    upsert_vector(&mut executor, "docs", "c", vec![1.0, 1.0], json!({}));
+
+    assert_eq!(vector_count(&mut executor, "docs"), 3);
+    assert_eq!(
+        vector_count_as_of(&mut executor, "docs", first),
+        1,
+        "count as_of the first upsert sees only the first key"
+    );
+    assert_eq!(
+        list_vector_keys_as_of(&mut executor, "docs", first),
+        vec!["a".to_owned()],
+        "list keys as_of the first upsert sees only the first key"
+    );
 }
 
 fn vector_exists(executor: &mut Executor, collection: &str, key: &str) -> bool {
@@ -1911,6 +1970,7 @@ fn list_vector_keys(
             prefix: prefix.map(str::to_owned),
             cursor: cursor.map(str::to_owned),
             limit,
+            as_of: None,
         })
         .expect("list keys succeeds")
     else {

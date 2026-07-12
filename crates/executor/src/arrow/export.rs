@@ -399,6 +399,7 @@ fn export_vector(
             prefix: prefix.map(str::to_owned),
             cursor,
             limit: Some(page_limit),
+            as_of: None,
         })?;
         let Output::VectorKeyPage { items: keys, page } = output else {
             return Err(unexpected_output("vector_list_keys"));

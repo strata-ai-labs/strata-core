@@ -323,6 +323,9 @@ pub enum Command {
         /// Optional key prefix.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         prefix: Option<Bytes>,
+        /// Optional timestamp in microseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
     },
     /// Samples keys and values.
     KvSample {
@@ -487,6 +490,9 @@ pub enum Command {
         /// Optional document key prefix.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         prefix: Option<String>,
+        /// Optional timestamp in microseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
     },
     /// Samples JSON documents.
     JsonSample {
@@ -594,6 +600,9 @@ pub enum Command {
         space: Option<String>,
         /// Collection name.
         collection: String,
+        /// Optional timestamp in microseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
     },
     /// Upserts one vector.
     VectorUpsert {
@@ -674,6 +683,9 @@ pub enum Command {
         /// Optional item limit. Defaults to 100.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
+        /// Optional timestamp in microseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
     },
     /// Updates vector metadata.
     VectorUpdateMetadata {

@@ -6,6 +6,15 @@
     "additionalProperties": false,
     "description": "Lists vector keys.",
     "properties": {
+      "as_of": {
+        "description": "Optional timestamp in microseconds.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
       "branch": {
         "description": "Target branch. Defaults to the executor handle branch.",
         "type": [

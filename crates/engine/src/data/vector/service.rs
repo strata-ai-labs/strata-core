@@ -230,7 +230,18 @@ impl<'a> VectorService<'a> {
     pub fn count(&mut self, name: &VectorCollectionName) -> EngineResult<u64> {
         let record = self.branch_record()?;
         self.require_collection_config(&record, name)?;
-        self.count_with_record(&record, name)
+        self.count_with_record(&record, name, ReadSelector::Latest)
+    }
+
+    /// Counts vectors visible at a commit timestamp in a collection.
+    pub fn count_at(
+        &mut self,
+        name: &VectorCollectionName,
+        timestamp: Timestamp,
+    ) -> EngineResult<u64> {
+        let record = self.branch_record()?;
+        self.require_collection_config(&record, name)?;
+        self.count_with_record(&record, name, ReadSelector::AtTimestamp(timestamp))
     }
 
     /// Upserts one vector entry.
@@ -365,6 +376,35 @@ impl<'a> VectorService<'a> {
         cursor: Option<&VectorKey>,
         limit: usize,
     ) -> EngineResult<VectorKeyPage> {
+        self.list_keys_with_selector(collection, prefix, cursor, limit, ReadSelector::Latest)
+    }
+
+    /// Lists vector keys visible at a commit timestamp with cursor pagination.
+    pub fn list_keys_at(
+        &mut self,
+        collection: &VectorCollectionName,
+        prefix: Option<&VectorKey>,
+        cursor: Option<&VectorKey>,
+        limit: usize,
+        timestamp: Timestamp,
+    ) -> EngineResult<VectorKeyPage> {
+        self.list_keys_with_selector(
+            collection,
+            prefix,
+            cursor,
+            limit,
+            ReadSelector::AtTimestamp(timestamp),
+        )
+    }
+
+    fn list_keys_with_selector(
+        &mut self,
+        collection: &VectorCollectionName,
+        prefix: Option<&VectorKey>,
+        cursor: Option<&VectorKey>,
+        limit: usize,
+        selector: ReadSelector,
+    ) -> EngineResult<VectorKeyPage> {
         let record = self.branch_record()?;
         self.require_collection_config(&record, collection)?;
         if limit == 0 {
@@ -376,7 +416,7 @@ impl<'a> VectorService<'a> {
             prefix,
             cursor,
             limit.saturating_add(1),
-            ReadSelector::Latest,
+            selector,
         )?;
         let has_more = keys.len() > limit;
         if has_more {
@@ -2411,7 +2451,7 @@ impl<'a> VectorService<'a> {
             )
         })?;
         let config = decode_collection_config(&name, value)?;
-        let count = self.count_with_record(record, &name)?;
+        let count = self.count_with_record(record, &name, ReadSelector::Latest)?;
         Ok(VectorCollectionInfo::new(
             name,
             config,
@@ -2425,9 +2465,10 @@ impl<'a> VectorService<'a> {
         &mut self,
         record: &BranchCatalogRecord,
         collection: &VectorCollectionName,
+        selector: ReadSelector,
     ) -> EngineResult<u64> {
         let count = self
-            .vector_rows(record, collection, ReadSelector::Latest)?
+            .vector_rows(record, collection, selector)?
             .into_iter()
             .filter(|row| !row.is_tombstone())
             .count();

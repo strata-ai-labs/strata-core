@@ -34,6 +34,7 @@ pub(super) fn vector_collection_commands() -> Vec<Command> {
             branch: None,
             space: None,
             collection: "docs".to_owned(),
+            as_of: None,
         },
     ]
 }
@@ -74,6 +75,7 @@ pub(super) fn vector_row_commands() -> Vec<Command> {
             prefix: Some("doc-".to_owned()),
             cursor: Some("doc-a".to_owned()),
             limit: Some(2),
+            as_of: None,
         },
         Command::VectorUpdateMetadata {
             branch: None,
@@ -193,6 +195,7 @@ pub(super) fn vector_round_trip_edge_commands() -> Vec<Command> {
             prefix: Some("doc-".to_owned()),
             cursor: Some("doc-001".to_owned()),
             limit: Some(25),
+            as_of: None,
         },
         Command::VectorUpdateMetadata {
             branch: Some("feature".to_owned()),

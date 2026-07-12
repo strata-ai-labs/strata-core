@@ -687,6 +687,7 @@ fn vector_count(executor: &mut Executor, collection: &str) -> u64 {
             branch: None,
             space: None,
             collection: collection.to_owned(),
+            as_of: None,
         })
         .expect("vector count succeeds");
     let Output::Uint(count) = output else {
