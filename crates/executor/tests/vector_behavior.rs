@@ -2206,3 +2206,94 @@ fn kind_filter(kind: &str) -> VectorMetadataFilter {
         VectorScalar::from(kind),
     )])
 }
+
+/// Pins the `VectorScan` contract: ordered key + value rows and honest cursor
+/// pagination — a limit below the row count reports `has_more` with the first
+/// unreturned key, and resuming from that inclusive cursor returns the rest with
+/// no gap or overlap before a terminal page. Mirrors the KV scan contract.
+#[test]
+fn vector_scan_returns_ordered_rows_and_paginates_honestly() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    executor
+        .execute(Command::VectorCreateCollection {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            dimension: 2,
+            metric: VectorDistanceMetric::Cosine,
+        })
+        .expect("create collection succeeds");
+    for i in 0u8..6 {
+        executor
+            .execute(Command::VectorUpsert {
+                branch: None,
+                space: None,
+                collection: "docs".to_owned(),
+                key: format!("doc-{i}"),
+                vector: vec![f32::from(i) + 1.0, 1.0],
+                metadata: Some(json!({ "n": i })),
+            })
+            .expect("upsert succeeds");
+    }
+
+    // A page below the row count returns ordered key+value rows and a cursor at
+    // the first unreturned key.
+    let (rows, cursor) = vector_scan_page(&mut executor, None, 2);
+    assert_eq!(
+        rows,
+        vec![
+            ("doc-0".to_owned(), vec![1.0, 1.0]),
+            ("doc-1".to_owned(), vec![2.0, 1.0]),
+        ]
+    );
+    assert_eq!(cursor.as_deref(), Some("doc-2"));
+
+    // Resume from the cursor until a terminal page. The union of pages is every
+    // vector, in ascending order, with no overlap or gap.
+    let mut seen = rows;
+    let mut start = cursor;
+    let mut pages = 1;
+    while let Some(next) = start {
+        let (rows, cursor) = vector_scan_page(&mut executor, Some(next), 2);
+        assert!(rows.len() <= 2);
+        seen.extend(rows);
+        pages += 1;
+        assert!(pages <= 6, "pagination did not terminate");
+        start = cursor;
+    }
+    assert_eq!(pages, 3);
+    let keys: Vec<String> = seen.iter().map(|(key, _)| key.clone()).collect();
+    let mut deduped = keys.clone();
+    deduped.dedup();
+    assert_eq!(deduped.len(), keys.len(), "no duplicate keys across pages");
+    let expected: Vec<(String, Vec<f32>)> = (0u8..6)
+        .map(|i| (format!("doc-{i}"), vec![f32::from(i) + 1.0, 1.0]))
+        .collect();
+    assert_eq!(seen, expected);
+}
+
+fn vector_scan_page(
+    executor: &mut Executor,
+    start: Option<String>,
+    limit: u64,
+) -> (Vec<(String, Vec<f32>)>, Option<String>) {
+    let output = executor
+        .execute(Command::VectorScan {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            start,
+            limit: Some(limit),
+        })
+        .expect("vector scan succeeds");
+    let Output::VectorScanResult { items, page } = output else {
+        panic!("unexpected vector scan output: {output:?}");
+    };
+    (
+        items
+            .iter()
+            .map(|item| (item.key().to_owned(), item.data().embedding().to_vec()))
+            .collect(),
+        page.cursor().cloned(),
+    )
+}

@@ -592,6 +592,45 @@ impl<'a> JsonService<'a> {
         Ok(JsonSample::new(total_count, sampled))
     }
 
+    /// Scans latest visible documents from an inclusive start id.
+    ///
+    /// Mirrors the KV scan: the range is bounded to the space prefix, tombstones
+    /// are skipped, and a `Some(limit)` request refills across tombstones so a
+    /// caller that reads `limit + 1` rows can page honestly.
+    pub fn scan(
+        &mut self,
+        start: Option<&JsonDocumentId>,
+        limit: Option<usize>,
+    ) -> EngineResult<Vec<JsonSampleRow>> {
+        if limit == Some(0) {
+            return Ok(Vec::new());
+        }
+        let record = self.branch_record()?;
+        let prefix = encode_json_space_prefix(&self.space);
+        let start = start.map_or_else(|| prefix.clone(), |id| encode_json_key(&self.space, id));
+        let end = next_prefix(&prefix);
+        if start >= end {
+            return Ok(Vec::new());
+        }
+        match limit {
+            Some(limit) => self.scan_range_limited(&record, start, &end, limit),
+            None => self
+                .persistence
+                .scan_range(
+                    record.storage_branch_id(),
+                    RowClass::Json,
+                    Some(start),
+                    Some(end),
+                    ReadSelector::Latest,
+                    None,
+                )?
+                .into_iter()
+                .filter(|row| !row.is_tombstone())
+                .map(|row| self.sample_row_from_row(&row))
+                .collect(),
+        }
+    }
+
     /// Creates a JSON secondary index and backfills current documents.
     pub fn create_index(
         &mut self,
@@ -827,6 +866,43 @@ impl<'a> JsonService<'a> {
             start = exclusive_after_key(last_raw_key);
         }
         Ok(ids)
+    }
+
+    fn scan_range_limited(
+        &mut self,
+        record: &BranchCatalogRecord,
+        mut start: Vec<u8>,
+        end: &[u8],
+        limit: usize,
+    ) -> EngineResult<Vec<JsonSampleRow>> {
+        let mut visible = Vec::with_capacity(limit.min(JSON_LIST_RAW_PAGE_MIN));
+        while visible.len() < limit && start.as_slice() < end {
+            let remaining = limit.saturating_sub(visible.len());
+            let raw_limit = remaining.clamp(JSON_LIST_RAW_PAGE_MIN, JSON_LIST_RAW_PAGE_MAX);
+            let rows = self.persistence.scan_range(
+                record.storage_branch_id(),
+                RowClass::Json,
+                Some(start.clone()),
+                Some(end.to_owned()),
+                ReadSelector::Latest,
+                Some(raw_limit),
+            )?;
+            if rows.is_empty() {
+                break;
+            }
+            for row in &rows {
+                if row.is_tombstone() {
+                    continue;
+                }
+                visible.push(self.sample_row_from_row(row)?);
+                if visible.len() >= limit {
+                    break;
+                }
+            }
+            let last_raw_key = rows.last().expect("non-empty raw page").key();
+            start = exclusive_after_key(last_raw_key);
+        }
+        Ok(visible)
     }
 
     fn branch_record(&self) -> EngineResult<BranchCatalogRecord> {

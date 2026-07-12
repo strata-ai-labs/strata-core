@@ -481,6 +481,18 @@ pub(crate) enum JsonCommand {
         #[arg(long)]
         as_of: Option<u64>,
     },
+    /// Scan JSON documents (keys and values).
+    Scan {
+        /// Optional inclusive start document key.
+        #[arg(long, conflicts_with = "cursor")]
+        start: Option<String>,
+        /// Optional continuation cursor as printed by the previous page.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Optional item limit.
+        #[arg(long)]
+        limit: Option<u64>,
+    },
     /// Check whether a document exists.
     Exists {
         /// Document key.
@@ -624,6 +636,20 @@ pub(crate) enum VectorCommand {
         #[arg(long)]
         prefix: Option<String>,
         /// Optional continuation cursor.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Optional item limit.
+        #[arg(long)]
+        limit: Option<u64>,
+    },
+    /// Scan vectors (keys and values).
+    Scan {
+        /// Collection name.
+        collection: String,
+        /// Optional inclusive start key.
+        #[arg(long, conflicts_with = "cursor")]
+        start: Option<String>,
+        /// Optional continuation cursor as printed by the previous page.
         #[arg(long)]
         cursor: Option<String>,
         /// Optional item limit.

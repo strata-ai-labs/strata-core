@@ -184,6 +184,12 @@ impl Executor {
                 limit,
                 as_of,
             ),
+            Command::JsonScan {
+                branch,
+                space,
+                start,
+                limit,
+            } => self.execute_json_scan(branch.as_deref(), space.as_deref(), start, limit),
             Command::JsonCount {
                 branch,
                 space,
@@ -320,6 +326,19 @@ impl Executor {
                 cursor,
                 limit,
                 as_of,
+            ),
+            Command::VectorScan {
+                branch,
+                space,
+                collection,
+                start,
+                limit,
+            } => self.execute_vector_scan(
+                branch.as_deref(),
+                space.as_deref(),
+                collection,
+                start,
+                limit,
             ),
             Command::VectorUpdateMetadata {
                 branch,

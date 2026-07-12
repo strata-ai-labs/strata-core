@@ -76,6 +76,16 @@ pub(super) fn vector_read_outputs() -> Vec<Output> {
             items: vec!["doc-a".to_owned()],
             page: PageInfo::new(true, Some("doc-a".to_owned())),
         },
+        Output::VectorScanResult {
+            items: vec![VectorVersionedData::new(
+                "doc-a".to_owned(),
+                VectorData::new(vec![1.0, 0.0], Some(json!({"kind": "doc"}))),
+                1,
+                10,
+                1,
+            )],
+            page: PageInfo::new(true, Some("doc-b".to_owned())),
+        },
         Output::VectorCollectionList {
             items: vec![VectorCollectionInfo::new(
                 "docs".to_owned(),

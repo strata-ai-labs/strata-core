@@ -153,6 +153,21 @@ commands:
         - requests/v1/setup/vector_upsert_doc_b.json
       request: requests/v1/vector/keys.json
       response: responses/v1/vector/key_page.json
+  - id: vector.scan
+    kind: read.page
+    title: Scan vectors
+    input: Command::VectorScan
+    output: Output::VectorScanResult
+    result: VectorVersionedData
+    response_model: Page<VectorVersionedData, String>
+    prose: commands/vector.scan.md
+    fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
+        - requests/v1/vector/upsert.json
+        - requests/v1/setup/vector_upsert_doc_b.json
+      request: requests/v1/vector/scan.json
+      response: responses/v1/vector/scan_page.json
   - id: vector.metadata.update
     kind: mutation.metadata_update
     title: Update vector metadata

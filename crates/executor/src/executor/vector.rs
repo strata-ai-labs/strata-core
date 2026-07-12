@@ -253,6 +253,42 @@ impl Executor {
         Ok(vector_key_page_output(&page))
     }
 
+    pub(super) fn execute_vector_scan(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+        start: Option<String>,
+        limit: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let start = optional_vector_key(start)?;
+        let limit = optional_limit(limit)?;
+        let mut service = self.vector_service(branch, space)?;
+        // Fetch one extra row to detect truncation and report has_more/cursor
+        // honestly, like KvScan. The continuation cursor is the first unreturned
+        // key; the inclusive start resumes with neither a gap nor an overlap.
+        // `scan` validates the collection, so a missing one surfaces not-found
+        // even for an empty page.
+        let mut rows = service.scan(
+            &collection,
+            start.as_ref(),
+            limit.map(|limit| limit.saturating_add(1)),
+        )?;
+        let page = match limit {
+            Some(limit) if rows.len() > limit => {
+                let cursor = rows[limit].key().as_str().to_owned();
+                rows.truncate(limit);
+                PageInfo::new(true, Some(cursor))
+            }
+            _ => PageInfo::terminal(),
+        };
+        Ok(Output::VectorScanResult {
+            items: rows.iter().map(vector_versioned_data).collect(),
+            page,
+        })
+    }
+
     pub(super) fn execute_vector_update_metadata(
         &mut self,
         branch: Option<&str>,

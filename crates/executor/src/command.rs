@@ -490,6 +490,21 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
+    /// Scans JSON documents.
+    JsonScan {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Optional inclusive start document key.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start: Option<String>,
+        /// Optional row limit.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u64>,
+    },
     /// Counts JSON documents.
     JsonCount {
         /// Target branch. Defaults to the executor handle branch.
@@ -710,6 +725,23 @@ pub enum Command {
         /// Optional timestamp in microseconds.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+    },
+    /// Scans vectors.
+    VectorScan {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+        /// Optional inclusive start key.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start: Option<String>,
+        /// Optional row limit.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u64>,
     },
     /// Updates vector metadata.
     VectorUpdateMetadata {
@@ -1722,6 +1754,7 @@ impl Command {
             Self::JsonBatchGet { .. } => "json_batch_get",
             Self::JsonBatchDelete { .. } => "json_batch_delete",
             Self::JsonList { .. } => "json_list",
+            Self::JsonScan { .. } => "json_scan",
             Self::JsonCount { .. } => "json_count",
             Self::JsonSample { .. } => "json_sample",
             Self::JsonCreateIndex { .. } => "json_create_index",
@@ -1738,6 +1771,7 @@ impl Command {
             Self::VectorExists { .. } => "vector_exists",
             Self::VectorBatchExists { .. } => "vector_batch_exists",
             Self::VectorListKeys { .. } => "vector_list_keys",
+            Self::VectorScan { .. } => "vector_scan",
             Self::VectorUpdateMetadata { .. } => "vector_update_metadata",
             Self::VectorDelete { .. } => "vector_delete",
             Self::VectorDeleteByFilter { .. } => "vector_delete_by_filter",
