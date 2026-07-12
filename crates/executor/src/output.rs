@@ -2,10 +2,10 @@
 
 use crate::types::{
     AdminConfig, AdminDatabaseInfo, AdminDescribe, AdminHealth, AdminMetrics, ArrowExportResult,
-    ArrowImportResult, BatchExistsItemResult, BatchGetItemResult, BatchItemResult, BatchResult,
-    BranchCleanupItem, BranchItem, Bytes, CommitReceipt, EventBatchAppendItemResult,
-    EventChainVerification, EventVersionedData, GraphBatchItemResult, GraphBfsData,
-    GraphBindingHit, GraphCdlpData, GraphEdgeDataOutput, GraphInfoData, GraphLccData,
+    ArrowImportResult, BatchExistsItemResult, BatchExistsPresence, BatchGetItemResult,
+    BatchItemResult, BatchResult, BranchCleanupItem, BranchItem, Bytes, CommitReceipt,
+    EventBatchAppendItemResult, EventChainVerification, EventVersionedData, GraphBatchItemResult,
+    GraphBfsData, GraphBindingHit, GraphCdlpData, GraphEdgeDataOutput, GraphInfoData, GraphLccData,
     GraphNeighborHit, GraphNodeDataOutput, GraphOntologyData, GraphOntologySummaryData,
     GraphPagerankData, GraphSsspData, GraphWccData, HistoryResult, JsonBatchGetItemResult,
     JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition, JsonSampleItem, Maybe,
@@ -200,6 +200,10 @@ pub enum Output {
     Bool(bool),
     /// Positional batch existence results.
     BatchExistsResults(BatchResult<BatchExistsItemResult>),
+    /// JSON batch document-existence results.
+    JsonBatchExistsResults(BatchResult<BatchExistsPresence>),
+    /// Vector batch key-existence results.
+    VectorBatchExistsResults(BatchResult<BatchExistsPresence>),
     /// Unsigned integer result.
     Uint(u64),
     /// Sampled KV result.

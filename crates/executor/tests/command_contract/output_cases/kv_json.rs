@@ -141,6 +141,10 @@ pub(super) fn json_outputs() -> Vec<Output> {
             Some(JsonBatchGetItemResult::not_found()),
             item_error("invalid document id"),
         )])),
+        Output::JsonBatchExistsResults(presence_batch_exists(vec![
+            BatchItem::ok(0, false, None, None, BatchExistsPresence::new(true)),
+            BatchItem::failed(1, None, item_error("invalid document id")),
+        ])),
         Output::JsonSampleResult {
             total_count: 3,
             items: vec![JsonSampleItem::new(

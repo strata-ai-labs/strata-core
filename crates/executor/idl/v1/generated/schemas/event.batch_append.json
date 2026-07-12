@@ -14,7 +14,7 @@
       ],
       "type": "object"
     },
-    "BatchItem8": {
+    "BatchItem9": {
       "description": "Shared positional item wrapper for all public batch responses.",
       "properties": {
         "applied": {
@@ -111,7 +111,7 @@
         }
       ]
     },
-    "BatchResult8": {
+    "BatchResult9": {
       "description": "Shared batch response wrapper for all public batch commands.",
       "properties": {
         "applied": {
@@ -129,7 +129,7 @@
         },
         "items": {
           "items": {
-            "$ref": "#/$defs/BatchItem8"
+            "$ref": "#/$defs/BatchItem9"
           },
           "type": "array"
         },
@@ -542,7 +542,7 @@
     "description": "Positional event batch append results.",
     "properties": {
       "data": {
-        "$ref": "#/$defs/BatchResult8"
+        "$ref": "#/$defs/BatchResult9"
       },
       "type": {
         "const": "event_batch_append_results",

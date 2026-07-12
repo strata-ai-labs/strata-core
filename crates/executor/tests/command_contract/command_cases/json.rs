@@ -32,6 +32,11 @@ pub(super) fn json_commands() -> Vec<Command> {
             space: None,
             key: "doc-a".to_owned(),
         },
+        Command::JsonBatchExists {
+            branch: None,
+            space: None,
+            keys: vec!["doc-a".to_owned(), "missing".to_owned()],
+        },
         Command::JsonBatchSet {
             branch: None,
             space: None,

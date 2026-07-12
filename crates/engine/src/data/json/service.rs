@@ -259,6 +259,21 @@ impl<'a> JsonService<'a> {
             .is_some_and(|row| !row.is_tombstone()))
     }
 
+    /// Checks multiple documents for latest visible values.
+    pub fn batch_exists(&mut self, ids: &[JsonDocumentId]) -> EngineResult<Vec<bool>> {
+        let record = self.branch_record()?;
+        let mut results = Vec::with_capacity(ids.len());
+        for id in ids {
+            let address = self.row_address(&record, id);
+            let exists = self
+                .persistence
+                .read_row(address, ReadSelector::Latest)?
+                .is_some_and(|row| !row.is_tombstone());
+            results.push(exists);
+        }
+        Ok(results)
+    }
+
     /// Deletes a root document or one path.
     pub fn delete(
         &mut self,

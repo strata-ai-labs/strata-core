@@ -127,6 +127,10 @@ pub(super) fn vector_batch_outputs() -> Vec<Output> {
             Some(commit_receipt(2, 20, 0, 1)),
             VectorBatchItemResult::new(None),
         )])),
+        Output::VectorBatchExistsResults(presence_batch_exists(vec![
+            BatchItem::ok(0, false, None, None, BatchExistsPresence::new(true)),
+            BatchItem::ok(1, false, None, None, BatchExistsPresence::new(false)),
+        ])),
     ]
 }
 

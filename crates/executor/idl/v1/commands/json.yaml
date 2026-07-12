@@ -82,6 +82,18 @@ commands:
         - requests/v1/json/set.json
       request: requests/v1/json/exists.json
       response: responses/v1/status/bool_true.json
+  - id: json.batch_exists
+    kind: batch.itemwise_status
+    title: Batch check JSON document existence
+    input: Command::JsonBatchExists
+    output: Output::JsonBatchExistsResults
+    result: BatchExistsPresence
+    prose: commands/json.batch_exists.md
+    fixtures:
+      setup:
+        - requests/v1/json/set.json
+      request: requests/v1/json/batch_exists.json
+      response: responses/v1/json/batch_exists.json
   - id: json.batch_set
     kind: batch.itemwise_mutation
     title: Batch set JSON values

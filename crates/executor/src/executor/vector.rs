@@ -1,16 +1,17 @@
 use super::{
-    commit_receipt, delete_effect, empty_vector_batch_get_results, empty_vector_batch_results,
-    engine_vector_metric, finish_vector_batch_get_results, finish_vector_batch_results,
-    optional_limit, optional_vector_key, optional_vector_metadata, reject_duplicate_vector_keys,
-    require_vector_collection_info, required_usize, update_effect, upsert_effect, usize_to_u64,
-    vector_batch_get_failed, vector_batch_get_item, vector_batch_item_failed,
-    vector_batch_item_result, vector_bulk_delete_output, vector_collection, vector_collection_info,
-    vector_dimension_mismatch_error, vector_embedding, vector_filter, vector_history_result,
-    vector_index_diagnostics, vector_key, vector_key_page_output, vector_match,
-    vector_metadata_patch, vector_upsert_entry, vector_versioned_data, vector_write_output,
-    BatchVectorEntry, EngineVectorConfig, Executor, ExecutorError, ExecutorResult, Maybe, Output,
-    PageInfo, Timestamp, VectorDistanceMetric, VectorIndexQueryResult, VectorMetadataFilter,
-    DEFAULT_VECTOR_LIST_LIMIT,
+    commit_receipt, delete_effect, empty_presence_exists_results, empty_vector_batch_get_results,
+    empty_vector_batch_results, engine_vector_metric, finish_presence_exists_results,
+    finish_vector_batch_get_results, finish_vector_batch_results, optional_limit,
+    optional_vector_key, optional_vector_metadata, presence_exists_failed, presence_exists_item,
+    reject_duplicate_vector_keys, require_vector_collection_info, required_usize, update_effect,
+    upsert_effect, usize_to_u64, vector_batch_get_failed, vector_batch_get_item,
+    vector_batch_item_failed, vector_batch_item_result, vector_bulk_delete_output,
+    vector_collection, vector_collection_info, vector_dimension_mismatch_error, vector_embedding,
+    vector_filter, vector_history_result, vector_index_diagnostics, vector_key,
+    vector_key_page_output, vector_match, vector_metadata_patch, vector_upsert_entry,
+    vector_versioned_data, vector_write_output, BatchVectorEntry, EngineVectorConfig, Executor,
+    ExecutorError, ExecutorResult, Maybe, Output, PageInfo, Timestamp, VectorDistanceMetric,
+    VectorIndexQueryResult, VectorMetadataFilter, DEFAULT_VECTOR_LIST_LIMIT,
 };
 
 impl Executor {
@@ -179,6 +180,47 @@ impl Executor {
         let key = vector_key(key)?;
         let mut service = self.vector_service(branch, space)?;
         Ok(Output::Bool(service.exists(&collection, &key)?))
+    }
+
+    pub(super) fn execute_vector_batch_exists(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+        keys: Vec<String>,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let mut service = self.vector_service(branch, space)?;
+        // The `?` validates the collection exists (surfacing not-found) before
+        // any per-key work, so an empty or all-invalid key list still reports a
+        // missing collection; the returned info is unused, so it is discarded.
+        let _ = require_vector_collection_info(&mut service, &collection)?;
+        let mut results = empty_presence_exists_results(keys.len());
+        let mut valid_keys = Vec::with_capacity(keys.len());
+        for (index, key) in keys.into_iter().enumerate() {
+            match vector_key(key) {
+                Ok(key) => valid_keys.push((index, key)),
+                Err(error) => {
+                    results[index] = Some(presence_exists_failed(usize_to_u64(index), error));
+                }
+            }
+        }
+        if valid_keys.is_empty() {
+            return Ok(Output::VectorBatchExistsResults(
+                finish_presence_exists_results(results),
+            ));
+        }
+        let keys = valid_keys
+            .iter()
+            .map(|(_, key)| key.clone())
+            .collect::<Vec<_>>();
+        let exists = service.batch_exists(&collection, &keys)?;
+        for ((index, _), exists) in valid_keys.into_iter().zip(exists) {
+            results[index] = Some(presence_exists_item(usize_to_u64(index), exists));
+        }
+        Ok(Output::VectorBatchExistsResults(
+            finish_presence_exists_results(results),
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -1,6 +1,6 @@
 {
   "$defs": {
-    "BatchItem7": {
+    "BatchItem8": {
       "description": "Shared positional item wrapper for all public batch responses.",
       "properties": {
         "applied": {
@@ -97,7 +97,7 @@
         }
       ]
     },
-    "BatchResult7": {
+    "BatchResult8": {
       "description": "Shared batch response wrapper for all public batch commands.",
       "properties": {
         "applied": {
@@ -115,7 +115,7 @@
         },
         "items": {
           "items": {
-            "$ref": "#/$defs/BatchItem7"
+            "$ref": "#/$defs/BatchItem8"
           },
           "type": "array"
         },
@@ -586,7 +586,7 @@
     "description": "Positional vector batch read results.",
     "properties": {
       "data": {
-        "$ref": "#/$defs/BatchResult7"
+        "$ref": "#/$defs/BatchResult8"
       },
       "type": {
         "const": "vector_batch_get_results",

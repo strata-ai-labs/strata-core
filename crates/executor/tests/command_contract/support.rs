@@ -5,10 +5,10 @@ pub(super) use strata_executor::{
     AdminGraph, AdminHealth, AdminHealthStatus, AdminMetrics, AdminOpenTarget, AdminPrimitives,
     AdminVectorCollection, ArrowExportPrimitive, ArrowExportResult, ArrowFileFormat,
     ArrowImportResult, ArrowImportTarget, BatchEventEntry, BatchExistsItemResult,
-    BatchGetItemResult, BatchItem, BatchItemResult, BatchItemStatus, BatchJsonDeleteEntry,
-    BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry, BatchMode, BatchResult, BatchStatus,
-    BatchVectorEntry, BranchCleanupItem, BranchItem, BranchParentItem, BranchStatus, Bytes,
-    Command, CommitReceipt, ErrorStatus, EventBatchAppendItemResult, EventChainVerification,
+    BatchExistsPresence, BatchGetItemResult, BatchItem, BatchItemResult, BatchItemStatus,
+    BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry, BatchMode, BatchResult,
+    BatchStatus, BatchVectorEntry, BranchCleanupItem, BranchItem, BranchParentItem, BranchStatus,
+    Bytes, Command, CommitReceipt, ErrorStatus, EventBatchAppendItemResult, EventChainVerification,
     EventData, EventRangeDirection, EventVersionedData, GraphAnalyticsBudget, GraphBatchItemResult,
     GraphBatchOperation, GraphBfsData, GraphBfsEdgeData, GraphBindingHit, GraphBindingPrimitive,
     GraphBindingTarget, GraphBulkEdge, GraphBulkNode, GraphCdlpData, GraphDeletePolicy,
@@ -124,6 +124,12 @@ pub(super) fn kv_batch_get(
 pub(super) fn kv_batch_exists(
     items: Vec<BatchItem<BatchExistsItemResult>>,
 ) -> BatchResult<BatchExistsItemResult> {
+    BatchResult::from_items(BatchMode::Itemwise, items)
+}
+
+pub(super) fn presence_batch_exists(
+    items: Vec<BatchItem<BatchExistsPresence>>,
+) -> BatchResult<BatchExistsPresence> {
     BatchResult::from_items(BatchMode::Itemwise, items)
 }
 

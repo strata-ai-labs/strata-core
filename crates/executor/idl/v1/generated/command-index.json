@@ -5018,6 +5018,68 @@
       }
     },
     {
+      "id": "json.batch_exists",
+      "family": "json",
+      "op": "batch_exists",
+      "kind": "batch.itemwise_status",
+      "title": "Batch check JSON document existence",
+      "summary": "Check existence for multiple JSON documents.",
+      "description": "Checks several JSON documents and returns positional boolean status values. The response preserves the input order.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
+      "docs": "/docs/json/batch_exists",
+      "cli": {
+        "path": [
+          "json",
+          "batch-exists"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_json_batch_exists",
+        "description": "Use this when the user wants to test whether several JSON documents exist."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::JsonBatchExists",
+      "output": "Output::JsonBatchExistsResults",
+      "outputs": [
+        "Output::JsonBatchExistsResults"
+      ],
+      "wire_status": "stable",
+      "response_model": "BatchResult<BatchExistsPresence>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "itemwise",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/batch_exists.json",
+        "response": "responses/v1/json/batch_exists.json",
+        "setup": [
+          "requests/v1/json/set.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.batch_exists.md"
+      }
+    },
+    {
       "id": "json.batch_get",
       "family": "json",
       "op": "batch_get",
@@ -7102,6 +7164,78 @@
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",
         "prose": "commands/vector.batch_delete.md"
+      }
+    },
+    {
+      "id": "vector.batch_exists",
+      "family": "vector",
+      "op": "batch_exists",
+      "kind": "batch.itemwise_status",
+      "title": "Batch check vector existence",
+      "summary": "Check existence for multiple vector keys.",
+      "description": "Checks several vector keys in one collection and returns positional boolean status values. The response preserves the input order.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
+      "docs": "/docs/vector/batch_exists",
+      "cli": {
+        "path": [
+          "vector",
+          "batch-exists"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_vector_batch_exists",
+        "description": "Use this when the user wants to test whether several vector keys exist in a collection."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::VectorBatchExists",
+      "output": "Output::VectorBatchExistsResults",
+      "outputs": [
+        "Output::VectorBatchExistsResults"
+      ],
+      "wire_status": "stable",
+      "response_model": "BatchResult<BatchExistsPresence>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "itemwise",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/batch_exists.json",
+        "response": "responses/v1/vector/batch_exists.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json",
+          "requests/v1/vector/upsert.json",
+          "requests/v1/setup/vector_upsert_doc_b.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/vector.yaml",
+        "prose": "commands/vector.batch_exists.md"
       }
     },
     {

@@ -1,0 +1,33 @@
+{
+  "data": {
+    "applied": false,
+    "commit": null,
+    "items": [
+      {
+        "applied": false,
+        "commit": null,
+        "effect": null,
+        "error": null,
+        "index": 0,
+        "result": {
+          "exists": true
+        },
+        "status": "ok"
+      },
+      {
+        "applied": false,
+        "commit": null,
+        "effect": null,
+        "error": null,
+        "index": 1,
+        "result": {
+          "exists": false
+        },
+        "status": "ok"
+      }
+    ],
+    "mode": "itemwise",
+    "status": "ok"
+  },
+  "type": "vector_batch_exists_results"
+}
