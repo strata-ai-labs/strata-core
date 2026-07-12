@@ -7,6 +7,7 @@ response_models:
   - BatchResult<KvMutationItem>
   - BatchResult<Maybe<Bytes>>
   - BatchResult<BatchExistsItemResult>
+  - BatchResult<BatchExistsPresence>
   - BatchResult<StatusValue<bool>>
   - StatusValue<bool>
   - Maybe<Vec<HistoryItem>>

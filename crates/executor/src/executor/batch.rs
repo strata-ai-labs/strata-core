@@ -1,8 +1,8 @@
 use super::{
-    BTreeSet, BatchExistsItemResult, BatchGetItemResult, BatchItem, BatchItemResult, BatchMode,
-    BatchResult, Bytes, EventBatchAppendItemResult, ExecutorError, ExecutorErrorClass,
-    ExecutorResult, GraphBatchItemResult, JsonBatchGetItemResult, JsonBatchItemResult,
-    VectorBatchGetItemResult, VectorBatchItemResult,
+    BTreeSet, BatchExistsItemResult, BatchExistsPresence, BatchGetItemResult, BatchItem,
+    BatchItemResult, BatchMode, BatchResult, Bytes, EventBatchAppendItemResult, ExecutorError,
+    ExecutorErrorClass, ExecutorResult, GraphBatchItemResult, JsonBatchGetItemResult,
+    JsonBatchItemResult, VectorBatchGetItemResult, VectorBatchItemResult,
 };
 
 pub(super) fn empty_batch_results(len: usize) -> Vec<Option<BatchItem<BatchItemResult>>> {
@@ -53,6 +53,35 @@ pub(super) fn finish_batch_exists_results(
     results: Vec<Option<BatchItem<BatchExistsItemResult>>>,
 ) -> BatchResult<BatchExistsItemResult> {
     kv_batch_exists_result(unwrap_slots(results, "batch exists result"))
+}
+
+pub(super) fn empty_presence_exists_results(
+    len: usize,
+) -> Vec<Option<BatchItem<BatchExistsPresence>>> {
+    std::iter::repeat_with(|| None).take(len).collect()
+}
+
+pub(super) fn presence_exists_result(
+    items: Vec<BatchItem<BatchExistsPresence>>,
+) -> BatchResult<BatchExistsPresence> {
+    BatchResult::from_items(BatchMode::Itemwise, items)
+}
+
+pub(super) fn finish_presence_exists_results(
+    results: Vec<Option<BatchItem<BatchExistsPresence>>>,
+) -> BatchResult<BatchExistsPresence> {
+    presence_exists_result(unwrap_slots(results, "batch exists result"))
+}
+
+pub(super) fn presence_exists_item(index: u64, exists: bool) -> BatchItem<BatchExistsPresence> {
+    BatchItem::ok(index, false, None, None, BatchExistsPresence::new(exists))
+}
+
+pub(super) fn presence_exists_failed(
+    index: u64,
+    error: ExecutorError,
+) -> BatchItem<BatchExistsPresence> {
+    BatchItem::failed(index, None, error.into_status())
 }
 
 pub(super) fn empty_json_batch_results(len: usize) -> Vec<Option<BatchItem<JsonBatchItemResult>>> {

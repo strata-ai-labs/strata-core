@@ -68,6 +68,54 @@ fn vector_batch_get_reports_missing_keys_as_misses() {
 }
 
 #[test]
+fn vector_batch_exists_reports_present_and_absent_keys() {
+    // exists=false for an absent key is a definitive answer, so it is an ok
+    // item and the outer batch is ok (never a miss) — matching kv batch-exists.
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    executor
+        .execute(Command::VectorCreateCollection {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            dimension: 2,
+            metric: VectorDistanceMetric::Cosine,
+        })
+        .expect("create collection");
+    executor
+        .execute(Command::VectorUpsert {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            key: "present".to_owned(),
+            vector: vec![1.0, 0.0],
+            metadata: None,
+        })
+        .expect("upsert present vector");
+
+    let Output::VectorBatchExistsResults(results) = executor
+        .execute(Command::VectorBatchExists {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            keys: vec!["present".to_owned(), "absent".to_owned()],
+        })
+        .expect("batch exists succeeds")
+    else {
+        panic!("unexpected batch exists output");
+    };
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].status(), BatchItemStatus::Ok);
+    assert!(results[0].exists(), "present key exists");
+    assert_eq!(results[1].status(), BatchItemStatus::Ok);
+    assert!(!results[1].exists(), "absent key does not exist");
+    assert_eq!(
+        results.status(),
+        BatchStatus::Ok,
+        "a definitive exists=false answer is ok, not a miss"
+    );
+}
+
+#[test]
 fn durable_executor_reopens_vector_collections_rows_and_history() {
     let temp = TempDir::new().expect("temp dir");
     let path = temp.path().join("db");
@@ -379,6 +427,12 @@ fn vector_mapping_row_commands() -> Vec<Command> {
             collection: "map".to_owned(),
             key: "map-a".to_owned(),
         },
+        Command::VectorBatchExists {
+            branch: None,
+            space: None,
+            collection: "map".to_owned(),
+            keys: vec!["map-a".to_owned(), "missing".to_owned()],
+        },
         Command::VectorListKeys {
             branch: None,
             space: None,
@@ -461,7 +515,7 @@ fn vector_mapping_bulk_commands() -> Vec<Command> {
 }
 
 fn assert_vector_mapping_outputs(outputs: &[Output]) {
-    assert_eq!(outputs.len(), 19);
+    assert_eq!(outputs.len(), 20);
     assert!(matches!(outputs[0], Output::VectorCollectionList { .. }));
     assert!(matches!(outputs[1], Output::Bool(_)));
     assert!(matches!(outputs[2], Output::VectorCollectionList { .. }));
@@ -471,19 +525,20 @@ fn assert_vector_mapping_outputs(outputs: &[Output]) {
     assert!(matches!(outputs[6], Output::VectorData(_)));
     assert!(matches!(outputs[7], Output::VectorVersionHistory(_)));
     assert!(matches!(outputs[8], Output::Bool(_)));
-    assert!(matches!(outputs[9], Output::VectorKeyPage { .. }));
+    assert!(matches!(outputs[9], Output::VectorBatchExistsResults(_)));
+    assert!(matches!(outputs[10], Output::VectorKeyPage { .. }));
     assert!(matches!(
-        outputs[10],
+        outputs[11],
         Output::VectorMetadataUpdateResult { .. }
     ));
-    assert!(matches!(outputs[11], Output::VectorDeleteResult { .. }));
-    assert!(matches!(outputs[12], Output::VectorBulkDeleteResult { .. }));
+    assert!(matches!(outputs[12], Output::VectorDeleteResult { .. }));
     assert!(matches!(outputs[13], Output::VectorBulkDeleteResult { .. }));
-    assert!(matches!(outputs[14], Output::VectorMatches(_)));
-    assert!(matches!(outputs[15], Output::VectorIndexQuery(_)));
-    assert!(matches!(outputs[16], Output::VectorBatchUpsertResults(_)));
-    assert!(matches!(outputs[17], Output::VectorBatchGetResults(_)));
-    assert!(matches!(outputs[18], Output::VectorBatchDeleteResults(_)));
+    assert!(matches!(outputs[14], Output::VectorBulkDeleteResult { .. }));
+    assert!(matches!(outputs[15], Output::VectorMatches(_)));
+    assert!(matches!(outputs[16], Output::VectorIndexQuery(_)));
+    assert!(matches!(outputs[17], Output::VectorBatchUpsertResults(_)));
+    assert!(matches!(outputs[18], Output::VectorBatchGetResults(_)));
+    assert!(matches!(outputs[19], Output::VectorBatchDeleteResults(_)));
 }
 
 fn assert_invalid_input_vector_commands(executor: &mut Executor) {

@@ -68,6 +68,12 @@ pub(super) fn vector_row_commands() -> Vec<Command> {
             collection: "docs".to_owned(),
             key: "doc-a".to_owned(),
         },
+        Command::VectorBatchExists {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            keys: vec!["doc-a".to_owned(), "missing".to_owned()],
+        },
         Command::VectorListKeys {
             branch: None,
             space: None,

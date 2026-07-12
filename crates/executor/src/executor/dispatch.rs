@@ -149,6 +149,11 @@ impl Executor {
             Command::JsonExists { branch, space, key } => {
                 self.execute_json_exists(branch.as_deref(), space.as_deref(), key)
             }
+            Command::JsonBatchExists {
+                branch,
+                space,
+                keys,
+            } => self.execute_json_batch_exists(branch.as_deref(), space.as_deref(), keys),
             Command::JsonBatchSet {
                 branch,
                 space,
@@ -288,6 +293,17 @@ impl Executor {
                 collection,
                 key,
             } => self.execute_vector_exists(branch.as_deref(), space.as_deref(), collection, key),
+            Command::VectorBatchExists {
+                branch,
+                space,
+                collection,
+                keys,
+            } => self.execute_vector_batch_exists(
+                branch.as_deref(),
+                space.as_deref(),
+                collection,
+                keys,
+            ),
             Command::VectorListKeys {
                 branch,
                 space,

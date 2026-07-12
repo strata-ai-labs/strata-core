@@ -368,6 +368,25 @@ impl<'a> VectorService<'a> {
         Ok(self.get_versioned(collection, key)?.is_some())
     }
 
+    /// Checks multiple vector keys for latest visible values.
+    ///
+    /// The collection config is validated once up front (surfacing
+    /// `not_found.engine.vector_collection`); each key then reuses the same
+    /// single-key existence check that [`exists`](Self::exists) resolves to.
+    pub fn batch_exists(
+        &mut self,
+        collection: &VectorCollectionName,
+        keys: &[VectorKey],
+    ) -> EngineResult<Vec<bool>> {
+        let record = self.branch_record()?;
+        self.require_collection_config(&record, collection)?;
+        let mut results = Vec::with_capacity(keys.len());
+        for key in keys {
+            results.push(self.visible_vector_exists(&record, collection, key)?);
+        }
+        Ok(results)
+    }
+
     /// Lists visible vector keys with cursor pagination.
     pub fn list_keys(
         &mut self,

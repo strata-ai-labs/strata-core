@@ -1,12 +1,14 @@
 use super::{
-    delete_effect, empty_json_batch_get_results, empty_json_batch_results, engine_json_index_type,
-    finish_json_batch_get_results, finish_json_batch_results, json_batch_get_batch_result,
+    delete_effect, empty_json_batch_get_results, empty_json_batch_results,
+    empty_presence_exists_results, engine_json_index_type, finish_json_batch_get_results,
+    finish_json_batch_results, finish_presence_exists_results, json_batch_get_batch_result,
     json_batch_get_failed, json_batch_get_result, json_batch_item_failed, json_batch_item_result,
     json_batch_result, json_delete_output, json_document_id, json_get_entry, json_history_items,
     json_index_definition, json_index_name, json_list_output, json_path, json_sample_output,
     json_value, json_value_output, json_versioned_value, json_write_output,
-    optional_json_document_id, optional_json_prefix, optional_limit, reject_duplicate_json_targets,
-    upsert_effect, usize_to_u64, BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, Executor,
+    optional_json_document_id, optional_json_prefix, optional_limit, presence_exists_failed,
+    presence_exists_item, presence_exists_result, reject_duplicate_json_targets, upsert_effect,
+    usize_to_u64, BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, Executor,
     ExecutorResult, JsonIndexType, JsonSetEntry, MaybeJsonValue, MaybeJsonVersionedValue, Output,
     PageInfo, Timestamp, DEFAULT_JSON_LIST_LIMIT,
 };
@@ -95,6 +97,46 @@ impl Executor {
         let id = json_document_id(key)?;
         let mut service = self.json_service(branch, space)?;
         Ok(Output::Bool(service.exists(&id)?))
+    }
+
+    pub(super) fn execute_json_batch_exists(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        keys: Vec<String>,
+    ) -> ExecutorResult<Output> {
+        let mut service = self.json_service(branch, space)?;
+        if keys.is_empty() {
+            return Ok(Output::JsonBatchExistsResults(presence_exists_result(
+                Vec::new(),
+            )));
+        }
+        let mut results = empty_presence_exists_results(keys.len());
+        let mut valid_ids = Vec::with_capacity(keys.len());
+        for (index, key) in keys.into_iter().enumerate() {
+            match json_document_id(key) {
+                Ok(id) => valid_ids.push((index, id)),
+                Err(error) => {
+                    results[index] = Some(presence_exists_failed(usize_to_u64(index), error));
+                }
+            }
+        }
+        if valid_ids.is_empty() {
+            return Ok(Output::JsonBatchExistsResults(
+                finish_presence_exists_results(results),
+            ));
+        }
+        let ids = valid_ids
+            .iter()
+            .map(|(_, id)| id.clone())
+            .collect::<Vec<_>>();
+        let exists = service.batch_exists(&ids)?;
+        for ((index, _), exists) in valid_ids.into_iter().zip(exists) {
+            results[index] = Some(presence_exists_item(usize_to_u64(index), exists));
+        }
+        Ok(Output::JsonBatchExistsResults(
+            finish_presence_exists_results(results),
+        ))
     }
 
     pub(super) fn execute_json_batch_set(

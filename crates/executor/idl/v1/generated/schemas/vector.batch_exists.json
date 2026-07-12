@@ -1,6 +1,18 @@
 {
   "$defs": {
-    "BatchItem7": {
+    "BatchExistsPresence": {
+      "description": "Positional batch-existence item: whether the key at this position exists.\njson/vector batch reads are positional (no echoed key), so `batch_exists`\ncarries only the presence bool; callers correlate by the `BatchItem` index.",
+      "properties": {
+        "exists": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "exists"
+      ],
+      "type": "object"
+    },
+    "BatchItem6": {
       "description": "Shared positional item wrapper for all public batch responses.",
       "properties": {
         "applied": {
@@ -44,7 +56,7 @@
         "result": {
           "anyOf": [
             {
-              "$ref": "#/$defs/VectorBatchItemResult"
+              "$ref": "#/$defs/BatchExistsPresence"
             },
             {
               "type": "null"
@@ -97,7 +109,7 @@
         }
       ]
     },
-    "BatchResult7": {
+    "BatchResult6": {
       "description": "Shared batch response wrapper for all public batch commands.",
       "properties": {
         "applied": {
@@ -115,7 +127,7 @@
         },
         "items": {
           "items": {
-            "$ref": "#/$defs/BatchItem7"
+            "$ref": "#/$defs/BatchItem6"
           },
           "type": "array"
         },
@@ -153,27 +165,6 @@
           "type": "string"
         }
       ]
-    },
-    "BatchVectorEntry": {
-      "description": "One vector batch upsert entry.",
-      "properties": {
-        "key": {
-          "type": "string"
-        },
-        "metadata": true,
-        "vector": {
-          "items": {
-            "format": "float",
-            "type": "number"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "key",
-        "vector"
-      ],
-      "type": "object"
     },
     "CommitOutcomeStatus": {
       "description": "V1 commit outcome status.",
@@ -484,28 +475,14 @@
           "type": "string"
         }
       ]
-    },
-    "VectorBatchItemResult": {
-      "description": "Positional vector batch write/delete result payload.\n\nThe shared [`BatchItem`](crate::BatchItem) wrapper owns the status, mutation\neffect, commit receipt, and error; this payload carries only the\nvector-specific revision.",
-      "properties": {
-        "vector_revision": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
     }
   },
-  "$id": "https://stratadb.org/idl/v1/schemas/vector.batch_upsert.json",
+  "$id": "https://stratadb.org/idl/v1/schemas/vector.batch_exists.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "command": "vector.batch_upsert",
+  "command": "vector.batch_exists",
   "request": {
     "additionalProperties": false,
-    "description": "Upserts multiple vectors.",
+    "description": "Batch-checks vector key existence.",
     "properties": {
       "branch": {
         "description": "Target branch. Defaults to the executor handle branch.",
@@ -518,10 +495,10 @@
         "description": "Collection name.",
         "type": "string"
       },
-      "entries": {
-        "description": "Entries to write.",
+      "keys": {
+        "description": "Vector keys to check.",
         "items": {
-          "$ref": "#/$defs/BatchVectorEntry"
+          "type": "string"
         },
         "type": "array"
       },
@@ -533,25 +510,25 @@
         ]
       },
       "type": {
-        "const": "vector_batch_upsert",
+        "const": "vector_batch_exists",
         "type": "string"
       }
     },
     "required": [
       "type",
       "collection",
-      "entries"
+      "keys"
     ],
     "type": "object"
   },
   "response": {
-    "description": "Positional vector batch write results.",
+    "description": "Vector batch key-existence results.",
     "properties": {
       "data": {
-        "$ref": "#/$defs/BatchResult7"
+        "$ref": "#/$defs/BatchResult6"
       },
       "type": {
-        "const": "vector_batch_upsert_results",
+        "const": "vector_batch_exists_results",
         "type": "string"
       }
     },

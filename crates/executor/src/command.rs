@@ -408,6 +408,17 @@ pub enum Command {
         /// Document key.
         key: String,
     },
+    /// Batch-checks JSON document existence.
+    JsonBatchExists {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Document keys to check.
+        keys: Vec<String>,
+    },
     /// Sets multiple JSON values in one engine commit.
     JsonBatchSet {
         /// Target branch. Defaults to the executor handle branch.
@@ -663,6 +674,19 @@ pub enum Command {
         collection: String,
         /// Vector key.
         key: String,
+    },
+    /// Batch-checks vector key existence.
+    VectorBatchExists {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+        /// Vector keys to check.
+        keys: Vec<String>,
     },
     /// Lists vector keys.
     VectorListKeys {
@@ -1693,6 +1717,7 @@ impl Command {
             Self::JsonDelete { .. } => "json_delete",
             Self::JsonGetv { .. } => "json_getv",
             Self::JsonExists { .. } => "json_exists",
+            Self::JsonBatchExists { .. } => "json_batch_exists",
             Self::JsonBatchSet { .. } => "json_batch_set",
             Self::JsonBatchGet { .. } => "json_batch_get",
             Self::JsonBatchDelete { .. } => "json_batch_delete",
@@ -1711,6 +1736,7 @@ impl Command {
             Self::VectorGet { .. } => "vector_get",
             Self::VectorGetv { .. } => "vector_getv",
             Self::VectorExists { .. } => "vector_exists",
+            Self::VectorBatchExists { .. } => "vector_batch_exists",
             Self::VectorListKeys { .. } => "vector_list_keys",
             Self::VectorUpdateMetadata { .. } => "vector_update_metadata",
             Self::VectorDelete { .. } => "vector_delete",

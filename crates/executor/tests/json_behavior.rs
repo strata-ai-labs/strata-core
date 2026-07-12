@@ -488,6 +488,11 @@ fn json_mapping_commands() -> Vec<Command> {
             space: None,
             key: "map-a".to_owned(),
         },
+        Command::JsonBatchExists {
+            branch: None,
+            space: None,
+            keys: vec!["map-a".to_owned(), "missing".to_owned()],
+        },
         Command::JsonBatchSet {
             branch: None,
             space: None,
@@ -555,15 +560,16 @@ fn assert_json_mapping_outputs(outputs: &[Output]) {
     assert!(matches!(outputs[2], Output::JsonDeleteResult { .. }));
     assert!(matches!(outputs[3], Output::JsonVersionHistory(_)));
     assert!(matches!(outputs[4], Output::Bool(_)));
-    assert!(matches!(outputs[5], Output::JsonBatchResults(_)));
-    assert!(matches!(outputs[6], Output::JsonBatchGetResults(_)));
-    assert!(matches!(outputs[7], Output::JsonBatchResults(_)));
-    assert!(matches!(outputs[8], Output::JsonListResult { .. }));
-    assert!(matches!(outputs[9], Output::Uint(_)));
-    assert!(matches!(outputs[10], Output::JsonSampleResult { .. }));
-    assert!(matches!(outputs[11], Output::JsonIndexDefinition(_)));
-    assert!(matches!(outputs[12], Output::Bool(_)));
-    assert!(matches!(outputs[13], Output::JsonIndexList { .. }));
+    assert!(matches!(outputs[5], Output::JsonBatchExistsResults(_)));
+    assert!(matches!(outputs[6], Output::JsonBatchResults(_)));
+    assert!(matches!(outputs[7], Output::JsonBatchGetResults(_)));
+    assert!(matches!(outputs[8], Output::JsonBatchResults(_)));
+    assert!(matches!(outputs[9], Output::JsonListResult { .. }));
+    assert!(matches!(outputs[10], Output::Uint(_)));
+    assert!(matches!(outputs[11], Output::JsonSampleResult { .. }));
+    assert!(matches!(outputs[12], Output::JsonIndexDefinition(_)));
+    assert!(matches!(outputs[13], Output::Bool(_)));
+    assert!(matches!(outputs[14], Output::JsonIndexList { .. }));
 }
 
 #[test]
@@ -607,6 +613,44 @@ fn json_batch_get_reports_missing_documents_as_misses() {
         results.status(),
         BatchStatus::Partial,
         "a batch with a miss is partial, not ok"
+    );
+}
+
+#[test]
+fn json_batch_exists_reports_present_and_absent_documents() {
+    // exists=false for an absent document is a definitive answer, so it is an
+    // ok item and the outer batch is ok (never a miss) — matching kv
+    // batch-exists.
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    executor
+        .execute(Command::JsonSet {
+            branch: None,
+            space: None,
+            key: "present".to_owned(),
+            path: "$".to_owned(),
+            value: json!({"name": "Ada"}),
+        })
+        .expect("set present document");
+
+    let output = executor
+        .execute(Command::JsonBatchExists {
+            branch: None,
+            space: None,
+            keys: vec!["present".to_owned(), "absent".to_owned()],
+        })
+        .expect("batch exists succeeds");
+    let Output::JsonBatchExistsResults(results) = output else {
+        panic!("unexpected batch exists output: {output:?}");
+    };
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].status(), BatchItemStatus::Ok);
+    assert!(results[0].exists(), "present document exists");
+    assert_eq!(results[1].status(), BatchItemStatus::Ok);
+    assert!(!results[1].exists(), "absent document does not exist");
+    assert_eq!(
+        results.status(),
+        BatchStatus::Ok,
+        "a definitive exists=false answer is ok, not a miss"
     );
 }
 

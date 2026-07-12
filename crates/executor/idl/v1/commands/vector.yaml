@@ -124,6 +124,20 @@ commands:
         - requests/v1/setup/vector_upsert_doc_b.json
       request: requests/v1/vector/exists.json
       response: responses/v1/vector/exists_true.json
+  - id: vector.batch_exists
+    kind: batch.itemwise_status
+    title: Batch check vector existence
+    input: Command::VectorBatchExists
+    output: Output::VectorBatchExistsResults
+    result: BatchExistsPresence
+    prose: commands/vector.batch_exists.md
+    fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
+        - requests/v1/vector/upsert.json
+        - requests/v1/setup/vector_upsert_doc_b.json
+      request: requests/v1/vector/batch_exists.json
+      response: responses/v1/vector/batch_exists.json
   - id: vector.keys
     kind: read.page
     title: List vector keys

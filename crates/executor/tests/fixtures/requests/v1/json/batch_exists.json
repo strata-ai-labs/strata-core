@@ -1,0 +1,7 @@
+{
+  "type": "json_batch_exists",
+  "keys": [
+    "user:ada",
+    "user:missing"
+  ]
+}

@@ -267,6 +267,27 @@ impl<T> Maybe<T> {
     }
 }
 
+/// Positional batch-existence item: whether the key at this position exists.
+/// json/vector batch reads are positional (no echoed key), so `batch_exists`
+/// carries only the presence bool; callers correlate by the `BatchItem` index.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+pub struct BatchExistsPresence {
+    exists: bool,
+}
+
+impl BatchExistsPresence {
+    /// Creates a presence item.
+    pub const fn new(exists: bool) -> Self {
+        Self { exists }
+    }
+
+    /// Returns whether the key exists.
+    pub const fn exists(&self) -> bool {
+        self.exists
+    }
+}
+
 /// Batch execution semantics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
