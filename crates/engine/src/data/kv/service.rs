@@ -329,6 +329,19 @@ impl<'a> KvService<'a> {
 
     /// Counts latest visible keys with an optional user-key prefix.
     pub fn count(&mut self, prefix: Option<&KvKey>) -> EngineResult<u64> {
+        self.count_with_selector(prefix, ReadSelector::Latest)
+    }
+
+    /// Counts keys visible at a commit timestamp with an optional user-key prefix.
+    pub fn count_at(&mut self, prefix: Option<&KvKey>, timestamp: Timestamp) -> EngineResult<u64> {
+        self.count_with_selector(prefix, ReadSelector::AtTimestamp(timestamp))
+    }
+
+    fn count_with_selector(
+        &mut self,
+        prefix: Option<&KvKey>,
+        selector: ReadSelector,
+    ) -> EngineResult<u64> {
         let record = self.branch_record()?;
         let count = self
             .persistence
@@ -336,7 +349,7 @@ impl<'a> KvService<'a> {
                 record.storage_branch_id(),
                 RowClass::Kv,
                 self.scan_prefix(prefix),
-                ReadSelector::Latest,
+                selector,
                 None,
             )?
             .into_iter()

@@ -92,10 +92,16 @@ impl Executor {
         branch: Option<&str>,
         space: Option<&str>,
         collection: String,
+        as_of: Option<u64>,
     ) -> ExecutorResult<Output> {
         let collection = vector_collection(collection)?;
         let mut service = self.vector_service(branch, space)?;
-        Ok(Output::Uint(service.count(&collection)?))
+        let count = if let Some(as_of) = as_of {
+            service.count_at(&collection, Timestamp::from_micros(as_of))?
+        } else {
+            service.count(&collection)?
+        };
+        Ok(Output::Uint(count))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -175,6 +181,7 @@ impl Executor {
         Ok(Output::Bool(service.exists(&collection, &key)?))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn execute_vector_list_keys(
         &mut self,
         branch: Option<&str>,
@@ -183,18 +190,25 @@ impl Executor {
         prefix: Option<String>,
         cursor: Option<String>,
         limit: Option<u64>,
+        as_of: Option<u64>,
     ) -> ExecutorResult<Output> {
         let collection = vector_collection(collection)?;
         let prefix = optional_vector_key(prefix)?;
         let cursor = optional_vector_key(cursor)?;
         let limit = optional_limit(limit)?.unwrap_or(DEFAULT_VECTOR_LIST_LIMIT);
         let mut service = self.vector_service(branch, space)?;
-        Ok(vector_key_page_output(&service.list_keys(
-            &collection,
-            prefix.as_ref(),
-            cursor.as_ref(),
-            limit,
-        )?))
+        let page = if let Some(as_of) = as_of {
+            service.list_keys_at(
+                &collection,
+                prefix.as_ref(),
+                cursor.as_ref(),
+                limit,
+                Timestamp::from_micros(as_of),
+            )?
+        } else {
+            service.list_keys(&collection, prefix.as_ref(), cursor.as_ref(), limit)?
+        };
+        Ok(vector_key_page_output(&page))
     }
 
     pub(super) fn execute_vector_update_metadata(

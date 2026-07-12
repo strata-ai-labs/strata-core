@@ -723,7 +723,11 @@ engine to change the V1 temporal model.
 The engine-next test suite must include:
 
 1. `as_of` is timestamp-only across KV, JSON, event, vector, graph, search, and
-   branch diff surfaces that support it.
+   branch diff surfaces that support it. The one documented exception is event's
+   by-sequence `range`, which stays latest-only by design: event's commit-timeline
+   temporal reads are served by `as_of` on `get`/`len`/`list`, and the separate
+   event-domain axis by `range_by_time`, so a commit-timeline `range_at` would be
+   redundant.
 2. `getv` and history surfaces return retained versions, timestamps, deletion
    markers, timeline bounds, and record-history bounds.
 3. Current multi-row reads resolve one frontier and do not observe a concurrent

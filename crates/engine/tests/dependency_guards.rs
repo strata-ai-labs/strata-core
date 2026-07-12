@@ -608,7 +608,8 @@ fn kv_read_shapes_do_not_devolve_to_point_or_write_loops() {
     assert!(batch_get.contains(".read_row("));
     assert!(!batch_get.contains("commit_batch"));
 
-    let count = function_body(&text, "pub fn count");
+    // `count` / `count_at` delegate to `count_with_selector`, which owns the scan.
+    let count = function_body(&text, "fn count_with_selector");
     assert!(count.contains(".scan_prefix("));
     assert!(!count.contains(".read_row("));
 

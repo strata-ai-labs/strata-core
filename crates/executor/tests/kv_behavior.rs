@@ -409,6 +409,7 @@ fn command_to_output_mapping_is_explicit_for_every_variant() {
             branch: None,
             space: None,
             prefix: Some(bytes("map-")),
+            as_of: None,
         },
         Command::KvSample {
             branch: None,
@@ -1078,12 +1079,42 @@ fn execute_count(executor: &mut Executor, prefix: Option<&str>) -> u64 {
             branch: None,
             space: None,
             prefix: prefix.map(bytes),
+            as_of: None,
         })
         .expect("count succeeds")
     {
         Output::Uint(count) => count,
         output => panic!("unexpected count output: {output:?}"),
     }
+}
+
+fn execute_count_as_of(executor: &mut Executor, prefix: Option<&str>, as_of: u64) -> u64 {
+    match executor
+        .execute(Command::KvCount {
+            branch: None,
+            space: None,
+            prefix: prefix.map(bytes),
+            as_of: Some(as_of),
+        })
+        .expect("count as_of succeeds")
+    {
+        Output::Uint(count) => count,
+        output => panic!("unexpected count output: {output:?}"),
+    }
+}
+
+#[test]
+fn kv_count_as_of_returns_historical_count() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let first = write(&mut executor, None, None, "a", "1");
+    write(&mut executor, None, None, "b", "2");
+    write(&mut executor, None, None, "c", "3");
+    assert_eq!(execute_count(&mut executor, None), 3);
+    assert_eq!(
+        execute_count_as_of(&mut executor, None, first.timestamp),
+        1,
+        "count as_of the first write sees only the first key"
+    );
 }
 
 fn execute_sample(executor: &mut Executor, prefix: Option<&str>, count: u64) -> (u64, Vec<Bytes>) {

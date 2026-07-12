@@ -556,6 +556,7 @@ fn kv_count_in(executor: &mut Executor, branch: Option<&str>, space: Option<&str
             branch: branch.map(str::to_owned),
             space: space.map(str::to_owned),
             prefix: None,
+            as_of: None,
         })
         .expect("kv count succeeds")
     else {
@@ -570,6 +571,7 @@ fn json_count(executor: &mut Executor, space: Option<&str>) -> u64 {
             branch: None,
             space: space.map(str::to_owned),
             prefix: None,
+            as_of: None,
         })
         .expect("json count succeeds")
     else {

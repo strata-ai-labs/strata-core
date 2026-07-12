@@ -67,6 +67,7 @@ pub(super) fn kv_commands() -> Vec<Command> {
             branch: None,
             space: None,
             prefix: Some(bytes("a")),
+            as_of: None,
         },
         Command::KvSample {
             branch: None,

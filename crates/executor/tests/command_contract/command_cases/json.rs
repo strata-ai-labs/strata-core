@@ -59,6 +59,7 @@ pub(super) fn json_commands() -> Vec<Command> {
             branch: None,
             space: None,
             prefix: Some("doc-".to_owned()),
+            as_of: None,
         },
         Command::JsonSample {
             branch: None,
