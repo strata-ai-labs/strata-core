@@ -226,6 +226,29 @@ impl<'a> VectorService<'a> {
             .transpose()
     }
 
+    /// Samples up to `count` vectors from a collection using a deterministic
+    /// stride over the ordered live rows. Returns the total live count and the
+    /// sample.
+    pub fn sample(
+        &mut self,
+        collection: &VectorCollectionName,
+        count: usize,
+    ) -> EngineResult<(u64, Vec<VectorVersionedEntry>)> {
+        let entries = self.scan(collection, None, None)?;
+        let total_count = u64::try_from(entries.len()).unwrap_or(u64::MAX);
+        if count == 0 || entries.is_empty() {
+            return Ok((total_count, Vec::new()));
+        }
+        if count >= entries.len() {
+            return Ok((total_count, entries));
+        }
+        let row_count = entries.len();
+        let sampled = (0..count)
+            .map(|index| entries[(index * row_count) / count].clone())
+            .collect();
+        Ok((total_count, sampled))
+    }
+
     /// Counts visible vectors in a collection.
     pub fn count(&mut self, name: &VectorCollectionName) -> EngineResult<u64> {
         let record = self.branch_record()?;

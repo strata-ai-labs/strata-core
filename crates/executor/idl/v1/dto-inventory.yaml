@@ -36,6 +36,8 @@ response_models:
   - BatchResult<JsonMutationItem>
   - BatchResult<Maybe<JsonValue>>
   - SamplePage<JsonSampleItem>
+  - SamplePage<VectorVersionedData>
+  - SamplePage<GraphNodeDataOutput>
   - Page<JsonSampleItem, String>
   - MutationAck<JsonIndexCreate>
   - MutationAck<JsonIndexDrop>

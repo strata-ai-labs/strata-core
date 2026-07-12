@@ -4092,6 +4092,75 @@
       }
     },
     {
+      "id": "graph.sample",
+      "family": "graph",
+      "op": "sample",
+      "kind": "read.sample",
+      "title": "Sample graph nodes",
+      "summary": "Sample graph nodes.",
+      "description": "Returns a deterministic representative sample of nodes from a graph: the total live node count and up to `count` nodes (default 10), evenly strided over the ordered node ids. Latest state only.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/graph/sample",
+      "cli": {
+        "path": [
+          "graph",
+          "sample"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_sample",
+        "description": "Use this when the user wants a quick representative look at a graph's nodes without paging through all of them."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphSample",
+      "output": "Output::GraphSampleResult",
+      "outputs": [
+        "Output::GraphSampleResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "SamplePage<GraphNodeDataOutput>",
+      "commit": "none",
+      "pagination": "sample",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/sample.json",
+        "response": "responses/v1/graph/sample_page.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/setup/graph_add_carol.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.sample.md"
+      }
+    },
+    {
       "id": "inference.cache_status",
       "family": "inference",
       "op": "cache_status",
@@ -8568,6 +8637,78 @@
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",
         "prose": "commands/vector.query.md"
+      }
+    },
+    {
+      "id": "vector.sample",
+      "family": "vector",
+      "op": "sample",
+      "kind": "read.sample",
+      "title": "Sample vectors",
+      "summary": "Sample vectors with values and version facts.",
+      "description": "Returns a deterministic representative sample of vectors from a collection: the total live count and up to `count` entries (default 10), evenly strided over the ordered keys. Latest state only.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/vector/sample",
+      "cli": {
+        "path": [
+          "vector",
+          "sample"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_vector_sample",
+        "description": "Use this when the user wants a quick representative look at stored vectors without paging through the whole collection."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::VectorSample",
+      "output": "Output::VectorSampleResult",
+      "outputs": [
+        "Output::VectorSampleResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "SamplePage<VectorVersionedData>",
+      "commit": "none",
+      "pagination": "sample",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/sample.json",
+        "response": "responses/v1/vector/sample_page.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json",
+          "requests/v1/vector/upsert.json",
+          "requests/v1/setup/vector_upsert_doc_b.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/vector.yaml",
+        "prose": "commands/vector.sample.md"
       }
     },
     {

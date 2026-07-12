@@ -636,6 +636,37 @@ impl<'a> GraphService<'a> {
         Ok(GraphDeleteOutcome::new(graph.clone(), true, Some(commit)))
     }
 
+    /// Samples up to `count` nodes from a graph using a deterministic stride
+    /// over the ordered live nodes. Returns the total live node count and the
+    /// sample.
+    pub fn sample_nodes(
+        &mut self,
+        graph: &GraphName,
+        count: usize,
+    ) -> EngineResult<(u64, Vec<GraphNode>)> {
+        let record = self.branch_record()?;
+        self.require_graph_with_selector(&record, graph, ReadSelector::Latest)?;
+        let mut nodes = self
+            .node_rows(&record, graph, ReadSelector::Latest)?
+            .into_iter()
+            .filter(|row| !row.is_tombstone())
+            .map(|row| self.node_from_row(&row))
+            .collect::<EngineResult<Vec<_>>>()?;
+        nodes.sort_by(|left, right| left.node_id().cmp(right.node_id()));
+        let total_count = u64::try_from(nodes.len()).unwrap_or(u64::MAX);
+        if count == 0 || nodes.is_empty() {
+            return Ok((total_count, Vec::new()));
+        }
+        if count >= nodes.len() {
+            return Ok((total_count, nodes));
+        }
+        let row_count = nodes.len();
+        let sampled = (0..count)
+            .map(|index| nodes[(index * row_count) / count].clone())
+            .collect();
+        Ok((total_count, sampled))
+    }
+
     /// Lists visible graph nodes.
     pub fn list_nodes(
         &mut self,

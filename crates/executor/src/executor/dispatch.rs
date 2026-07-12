@@ -263,6 +263,12 @@ impl Executor {
                 collection,
                 as_of,
             } => self.execute_vector_count(branch.as_deref(), space.as_deref(), collection, as_of),
+            Command::VectorSample {
+                branch,
+                space,
+                collection,
+                count,
+            } => self.execute_vector_sample(branch.as_deref(), space.as_deref(), collection, count),
             Command::VectorUpsert {
                 branch,
                 space,
@@ -603,6 +609,12 @@ impl Executor {
                 limit,
                 as_of,
             ),
+            Command::GraphSample {
+                branch,
+                space,
+                graph,
+                count,
+            } => self.execute_graph_sample(branch.as_deref(), space.as_deref(), graph, count),
             Command::GraphAddEdge {
                 branch,
                 space,

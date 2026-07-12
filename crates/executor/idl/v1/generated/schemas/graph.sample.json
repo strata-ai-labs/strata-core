@@ -1,0 +1,209 @@
+{
+  "$defs": {
+    "GraphBindingPrimitive": {
+      "description": "Product primitive kind used by graph entity bindings.",
+      "oneOf": [
+        {
+          "const": "kv",
+          "description": "KV primitive.",
+          "type": "string"
+        },
+        {
+          "const": "json",
+          "description": "JSON primitive.",
+          "type": "string"
+        },
+        {
+          "const": "vector",
+          "description": "Vector primitive.",
+          "type": "string"
+        },
+        {
+          "const": "event",
+          "description": "Event primitive.",
+          "type": "string"
+        },
+        {
+          "const": "graph",
+          "description": "Graph primitive.",
+          "type": "string"
+        }
+      ]
+    },
+    "GraphBindingTarget": {
+      "description": "Typed product identity attached to a graph node.",
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": "string"
+        },
+        "primitive": {
+          "$ref": "#/$defs/GraphBindingPrimitive"
+        },
+        "space": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "primitive",
+        "space",
+        "key"
+      ],
+      "type": "object"
+    },
+    "GraphEntityBinding": {
+      "description": "Node-to-entity binding.",
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/GraphBindingTarget"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    },
+    "GraphNodeDataOutput": {
+      "description": "Serializable graph node output.",
+      "properties": {
+        "binding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GraphEntityBinding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "graph": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "object_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "properties": true,
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "graph",
+        "node_id",
+        "version",
+        "timestamp"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/graph.sample.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "graph.sample",
+  "request": {
+    "additionalProperties": false,
+    "description": "Samples graph nodes.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "count": {
+        "description": "Optional sample count. Defaults to 10.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "graph": {
+        "description": "Graph name.",
+        "type": "string"
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "graph_sample",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "graph"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Sampled graph nodes.",
+    "properties": {
+      "data": {
+        "description": "Shared pagination continuation facts.",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "items": {
+            "description": "Sampled nodes.",
+            "items": {
+              "$ref": "#/$defs/GraphNodeDataOutput"
+            },
+            "type": "array"
+          },
+          "total_count": {
+            "description": "Total live nodes in the graph.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total_count",
+          "items",
+          "has_more"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "graph_sample_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

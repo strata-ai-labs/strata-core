@@ -1915,6 +1915,50 @@ fn delete_vector(executor: &mut Executor, collection: &str, key: &str) -> bool {
     effect.applied()
 }
 
+#[test]
+fn vector_sample_returns_total_and_deterministic_vectors() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    create_collection(&mut executor, "docs", VectorDistanceMetric::Cosine);
+    for index in 0..10 {
+        upsert_vector(
+            &mut executor,
+            "docs",
+            &format!("k{index:02}"),
+            vec![1.0, 0.0],
+            json!({}),
+        );
+    }
+
+    let sample = |executor: &mut Executor| {
+        let Output::VectorSampleResult {
+            total_count, items, ..
+        } = executor
+            .execute(Command::VectorSample {
+                branch: None,
+                space: None,
+                collection: "docs".to_owned(),
+                count: Some(3),
+            })
+            .expect("vector sample succeeds")
+        else {
+            panic!("unexpected vector sample output");
+        };
+        (
+            total_count,
+            items
+                .iter()
+                .map(|entry| entry.key().to_owned())
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    let (total_count, keys) = sample(&mut executor);
+    assert_eq!(total_count, 10, "total is the full live vector count");
+    assert_eq!(keys.len(), 3);
+    // The stride sample is deterministic across identical reads.
+    assert_eq!(sample(&mut executor).1, keys);
+}
+
 fn vector_count(executor: &mut Executor, collection: &str) -> u64 {
     vector_count_in(executor, None, None, collection)
 }

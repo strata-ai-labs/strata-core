@@ -304,6 +304,16 @@ pub enum Output {
     },
     /// Vector point-read result: present value with commit metadata, or absence.
     VectorData(Maybe<VectorVersionedData>),
+    /// Sampled vectors.
+    VectorSampleResult {
+        /// Total live vectors in the collection.
+        total_count: u64,
+        /// Sampled vectors.
+        items: Vec<VectorVersionedData>,
+        /// Shared page continuation facts.
+        #[serde(flatten)]
+        page: PageInfo<String>,
+    },
     /// Full vector history.
     VectorVersionHistory(Option<VectorHistoryResult>),
     /// Vector search matches.
@@ -411,6 +421,16 @@ pub enum Output {
     /// Paginated graph node list.
     GraphNodePage {
         /// Nodes in this page.
+        items: Vec<GraphNodeDataOutput>,
+        /// Shared page continuation facts.
+        #[serde(flatten)]
+        page: PageInfo<String>,
+    },
+    /// Sampled graph nodes.
+    GraphSampleResult {
+        /// Total live nodes in the graph.
+        total_count: u64,
+        /// Sampled nodes.
         items: Vec<GraphNodeDataOutput>,
         /// Shared page continuation facts.
         #[serde(flatten)]

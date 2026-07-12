@@ -130,6 +130,21 @@ commands:
         - requests/v1/setup/graph_add_carol.json
       request: requests/v1/graph/node_list.json
       response: responses/v1/graph/node_list_page.json
+  - id: graph.sample
+    kind: read.sample
+    title: Sample graph nodes
+    input: Command::GraphSample
+    output: Output::GraphSampleResult
+    result: GraphNodeDataOutput
+    prose: commands/graph.sample.md
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/node_add.json
+        - requests/v1/setup/graph_add_bob.json
+        - requests/v1/setup/graph_add_carol.json
+      request: requests/v1/graph/sample.json
+      response: responses/v1/graph/sample_page.json
   - id: graph.edge.add
     kind: mutation.put
     title: Add graph edge

@@ -1,0 +1,41 @@
+{
+  "data": {
+    "cursor": null,
+    "has_more": false,
+    "items": [
+      {
+        "graph": "social",
+        "node_id": "alice",
+        "object_type": "Person",
+        "properties": {
+          "name": "Alice",
+          "role": "eng"
+        },
+        "timestamp": 4,
+        "version": 4
+      },
+      {
+        "graph": "social",
+        "node_id": "bob",
+        "object_type": "Person",
+        "properties": {
+          "name": "Bob"
+        },
+        "timestamp": 5,
+        "version": 5
+      },
+      {
+        "graph": "social",
+        "node_id": "carol",
+        "object_type": "Person",
+        "properties": {
+          "name": "Carol"
+        },
+        "timestamp": 6,
+        "version": 6
+      }
+    ],
+    "total_count": 3
+  },
+  "type": "graph_sample_result"
+}

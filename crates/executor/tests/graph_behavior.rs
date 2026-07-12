@@ -1312,6 +1312,50 @@ struct GraphBatchOutput {
     timestamp: Option<u64>,
 }
 
+#[test]
+fn graph_sample_returns_total_and_deterministic_nodes() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    create_graph(&mut executor, "social");
+    for index in 0..8 {
+        add_node(
+            &mut executor,
+            "social",
+            &format!("n{index}"),
+            json!({}),
+            None,
+        );
+    }
+
+    let sample = |executor: &mut Executor| {
+        let Output::GraphSampleResult {
+            total_count, items, ..
+        } = executor
+            .execute(Command::GraphSample {
+                branch: None,
+                space: None,
+                graph: "social".to_owned(),
+                count: Some(3),
+            })
+            .expect("graph sample succeeds")
+        else {
+            panic!("unexpected graph sample output");
+        };
+        (
+            total_count,
+            items
+                .iter()
+                .map(|node| node.node_id().to_owned())
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    let (total_count, ids) = sample(&mut executor);
+    assert_eq!(total_count, 8, "total is the full live node count");
+    assert_eq!(ids.len(), 3);
+    // The stride sample is deterministic across identical reads.
+    assert_eq!(sample(&mut executor).1, ids);
+}
+
 fn create_graph(executor: &mut Executor, graph: &str) -> strata_executor::GraphInfoData {
     match executor
         .execute(Command::GraphCreate {

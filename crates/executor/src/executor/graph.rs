@@ -11,7 +11,7 @@ use super::{
     optional_limit, EngineGraphBatchWrite, EngineGraphLinkTypeDef, EngineGraphObjectTypeDef,
     Executor, ExecutorError, ExecutorResult, GraphBatchOperation, GraphBindingTarget,
     GraphDirection, GraphEdgeData, GraphEntityBinding, GraphNodeData, GraphPropertyDef, Maybe,
-    Output, Timestamp, DEFAULT_GRAPH_LIST_LIMIT,
+    Output, PageInfo, Timestamp, DEFAULT_GRAPH_LIST_LIMIT,
 };
 
 impl Executor {
@@ -149,6 +149,24 @@ impl Executor {
             None,
             None,
         ))
+    }
+
+    pub(super) fn execute_graph_sample(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        count: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let count = optional_limit(count)?.unwrap_or(10);
+        let mut service = self.graph_service(branch, space)?;
+        let (total_count, nodes) = service.sample_nodes(&graph, count)?;
+        Ok(Output::GraphSampleResult {
+            total_count,
+            items: nodes.iter().map(graph_node_data_output).collect(),
+            page: PageInfo::terminal(),
+        })
     }
 
     #[allow(clippy::too_many_arguments)]

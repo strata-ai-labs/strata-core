@@ -722,6 +722,14 @@ pub(crate) enum VectorCommand {
         /// Collection name.
         collection: String,
     },
+    /// Sample vectors (keys and values).
+    Sample {
+        /// Collection name.
+        collection: String,
+        /// Optional sample count.
+        #[arg(long)]
+        count: Option<u64>,
+    },
 }
 
 /// Vector collection commands.
@@ -995,6 +1003,14 @@ pub(crate) enum GraphCommand {
         /// Optional read timestamp in microseconds.
         #[arg(long)]
         as_of: Option<u64>,
+    },
+    /// Sample graph nodes.
+    Sample {
+        /// Graph name.
+        graph: String,
+        /// Optional sample count.
+        #[arg(long)]
+        count: Option<u64>,
     },
     /// Add or replace an edge.
     AddEdge {

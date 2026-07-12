@@ -1,0 +1,40 @@
+{
+  "data": {
+    "cursor": null,
+    "has_more": false,
+    "items": [
+      {
+        "data": {
+          "embedding": [
+            1.0,
+            0.0
+          ],
+          "metadata": {
+            "kind": "doc"
+          }
+        },
+        "key": "doc-a",
+        "timestamp": 4,
+        "vector_revision": 1,
+        "version": 4
+      },
+      {
+        "data": {
+          "embedding": [
+            0.0,
+            1.0
+          ],
+          "metadata": {
+            "kind": "note"
+          }
+        },
+        "key": "doc-b",
+        "timestamp": 5,
+        "vector_revision": 1,
+        "version": 5
+      }
+    ],
+    "total_count": 2
+  },
+  "type": "vector_sample_result"
+}
