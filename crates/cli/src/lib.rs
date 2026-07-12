@@ -796,6 +796,12 @@ fn vector_command(command: VectorCommand, scope: &Scope) -> Result<Command, CliE
             collection,
             as_of: None,
         },
+        VectorCommand::Sample { collection, count } => Command::VectorSample {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            collection,
+            count,
+        },
     })
 }
 
@@ -1005,6 +1011,12 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             cursor,
             limit,
             as_of,
+        },
+        GraphCommand::Sample { graph, count } => Command::GraphSample {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            count,
         },
         GraphCommand::AddEdge {
             graph,

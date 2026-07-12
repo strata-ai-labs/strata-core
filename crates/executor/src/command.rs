@@ -630,6 +630,20 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
+    /// Samples vectors.
+    VectorSample {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+        /// Optional sample count. Defaults to 10.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        count: Option<u64>,
+    },
     /// Upserts one vector.
     VectorUpsert {
         /// Target branch. Defaults to the executor handle branch.
@@ -1150,6 +1164,20 @@ pub enum Command {
         /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+    },
+    /// Samples graph nodes.
+    GraphSample {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Optional sample count. Defaults to 10.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        count: Option<u64>,
     },
     /// Adds or replaces a graph edge.
     GraphAddEdge {
@@ -1765,6 +1793,7 @@ impl Command {
             Self::VectorListCollections { .. } => "vector_list_collections",
             Self::VectorCollectionStats { .. } => "vector_collection_stats",
             Self::VectorCount { .. } => "vector_count",
+            Self::VectorSample { .. } => "vector_sample",
             Self::VectorUpsert { .. } => "vector_upsert",
             Self::VectorGet { .. } => "vector_get",
             Self::VectorGetv { .. } => "vector_getv",
@@ -1799,6 +1828,7 @@ impl Command {
             Self::GraphGetNode { .. } => "graph_get_node",
             Self::GraphRemoveNode { .. } => "graph_remove_node",
             Self::GraphListNodes { .. } => "graph_list_nodes",
+            Self::GraphSample { .. } => "graph_sample",
             Self::GraphAddEdge { .. } => "graph_add_edge",
             Self::GraphGetEdge { .. } => "graph_get_edge",
             Self::GraphRemoveEdge { .. } => "graph_remove_edge",

@@ -105,6 +105,24 @@ impl Executor {
         Ok(Output::Uint(count))
     }
 
+    pub(super) fn execute_vector_sample(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+        count: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let count = optional_limit(count)?.unwrap_or(10);
+        let mut service = self.vector_service(branch, space)?;
+        let (total_count, entries) = service.sample(&collection, count)?;
+        Ok(Output::VectorSampleResult {
+            total_count,
+            items: entries.iter().map(vector_versioned_data).collect(),
+            page: PageInfo::terminal(),
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn execute_vector_upsert(
         &mut self,

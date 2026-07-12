@@ -1,0 +1,147 @@
+{
+  "$defs": {
+    "VectorData": {
+      "description": "Vector value payload.",
+      "properties": {
+        "embedding": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "metadata": true
+      },
+      "required": [
+        "embedding"
+      ],
+      "type": "object"
+    },
+    "VectorVersionedData": {
+      "description": "Vector value with commit metadata.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/VectorData"
+        },
+        "key": {
+          "type": "string"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "vector_revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "data",
+        "version",
+        "timestamp",
+        "vector_revision"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/vector.sample.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "vector.sample",
+  "request": {
+    "additionalProperties": false,
+    "description": "Samples vectors.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "collection": {
+        "description": "Collection name.",
+        "type": "string"
+      },
+      "count": {
+        "description": "Optional sample count. Defaults to 10.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "vector_sample",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "collection"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Sampled vectors.",
+    "properties": {
+      "data": {
+        "description": "Shared pagination continuation facts.",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "items": {
+            "description": "Sampled vectors.",
+            "items": {
+              "$ref": "#/$defs/VectorVersionedData"
+            },
+            "type": "array"
+          },
+          "total_count": {
+            "description": "Total live vectors in the collection.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total_count",
+          "items",
+          "has_more"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "vector_sample_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}
