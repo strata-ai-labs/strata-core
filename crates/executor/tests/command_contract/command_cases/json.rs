@@ -60,6 +60,12 @@ pub(super) fn json_commands() -> Vec<Command> {
             limit: Some(2),
             as_of: Some(99),
         },
+        Command::JsonScan {
+            branch: None,
+            space: None,
+            start: Some("doc-".to_owned()),
+            limit: Some(10),
+        },
         Command::JsonCount {
             branch: None,
             space: None,

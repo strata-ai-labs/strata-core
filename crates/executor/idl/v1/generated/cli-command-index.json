@@ -4,11 +4,11 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "950fb06e544876cdf59c68d5bc258ff1ca3266f94df86d84f8a263b6a66a515a",
+    "checksum_sha256": "e9bd867379a6c4ee412b84faa1e71543494927cc61856d2c64282211c7f4bab2",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
-  "command_count": 122,
+  "command_count": 124,
   "families": [
     {
       "id": "admin",
@@ -118,7 +118,7 @@
     },
     {
       "id": "json",
-      "command_count": 15,
+      "command_count": 16,
       "commands": [
         "json.batch_delete",
         "json.batch_exists",
@@ -134,6 +134,7 @@
         "json.index.list",
         "json.list",
         "json.sample",
+        "json.scan",
         "json.set"
       ]
     },
@@ -168,7 +169,7 @@
     },
     {
       "id": "vector",
-      "command_count": 20,
+      "command_count": 21,
       "commands": [
         "vector.batch_delete",
         "vector.batch_exists",
@@ -188,6 +189,7 @@
         "vector.index.query",
         "vector.keys",
         "vector.query",
+        "vector.scan",
         "vector.metadata.update",
         "vector.upsert"
       ]
@@ -5147,6 +5149,58 @@
       "wire_status": "stable"
     },
     {
+      "id": "json.scan",
+      "path": [
+        "json",
+        "scan"
+      ],
+      "path_display": "json scan",
+      "surface": "verb",
+      "family": "json",
+      "op": "scan",
+      "kind": "read.page",
+      "title": "Scan JSON documents",
+      "summary": "Scan JSON documents with values and version facts.",
+      "description": "Scans visible JSON documents starting at an optional document key. Each item includes the key, full document value, and commit metadata exposed by the executor output.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/json/scan",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "input": "Command::JsonScan",
+      "outputs": [
+        "Output::JsonScanResult"
+      ],
+      "response_model": "Page<JsonSampleItem, String>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/scan.json",
+        "response": "responses/v1/json/scan_page.json",
+        "setup": [
+          "requests/v1/json/batch_set.json"
+        ]
+      },
+      "wire_status": "stable"
+    },
+    {
       "id": "json.set",
       "path": [
         "json",
@@ -7424,6 +7478,68 @@
       "wire_status": "stable"
     },
     {
+      "id": "vector.scan",
+      "path": [
+        "vector",
+        "scan"
+      ],
+      "path_display": "vector scan",
+      "surface": "verb",
+      "family": "vector",
+      "op": "scan",
+      "kind": "read.page",
+      "title": "Scan vectors",
+      "summary": "Scan vectors with values and version facts.",
+      "description": "Scans visible vectors in a collection starting at an optional key. Each item includes the key, embedding, metadata, and commit metadata exposed by the executor output.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/vector/scan",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "input": "Command::VectorScan",
+      "outputs": [
+        "Output::VectorScanResult"
+      ],
+      "response_model": "Page<VectorVersionedData, String>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.engine.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.engine.vector_collection"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/scan.json",
+        "response": "responses/v1/vector/scan_page.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json",
+          "requests/v1/vector/upsert.json",
+          "requests/v1/setup/vector_upsert_doc_b.json"
+        ]
+      },
+      "wire_status": "stable"
+    },
+    {
       "id": "vector.metadata.update",
       "path": [
         "vector",
@@ -7574,9 +7690,9 @@
       "admin.health": 53,
       "admin.hub_clone": 9,
       "admin.info": 66,
-      "admin.metrics": 95,
-      "admin.ping": 96,
-      "admin.remote": 97,
+      "admin.metrics": 96,
+      "admin.ping": 97,
+      "admin.remote": 98,
       "arrow.export": 0,
       "arrow.import": 1,
       "branch.create": 2,
@@ -7652,44 +7768,46 @@
       "json.index.list": 78,
       "json.list": 79,
       "json.sample": 80,
-      "json.set": 81,
-      "kv.batch_delete": 82,
-      "kv.batch_exists": 83,
-      "kv.batch_get": 84,
-      "kv.batch_put": 85,
-      "kv.count": 86,
-      "kv.delete": 87,
-      "kv.exists": 88,
-      "kv.get": 89,
-      "kv.history": 90,
-      "kv.list": 91,
-      "kv.put": 92,
-      "kv.sample": 93,
-      "kv.scan": 94,
-      "space.create": 98,
-      "space.delete": 99,
-      "space.exists": 100,
-      "space.list": 101,
-      "vector.batch_delete": 102,
-      "vector.batch_exists": 103,
-      "vector.batch_get": 104,
-      "vector.batch_upsert": 105,
-      "vector.collection.create": 106,
-      "vector.collection.delete": 107,
-      "vector.collection.list": 108,
-      "vector.collection.stats": 109,
-      "vector.count": 110,
-      "vector.delete": 111,
-      "vector.delete_all": 112,
-      "vector.delete_by_filter": 113,
-      "vector.exists": 114,
-      "vector.get": 115,
-      "vector.history": 116,
-      "vector.index.query": 117,
-      "vector.keys": 118,
-      "vector.metadata.update": 120,
-      "vector.query": 119,
-      "vector.upsert": 121
+      "json.scan": 81,
+      "json.set": 82,
+      "kv.batch_delete": 83,
+      "kv.batch_exists": 84,
+      "kv.batch_get": 85,
+      "kv.batch_put": 86,
+      "kv.count": 87,
+      "kv.delete": 88,
+      "kv.exists": 89,
+      "kv.get": 90,
+      "kv.history": 91,
+      "kv.list": 92,
+      "kv.put": 93,
+      "kv.sample": 94,
+      "kv.scan": 95,
+      "space.create": 99,
+      "space.delete": 100,
+      "space.exists": 101,
+      "space.list": 102,
+      "vector.batch_delete": 103,
+      "vector.batch_exists": 104,
+      "vector.batch_get": 105,
+      "vector.batch_upsert": 106,
+      "vector.collection.create": 107,
+      "vector.collection.delete": 108,
+      "vector.collection.list": 109,
+      "vector.collection.stats": 110,
+      "vector.count": 111,
+      "vector.delete": 112,
+      "vector.delete_all": 113,
+      "vector.delete_by_filter": 114,
+      "vector.exists": 115,
+      "vector.get": 116,
+      "vector.history": 117,
+      "vector.index.query": 118,
+      "vector.keys": 119,
+      "vector.metadata.update": 122,
+      "vector.query": 120,
+      "vector.scan": 121,
+      "vector.upsert": 123
     },
     "by_path": {
       "arrow export": "arrow.export",
@@ -7773,6 +7891,7 @@
       "json index list": "json.index.list",
       "json list": "json.list",
       "json sample": "json.sample",
+      "json scan": "json.scan",
       "json set": "json.set",
       "kv batch-delete": "kv.batch_delete",
       "kv batch-exists": "kv.batch_exists",
@@ -7812,6 +7931,7 @@
       "vector index query": "vector.index.query",
       "vector keys": "vector.keys",
       "vector query": "vector.query",
+      "vector scan": "vector.scan",
       "vector update-metadata": "vector.metadata.update",
       "vector upsert": "vector.upsert"
     }

@@ -83,6 +83,13 @@ pub(super) fn vector_row_commands() -> Vec<Command> {
             limit: Some(2),
             as_of: None,
         },
+        Command::VectorScan {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            start: Some("doc-".to_owned()),
+            limit: Some(10),
+        },
         Command::VectorUpdateMetadata {
             branch: None,
             space: None,

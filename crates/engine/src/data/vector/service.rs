@@ -445,6 +445,51 @@ impl<'a> VectorService<'a> {
         Ok(VectorKeyPage::new(keys, has_more, cursor))
     }
 
+    /// Scans latest visible vector entries from an inclusive start key.
+    ///
+    /// Mirrors the KV scan: the range is bounded to the collection's entry
+    /// prefix, tombstones are skipped, and a `Some(limit)` request refills
+    /// across tombstones so a caller that reads `limit + 1` rows can page
+    /// honestly.
+    pub fn scan(
+        &mut self,
+        collection: &VectorCollectionName,
+        start: Option<&VectorKey>,
+        limit: Option<usize>,
+    ) -> EngineResult<Vec<VectorVersionedEntry>> {
+        let record = self.branch_record()?;
+        self.require_collection_config(&record, collection)?;
+        if limit == Some(0) {
+            return Ok(Vec::new());
+        }
+        let prefix = encode_vector_collection_entry_prefix(&self.space, collection);
+        let start = start.map_or_else(
+            || prefix.clone(),
+            |key| encode_vector_key(&self.space, collection, key),
+        );
+        let end = next_prefix(&prefix);
+        if start >= end {
+            return Ok(Vec::new());
+        }
+        match limit {
+            Some(limit) => self.scan_range_limited(&record, collection, start, &end, limit),
+            None => self
+                .persistence
+                .scan_range(
+                    record.storage_branch_id(),
+                    RowClass::Vector,
+                    Some(start),
+                    Some(end),
+                    ReadSelector::Latest,
+                    None,
+                )?
+                .into_iter()
+                .filter(|row| !row.is_tombstone())
+                .map(|row| self.scan_entry_from_row(collection, &row))
+                .collect(),
+        }
+    }
+
     /// Updates top-level vector metadata fields.
     pub fn update_metadata(
         &mut self,
@@ -2635,6 +2680,58 @@ impl<'a> VectorService<'a> {
         }
         keys.sort();
         Ok(keys)
+    }
+
+    fn scan_range_limited(
+        &mut self,
+        record: &BranchCatalogRecord,
+        collection: &VectorCollectionName,
+        mut start: Vec<u8>,
+        end: &[u8],
+        limit: usize,
+    ) -> EngineResult<Vec<VectorVersionedEntry>> {
+        let mut visible = Vec::with_capacity(limit.min(VECTOR_LIST_RAW_PAGE_MIN));
+        while visible.len() < limit && start.as_slice() < end {
+            let remaining = limit.saturating_sub(visible.len());
+            let raw_limit = remaining.clamp(VECTOR_LIST_RAW_PAGE_MIN, VECTOR_LIST_RAW_PAGE_MAX);
+            let rows = self.persistence.scan_range(
+                record.storage_branch_id(),
+                RowClass::Vector,
+                Some(start.clone()),
+                Some(end.to_owned()),
+                ReadSelector::Latest,
+                Some(raw_limit),
+            )?;
+            if rows.is_empty() {
+                break;
+            }
+            for row in &rows {
+                if row.is_tombstone() {
+                    continue;
+                }
+                visible.push(self.scan_entry_from_row(collection, row)?);
+                if visible.len() >= limit {
+                    break;
+                }
+            }
+            let last_raw_key = rows.last().expect("non-empty raw page").key();
+            start = exclusive_after_key(last_raw_key);
+        }
+        Ok(visible)
+    }
+
+    fn scan_entry_from_row(
+        &self,
+        collection: &VectorCollectionName,
+        row: &PersistenceReadRow,
+    ) -> EngineResult<VectorVersionedEntry> {
+        let (_, key) = decode_vector_key(&self.space, row.key())?;
+        let entry = Self::entry_from_row(collection, &key, row)?;
+        Ok(VectorVersionedEntry::new(
+            entry,
+            row.commit_version(),
+            row.commit_timestamp(),
+        ))
     }
 
     fn visible_vector_exists(

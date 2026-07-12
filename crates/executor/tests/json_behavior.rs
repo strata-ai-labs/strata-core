@@ -2111,3 +2111,83 @@ fn json_list_page(
     };
     (items, page.has_more(), page.cursor().cloned())
 }
+
+/// Pins the `JsonScan` contract: ordered key + full-value rows and honest cursor
+/// pagination — a limit below the row count reports `has_more` with the first
+/// unreturned key, and resuming from that inclusive cursor returns the rest with
+/// no gap or overlap before a terminal page. Mirrors the KV scan contract.
+#[test]
+fn json_scan_returns_ordered_rows_and_paginates_honestly() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    for i in 0..6 {
+        executor
+            .execute(Command::JsonSet {
+                branch: None,
+                space: None,
+                key: format!("doc-{i}"),
+                path: "$".to_owned(),
+                value: json!({ "n": i }),
+            })
+            .expect("set succeeds");
+    }
+
+    // A page below the row count returns ordered key+value rows and a cursor at
+    // the first unreturned key.
+    let (rows, cursor) = json_scan_page(&mut executor, None, 2);
+    assert_eq!(
+        rows,
+        vec![
+            ("doc-0".to_owned(), json!({ "n": 0 })),
+            ("doc-1".to_owned(), json!({ "n": 1 })),
+        ]
+    );
+    assert_eq!(cursor.as_deref(), Some("doc-2"));
+
+    // Resume from the cursor until a terminal page. The union of pages is every
+    // document, in ascending order, with no overlap or gap.
+    let mut seen = rows;
+    let mut start = cursor;
+    let mut pages = 1;
+    while let Some(next) = start {
+        let (rows, cursor) = json_scan_page(&mut executor, Some(next), 2);
+        assert!(rows.len() <= 2);
+        seen.extend(rows);
+        pages += 1;
+        assert!(pages <= 6, "pagination did not terminate");
+        start = cursor;
+    }
+    assert_eq!(pages, 3);
+    let keys: Vec<String> = seen.iter().map(|(key, _)| key.clone()).collect();
+    let mut deduped = keys.clone();
+    deduped.dedup();
+    assert_eq!(deduped.len(), keys.len(), "no duplicate keys across pages");
+    let expected: Vec<(String, Value)> = (0..6)
+        .map(|i| (format!("doc-{i}"), json!({ "n": i })))
+        .collect();
+    assert_eq!(seen, expected);
+}
+
+fn json_scan_page(
+    executor: &mut Executor,
+    start: Option<String>,
+    limit: u64,
+) -> (Vec<(String, Value)>, Option<String>) {
+    let output = executor
+        .execute(Command::JsonScan {
+            branch: None,
+            space: None,
+            start,
+            limit: Some(limit),
+        })
+        .expect("json scan succeeds");
+    let Output::JsonScanResult { items, page } = output else {
+        panic!("unexpected json scan output: {output:?}");
+    };
+    (
+        items
+            .iter()
+            .map(|item| (item.key().to_owned(), item.value().clone()))
+            .collect(),
+        page.cursor().cloned(),
+    )
+}

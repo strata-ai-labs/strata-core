@@ -1,0 +1,5 @@
+{
+  "type": "json_scan",
+  "start": "user:",
+  "limit": 10
+}

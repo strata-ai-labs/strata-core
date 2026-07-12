@@ -16,8 +16,8 @@ fn embedded_cli_metadata_loads_without_generator_feature() {
         catalog.index().generator_version,
         "strata-executor-cli-idl.1"
     );
-    assert_eq!(catalog.index().command_count, 122);
-    assert_eq!(catalog.commands().len(), 122);
+    assert_eq!(catalog.index().command_count, 124);
+    assert_eq!(catalog.commands().len(), 124);
     assert_eq!(catalog.families().len(), 10);
 }
 

@@ -21,6 +21,7 @@ response_models:
   - Maybe<VectorVersionedData>
   - Maybe<Vec<VectorHistoryItem>>
   - Page<String, String>
+  - Page<VectorVersionedData, String>
   - MutationAck<VectorMetadataUpdate>
   - MutationAck<VectorDelete>
   - MutationAck<VectorBulkDelete>
@@ -35,6 +36,7 @@ response_models:
   - BatchResult<JsonMutationItem>
   - BatchResult<Maybe<JsonValue>>
   - SamplePage<JsonSampleItem>
+  - Page<JsonSampleItem, String>
   - MutationAck<JsonIndexCreate>
   - MutationAck<JsonIndexDrop>
   - Page<JsonIndexDefinition, String>

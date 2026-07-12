@@ -1,0 +1,6 @@
+{
+  "type": "vector_scan",
+  "collection": "docs",
+  "start": "doc-",
+  "limit": 10
+}

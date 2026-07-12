@@ -224,6 +224,14 @@ pub enum Output {
         #[serde(flatten)]
         page: PageInfo<String>,
     },
+    /// JSON document scan page.
+    JsonScanResult {
+        /// Documents in this page.
+        items: Vec<JsonSampleItem>,
+        /// Shared page continuation facts.
+        #[serde(flatten)]
+        page: PageInfo<String>,
+    },
     /// Sampled JSON documents.
     JsonSampleResult {
         /// Total matching live documents.
@@ -306,6 +314,14 @@ pub enum Output {
     VectorKeyPage {
         /// Keys in this page.
         items: Vec<String>,
+        /// Shared page continuation facts.
+        #[serde(flatten)]
+        page: PageInfo<String>,
+    },
+    /// Vector scan page.
+    VectorScanResult {
+        /// Vectors in this page.
+        items: Vec<VectorVersionedData>,
         /// Shared page continuation facts.
         #[serde(flatten)]
         page: PageInfo<String>,

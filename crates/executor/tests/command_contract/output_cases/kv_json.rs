@@ -117,6 +117,16 @@ pub(super) fn json_outputs() -> Vec<Output> {
             items: vec!["doc-a".to_owned()],
             page: PageInfo::new(true, Some("doc-a".to_owned())),
         },
+        Output::JsonScanResult {
+            items: vec![JsonSampleItem::new(
+                "doc-a".to_owned(),
+                json!({"name": "Ada"}),
+                1,
+                10,
+                2,
+            )],
+            page: PageInfo::new(true, Some("doc-b".to_owned())),
+        },
         Output::JsonBatchResults(json_batch(vec![BatchItem::ok(
             0,
             true,

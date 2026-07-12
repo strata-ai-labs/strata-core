@@ -159,6 +159,19 @@ commands:
         - requests/v1/json/batch_set.json
       request: requests/v1/json/list.json
       response: responses/v1/json/list_page.json
+  - id: json.scan
+    kind: read.page
+    title: Scan JSON documents
+    input: Command::JsonScan
+    output: Output::JsonScanResult
+    result: JsonSampleItem
+    response_model: Page<JsonSampleItem, String>
+    prose: commands/json.scan.md
+    fixtures:
+      setup:
+        - requests/v1/json/batch_set.json
+      request: requests/v1/json/scan.json
+      response: responses/v1/json/scan_page.json
   - id: json.count
     kind: read.status
     title: Count JSON documents

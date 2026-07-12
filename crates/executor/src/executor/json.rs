@@ -4,8 +4,8 @@ use super::{
     finish_json_batch_results, finish_presence_exists_results, json_batch_get_batch_result,
     json_batch_get_failed, json_batch_get_result, json_batch_item_failed, json_batch_item_result,
     json_batch_result, json_delete_output, json_document_id, json_get_entry, json_history_items,
-    json_index_definition, json_index_name, json_list_output, json_path, json_sample_output,
-    json_value, json_value_output, json_versioned_value, json_write_output,
+    json_index_definition, json_index_name, json_list_output, json_path, json_sample_item,
+    json_sample_output, json_value, json_value_output, json_versioned_value, json_write_output,
     optional_json_document_id, optional_json_prefix, optional_limit, presence_exists_failed,
     presence_exists_item, presence_exists_result, reject_duplicate_json_targets, upsert_effect,
     usize_to_u64, BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, Executor,
@@ -308,6 +308,34 @@ impl Executor {
             service.list(prefix.as_ref(), cursor.as_ref(), limit)?
         };
         Ok(json_list_output(&page))
+    }
+
+    pub(super) fn execute_json_scan(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        start: Option<String>,
+        limit: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let start = optional_json_document_id(start)?;
+        let limit = optional_limit(limit)?;
+        let mut service = self.json_service(branch, space)?;
+        // Fetch one extra row to detect truncation and report has_more/cursor
+        // honestly, like KvScan. The continuation cursor is the first unreturned
+        // key; the inclusive start resumes with neither a gap nor an overlap.
+        let mut rows = service.scan(start.as_ref(), limit.map(|limit| limit.saturating_add(1)))?;
+        let page = match limit {
+            Some(limit) if rows.len() > limit => {
+                let cursor = rows[limit].document_id().as_str().to_owned();
+                rows.truncate(limit);
+                PageInfo::new(true, Some(cursor))
+            }
+            _ => PageInfo::terminal(),
+        };
+        Ok(Output::JsonScanResult {
+            items: rows.iter().map(json_sample_item).collect(),
+            page,
+        })
     }
 
     pub(super) fn execute_json_count(
