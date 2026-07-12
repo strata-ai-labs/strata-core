@@ -60,7 +60,7 @@
         ]
       },
       "type": {
-        "const": "json_getv",
+        "const": "json_history",
         "type": "string"
       }
     },

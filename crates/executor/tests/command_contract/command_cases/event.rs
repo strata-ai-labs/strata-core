@@ -24,7 +24,7 @@ pub(super) fn event_commands() -> Vec<Command> {
             space: None,
             sequence: 0,
         },
-        Command::EventLen {
+        Command::EventCount {
             branch: None,
             space: None,
             as_of: Some(99),

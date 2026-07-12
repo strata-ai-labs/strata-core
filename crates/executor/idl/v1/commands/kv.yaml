@@ -135,7 +135,7 @@ commands:
   - id: kv.history
     kind: read.history
     title: Read KV history
-    input: Command::KvGetv
+    input: Command::KvHistory
     output: Output::VersionHistory
     result: HistoryItem
     prose: commands/kv.history.md

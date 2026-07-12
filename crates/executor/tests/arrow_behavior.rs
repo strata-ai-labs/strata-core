@@ -452,7 +452,7 @@ fn event_export_writes_filtered_jsonl_without_mutating_log() {
     let exported = fs::read_to_string(output_path).expect("read jsonl");
     assert!(exported.contains("\"event_type\":\"audit.created\""));
     assert!(!exported.contains("\"event_type\":\"audit.updated\""));
-    assert_eq!(event_len(&mut executor), 2);
+    assert_eq!(event_count(&mut executor), 2);
 }
 
 #[test]
@@ -696,15 +696,15 @@ fn vector_count(executor: &mut Executor, collection: &str) -> u64 {
     count
 }
 
-fn event_len(executor: &mut Executor) -> u64 {
+fn event_count(executor: &mut Executor) -> u64 {
     let output = executor
-        .execute(Command::EventLen {
+        .execute(Command::EventCount {
             branch: None,
             space: None,
             as_of: None,
         })
         .expect("event len succeeds");
-    let Output::EventLength { count } = output else {
+    let Output::EventCount { count } = output else {
         panic!("unexpected event len output");
     };
     count

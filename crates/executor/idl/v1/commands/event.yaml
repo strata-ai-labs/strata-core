@@ -53,13 +53,13 @@ commands:
         - requests/v1/event/append.json
       request: requests/v1/event/exists.json
       response: responses/v1/status/bool_true.json
-  - id: event.len
+  - id: event.count
     kind: read.status
     title: Count events
-    input: Command::EventLen
-    output: Output::EventLength
+    input: Command::EventCount
+    output: Output::EventCount
     result: u64
-    prose: commands/event.len.md
+    prose: commands/event.count.md
     fixtures:
       setup:
         - requests/v1/event/append.json

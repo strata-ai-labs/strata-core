@@ -1,5 +1,5 @@
 {
-  "type": "vector_getv",
+  "type": "vector_history",
   "collection": "docs",
   "key": "doc-a"
 }

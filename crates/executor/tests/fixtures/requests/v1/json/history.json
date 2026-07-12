@@ -1,4 +1,4 @@
 {
-  "type": "json_getv",
+  "type": "json_history",
   "key": "user:ada"
 }

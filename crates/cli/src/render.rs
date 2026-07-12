@@ -62,7 +62,7 @@ fn render_human(value: &Value) -> Result<(), CliError> {
                 data.get("version").and_then(Value::as_str).unwrap_or("")
             ),
             "bool" | "uint" => println!("{}", scalar_summary(data)),
-            "event_length" => print_count(data),
+            "event_count" => print_count(data),
             "kv_versioned_value" => print_optional_data(data),
             "vector_data" | "event_record" | "graph_node_result" | "graph_edge_result" => {
                 print_optional_record(data)?;
@@ -168,7 +168,7 @@ fn render_raw(value: &Value) {
             print_matches_data(data);
             return;
         }
-        "event_length" => {
+        "event_count" => {
             print_count(data);
             return;
         }
@@ -469,7 +469,7 @@ fn print_matches_data(data: &Value) {
     }
 }
 
-/// `event_length` wraps its count in `{count}`; humans and scripts get the
+/// `event_count` wraps its count in `{count}`; humans and scripts get the
 /// bare number, matching how `kv count` (a plain `uint`) renders.
 fn print_count(data: &Value) {
     println!(

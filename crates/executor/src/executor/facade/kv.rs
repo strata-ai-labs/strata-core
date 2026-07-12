@@ -102,8 +102,8 @@ impl Executor {
     }
 
     /// Executes a default-branch version-history command.
-    pub fn kv_getv(&mut self, key: impl Into<Bytes>) -> ExecutorResult<Output> {
-        self.execute(Command::KvGetv {
+    pub fn kv_history(&mut self, key: impl Into<Bytes>) -> ExecutorResult<Output> {
+        self.execute(Command::KvHistory {
             branch: None,
             space: None,
             key: key.into(),

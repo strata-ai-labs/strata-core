@@ -150,7 +150,7 @@ fn space_delete_is_conservative_and_force_removes_visible_data() {
     assert_eq!(space_list(&mut executor, None), vec!["default"]);
     assert_eq!(kv_count(&mut executor, Some("tenant_a")), 0);
     assert_eq!(json_count(&mut executor, Some("tenant_a")), 0);
-    assert_eq!(event_len(&mut executor, Some("tenant_a")), 0);
+    assert_eq!(event_count(&mut executor, Some("tenant_a")), 0);
     assert_eq!(
         vector_collections(&mut executor, Some("tenant_a")),
         Vec::<String>::new()
@@ -580,9 +580,9 @@ fn json_count(executor: &mut Executor, space: Option<&str>) -> u64 {
     count
 }
 
-fn event_len(executor: &mut Executor, space: Option<&str>) -> u64 {
-    let Output::EventLength { count } = executor
-        .execute(Command::EventLen {
+fn event_count(executor: &mut Executor, space: Option<&str>) -> u64 {
+    let Output::EventCount { count } = executor
+        .execute(Command::EventCount {
             branch: None,
             space: space.map(str::to_owned),
             as_of: None,

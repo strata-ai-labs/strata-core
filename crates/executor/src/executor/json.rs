@@ -75,7 +75,7 @@ impl Executor {
         Ok(json_delete_output(key, outcome.deleted(), outcome.commit()))
     }
 
-    pub(super) fn execute_json_getv(
+    pub(super) fn execute_json_history(
         &mut self,
         branch: Option<&str>,
         space: Option<&str>,

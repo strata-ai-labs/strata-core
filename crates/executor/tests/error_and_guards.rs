@@ -512,7 +512,7 @@ fn convenience_facade_stays_command_shaped() {
     assert!(facade.contains("self.execute(Command::EventAppend"));
     assert!(facade.contains("self.execute(Command::EventGet"));
     assert!(facade.contains("self.execute(Command::EventExists"));
-    assert!(facade.contains("self.execute(Command::EventLen"));
+    assert!(facade.contains("self.execute(Command::EventCount"));
     assert!(facade.contains("self.execute(Command::EventRange"));
     assert!(facade.contains("self.execute(Command::EventRangeByTime"));
     assert!(facade.contains("self.execute(Command::EventListTypes"));

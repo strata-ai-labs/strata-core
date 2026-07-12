@@ -81,7 +81,7 @@
         ]
       },
       "type": {
-        "const": "kv_getv",
+        "const": "kv_history",
         "type": "string"
       }
     },

@@ -525,7 +525,7 @@ fn kv_command(command: KvCommand, scope: &Scope) -> Result<Command, CliError> {
             space: scope.space.clone(),
             key: bytes(key),
         },
-        KvCommand::History { key } => Command::KvGetv {
+        KvCommand::History { key } => Command::KvHistory {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             key: bytes(key),
@@ -602,7 +602,7 @@ fn json_command(command: JsonCommand, scope: &Scope) -> Result<Command, CliError
             space: scope.space.clone(),
             key,
         },
-        JsonCommand::History { key } => Command::JsonGetv {
+        JsonCommand::History { key } => Command::JsonHistory {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             key,
@@ -683,7 +683,7 @@ fn vector_command(command: VectorCommand, scope: &Scope) -> Result<Command, CliE
             key,
             as_of,
         },
-        VectorCommand::History { collection, key } => Command::VectorGetv {
+        VectorCommand::History { collection, key } => Command::VectorHistory {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             collection,
@@ -858,7 +858,7 @@ fn event_command(command: EventCommand, scope: &Scope) -> Result<Command, CliErr
             space: scope.space.clone(),
             sequence,
         },
-        EventCommand::Len { as_of } => Command::EventLen {
+        EventCommand::Count { as_of } => Command::EventCount {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             as_of,

@@ -816,7 +816,7 @@ pub(crate) enum EventCommand {
         sequence: u64,
     },
     /// Count visible events.
-    Len {
+    Count {
         /// Optional read timestamp in microseconds.
         #[arg(long)]
         as_of: Option<u64>,

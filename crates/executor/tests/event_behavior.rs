@@ -34,7 +34,7 @@ fn durable_executor_reopens_event_log() {
     }
 
     let mut reopened = Executor::open_durable_local(&path).expect("durable executor reopens");
-    assert_eq!(event_len(&mut reopened, None, None, None), 4);
+    assert_eq!(event_count(&mut reopened, None, None, None), 4);
     let first = get_event(&mut reopened, None, None, 0, None).expect("event exists");
     assert_eq!(first.event().event_type(), "user.created");
     assert_eq!(first.event().payload(), &json!({"id": 1}));
@@ -52,7 +52,7 @@ fn durable_executor_reopens_event_log() {
     assert_eq!(reopened_append.sequence, 4);
     let new_head = get_event(&mut reopened, None, None, 4, None).expect("new head exists");
     assert_eq!(new_head.event().previous_hash(), old_head);
-    assert_eq!(event_len(&mut reopened, None, None, None), 5);
+    assert_eq!(event_count(&mut reopened, None, None, None), 5);
 }
 
 #[test]
@@ -123,9 +123,9 @@ fn populate_branch_and_space_fixture(executor: &mut Executor) {
 }
 
 fn assert_branch_defaults_and_isolation(executor: &mut Executor) {
-    assert_eq!(event_len(executor, None, None, None), 1);
-    assert_eq!(event_len(executor, Some("feature"), None, None), 2);
-    assert_eq!(event_len(executor, Some("scratch"), None, None), 1);
+    assert_eq!(event_count(executor, None, None, None), 1);
+    assert_eq!(event_count(executor, Some("feature"), None, None), 2);
+    assert_eq!(event_count(executor, Some("scratch"), None, None), 1);
     assert_eq!(
         get_event(executor, None, None, 0, None)
             .expect("default event")
@@ -160,8 +160,8 @@ fn assert_branch_defaults_and_isolation(executor: &mut Executor) {
 }
 
 fn assert_space_defaults_and_isolation(executor: &mut Executor) {
-    assert_eq!(event_len(executor, None, Some("tenant-a"), None), 1);
-    assert_eq!(event_len(executor, None, Some("tenant-b"), None), 1);
+    assert_eq!(event_count(executor, None, Some("tenant-a"), None), 1);
+    assert_eq!(event_count(executor, None, Some("tenant-b"), None), 1);
     assert_eq!(
         get_event(executor, None, Some("tenant-a"), 0, None)
             .expect("space event")
@@ -217,7 +217,7 @@ fn event_executor_inherits_configured_database_default_branch() {
         "main.event",
         json!({"where": "main"}),
     );
-    assert_eq!(event_len(&mut executor, None, None, None), 1);
+    assert_eq!(event_count(&mut executor, None, None, None), 1);
 
     let error = executor
         .execute(Command::EventGet {
@@ -333,7 +333,7 @@ fn run_event_batch_append_edges(executor: &mut Executor) {
             .version()
     );
     assert!(results[3].error().is_none());
-    assert_eq!(event_len(executor, None, None, None), 2);
+    assert_eq!(event_count(executor, None, None, None), 2);
 
     let first = get_event(executor, None, None, 0, None).expect("first valid item exists");
     let second = get_event(executor, None, None, 1, None).expect("second valid item exists");
@@ -351,8 +351,8 @@ fn event_convenience_facade_runs_complete_event_command_suite() {
     let mut executor = Executor::open_cache().expect("cache executor opens");
 
     assert_eq!(
-        executor.event_len().expect("len succeeds"),
-        Output::EventLength { count: 0 }
+        executor.event_count().expect("len succeeds"),
+        Output::EventCount { count: 0 }
     );
     assert!(matches!(
         executor
@@ -396,8 +396,8 @@ fn event_convenience_facade_runs_complete_event_command_suite() {
         Output::EventRecords { items: records, .. } if event_sequences(&records) == vec![0]
     ));
     assert_eq!(
-        executor.event_len().expect("len succeeds"),
-        Output::EventLength { count: 2 }
+        executor.event_count().expect("len succeeds"),
+        Output::EventCount { count: 2 }
     );
     assert!(matches!(
         executor
@@ -430,13 +430,13 @@ fn event_convenience_facade_runs_complete_event_command_suite() {
 }
 
 fn run_event_error_contract(executor: &mut Executor) {
-    assert_eq!(event_len(executor, None, None, None), 0);
+    assert_eq!(event_count(executor, None, None, None), 0);
 
     for command in invalid_input_event_commands() {
-        let before = event_len(executor, None, None, None);
+        let before = event_count(executor, None, None, None);
         let error = executor.execute(command).expect_err("command fails");
         assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
-        assert_eq!(event_len(executor, None, None, None), before);
+        assert_eq!(event_count(executor, None, None, None), before);
     }
 
     let missing_branch = executor
@@ -451,7 +451,7 @@ fn run_event_error_contract(executor: &mut Executor) {
 
     executor.close().expect("close succeeds");
     let closed = executor
-        .execute(Command::EventLen {
+        .execute(Command::EventCount {
             branch: None,
             space: None,
             as_of: None,
@@ -477,7 +477,7 @@ fn event_command_to_output_mapping_is_explicit_for_every_variant() {
     assert!(matches!(outputs[2], Output::EventRecord(_)));
     assert!(matches!(outputs[3], Output::Bool(_)));
     assert!(matches!(outputs[4], Output::EventRecords { .. }));
-    assert!(matches!(outputs[5], Output::EventLength { .. }));
+    assert!(matches!(outputs[5], Output::EventCount { .. }));
     assert!(matches!(outputs[6], Output::EventRangeResult { .. }));
     assert!(matches!(outputs[7], Output::EventRangeResult { .. }));
     assert!(matches!(outputs[8], Output::EventTypeList { .. }));
@@ -486,7 +486,7 @@ fn event_command_to_output_mapping_is_explicit_for_every_variant() {
 }
 
 fn run_event_command_suite(executor: &mut Executor) {
-    assert_eq!(event_len(executor, None, None, None), 0);
+    assert_eq!(event_count(executor, None, None, None), 0);
     assert!(get_event(executor, None, None, 0, None).is_none());
     assert!(!event_exists(executor, None, None, 0));
     assert_eq!(
@@ -561,7 +561,7 @@ fn run_event_command_suite(executor: &mut Executor) {
 }
 
 fn assert_latest_event_reads(executor: &mut Executor) {
-    assert_eq!(event_len(executor, None, None, None), 4);
+    assert_eq!(event_count(executor, None, None, None), 4);
     assert!(event_exists(executor, None, None, 3));
 
     let first = get_event(executor, None, None, 0, None).expect("first event exists");
@@ -807,8 +807,8 @@ fn assert_event_history_and_chain(executor: &mut Executor) {
         .expect("third event exists")
         .timestamp();
 
-    assert_eq!(event_len(executor, None, None, Some(first)), 1);
-    assert_eq!(event_len(executor, None, None, Some(second)), 2);
+    assert_eq!(event_count(executor, None, None, Some(first)), 1);
+    assert_eq!(event_count(executor, None, None, Some(second)), 2);
     assert_eq!(
         event_sequences(&event_records_by_type(
             executor,
@@ -870,7 +870,7 @@ fn event_mapping_commands() -> Vec<Command> {
             after_sequence: None,
             as_of: None,
         },
-        Command::EventLen {
+        Command::EventCount {
             branch: None,
             space: None,
             as_of: None,
@@ -1115,21 +1115,21 @@ fn event_records_by_type(
     }
 }
 
-fn event_len(
+fn event_count(
     executor: &mut Executor,
     branch: Option<&str>,
     space: Option<&str>,
     as_of: Option<u64>,
 ) -> u64 {
     match executor
-        .execute(Command::EventLen {
+        .execute(Command::EventCount {
             branch: branch.map(str::to_owned),
             space: space.map(str::to_owned),
             as_of,
         })
         .expect("len succeeds")
     {
-        Output::EventLength { count } => count,
+        Output::EventCount { count } => count,
         output => panic!("unexpected len output: {output:?}"),
     }
 }

@@ -58,7 +58,7 @@ pub(super) fn kv_commands() -> Vec<Command> {
             space: None,
             key: bytes("a"),
         },
-        Command::KvGetv {
+        Command::KvHistory {
             branch: None,
             space: None,
             key: bytes("a"),

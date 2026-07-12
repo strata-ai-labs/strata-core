@@ -109,7 +109,7 @@
         ]
       },
       "type": {
-        "const": "vector_getv",
+        "const": "vector_history",
         "type": "string"
       }
     },

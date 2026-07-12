@@ -63,9 +63,9 @@ impl Executor {
         })
     }
 
-    /// Executes a default-branch event length command.
-    pub fn event_len(&mut self) -> ExecutorResult<Output> {
-        self.execute(Command::EventLen {
+    /// Executes a default-branch event count command.
+    pub fn event_count(&mut self) -> ExecutorResult<Output> {
+        self.execute(Command::EventCount {
             branch: None,
             space: None,
             as_of: None,

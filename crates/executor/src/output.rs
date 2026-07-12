@@ -371,8 +371,8 @@ pub enum Output {
         #[serde(flatten)]
         page: PageInfo<u64>,
     },
-    /// Event log length.
-    EventLength {
+    /// Event log count.
+    EventCount {
         /// Visible event count.
         count: u64,
     },

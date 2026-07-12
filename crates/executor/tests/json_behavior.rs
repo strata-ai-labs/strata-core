@@ -478,7 +478,7 @@ fn json_mapping_commands() -> Vec<Command> {
             key: "map-delete-missing".to_owned(),
             path: "$".to_owned(),
         },
-        Command::JsonGetv {
+        Command::JsonHistory {
             branch: None,
             space: None,
             key: "map-a".to_owned(),
@@ -1282,7 +1282,7 @@ fn closed_handle_json_commands() -> Vec<Command> {
             key: "doc".to_owned(),
             path: "$".to_owned(),
         },
-        Command::JsonGetv {
+        Command::JsonHistory {
             branch: None,
             space: None,
             key: "doc".to_owned(),
@@ -1974,7 +1974,7 @@ fn execute_json_history(
     key: &str,
 ) -> Vec<strata_executor::JsonHistoryItem> {
     match executor
-        .execute(Command::JsonGetv {
+        .execute(Command::JsonHistory {
             branch: None,
             space: None,
             key: key.to_owned(),

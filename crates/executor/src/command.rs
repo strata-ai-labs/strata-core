@@ -302,7 +302,7 @@ pub enum Command {
         key: Bytes,
     },
     /// Reads full version history for one key.
-    KvGetv {
+    KvHistory {
         /// Target branch. Defaults to the executor handle branch.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         branch: Option<String>,
@@ -387,7 +387,7 @@ pub enum Command {
         path: String,
     },
     /// Reads full JSON document version history.
-    JsonGetv {
+    JsonHistory {
         /// Target branch. Defaults to the executor handle branch.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         branch: Option<String>,
@@ -679,7 +679,7 @@ pub enum Command {
         as_of: Option<u64>,
     },
     /// Reads full vector history.
-    VectorGetv {
+    VectorHistory {
         /// Target branch. Defaults to the executor handle branch.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         branch: Option<String>,
@@ -940,7 +940,7 @@ pub enum Command {
         sequence: u64,
     },
     /// Counts visible events.
-    EventLen {
+    EventCount {
         /// Target branch. Defaults to the executor handle branch.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         branch: Option<String>,
@@ -1769,13 +1769,13 @@ impl Command {
             Self::KvBatchDelete { .. } => "kv_batch_delete",
             Self::KvBatchExists { .. } => "kv_batch_exists",
             Self::KvExists { .. } => "kv_exists",
-            Self::KvGetv { .. } => "kv_getv",
+            Self::KvHistory { .. } => "kv_history",
             Self::KvCount { .. } => "kv_count",
             Self::KvSample { .. } => "kv_sample",
             Self::JsonSet { .. } => "json_set",
             Self::JsonGet { .. } => "json_get",
             Self::JsonDelete { .. } => "json_delete",
-            Self::JsonGetv { .. } => "json_getv",
+            Self::JsonHistory { .. } => "json_history",
             Self::JsonExists { .. } => "json_exists",
             Self::JsonBatchExists { .. } => "json_batch_exists",
             Self::JsonBatchSet { .. } => "json_batch_set",
@@ -1796,7 +1796,7 @@ impl Command {
             Self::VectorSample { .. } => "vector_sample",
             Self::VectorUpsert { .. } => "vector_upsert",
             Self::VectorGet { .. } => "vector_get",
-            Self::VectorGetv { .. } => "vector_getv",
+            Self::VectorHistory { .. } => "vector_history",
             Self::VectorExists { .. } => "vector_exists",
             Self::VectorBatchExists { .. } => "vector_batch_exists",
             Self::VectorListKeys { .. } => "vector_list_keys",
@@ -1814,7 +1814,7 @@ impl Command {
             Self::EventAppend { .. } => "event_append",
             Self::EventGet { .. } => "event_get",
             Self::EventExists { .. } => "event_exists",
-            Self::EventLen { .. } => "event_len",
+            Self::EventCount { .. } => "event_count",
             Self::EventRange { .. } => "event_range",
             Self::EventRangeByTime { .. } => "event_range_by_time",
             Self::EventListTypes { .. } => "event_list_types",
