@@ -329,7 +329,10 @@ impl LocalProvider {
         let present = request.presence_penalty.unwrap_or(0.0);
         if (repeat - 1.0).abs() > f32::EPSILON || freq != 0.0 || present != 0.0 {
             let last_n = request.repeat_last_n.map_or(64, |n| n as i32);
-            api.sampler_chain_add(chain, api.sampler_init_penalties(last_n, repeat, freq, present));
+            api.sampler_chain_add(
+                chain,
+                api.sampler_init_penalties(last_n, repeat, freq, present),
+            );
         }
 
         let seed = request.seed.unwrap_or(0xFFFF_FFFF) as u32;

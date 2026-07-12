@@ -8,11 +8,7 @@
 // The llama.cpp C API speaks i32 lengths and mutable pointers; the casts
 // at this boundary are the interface, not accidents.
 #![allow(dead_code, missing_docs, unreachable_pub)]
-#![allow(
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::ptr_as_ptr
-)]
+#![allow(clippy::cast_possible_wrap, clippy::cast_sign_loss, clippy::ptr_as_ptr)]
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
@@ -710,7 +706,11 @@ impl LlamaCppApi {
         if ptr.is_null() {
             return None;
         }
-        Some(unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
+        Some(
+            unsafe { CStr::from_ptr(ptr) }
+                .to_string_lossy()
+                .into_owned(),
+        )
     }
 
     /// Applies a chat template (a jinja string or a built-in name like
@@ -770,7 +770,9 @@ impl LlamaCppApi {
             )
         };
         if written < 0 {
-            return Err(format!("llama_chat_apply_template failed on write ({written})"));
+            return Err(format!(
+                "llama_chat_apply_template failed on write ({written})"
+            ));
         }
         let written = (written as usize).min(buf.len());
         Ok(String::from_utf8_lossy(&buf[..written]).into_owned())

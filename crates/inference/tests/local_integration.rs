@@ -73,7 +73,9 @@ fn local_chat_applies_template_and_full_sampler() {
         seed: Some(42),
         ..ChatRequest::default()
     };
-    let response = runtime().chat(&model, &request).expect("local chat succeeds");
+    let response = runtime()
+        .chat(&model, &request)
+        .expect("local chat succeeds");
     assert_eq!(response.choices.len(), 1);
     assert!(
         !response.choices[0].message.content.trim().is_empty(),
@@ -107,7 +109,9 @@ fn local_chat_raw_prompt_greedy() {
         max_tokens: Some(8),
         ..ChatRequest::default()
     };
-    let response = runtime().chat(&model, &request).expect("raw-prompt chat succeeds");
+    let response = runtime()
+        .chat(&model, &request)
+        .expect("raw-prompt chat succeeds");
     assert!(!response.choices[0].message.content.trim().is_empty());
 }
 

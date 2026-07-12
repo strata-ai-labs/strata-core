@@ -6,12 +6,12 @@ pub use crate::runtime::{
     InferenceRuntimeConfig, ModelCacheStatus, PullModelOutput, RankRequest, RankResponse,
     RankRuntimeOutcome,
 };
-pub use crate::{
-    GenerateRequest, GenerateResponse, InferenceError, InferenceErrorClass, ProviderKind,
-    StopReason,
-};
 pub use crate::wire::{
     ChatChoice, ChatMessage, ChatRequest, ChatResponse, EmbedInput, EmbeddingItem,
     EmbeddingsRequest, EmbeddingsResponse, FinishReason, InputType, Mirostat, ModelConfig, Pooling,
     RerankRequest, RerankResponse, RerankResult, ResponseFormat, Role, Usage,
+};
+pub use crate::{
+    GenerateRequest, GenerateResponse, InferenceError, InferenceErrorClass, ProviderKind,
+    StopReason,
 };

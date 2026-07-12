@@ -617,8 +617,14 @@ mod tests {
 
     #[test]
     fn finish_reason_maps_from_stop_reason() {
-        assert_eq!(FinishReason::from(StopReason::StopToken), FinishReason::Stop);
-        assert_eq!(FinishReason::from(StopReason::MaxTokens), FinishReason::Length);
+        assert_eq!(
+            FinishReason::from(StopReason::StopToken),
+            FinishReason::Stop
+        );
+        assert_eq!(
+            FinishReason::from(StopReason::MaxTokens),
+            FinishReason::Length
+        );
         assert_eq!(
             FinishReason::from(StopReason::ContextLength),
             FinishReason::Length
