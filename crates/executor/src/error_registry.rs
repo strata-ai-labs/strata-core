@@ -233,6 +233,15 @@ const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
         EXECUTOR_SCHEMA,
     ),
     entry(
+        "invalid_argument.executor.graph_analytics_budget",
+        ErrorClass::InvalidArgument,
+        RetryPolicy::Never,
+        CommitOutcomeStatus::NotStarted,
+        "A graph analytics budget value is out of range for this platform.",
+        "Use a graph analytics budget that fits the platform's addressable range.",
+        EXECUTOR_SCHEMA,
+    ),
+    entry(
         "invalid_argument.executor.vector_dimension",
         ErrorClass::InvalidArgument,
         RetryPolicy::Never,

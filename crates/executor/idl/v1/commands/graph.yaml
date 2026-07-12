@@ -414,6 +414,7 @@ commands:
     prose: commands/graph.analytics.wcc.md
     errors+:
       - resource_exhausted.engine.graph_analytics_budget
+      - invalid_argument.executor.graph_analytics_budget
     fixtures:
       setup:
         - requests/v1/graph/create.json
@@ -436,6 +437,7 @@ commands:
     prose: commands/graph.analytics.lcc.md
     errors+:
       - resource_exhausted.engine.graph_analytics_budget
+      - invalid_argument.executor.graph_analytics_budget
     fixtures:
       setup:
         - requests/v1/graph/create.json
@@ -459,6 +461,7 @@ commands:
       - invalid_argument.engine.graph_node_id
       - not_found.engine.graph_node
       - resource_exhausted.engine.graph_analytics_budget
+      - invalid_argument.executor.graph_analytics_budget
     fixtures:
       setup:
         - requests/v1/graph/create.json
@@ -481,6 +484,7 @@ commands:
       - invalid_argument.engine.graph_pagerank_options
       - invalid_argument.engine.graph_personalization
       - resource_exhausted.engine.graph_analytics_budget
+      - invalid_argument.executor.graph_analytics_budget
     fixtures:
       setup:
         - requests/v1/graph/create.json
@@ -503,6 +507,7 @@ commands:
     prose: commands/graph.analytics.cdlp.md
     errors+:
       - resource_exhausted.engine.graph_analytics_budget
+      - invalid_argument.executor.graph_analytics_budget
     fixtures:
       setup:
         - requests/v1/graph/create.json
@@ -528,6 +533,7 @@ commands:
       - invalid_argument.engine.graph_edge_type
       - not_found.engine.graph_node
       - resource_exhausted.engine.graph_analytics_budget
+      - invalid_argument.executor.graph_analytics_budget
     fixtures:
       setup:
         - requests/v1/graph/create.json

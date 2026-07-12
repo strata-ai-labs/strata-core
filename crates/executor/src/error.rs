@@ -846,36 +846,20 @@ const fn default_suggested_fix(class: ErrorClass) -> &'static str {
 
 #[cfg(feature = "inference")]
 fn inference_public_class(code: &str, legacy: strata_inference::InferenceErrorClass) -> ErrorClass {
-    match code {
-        "inference.invalid_request" | "inference.unsupported_parameter" => {
-            ErrorClass::InvalidArgument
-        }
-        "inference.missing_model"
-        | "inference.model_load_failed"
-        | "inference.missing_api_key"
-        | "inference.download_disabled" => ErrorClass::FailedPrecondition,
-        "inference.unsupported_provider" | "inference.unsupported_operation" => {
-            ErrorClass::Unsupported
-        }
-        "inference.provider_auth_failed" => ErrorClass::AccessDenied,
-        "inference.provider_malformed_response" => ErrorClass::Serialization,
-        "inference.download_verification_failed" | "inference.registry_corrupt" => {
-            ErrorClass::Corruption
-        }
-        "inference.io_failure" => ErrorClass::Io,
-        "inference.provider_rate_limited"
-        | "inference.provider_timeout"
-        | "inference.provider_unavailable"
-        | "inference.download_failed"
-        | "inference.local_runtime_failed" => ErrorClass::Unavailable,
-        _ => match legacy {
-            strata_inference::InferenceErrorClass::InvalidInput => ErrorClass::InvalidArgument,
-            strata_inference::InferenceErrorClass::NotFound => ErrorClass::NotFound,
-            strata_inference::InferenceErrorClass::Unavailable
-            | strata_inference::InferenceErrorClass::Retryable => ErrorClass::Unavailable,
-            strata_inference::InferenceErrorClass::Corruption => ErrorClass::Corruption,
-            strata_inference::InferenceErrorClass::Internal => ErrorClass::Internal,
-        },
+    // The registry is the single source of truth for a code's public class, so
+    // a registered inference code drives it directly rather than restating the
+    // mapping here (which risked drifting from the registry). Only codes not yet
+    // in the registry fall back to the inference crate's legacy class.
+    if let Some(entry) = public_error_code_entry(code) {
+        return entry.class;
+    }
+    match legacy {
+        strata_inference::InferenceErrorClass::InvalidInput => ErrorClass::InvalidArgument,
+        strata_inference::InferenceErrorClass::NotFound => ErrorClass::NotFound,
+        strata_inference::InferenceErrorClass::Unavailable
+        | strata_inference::InferenceErrorClass::Retryable => ErrorClass::Unavailable,
+        strata_inference::InferenceErrorClass::Corruption => ErrorClass::Corruption,
+        strata_inference::InferenceErrorClass::Internal => ErrorClass::Internal,
     }
 }
 
