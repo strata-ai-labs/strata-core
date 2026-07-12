@@ -367,6 +367,10 @@ pub struct ModelConfig {
     /// Embedding pooling strategy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pooling: Option<Pooling>,
+    /// Named chat template (e.g. `"chatml"`, `"llama3"`, `"gemma"`) overriding
+    /// the model's embedded `tokenizer.chat_template`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_format: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

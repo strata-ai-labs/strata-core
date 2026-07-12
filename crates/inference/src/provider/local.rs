@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::llama::context::LlamaCppContext;
 use crate::llama::ffi::{llama_api_lock, LlamaSampler};
-use crate::wire::{ChatRequest, Role};
+use crate::wire::{ChatRequest, ModelConfig, Role};
 use crate::{GenerateRequest, GenerateResponse, InferenceError, StopReason};
 
 /// Local generation provider using llama.cpp.
@@ -23,9 +23,12 @@ pub(crate) struct LocalProvider {
 }
 
 impl LocalProvider {
-    /// Load from a GGUF file with an optional context size override.
-    pub(crate) fn from_gguf(path: &Path, ctx_size: Option<usize>) -> Result<Self, InferenceError> {
-        let ctx = LlamaCppContext::load_for_generation(path, ctx_size)?;
+    /// Load from a GGUF file with an optional model/context configuration.
+    pub(crate) fn from_gguf(
+        path: &Path,
+        config: Option<&ModelConfig>,
+    ) -> Result<Self, InferenceError> {
+        let ctx = LlamaCppContext::load_for_generation(path, config)?;
         Ok(Self { ctx })
     }
 
@@ -282,11 +285,20 @@ impl LocalProvider {
                 "chat request has no messages".to_string(),
             ));
         }
+        // Cascade: explicit chat_format name (a built-in llama.cpp template) ->
+        // the model's embedded template -> chatml fallback.
+        let explicit = request
+            .model_config
+            .as_ref()
+            .and_then(|c| c.chat_format.clone());
         let embedded = self.ctx.chat_template();
         let apply = |tmpl: &str| self.ctx.api.chat_apply_template(tmpl, &messages, true);
-        let rendered = match &embedded {
-            Some(tmpl) => apply(tmpl).or_else(|_| apply("chatml")),
-            None => apply("chatml"),
+        let rendered = if let Some(name) = &explicit {
+            apply(name)
+        } else if let Some(tmpl) = &embedded {
+            apply(tmpl).or_else(|_| apply("chatml"))
+        } else {
+            apply("chatml")
         };
         rendered.map_err(InferenceError::LlamaCpp)
     }

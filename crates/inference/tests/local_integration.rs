@@ -4,7 +4,7 @@
 
 use strata_inference::{
     ChatMessage, ChatRequest, EmbedRequest, FinishReason, GenerateRequest, InferenceRuntime,
-    InferenceRuntimeConfig, RankRequest, Role,
+    InferenceRuntimeConfig, ModelConfig, RankRequest, Role,
 };
 
 fn integration_enabled() -> bool {
@@ -109,6 +109,36 @@ fn local_chat_raw_prompt_greedy() {
     };
     let response = runtime().chat(&model, &request).expect("raw-prompt chat succeeds");
     assert!(!response.choices[0].message.content.trim().is_empty());
+}
+
+#[test]
+#[cfg(feature = "local")]
+fn local_chat_honors_model_config_n_ctx() {
+    if !integration_enabled() {
+        return;
+    }
+    let Some(path) = env_path("STRATA_INFERENCE_GENERATION_GGUF") else {
+        return;
+    };
+    let model = format!("local:{path}");
+    // A tiny n_ctx from ModelConfig; a long prompt must exceed it, proving the
+    // load param was threaded through (a distinct cache-keyed engine).
+    let request = ChatRequest {
+        prompt: Some("word ".repeat(500)),
+        max_tokens: Some(4),
+        model_config: Some(ModelConfig {
+            n_ctx: Some(64),
+            ..ModelConfig::default()
+        }),
+        ..ChatRequest::default()
+    };
+    let err = runtime()
+        .chat(&model, &request)
+        .expect_err("prompt should exceed the 64-token context");
+    assert!(
+        err.to_string().contains("exceeds context size"),
+        "expected context-size error, got: {err}"
+    );
 }
 
 #[test]

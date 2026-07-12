@@ -14,6 +14,8 @@ use tracing::info;
 
 #[cfg(feature = "local")]
 use crate::provider::local::LocalProvider;
+#[cfg(feature = "local")]
+use crate::wire::ModelConfig;
 use crate::wire::ChatRequest;
 use crate::{GenerateRequest, GenerateResponse, InferenceError, ProviderKind};
 
@@ -117,9 +119,23 @@ impl GenerationEngine {
         path: impl AsRef<Path>,
         ctx_size: Option<usize>,
     ) -> Result<Self, InferenceError> {
+        let config = ctx_size.map(|ctx| ModelConfig {
+            n_ctx: Some(u32::try_from(ctx).unwrap_or(u32::MAX)),
+            ..ModelConfig::default()
+        });
+        Self::from_gguf_with_config(path, config.as_ref())
+    }
+
+    /// Load a generation engine from a GGUF file with a model/context config
+    /// (`n_ctx`, `n_gpu_layers`, `n_batch`, `n_threads`).
+    #[cfg(feature = "local")]
+    pub fn from_gguf_with_config(
+        path: impl AsRef<Path>,
+        config: Option<&ModelConfig>,
+    ) -> Result<Self, InferenceError> {
         let path = path.as_ref();
         info!(path = %path.display(), "Loading generation engine from GGUF");
-        let provider = LocalProvider::from_gguf(path, ctx_size)?;
+        let provider = LocalProvider::from_gguf(path, config)?;
         info!(
             vocab_size = provider.vocab_size(),
             context_size = provider.context_size(),
@@ -136,9 +152,18 @@ impl GenerationEngine {
     /// then loads the model with default context size.
     #[cfg(feature = "local")]
     pub fn from_registry(name: &str) -> Result<Self, InferenceError> {
+        Self::from_registry_with_config(name, None)
+    }
+
+    /// Load a generation engine by registry name with a model/context config.
+    #[cfg(feature = "local")]
+    pub fn from_registry_with_config(
+        name: &str,
+        config: Option<&ModelConfig>,
+    ) -> Result<Self, InferenceError> {
         let registry = crate::registry::ModelRegistry::new();
         let path = registry.resolve(name)?;
-        Self::from_gguf(path)
+        Self::from_gguf_with_config(path, config)
     }
 
     /// Create a generation engine backed by a cloud provider.

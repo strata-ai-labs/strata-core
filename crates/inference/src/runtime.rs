@@ -318,7 +318,7 @@ impl InferenceRuntime {
             let (provider, _model) = parse_model_spec(model_spec)?;
             if provider == ProviderKind::Local {
                 let mut cache = self.lock_generation()?;
-                let engine = self.cached_generation_engine(&mut cache, model_spec)?;
+                let engine = self.cached_generation_engine(&mut cache, model_spec, None)?;
                 return engine.generate(request);
             }
 
@@ -329,9 +329,9 @@ impl InferenceRuntime {
             }
             #[cfg(not(any(feature = "anthropic", feature = "openai", feature = "google")))]
             {
-                return Err(InferenceError::NotSupported(format!(
+                Err(InferenceError::NotSupported(format!(
                     "{provider} provider not enabled"
-                )));
+                )))
             }
             #[cfg(any(feature = "anthropic", feature = "openai", feature = "google"))]
             {
@@ -372,7 +372,11 @@ impl InferenceRuntime {
             let (provider, _model) = parse_model_spec(model_spec)?;
             if provider == ProviderKind::Local {
                 let mut cache = self.lock_generation()?;
-                let engine = self.cached_generation_engine(&mut cache, model_spec)?;
+                let engine = self.cached_generation_engine(
+                    &mut cache,
+                    model_spec,
+                    request.model_config.as_ref(),
+                )?;
                 let response = engine.generate_chat(request)?;
                 return Ok(crate::wire::ChatResponse::from_internal(model_spec, response));
             }
@@ -428,7 +432,7 @@ impl InferenceRuntime {
         #[cfg(feature = "local")]
         {
             let mut cache = self.lock_generation()?;
-            let engine = self.cached_generation_engine(&mut cache, model_spec)?;
+            let engine = self.cached_generation_engine(&mut cache, model_spec, None)?;
             engine.encode(text, add_special)
         }
 
@@ -446,7 +450,7 @@ impl InferenceRuntime {
         #[cfg(feature = "local")]
         {
             let mut cache = self.lock_generation()?;
-            let engine = self.cached_generation_engine(&mut cache, model_spec)?;
+            let engine = self.cached_generation_engine(&mut cache, model_spec, None)?;
             engine.decode(ids)
         }
 
@@ -735,13 +739,15 @@ impl InferenceRuntime {
         &self,
         cache: &'a mut HashMap<String, GenerationEngine>,
         model_spec: &str,
+        config: Option<&crate::wire::ModelConfig>,
     ) -> Result<&'a mut GenerationEngine, InferenceError> {
-        if !cache.contains_key(model_spec) {
-            let engine = self.local_generation_engine(model_spec)?;
-            cache.insert(model_spec.to_owned(), engine);
+        let key = engine_cache_key(model_spec, config);
+        if !cache.contains_key(&key) {
+            let engine = self.local_generation_engine(model_spec, config)?;
+            cache.insert(key.clone(), engine);
         }
         Ok(cache
-            .get_mut(model_spec)
+            .get_mut(&key)
             .expect("generation engine inserted before lookup"))
     }
 
@@ -784,6 +790,7 @@ impl InferenceRuntime {
     fn local_generation_engine(
         &self,
         model_spec: &str,
+        config: Option<&crate::wire::ModelConfig>,
     ) -> Result<GenerationEngine, InferenceError> {
         let (provider, model) = parse_model_spec(model_spec)?;
         if provider != ProviderKind::Local {
@@ -794,13 +801,13 @@ impl InferenceRuntime {
         #[cfg(feature = "local")]
         {
             if looks_like_path(&model) {
-                return GenerationEngine::from_gguf(Path::new(&model));
+                return GenerationEngine::from_gguf_with_config(Path::new(&model), config);
             }
-            GenerationEngine::from_registry(&model)
+            GenerationEngine::from_registry_with_config(&model, config)
         }
         #[cfg(not(feature = "local"))]
         {
-            let _ = model;
+            let _ = (model, config);
             Err(InferenceError::NotSupported(
                 "local generation requires the local feature".to_owned(),
             ))
@@ -879,6 +886,23 @@ fn api_key(provider: ProviderKind) -> Result<String, InferenceError> {
             "{env_var} not set (required for {provider} provider)"
         ))
     })
+}
+
+/// Cache key for a loaded generation engine. A default or absent config shares
+/// the plain-spec key (so tokenize/generate and a config-less chat reuse one
+/// engine); a non-default config keys a distinct engine so its load params
+/// (`n_ctx`/`n_gpu_layers`/`n_batch`/`n_threads`) take effect.
+#[cfg(any(
+    feature = "local",
+    feature = "anthropic",
+    feature = "openai",
+    feature = "google"
+))]
+fn engine_cache_key(model_spec: &str, config: Option<&crate::wire::ModelConfig>) -> String {
+    match config {
+        Some(c) if *c != crate::wire::ModelConfig::default() => format!("{model_spec}\u{0}{c:?}"),
+        _ => model_spec.to_owned(),
+    }
 }
 
 #[cfg(feature = "local")]
