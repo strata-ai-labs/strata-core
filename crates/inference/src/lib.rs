@@ -30,6 +30,10 @@ mod error;
 mod grammar;
 pub mod registry;
 pub mod runtime;
+// Compiled unconditionally alongside `grammar` (same rationale); only
+// `provider/local.rs` consumes it, so it is dead code when `local` is off.
+#[cfg_attr(not(feature = "local"), allow(dead_code))]
+mod tool_grammar;
 pub mod wire;
 
 #[cfg(feature = "local")]
