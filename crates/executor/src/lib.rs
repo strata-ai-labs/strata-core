@@ -35,12 +35,15 @@ pub use strata_engine::{
 };
 #[cfg(feature = "inference")]
 pub use strata_inference::{
-    ChatRequest as InferenceChatRequest, ChatResponse as InferenceChatResponse,
-    EmbedInput as InferenceEmbedInput, EmbeddingsRequest as InferenceEmbeddingsRequest,
+    ChatMessage as InferenceChatMessage, ChatRequest as InferenceChatRequest,
+    ChatResponse as InferenceChatResponse, EmbedInput as InferenceEmbedInput,
+    EmbeddingsRequest as InferenceEmbeddingsRequest,
     EmbeddingsResponse as InferenceEmbeddingsResponse, InferenceCapability, InferenceRuntime,
-    InferenceRuntimeConfig, ModelCacheStatus as InferenceModelCacheStatus,
+    InferenceRuntimeConfig, InputType as InferenceInputType,
+    ModelCacheStatus as InferenceModelCacheStatus, ModelConfig as InferenceModelConfig,
     ModelInfo as InferenceModelInfo, PullModelOutput as InferencePullModelOutput,
     RankRequest as InferenceRankRequest, RankResponse as InferenceRankResponse,
+    ResponseFormat as InferenceResponseFormat, Role as InferenceRole,
 };
 pub use types::{
     AdminCapabilities, AdminConfig, AdminControlStatus, AdminDatabaseInfo, AdminDescribe,
