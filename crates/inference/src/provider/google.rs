@@ -7,8 +7,14 @@
 //! The API key is passed via the `x-goog-api-key` header for security
 //! (avoids leaking credentials in URL logs).
 
-use crate::provider::cloud::{chat_turns, reject_local_only};
-use crate::wire::{ChatRequest, ChatResponse, ResponseFormat, Role};
+use std::collections::HashMap;
+
+use crate::provider::cloud::reject_local_only;
+use crate::wire::{
+    ChatChoice, ChatMessage, ChatRequest, ChatResponse, FinishReason, FunctionDef, LogProbs,
+    NamedToolChoice, ResponseFormat, Role, TokenLogProb, Tool, ToolCall, ToolCallFunction,
+    ToolChoice, ToolChoiceMode, TopLogProb, Usage,
+};
 use crate::{GenerateRequest, GenerateResponse, InferenceError, StopReason};
 
 const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -57,21 +63,31 @@ impl GoogleProvider {
         self.post(body)
     }
 
-    /// Generate from an OpenAI-shaped chat request, mapping messages natively
-    /// (system prompt hoisted to `system_instruction`, assistant turns become
-    /// `model` turns).
+    /// Generate from an OpenAI-shaped chat request, mapping messages natively:
+    /// system prompt hoisted to `system_instruction`, multi-turn preserved,
+    /// assistant `tool_calls` rendered as `functionCall` parts, `tool` results
+    /// batched into user turns of `functionResponse` parts (name recovered from
+    /// the id→name correlation map), tools/tool_choice/response_format/logprobs
+    /// forwarded, and the native response (text + tool calls + logprobs) parsed
+    /// back into the [`ChatResponse`].
     pub(crate) fn generate_chat(
         &self,
         request: &ChatRequest,
     ) -> Result<ChatResponse, InferenceError> {
         let body = build_chat_request_json(request)?;
-        // Text-only wrap until G3 adds native tool/structured-output mapping.
-        Ok(ChatResponse::from_internal(&self.model, self.post(body)?))
+        let raw = self.send(body)?;
+        parse_chat_response_json(&raw, &self.model)
     }
 
-    /// Send a prepared request body and parse the response. The URL carries the
-    /// model name, so it is built here from `self.model`.
+    /// Send a prepared completion request body and parse it as a completion.
     fn post(&self, body: String) -> Result<GenerateResponse, InferenceError> {
+        parse_response_json(&self.send(body)?)
+    }
+
+    /// POST a prepared JSON body to the `generateContent` endpoint and return
+    /// the raw response body (shared by the completion and chat parsers). The
+    /// URL carries the model name, so it is built here from `self.model`.
+    fn send(&self, body: String) -> Result<String, InferenceError> {
         let url = build_url(&self.model);
 
         let agent = ureq::Agent::new_with_config(
@@ -86,11 +102,10 @@ impl GoogleProvider {
             .send(body)
             .map_err(|e| map_http_error("Google", e))?;
 
-        let response_body = response.body_mut().read_to_string().map_err(|e| {
-            InferenceError::Provider(format!("Google: failed to read response: {e}"))
-        })?;
-
-        parse_response_json(&response_body)
+        response
+            .body_mut()
+            .read_to_string()
+            .map_err(|e| InferenceError::Provider(format!("Google: failed to read response: {e}")))
     }
 
     pub(crate) fn model(&self) -> &str {
@@ -155,43 +170,40 @@ pub(crate) fn build_request_json(request: &GenerateRequest) -> String {
 
 /// Build the Google Gemini API request JSON from an OpenAI-shaped chat request.
 ///
-/// System-role turns are hoisted to `system_instruction`; user turns become
-/// `user` `contents` and assistant turns become `model` `contents`. Supported
-/// knobs (`max_tokens`, `temperature`, `top_p`, `top_k`, `stop`,
-/// `response_format`) are forwarded when set. Seed, penalties, logit_bias, and
-/// the llama.cpp extensions have no Gemini equivalent and are ignored.
+/// System-role turns are hoisted to `system_instruction` (joined with "\n");
+/// user turns become `user` `contents` and assistant turns become `model`
+/// `contents`. An assistant turn carrying `tool_calls` is rendered as
+/// `functionCall` parts, and consecutive `tool` results are batched into a
+/// single user turn of `functionResponse` parts.
+///
+/// `tools`/`tool_choice` map to Gemini's `functionDeclarations`/`toolConfig`;
+/// `response_format` maps to `responseMimeType` (+ `responseSchema` for
+/// json_schema); `logprobs`/`top_logprobs` map to `responseLogprobs`/`logprobs`.
+/// Supported sampling knobs (`max_tokens`, `temperature`, `top_p`, `top_k`,
+/// `stop`) are forwarded when set. Seed, penalties, logit_bias, and the
+/// llama.cpp extensions have no Gemini equivalent and are ignored.
+///
+/// **Impedance mismatch:** OpenAI keys tool results by call `id`, but Gemini
+/// keys `functionResponse` by function *name*. Messages are iterated directly
+/// (not via the lossy `chat_turns`, which drops `tool_calls`/`tool_call_id`) so
+/// an id→name map can be built from assistant `tool_calls` and used to recover
+/// each `tool` result's function name.
 pub(crate) fn build_chat_request_json(request: &ChatRequest) -> Result<String, InferenceError> {
     reject_local_only(request, "Google")?;
 
-    let mut system = String::new();
-    let mut contents: Vec<serde_json::Value> = Vec::new();
-    for (role, content) in chat_turns(request) {
-        match role {
-            Role::System => {
-                if !system.is_empty() {
-                    system.push('\n');
-                }
-                system.push_str(&content);
-            }
-            Role::User => {
-                contents.push(serde_json::json!({
-                    "role": "user",
-                    "parts": [{"text": content}]
-                }));
-            }
-            Role::Assistant => {
-                contents.push(serde_json::json!({
-                    "role": "model",
-                    "parts": [{"text": content}]
-                }));
-            }
-            Role::Tool => {
-                return Err(InferenceError::Provider(
-                    "Google: tool messages are not yet supported".to_string(),
-                ));
-            }
-        }
-    }
+    // A raw `prompt` is a single user turn; otherwise iterate the full messages
+    // directly to preserve tool_calls/tool_call_id (chat_turns is lossy).
+    let prompt_fallback: Vec<ChatMessage>;
+    let messages_in: &[ChatMessage] = if let Some(msgs) = &request.messages {
+        msgs.as_slice()
+    } else if let Some(prompt) = &request.prompt {
+        prompt_fallback = vec![ChatMessage::new(Role::User, prompt.clone())];
+        prompt_fallback.as_slice()
+    } else {
+        &[]
+    };
+
+    let (system, contents) = build_google_contents(messages_in)?;
 
     let mut gen_config = serde_json::json!({});
     if let Some(max_tokens) = request.max_tokens {
@@ -211,9 +223,8 @@ pub(crate) fn build_chat_request_json(request: &ChatRequest) -> Result<String, I
             gen_config["stopSequences"] = serde_json::json!(stop);
         }
     }
-    if request.response_format == Some(ResponseFormat::JsonObject) {
-        gen_config["responseMimeType"] = serde_json::json!("application/json");
-    }
+    apply_response_format(&mut gen_config, request);
+    apply_logprobs(&mut gen_config, request);
 
     // Default: disable thinking. Without this, gemini-2.5 spends the whole
     // budget on internal reasoning and returns no text; a `thinking` knob is a
@@ -227,8 +238,226 @@ pub(crate) fn build_chat_request_json(request: &ChatRequest) -> Result<String, I
     if !system.is_empty() {
         obj["system_instruction"] = serde_json::json!({"parts": [{"text": system}]});
     }
+    if let Some(tools) = build_tools_json(request) {
+        obj["tools"] = tools;
+    }
+    if let Some(tool_config) = build_tool_config_json(request.tool_choice.as_ref()) {
+        obj["toolConfig"] = tool_config;
+    }
 
     Ok(obj.to_string())
+}
+
+/// Map OpenAI-shaped chat turns into Gemini's `(system_instruction, contents)`
+/// pair. System turns are joined (with "\n"); user turns become `user`
+/// contents; assistant turns become `model` contents (`functionCall` parts when
+/// they carry `tool_calls`); and consecutive `tool` results are batched into a
+/// single `user` content of `functionResponse` parts.
+///
+/// The function name of a `functionResponse` is recovered from the assistant
+/// `tool_calls` seen earlier via a `tool_call_id → name` map. A `tool` message
+/// with a missing or unrecognized `tool_call_id` is an error.
+fn build_google_contents(
+    messages_in: &[ChatMessage],
+) -> Result<(String, Vec<serde_json::Value>), InferenceError> {
+    let mut system = String::new();
+    let mut contents: Vec<serde_json::Value> = Vec::new();
+    // tool_call_id → function name, populated from assistant tool_calls and read
+    // back when a `tool` result must be keyed by name for Gemini.
+    let mut call_names: HashMap<String, String> = HashMap::new();
+    // Consecutive `tool` results are delivered as a single user turn.
+    let mut pending_tool_results: Vec<serde_json::Value> = Vec::new();
+
+    for message in messages_in {
+        // Any non-tool message closes an open run of tool results.
+        if message.role != Role::Tool && !pending_tool_results.is_empty() {
+            contents.push(serde_json::json!({
+                "role": "user",
+                "parts": serde_json::Value::Array(std::mem::take(&mut pending_tool_results)),
+            }));
+        }
+
+        match message.role {
+            Role::System => {
+                if !system.is_empty() {
+                    system.push('\n');
+                }
+                system.push_str(&message.content);
+            }
+            Role::User => {
+                contents.push(serde_json::json!({
+                    "role": "user",
+                    "parts": [{"text": message.content}],
+                }));
+            }
+            Role::Assistant => {
+                if let Some(calls) = &message.tool_calls {
+                    for call in calls {
+                        let ToolCall::Function { id, function } = call;
+                        call_names.insert(id.clone(), function.name.clone());
+                    }
+                }
+                contents.push(model_message_json(message));
+            }
+            Role::Tool => {
+                let call_id = message.tool_call_id.as_deref().ok_or_else(|| {
+                    InferenceError::Provider(
+                        "Google: `tool` message is missing `tool_call_id`".to_string(),
+                    )
+                })?;
+                let name = call_names.get(call_id).ok_or_else(|| {
+                    InferenceError::Provider(format!(
+                        "Google: `tool` message references unknown tool_call_id `{call_id}`; no \
+                         preceding assistant tool_call declared it"
+                    ))
+                })?;
+                pending_tool_results.push(function_response_part(name, &message.content));
+            }
+        }
+    }
+
+    // Flush a trailing run of tool results.
+    if !pending_tool_results.is_empty() {
+        contents.push(serde_json::json!({
+            "role": "user",
+            "parts": serde_json::Value::Array(pending_tool_results),
+        }));
+    }
+
+    Ok((system, contents))
+}
+
+/// Render an assistant turn as a Gemini `model` content. A turn with
+/// `tool_calls` becomes a parts array (an optional leading `text` part, then one
+/// `functionCall` part per call); otherwise a plain-text `model` content. The
+/// `arguments` JSON string is parsed into an object for `args` (falling back to
+/// `{}` when it does not parse).
+fn model_message_json(message: &ChatMessage) -> serde_json::Value {
+    let tool_calls = match &message.tool_calls {
+        Some(calls) if !calls.is_empty() => calls,
+        _ => {
+            return serde_json::json!({
+                "role": "model",
+                "parts": [{"text": message.content}],
+            });
+        }
+    };
+
+    let mut parts: Vec<serde_json::Value> = Vec::new();
+    // Omit the text part for a pure tool-call turn.
+    if !message.content.is_empty() {
+        parts.push(serde_json::json!({"text": message.content}));
+    }
+    for call in tool_calls {
+        let ToolCall::Function { id: _, function } = call;
+        let args: serde_json::Value =
+            serde_json::from_str(&function.arguments).unwrap_or_else(|_| serde_json::json!({}));
+        parts.push(serde_json::json!({
+            "functionCall": {
+                "name": function.name,
+                "args": args,
+            }
+        }));
+    }
+    serde_json::json!({
+        "role": "model",
+        "parts": serde_json::Value::Array(parts),
+    })
+}
+
+/// Build a Gemini `functionResponse` part. The tool-result content is parsed as
+/// a JSON object and used verbatim; anything that is not a JSON object (or does
+/// not parse) is wrapped as `{"result": <content>}`.
+fn function_response_part(name: &str, content: &str) -> serde_json::Value {
+    let response = match serde_json::from_str::<serde_json::Value>(content) {
+        Ok(value @ serde_json::Value::Object(_)) => value,
+        _ => serde_json::json!({ "result": content }),
+    };
+    serde_json::json!({
+        "functionResponse": {
+            "name": name,
+            "response": response,
+        }
+    })
+}
+
+/// Apply `response_format` to `generationConfig`: `json_object` sets
+/// `responseMimeType`; `json_schema` sets `responseMimeType` + `responseSchema`;
+/// text/none add nothing.
+fn apply_response_format(gen_config: &mut serde_json::Value, request: &ChatRequest) {
+    match &request.response_format {
+        Some(ResponseFormat::JsonObject) => {
+            gen_config["responseMimeType"] = serde_json::json!("application/json");
+        }
+        Some(ResponseFormat::JsonSchema { json_schema }) => {
+            gen_config["responseMimeType"] = serde_json::json!("application/json");
+            gen_config["responseSchema"] = json_schema.schema.clone();
+        }
+        Some(ResponseFormat::Text) | None => {}
+    }
+}
+
+/// Apply log-probability knobs to `generationConfig`: `logprobs == Some(true)`
+/// sets `responseLogprobs`, and `top_logprobs` sets Gemini's `logprobs` count.
+fn apply_logprobs(gen_config: &mut serde_json::Value, request: &ChatRequest) {
+    if request.logprobs == Some(true) {
+        gen_config["responseLogprobs"] = serde_json::json!(true);
+        if let Some(top_logprobs) = request.top_logprobs {
+            gen_config["logprobs"] = serde_json::json!(top_logprobs);
+        }
+    }
+}
+
+/// Build Gemini's `tools` value: a single-element array holding one
+/// `functionDeclarations` list for all offered functions. Returns `None` when
+/// the request offers no tools.
+fn build_tools_json(request: &ChatRequest) -> Option<serde_json::Value> {
+    let tools = request.tools.as_ref()?;
+    if tools.is_empty() {
+        return None;
+    }
+    let declarations: Vec<serde_json::Value> = tools
+        .iter()
+        .map(|tool| {
+            let Tool::Function { function } = tool;
+            function_declaration_json(function)
+        })
+        .collect();
+    Some(serde_json::json!([{ "functionDeclarations": declarations }]))
+}
+
+/// Map a [`FunctionDef`] to a Gemini `functionDeclarations` entry (`name`,
+/// optional `description`, and `parameters`). A missing parameter schema becomes
+/// a bare object schema.
+fn function_declaration_json(function: &FunctionDef) -> serde_json::Value {
+    let parameters = function
+        .parameters
+        .clone()
+        .unwrap_or_else(|| serde_json::json!({ "type": "object" }));
+    let mut decl = serde_json::json!({
+        "name": function.name,
+        "parameters": parameters,
+    });
+    if let Some(description) = &function.description {
+        decl["description"] = serde_json::json!(description);
+    }
+    decl
+}
+
+/// Map an OpenAI-shaped [`ToolChoice`] to Gemini's `toolConfig`: `auto`→AUTO,
+/// `required`→ANY, `none`→NONE, and a named function→ANY with
+/// `allowedFunctionNames`. Returns `None` when no tool_choice is set.
+fn build_tool_config_json(choice: Option<&ToolChoice>) -> Option<serde_json::Value> {
+    let config = match choice? {
+        ToolChoice::Mode(ToolChoiceMode::Auto) => serde_json::json!({ "mode": "AUTO" }),
+        ToolChoice::Mode(ToolChoiceMode::Required) => serde_json::json!({ "mode": "ANY" }),
+        ToolChoice::Mode(ToolChoiceMode::None) => serde_json::json!({ "mode": "NONE" }),
+        ToolChoice::Named(NamedToolChoice::Function { function }) => serde_json::json!({
+            "mode": "ANY",
+            "allowedFunctionNames": [function.name],
+        }),
+    };
+    Some(serde_json::json!({ "functionCallingConfig": config }))
 }
 
 /// Parse the Google Gemini API response JSON into a `GenerateResponse`.
@@ -314,6 +543,187 @@ pub(crate) fn parse_response_json(body: &str) -> Result<GenerateResponse, Infere
         prompt_tokens,
         completion_tokens,
     })
+}
+
+/// Parse the Google Gemini `generateContent` response JSON into a rich
+/// [`ChatResponse`] (concatenated text, tool calls, finish reason,
+/// log-probabilities, and usage).
+///
+/// `functionCall` parts become [`ToolCall`]s with synthesized ids (`call_0`, …,
+/// Gemini assigns none), and their presence forces `finish_reason =
+/// ToolCalls`. The model is always the caller's `fallback_model`. API-error
+/// bodies map to `Err`.
+pub(crate) fn parse_chat_response_json(
+    body: &str,
+    fallback_model: &str,
+) -> Result<ChatResponse, InferenceError> {
+    let json: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| InferenceError::Provider(format!("Google: invalid JSON response: {e}")))?;
+
+    // Check for API error response
+    if let Some(error) = json.get("error") {
+        let msg = error
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown error");
+        let code = error
+            .get("code")
+            .and_then(|c| c.as_u64())
+            .map(|c| format!(" (code {c})"))
+            .unwrap_or_default();
+        return Err(InferenceError::Provider(format!(
+            "Google API error{code}: {msg}"
+        )));
+    }
+
+    let candidates = json
+        .get("candidates")
+        .and_then(|c| c.as_array())
+        .ok_or_else(|| {
+            InferenceError::Provider("Google: missing or invalid 'candidates' array".to_string())
+        })?;
+    let candidate = candidates.first().ok_or_else(|| {
+        InferenceError::Provider("Google: empty candidates array in response".to_string())
+    })?;
+
+    let parts = candidate
+        .get("content")
+        .and_then(|c| c.get("parts"))
+        .and_then(|p| p.as_array())
+        .map(Vec::as_slice);
+    let (content, tool_calls) = parse_candidate_parts(parts);
+
+    // Gemini returns finishReason "STOP" even when it emits function calls, so
+    // the presence of tool calls decides ToolCalls regardless of finishReason.
+    let finish_reason = if tool_calls.is_some() {
+        FinishReason::ToolCalls
+    } else {
+        match candidate.get("finishReason").and_then(|r| r.as_str()) {
+            Some("STOP") => FinishReason::Stop,
+            Some("MAX_TOKENS") => FinishReason::Length,
+            Some("SAFETY" | "RECITATION") => FinishReason::ContentFilter,
+            Some(other) => {
+                tracing::warn!(reason = ?other, "Unknown finish reason from Google, defaulting to Stop");
+                FinishReason::Stop
+            }
+            None => FinishReason::Stop,
+        }
+    };
+
+    let logprobs = parse_logprobs(candidate.get("logprobsResult"));
+
+    let usage = json.get("usageMetadata");
+    let prompt_tokens = usage
+        .and_then(|u| u.get("promptTokenCount"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as u32;
+    let completion_tokens = usage
+        .and_then(|u| u.get("candidatesTokenCount"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as u32;
+
+    Ok(ChatResponse {
+        model: fallback_model.to_string(),
+        choices: vec![ChatChoice {
+            index: 0,
+            message: ChatMessage {
+                role: Role::Assistant,
+                content,
+                name: None,
+                tool_calls,
+                tool_call_id: None,
+            },
+            finish_reason,
+            logprobs,
+        }],
+        usage: Usage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens + completion_tokens,
+        },
+    })
+}
+
+/// Split a candidate's `parts` array into concatenated text and tool calls.
+/// Gemini assigns no call id, so ids are synthesized by tool-call index
+/// (`call_0`, `call_1`, …).
+fn parse_candidate_parts(parts: Option<&[serde_json::Value]>) -> (String, Option<Vec<ToolCall>>) {
+    let mut content = String::new();
+    let mut tool_calls: Vec<ToolCall> = Vec::new();
+    for part in parts.into_iter().flatten() {
+        if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+            content.push_str(text);
+        } else if let Some(call) = part.get("functionCall") {
+            let name = call
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_string();
+            let args = call
+                .get("args")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let arguments = serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_string());
+            let id = format!("call_{}", tool_calls.len());
+            tool_calls.push(ToolCall::Function {
+                id,
+                function: ToolCallFunction { name, arguments },
+            });
+        }
+    }
+    let tool_calls = (!tool_calls.is_empty()).then_some(tool_calls);
+    (content, tool_calls)
+}
+
+/// Parse Gemini's `logprobsResult` into [`LogProbs`] (best-effort; `None` when
+/// absent or malformed). `chosenCandidates` become the per-token entries, and
+/// the matching `topCandidates[i].candidates` become each token's alternatives.
+fn parse_logprobs(value: Option<&serde_json::Value>) -> Option<LogProbs> {
+    let result = value?;
+    let chosen = result.get("chosenCandidates").and_then(|c| c.as_array())?;
+    let top = result.get("topCandidates").and_then(|c| c.as_array());
+    let content = chosen
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            let top_logprobs = top
+                .and_then(|t| t.get(i))
+                .and_then(|c| c.get("candidates"))
+                .and_then(|c| c.as_array())
+                .map(|alts| {
+                    alts.iter()
+                        .map(|alt| TopLogProb {
+                            token: gemini_token(alt),
+                            logprob: gemini_logprob(alt),
+                            bytes: None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            TokenLogProb {
+                token: gemini_token(entry),
+                logprob: gemini_logprob(entry),
+                bytes: None,
+                top_logprobs,
+            }
+        })
+        .collect();
+    Some(LogProbs { content })
+}
+
+fn gemini_token(entry: &serde_json::Value) -> String {
+    entry
+        .get("token")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn gemini_logprob(entry: &serde_json::Value) -> f32 {
+    entry
+        .get("logProbability")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0) as f32
 }
 
 // =========================================================================
@@ -786,12 +1196,573 @@ mod tests {
 
     #[test]
     fn chat_json_tool_message_errors() {
+        // A bare `tool` message has no `tool_call_id` to correlate → error.
         let req = ChatRequest {
             messages: Some(vec![crate::wire::ChatMessage::new(Role::Tool, "r")]),
             ..Default::default()
         };
         let err = build_chat_request_json(&req).unwrap_err();
         assert!(matches!(err, InferenceError::Provider(_)), "err: {err}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Chat request: tools / tool_choice (G3b)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn chat_json_tools_become_function_declarations() {
+        let req = ChatRequest {
+            messages: Some(vec![ChatMessage::new(Role::User, "weather?")]),
+            tools: Some(vec![
+                Tool::Function {
+                    function: FunctionDef {
+                        name: "get_weather".into(),
+                        description: Some("look up weather".into()),
+                        parameters: Some(serde_json::json!({
+                            "type": "object",
+                            "properties": { "city": { "type": "string" } },
+                        })),
+                        strict: None,
+                    },
+                },
+                Tool::Function {
+                    function: FunctionDef {
+                        name: "no_params".into(),
+                        description: None,
+                        parameters: None,
+                        strict: None,
+                    },
+                },
+            ]),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json(&req).unwrap()).unwrap();
+        // One `tools` entry holding a single functionDeclarations array.
+        let tools = json["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        let decls = tools[0]["functionDeclarations"].as_array().unwrap();
+        assert_eq!(decls.len(), 2);
+        assert_eq!(decls[0]["name"], "get_weather");
+        assert_eq!(decls[0]["description"], "look up weather");
+        assert_eq!(
+            decls[0]["parameters"]["properties"]["city"]["type"],
+            "string"
+        );
+        // Gemini uses `parameters`, never OpenAI's nested `function` wrapper.
+        assert!(tools[0].get("type").is_none());
+        // No-params fn defaults to a bare object schema; no description key.
+        assert_eq!(decls[1]["name"], "no_params");
+        assert!(decls[1].get("description").is_none());
+        assert_eq!(
+            decls[1]["parameters"],
+            serde_json::json!({ "type": "object" })
+        );
+    }
+
+    #[test]
+    fn chat_json_tool_config_all_modes() {
+        use crate::wire::ToolChoiceFunction;
+        let config_json = |tc: ToolChoice| -> serde_json::Value {
+            let req = ChatRequest {
+                prompt: Some("hi".into()),
+                tool_choice: Some(tc),
+                ..Default::default()
+            };
+            serde_json::from_str::<serde_json::Value>(&build_chat_request_json(&req).unwrap())
+                .unwrap()["toolConfig"]["functionCallingConfig"]
+                .clone()
+        };
+        assert_eq!(
+            config_json(ToolChoice::Mode(ToolChoiceMode::Auto))["mode"],
+            "AUTO"
+        );
+        assert_eq!(
+            config_json(ToolChoice::Mode(ToolChoiceMode::Required))["mode"],
+            "ANY"
+        );
+        assert_eq!(
+            config_json(ToolChoice::Mode(ToolChoiceMode::None))["mode"],
+            "NONE"
+        );
+        let named = config_json(ToolChoice::Named(NamedToolChoice::Function {
+            function: ToolChoiceFunction {
+                name: "get_weather".into(),
+            },
+        }));
+        assert_eq!(named["mode"], "ANY");
+        assert_eq!(named["allowedFunctionNames"][0], "get_weather");
+    }
+
+    // -----------------------------------------------------------------------
+    // Chat request: tool round-trip (G3b)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn chat_json_assistant_tool_calls_become_function_call_parts() {
+        let assistant = ChatMessage {
+            role: Role::Assistant,
+            content: "let me check".into(),
+            name: None,
+            tool_calls: Some(vec![ToolCall::Function {
+                id: "call_1".into(),
+                function: ToolCallFunction {
+                    name: "get_weather".into(),
+                    arguments: r#"{"city":"Paris"}"#.into(),
+                },
+            }]),
+            tool_call_id: None,
+        };
+        let req = ChatRequest {
+            messages: Some(vec![ChatMessage::new(Role::User, "weather?"), assistant]),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json(&req).unwrap()).unwrap();
+        assert_eq!(json["contents"][1]["role"], "model");
+        let parts = json["contents"][1]["parts"].as_array().unwrap();
+        // Text part first (content non-empty), then the functionCall part.
+        assert_eq!(parts[0]["text"], "let me check");
+        assert_eq!(parts[1]["functionCall"]["name"], "get_weather");
+        // The arguments string is parsed into a JSON object for `args`.
+        assert_eq!(parts[1]["functionCall"]["args"]["city"], "Paris");
+    }
+
+    #[test]
+    fn chat_json_assistant_pure_tool_call_omits_text_and_tolerates_bad_arguments() {
+        let assistant = ChatMessage {
+            role: Role::Assistant,
+            content: String::new(),
+            name: None,
+            tool_calls: Some(vec![ToolCall::Function {
+                id: "c".into(),
+                function: ToolCallFunction {
+                    name: "f".into(),
+                    arguments: "not json".into(),
+                },
+            }]),
+            tool_call_id: None,
+        };
+        let req = ChatRequest {
+            messages: Some(vec![assistant]),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json(&req).unwrap()).unwrap();
+        let parts = json["contents"][0]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1, "no text part for an empty-content turn");
+        // Unparseable arguments fall back to an empty object.
+        assert_eq!(parts[0]["functionCall"]["args"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn chat_json_tool_result_correlates_name_by_id() {
+        let assistant = ChatMessage {
+            role: Role::Assistant,
+            content: String::new(),
+            name: None,
+            tool_calls: Some(vec![ToolCall::Function {
+                id: "call_1".into(),
+                function: ToolCallFunction {
+                    name: "get_weather".into(),
+                    arguments: r#"{"city":"Paris"}"#.into(),
+                },
+            }]),
+            tool_call_id: None,
+        };
+        let tool = ChatMessage {
+            role: Role::Tool,
+            content: r#"{"temp":20}"#.into(),
+            name: None,
+            tool_calls: None,
+            tool_call_id: Some("call_1".into()),
+        };
+        let req = ChatRequest {
+            messages: Some(vec![
+                ChatMessage::new(Role::User, "weather?"),
+                assistant,
+                tool,
+            ]),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json(&req).unwrap()).unwrap();
+        let contents = json["contents"].as_array().unwrap();
+        // user, model(functionCall), user(functionResponse).
+        assert_eq!(contents.len(), 3);
+        assert_eq!(contents[2]["role"], "user");
+        let response = &contents[2]["parts"][0]["functionResponse"];
+        // Name recovered from the id→name map, not from the tool message.
+        assert_eq!(response["name"], "get_weather");
+        // A JSON-object result is used verbatim.
+        assert_eq!(response["response"]["temp"], 20);
+    }
+
+    #[test]
+    fn chat_json_tool_result_non_object_wrapped() {
+        let assistant = ChatMessage {
+            role: Role::Assistant,
+            content: String::new(),
+            name: None,
+            tool_calls: Some(vec![ToolCall::Function {
+                id: "c1".into(),
+                function: ToolCallFunction {
+                    name: "f".into(),
+                    arguments: "{}".into(),
+                },
+            }]),
+            tool_call_id: None,
+        };
+        let tool = ChatMessage {
+            role: Role::Tool,
+            content: "plain text".into(),
+            name: None,
+            tool_calls: None,
+            tool_call_id: Some("c1".into()),
+        };
+        let req = ChatRequest {
+            messages: Some(vec![assistant, tool]),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json(&req).unwrap()).unwrap();
+        let response = &json["contents"][1]["parts"][0]["functionResponse"];
+        assert_eq!(response["name"], "f");
+        // Non-object content is wrapped under `result`.
+        assert_eq!(response["response"]["result"], "plain text");
+    }
+
+    #[test]
+    fn chat_json_consecutive_tool_results_batched() {
+        let assistant = ChatMessage {
+            role: Role::Assistant,
+            content: String::new(),
+            name: None,
+            tool_calls: Some(vec![
+                ToolCall::Function {
+                    id: "call_a".into(),
+                    function: ToolCallFunction {
+                        name: "wa".into(),
+                        arguments: "{}".into(),
+                    },
+                },
+                ToolCall::Function {
+                    id: "call_b".into(),
+                    function: ToolCallFunction {
+                        name: "wb".into(),
+                        arguments: "{}".into(),
+                    },
+                },
+            ]),
+            tool_call_id: None,
+        };
+        let tool = |id: &str, content: &str| ChatMessage {
+            role: Role::Tool,
+            content: content.into(),
+            name: None,
+            tool_calls: None,
+            tool_call_id: Some(id.into()),
+        };
+        let req = ChatRequest {
+            messages: Some(vec![
+                ChatMessage::new(Role::User, "?"),
+                assistant,
+                tool("call_a", r#"{"v":1}"#),
+                tool("call_b", r#"{"v":2}"#),
+                ChatMessage::new(Role::User, "thanks"),
+            ]),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json(&req).unwrap()).unwrap();
+        let contents = json["contents"].as_array().unwrap();
+        // user, model(functionCall x2), user(functionResponse x2), user("thanks").
+        assert_eq!(contents.len(), 4);
+        assert_eq!(contents[2]["role"], "user");
+        let responses = contents[2]["parts"].as_array().unwrap();
+        assert_eq!(responses.len(), 2, "both tool results in one user turn");
+        assert_eq!(responses[0]["functionResponse"]["name"], "wa");
+        assert_eq!(responses[1]["functionResponse"]["name"], "wb");
+        // The trailing user message flushes the tool-result run into its own turn.
+        assert_eq!(contents[3]["role"], "user");
+        assert_eq!(contents[3]["parts"][0]["text"], "thanks");
+    }
+
+    #[test]
+    fn chat_json_tool_result_unknown_id_errors() {
+        let tool = ChatMessage {
+            role: Role::Tool,
+            content: "{}".into(),
+            name: None,
+            tool_calls: None,
+            tool_call_id: Some("nope".into()),
+        };
+        let req = ChatRequest {
+            messages: Some(vec![ChatMessage::new(Role::User, "hi"), tool]),
+            ..Default::default()
+        };
+        let err = build_chat_request_json(&req).unwrap_err();
+        assert!(matches!(err, InferenceError::Provider(_)), "err: {err}");
+        assert!(err.to_string().contains("nope"), "err: {err}");
+    }
+
+    #[test]
+    fn chat_json_tool_result_missing_id_errors() {
+        let req = ChatRequest {
+            messages: Some(vec![ChatMessage {
+                role: Role::Tool,
+                content: "r".into(),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }]),
+            ..Default::default()
+        };
+        let err = build_chat_request_json(&req).unwrap_err();
+        assert!(matches!(err, InferenceError::Provider(_)), "err: {err}");
+        assert!(err.to_string().contains("tool_call_id"), "err: {err}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Chat request: structured outputs / logprobs (G3b)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn chat_json_response_format_json_schema_sets_response_schema() {
+        use crate::wire::JsonSchemaSpec;
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            response_format: Some(ResponseFormat::JsonSchema {
+                json_schema: JsonSchemaSpec {
+                    name: "person".into(),
+                    description: Some("a person".into()),
+                    schema: serde_json::json!({
+                        "type": "object",
+                        "properties": { "name": { "type": "string" } },
+                    }),
+                    strict: Some(true),
+                },
+            }),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json(&req).unwrap()).unwrap();
+        let cfg = &json["generationConfig"];
+        assert_eq!(cfg["responseMimeType"], "application/json");
+        assert_eq!(cfg["responseSchema"]["type"], "object");
+        assert_eq!(
+            cfg["responseSchema"]["properties"]["name"]["type"],
+            "string"
+        );
+    }
+
+    #[test]
+    fn chat_json_json_object_sets_mime_only() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            response_format: Some(ResponseFormat::JsonObject),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json(&req).unwrap()).unwrap();
+        let cfg = &json["generationConfig"];
+        assert_eq!(cfg["responseMimeType"], "application/json");
+        assert!(cfg.get("responseSchema").is_none());
+    }
+
+    #[test]
+    fn chat_json_logprobs_forwarded() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            logprobs: Some(true),
+            top_logprobs: Some(5),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json(&req).unwrap()).unwrap();
+        let cfg = &json["generationConfig"];
+        assert_eq!(cfg["responseLogprobs"], true);
+        assert_eq!(cfg["logprobs"], 5);
+    }
+
+    #[test]
+    fn chat_json_logprobs_true_without_top_logprobs() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            logprobs: Some(true),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json(&req).unwrap()).unwrap();
+        let cfg = &json["generationConfig"];
+        assert_eq!(cfg["responseLogprobs"], true);
+        assert!(cfg.get("logprobs").is_none());
+    }
+
+    #[test]
+    fn chat_json_advanced_knobs_omitted_when_unset() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json(&req).unwrap()).unwrap();
+        assert!(json.get("tools").is_none());
+        assert!(json.get("toolConfig").is_none());
+        let cfg = &json["generationConfig"];
+        assert!(cfg.get("responseMimeType").is_none());
+        assert!(cfg.get("responseSchema").is_none());
+        assert!(cfg.get("responseLogprobs").is_none());
+        assert!(cfg.get("logprobs").is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Chat response parsing (G3b)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_chat_response_text() {
+        let body = r#"{
+            "candidates": [{
+                "content": {"parts": [{"text": "Hello world"}]},
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 2}
+        }"#;
+        let resp = parse_chat_response_json(body, "gemini-pro").unwrap();
+        assert_eq!(resp.model, "gemini-pro");
+        assert_eq!(resp.choices[0].message.content, "Hello world");
+        assert_eq!(resp.choices[0].finish_reason, FinishReason::Stop);
+        assert!(resp.choices[0].message.tool_calls.is_none());
+        assert!(resp.choices[0].logprobs.is_none());
+        assert_eq!(resp.usage.total_tokens, 7);
+    }
+
+    #[test]
+    fn parse_chat_response_function_calls() {
+        let body = r#"{
+            "candidates": [{
+                "content": {"parts": [
+                    {"functionCall": {"name": "get_weather", "args": {"city": "Paris"}}},
+                    {"functionCall": {"name": "get_time", "args": {}}}
+                ]},
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 8}
+        }"#;
+        let resp = parse_chat_response_json(body, "gemini-pro").unwrap();
+        // functionCall parts force ToolCalls even though Gemini reports STOP.
+        assert_eq!(resp.choices[0].finish_reason, FinishReason::ToolCalls);
+        let calls = resp.choices[0].message.tool_calls.as_ref().unwrap();
+        assert_eq!(calls.len(), 2);
+        let ToolCall::Function { id, function } = &calls[0];
+        assert_eq!(id, "call_0", "ids synthesized by index");
+        assert_eq!(function.name, "get_weather");
+        assert!(function.arguments.contains("Paris"));
+        let ToolCall::Function { id: id1, .. } = &calls[1];
+        assert_eq!(id1, "call_1");
+        // No text parts → empty content.
+        assert_eq!(resp.choices[0].message.content, "");
+    }
+
+    #[test]
+    fn parse_chat_response_text_and_function_call() {
+        let body = r#"{
+            "candidates": [{
+                "content": {"parts": [
+                    {"text": "let me check"},
+                    {"functionCall": {"name": "get_weather", "args": {"city": "Paris"}}}
+                ]},
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 4}
+        }"#;
+        let resp = parse_chat_response_json(body, "m").unwrap();
+        assert_eq!(resp.choices[0].message.content, "let me check");
+        let calls = resp.choices[0].message.tool_calls.as_ref().unwrap();
+        // Ids are indexed by tool-call count, so a leading text part is call_0.
+        let ToolCall::Function { id, .. } = &calls[0];
+        assert_eq!(id, "call_0");
+        assert_eq!(resp.choices[0].finish_reason, FinishReason::ToolCalls);
+    }
+
+    #[test]
+    fn parse_chat_response_finish_reasons() {
+        let finish = |reason: &str| {
+            let body = format!(
+                r#"{{"candidates":[{{"content":{{"parts":[{{"text":"x"}}]}},"finishReason":"{reason}"}}],"usageMetadata":{{"promptTokenCount":1,"candidatesTokenCount":1}}}}"#
+            );
+            parse_chat_response_json(&body, "m").unwrap().choices[0].finish_reason
+        };
+        assert_eq!(finish("STOP"), FinishReason::Stop);
+        assert_eq!(finish("MAX_TOKENS"), FinishReason::Length);
+        assert_eq!(finish("SAFETY"), FinishReason::ContentFilter);
+        assert_eq!(finish("RECITATION"), FinishReason::ContentFilter);
+        assert_eq!(finish("SOME_FUTURE_REASON"), FinishReason::Stop);
+    }
+
+    #[test]
+    fn parse_chat_response_logprobs() {
+        let body = r#"{
+            "candidates": [{
+                "content": {"parts": [{"text": "hi"}]},
+                "finishReason": "STOP",
+                "logprobsResult": {
+                    "chosenCandidates": [
+                        {"token": "hi", "logProbability": -0.05}
+                    ],
+                    "topCandidates": [
+                        {"candidates": [
+                            {"token": "hi", "logProbability": -0.05},
+                            {"token": "hey", "logProbability": -2.3}
+                        ]}
+                    ]
+                }
+            }],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+        }"#;
+        let resp = parse_chat_response_json(body, "m").unwrap();
+        let lp = resp.choices[0].logprobs.as_ref().unwrap();
+        assert_eq!(lp.content.len(), 1);
+        assert_eq!(lp.content[0].token, "hi");
+        assert!((lp.content[0].logprob + 0.05).abs() < 1e-6);
+        assert_eq!(lp.content[0].top_logprobs.len(), 2);
+        assert_eq!(lp.content[0].top_logprobs[1].token, "hey");
+        assert!((lp.content[0].top_logprobs[1].logprob + 2.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_chat_response_logprobs_absent_is_none() {
+        let body = r#"{
+            "candidates": [{
+                "content": {"parts": [{"text": "hi"}]},
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+        }"#;
+        let resp = parse_chat_response_json(body, "m").unwrap();
+        assert!(resp.choices[0].logprobs.is_none());
+    }
+
+    #[test]
+    fn parse_chat_response_api_error() {
+        let body = r#"{"error": {"code": 400, "message": "API key not valid"}}"#;
+        let err = parse_chat_response_json(body, "gemini-pro").unwrap_err();
+        assert!(err.to_string().contains("API key not valid"), "err: {err}");
+        assert!(err.to_string().contains("400"), "err: {err}");
+    }
+
+    #[test]
+    fn parse_chat_response_invalid_json() {
+        let err = parse_chat_response_json("not json", "m").unwrap_err();
+        assert!(err.to_string().contains("invalid JSON"), "err: {err}");
+    }
+
+    #[test]
+    fn parse_chat_response_empty_candidates_errors() {
+        let body = r#"{"candidates": []}"#;
+        let err = parse_chat_response_json(body, "m").unwrap_err();
+        assert!(err.to_string().contains("empty candidates"), "err: {err}");
     }
 
     // -----------------------------------------------------------------------
