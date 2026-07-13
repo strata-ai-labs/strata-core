@@ -64,6 +64,9 @@ impl Cli {
 }
 
 /// Top-level command families.
+// The `Inference` family carries the large `Generate` chat-flag set (see the
+// same allow on `InferenceCommand`); clap subcommand enums are not boxed.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Subcommand)]
 pub(crate) enum TopCommand {
     /// Prepare the Strata home directory and print next steps.
@@ -1582,6 +1585,25 @@ pub(crate) enum InferenceCommand {
         /// Named chat template override, e.g. chatml/llama3/gemma (local).
         #[arg(long)]
         chat_format: Option<String>,
+        /// Tools (functions) as a JSON array the model may call.
+        #[arg(long)]
+        tools_json: Option<String>,
+        /// Tool choice: `auto` | `none` | `required` | a function name.
+        #[arg(long)]
+        tool_choice: Option<String>,
+        /// JSON Schema for structured output (sets `response_format` to
+        /// `json_schema`; overrides `--response-format`).
+        #[arg(long)]
+        response_schema: Option<String>,
+        /// Name for the --response-schema output (default: "response").
+        #[arg(long)]
+        response_schema_name: Option<String>,
+        /// Return per-token log-probabilities.
+        #[arg(long)]
+        logprobs: bool,
+        /// Number of top alternatives per token (implies --logprobs).
+        #[arg(long)]
+        top_logprobs: Option<u32>,
     },
     /// Tokenize text with a local model.
     Tokenize {

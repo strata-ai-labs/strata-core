@@ -104,6 +104,14 @@ pub struct InferenceCapability {
     pub network_enabled: bool,
     /// Known embedding dimension, if available.
     pub embedding_dim: usize,
+    /// Whether chat requests may offer `tools` (function calling).
+    pub supports_tools: bool,
+    /// Whether `response_format: json_object` is honored.
+    pub supports_json_object: bool,
+    /// Whether `response_format: json_schema` (structured output) is honored.
+    pub supports_json_schema: bool,
+    /// Whether `logprobs` are returned in the response.
+    pub supports_logprobs: bool,
 }
 
 /// Pull-model command output.
@@ -299,6 +307,14 @@ impl InferenceRuntime {
                 || embedding_provider_feature_enabled_for_capability(provider),
             network_enabled: self.config.network_enabled,
             embedding_dim: local_info.map_or(0, |info| info.embedding_dim),
+            // Chat feature support per provider. `json_object` is unsupported by
+            // Anthropic (use json_schema); `logprobs` are unsupported by
+            // Anthropic and local (deferred). Local structured outputs and tool
+            // calling are grammar-based.
+            supports_tools: true,
+            supports_json_object: provider != ProviderKind::Anthropic,
+            supports_json_schema: true,
+            supports_logprobs: matches!(provider, ProviderKind::OpenAI | ProviderKind::Google),
         })
     }
 
@@ -382,10 +398,9 @@ impl InferenceRuntime {
                     model_spec,
                     request.model_config.as_ref(),
                 )?;
-                let response = engine.generate_chat(request)?;
-                return Ok(crate::wire::ChatResponse::from_internal(
-                    model_spec, response,
-                ));
+                let mut response = engine.generate_chat(request)?;
+                response.model = model_spec.to_string();
+                return Ok(response);
             }
 
             if !self.config.network_enabled {
@@ -402,10 +417,9 @@ impl InferenceRuntime {
             #[cfg(any(feature = "anthropic", feature = "openai", feature = "google"))]
             {
                 let mut engine = self.cloud_generation_engine(model_spec)?;
-                let response = engine.generate_chat(request)?;
-                Ok(crate::wire::ChatResponse::from_internal(
-                    model_spec, response,
-                ))
+                let mut response = engine.generate_chat(request)?;
+                response.model = model_spec.to_string();
+                Ok(response)
             }
         }
 

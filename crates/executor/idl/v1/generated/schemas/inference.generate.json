@@ -1,7 +1,7 @@
 {
   "$defs": {
     "ChatChoice": {
-      "description": "One generation choice.",
+      "description": "One generation choice.\n\nCarries optional f32 log-probabilities, so this type is [`PartialEq`] but\nnot [`Eq`].",
       "properties": {
         "finish_reason": {
           "$ref": "#/$defs/FinishReason",
@@ -12,6 +12,17 @@
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
+        },
+        "logprobs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LogProbs"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Per-token log-probabilities, when requested via `logprobs`."
         },
         "message": {
           "$ref": "#/$defs/ChatMessage",
@@ -26,10 +37,11 @@
       "type": "object"
     },
     "ChatMessage": {
-      "description": "One chat message. (Content is text in this phase; typed multimodal parts and\ntool calls arrive in a later phase.)",
+      "description": "One chat message. (Content is text in this phase; typed multimodal parts\narrive in a later phase.)",
       "properties": {
         "content": {
-          "description": "Message text.",
+          "default": "",
+          "description": "Message text. Empty (or omitted) for an assistant turn that only calls\ntools.",
           "type": "string"
         },
         "name": {
@@ -42,11 +54,27 @@
         "role": {
           "$ref": "#/$defs/Role",
           "description": "Message author."
+        },
+        "tool_call_id": {
+          "description": "For a `tool` message: the id of the [`ToolCall`] this message answers.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tool_calls": {
+          "description": "Tool calls emitted by the assistant (function calling). Present on an\nassistant message that invokes one or more tools.",
+          "items": {
+            "$ref": "#/$defs/ToolCall"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         }
       },
       "required": [
-        "role",
-        "content"
+        "role"
       ],
       "type": "object"
     },
@@ -228,6 +256,27 @@
             "null"
           ]
         },
+        "tool_choice": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolChoice"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How the model should choose among `tools`."
+        },
+        "tools": {
+          "description": "Tools (functions) the model may call.",
+          "items": {
+            "$ref": "#/$defs/Tool"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "top_k": {
           "description": "Top-k sampling cutoff.",
           "format": "uint32",
@@ -320,6 +369,83 @@
           "type": "string"
         }
       ]
+    },
+    "FunctionDef": {
+      "description": "A function tool definition.",
+      "properties": {
+        "description": {
+          "description": "What the function does (helps the model decide when to call it).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Function name the model calls.",
+          "type": "string"
+        },
+        "parameters": {
+          "description": "JSON Schema describing the arguments object."
+        },
+        "strict": {
+          "description": "Enforce strict schema adherence. Provider-dependent.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "JsonSchemaSpec": {
+      "description": "A named JSON Schema for structured outputs (OpenAI `json_schema` block).",
+      "properties": {
+        "description": {
+          "description": "Human-readable description of the schema's intent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Schema name (the identifier the model is told to conform to).",
+          "type": "string"
+        },
+        "schema": {
+          "description": "The JSON Schema the output must validate against."
+        },
+        "strict": {
+          "description": "Enforce strict adherence (no additional properties). Provider-dependent;\nenforced exactly for local (GBNF) and OpenAI structured outputs.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "schema"
+      ],
+      "type": "object"
+    },
+    "LogProbs": {
+      "description": "Per-token log-probabilities for a choice (OpenAI `logprobs.content`).",
+      "properties": {
+        "content": {
+          "description": "One entry per generated token, in order.",
+          "items": {
+            "$ref": "#/$defs/TokenLogProb"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "type": "object"
     },
     "Mirostat": {
       "description": "Mirostat perplexity-control sampling (llama.cpp extension).",
@@ -415,6 +541,29 @@
       },
       "type": "object"
     },
+    "NamedToolChoice": {
+      "description": "Force a specific function call (`{\"type\":\"function\",\"function\":{\"name\":…}}`).",
+      "oneOf": [
+        {
+          "description": "Require the named function.",
+          "properties": {
+            "function": {
+              "$ref": "#/$defs/ToolChoiceFunction",
+              "description": "The function to force."
+            },
+            "type": {
+              "const": "function",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "function"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "Pooling": {
       "description": "Embedding pooling strategy (a context-creation param — load-time).",
       "oneOf": [
@@ -441,7 +590,7 @@
       ]
     },
     "ResponseFormat": {
-      "description": "Output format constraint. (`json_schema` and tools arrive with structured\noutputs in a later phase.)",
+      "description": "Output format constraint.\n\n`JsonSchema` carries the schema as an opaque [`serde_json::Value`], so this\nenum is [`PartialEq`] but not [`Eq`].",
       "oneOf": [
         {
           "description": "Free-form text (default).",
@@ -466,6 +615,24 @@
           },
           "required": [
             "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Constrain output to a caller-supplied JSON Schema (structured outputs).",
+          "properties": {
+            "json_schema": {
+              "$ref": "#/$defs/JsonSchemaSpec",
+              "description": "The named schema the output must conform to."
+            },
+            "type": {
+              "const": "json_schema",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "json_schema"
           ],
           "type": "object"
         }
@@ -495,6 +662,192 @@
           "type": "string"
         }
       ]
+    },
+    "TokenLogProb": {
+      "description": "Log-probability of one generated token.",
+      "properties": {
+        "bytes": {
+          "description": "Raw UTF-8 bytes of the token (present when it is not standalone-UTF-8).",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "logprob": {
+          "description": "Natural-log probability of the token.",
+          "format": "float",
+          "type": "number"
+        },
+        "token": {
+          "description": "The token text.",
+          "type": "string"
+        },
+        "top_logprobs": {
+          "description": "The most likely alternatives at this position (up to `top_logprobs`).",
+          "items": {
+            "$ref": "#/$defs/TopLogProb"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "token",
+        "logprob"
+      ],
+      "type": "object"
+    },
+    "Tool": {
+      "description": "A tool the model may call. Only `function` tools exist today (OpenAI-shaped);\nthe tagged form reserves room for future tool kinds.\n\nHolds a JSON-Schema [`serde_json::Value`], so this type is [`PartialEq`] but\nnot [`Eq`].",
+      "oneOf": [
+        {
+          "description": "A function tool with a JSON-Schema parameter contract.",
+          "properties": {
+            "function": {
+              "$ref": "#/$defs/FunctionDef",
+              "description": "The function definition."
+            },
+            "type": {
+              "const": "function",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "function"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ToolCall": {
+      "description": "A tool call emitted by the assistant.",
+      "oneOf": [
+        {
+          "description": "A function invocation.",
+          "properties": {
+            "function": {
+              "$ref": "#/$defs/ToolCallFunction",
+              "description": "The invoked function and its arguments."
+            },
+            "id": {
+              "description": "Provider-assigned call id (echoed in the answering `tool` message).",
+              "type": "string"
+            },
+            "type": {
+              "const": "function",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "function"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ToolCallFunction": {
+      "description": "The function invoked by a [`ToolCall`].",
+      "properties": {
+        "arguments": {
+          "description": "Arguments as a JSON-encoded string (OpenAI convention).",
+          "type": "string"
+        },
+        "name": {
+          "description": "Function name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "arguments"
+      ],
+      "type": "object"
+    },
+    "ToolChoice": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ToolChoiceMode",
+          "description": "A coarse mode: `none`, `auto`, or `required`."
+        },
+        {
+          "$ref": "#/$defs/NamedToolChoice",
+          "description": "Force a specific named function."
+        }
+      ],
+      "description": "How the model should choose among the offered `tools`."
+    },
+    "ToolChoiceFunction": {
+      "description": "The function a [`NamedToolChoice`] forces.",
+      "properties": {
+        "name": {
+          "description": "Function name to force.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "ToolChoiceMode": {
+      "description": "Coarse tool-choice mode.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "Never call a tool.",
+          "type": "string"
+        },
+        {
+          "const": "auto",
+          "description": "Model decides whether to call a tool.",
+          "type": "string"
+        },
+        {
+          "const": "required",
+          "description": "Model must call at least one tool.",
+          "type": "string"
+        }
+      ]
+    },
+    "TopLogProb": {
+      "description": "One alternative token and its log-probability.",
+      "properties": {
+        "bytes": {
+          "description": "Raw UTF-8 bytes of the token.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "logprob": {
+          "description": "Natural-log probability of the token.",
+          "format": "float",
+          "type": "number"
+        },
+        "token": {
+          "description": "The token text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "token",
+        "logprob"
+      ],
+      "type": "object"
     },
     "Usage": {
       "description": "Token usage accounting.",

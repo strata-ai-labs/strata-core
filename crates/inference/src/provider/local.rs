@@ -7,11 +7,15 @@
 //! [`LocalProvider`] wraps a [`LlamaCppContext`] loaded for generation and
 //! implements the autoregressive decode loop with sampler chain support.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use crate::llama::context::LlamaCppContext;
 use crate::llama::ffi::{llama_api_lock, LlamaSampler};
-use crate::wire::{ChatRequest, ModelConfig, Role};
+use crate::wire::{
+    ChatRequest, ChatResponse, FinishReason, ModelConfig, NamedToolChoice, ResponseFormat, Role,
+    Tool, ToolChoice, ToolChoiceMode,
+};
 use crate::{GenerateRequest, GenerateResponse, InferenceError, StopReason};
 
 /// Local generation provider using llama.cpp.
@@ -160,14 +164,47 @@ impl LocalProvider {
     pub(crate) fn generate_chat(
         &mut self,
         request: &ChatRequest,
-    ) -> Result<GenerateResponse, InferenceError> {
+    ) -> Result<ChatResponse, InferenceError> {
         let _api_guard = llama_api_lock();
-        let prompt = self.render_chat(request)?;
-        let sampler = self.build_sampler_chat(request)?;
+        let plan = tool_plan(request);
+
+        // `tool_choice: auto` (best-effort) injects a tool-instruction preamble;
+        // Forced/Disabled do not.
+        let preamble = match plan.mode {
+            // In `Auto` mode `tool_plan` guarantees a non-empty tool set, so the
+            // `unwrap_or_default` fallback is unreachable.
+            ToolMode::Auto => Some(tool_preamble(request.tools.as_deref().unwrap_or_default())),
+            ToolMode::Forced | ToolMode::Disabled => None,
+        };
+        let prompt = self.render_chat(request, preamble.as_deref())?;
+
+        // Grammar precedence: explicit `grammar` > forced tool-call grammar >
+        // `response_format` > none (see `resolve_grammar`).
+        let grammar = resolve_grammar(request, &plan);
+        let sampler = self.build_sampler_chat(request, grammar.as_deref())?;
+
         let max_tokens = request.max_tokens.unwrap_or(256) as usize;
         let stop_sequences = request.stop.clone().unwrap_or_default();
         let stop_tokens = request.stop_token_ids.clone().unwrap_or_default();
-        self.run_generation(&prompt, sampler, max_tokens, &stop_sequences, &stop_tokens)
+        let generated =
+            self.run_generation(&prompt, sampler, max_tokens, &stop_sequences, &stop_tokens)?;
+
+        // When tools were offered (forced or auto), lift any tool calls out of
+        // the generated text and surface them with `finish_reason: tool_calls`.
+        if plan.mode != ToolMode::Disabled {
+            let (leftover, calls) =
+                crate::tool_grammar::parse_tool_calls_from_text(&generated.text);
+            if let Some(calls) = calls {
+                let mut response = ChatResponse::from_internal("local", generated);
+                let choice = &mut response.choices[0];
+                choice.message.content = leftover;
+                choice.message.tool_calls = Some(calls);
+                choice.finish_reason = FinishReason::ToolCalls;
+                return Ok(response);
+            }
+        }
+        // `model` is normalized to the caller's spec upstream.
+        Ok(ChatResponse::from_internal("local", generated))
     }
 
     /// Runs the autoregressive decode loop with a pre-built sampler.
@@ -270,21 +307,37 @@ impl LocalProvider {
 
     /// Renders a chat request to a prompt via the chat-template cascade: the
     /// model's embedded `tokenizer.chat_template`, falling back to chatml.
-    fn render_chat(&self, request: &ChatRequest) -> Result<String, InferenceError> {
+    ///
+    /// `preamble`, when present, is injected ahead of the conversation (as a
+    /// leading system message, or prepended to a raw `prompt`) — used to carry
+    /// the tool-instruction preamble for `tool_choice: auto`.
+    fn render_chat(
+        &self,
+        request: &ChatRequest,
+        preamble: Option<&str>,
+    ) -> Result<String, InferenceError> {
         if let Some(prompt) = &request.prompt {
-            return Ok(prompt.clone());
+            return Ok(match preamble {
+                Some(pre) => format!("{pre}\n\n{prompt}"),
+                None => prompt.clone(),
+            });
         }
-        let messages: Vec<(String, String)> = request
+        let user_messages: Vec<(String, String)> = request
             .messages
             .iter()
             .flatten()
             .map(|m| (role_str(m.role).to_string(), m.content.clone()))
             .collect();
-        if messages.is_empty() {
+        if user_messages.is_empty() {
             return Err(InferenceError::InvalidSpec(
                 "chat request has no messages".to_string(),
             ));
         }
+        let mut messages: Vec<(String, String)> = Vec::with_capacity(user_messages.len() + 1);
+        if let Some(pre) = preamble {
+            messages.push(("system".to_string(), pre.to_string()));
+        }
+        messages.extend(user_messages);
         // Cascade: explicit chat_format name (a built-in llama.cpp template) ->
         // the model's embedded template -> chatml fallback.
         let explicit = request
@@ -307,11 +360,17 @@ impl LocalProvider {
     /// the correct order (grammar, penalties, then the truncation chain or a
     /// terminal mirostat sampler). `tfs_z` has no sampler in this llama.cpp and
     /// is ignored for local.
-    fn build_sampler_chat(&self, request: &ChatRequest) -> Result<LlamaSampler, InferenceError> {
+    fn build_sampler_chat(
+        &self,
+        request: &ChatRequest,
+        grammar: Option<&str>,
+    ) -> Result<LlamaSampler, InferenceError> {
         let api = &self.ctx.api;
         let chain = api.sampler_chain_init(api.sampler_chain_default_params());
 
-        if let Some(grammar) = &request.grammar {
+        // Grammar constraint first — masks tokens that violate the grammar. The
+        // effective grammar is resolved by the caller (see `resolve_grammar`).
+        if let Some(grammar) = grammar {
             let g = api
                 .sampler_init_grammar(self.ctx.vocab, grammar, "root")
                 .map_err(InferenceError::LlamaCpp)?;
@@ -494,9 +553,300 @@ fn role_str(role: Role) -> &'static str {
     }
 }
 
+/// The GBNF grammar to constrain local generation, if any.
+///
+/// An explicit raw `grammar` (the low-level GBNF escape hatch) takes precedence.
+/// Otherwise `response_format` maps to a grammar: `json_object` uses the
+/// canonical JSON-object grammar, and `json_schema` is converted via
+/// [`crate::grammar::json_schema_to_gbnf`]. Free-form text yields `None`.
+fn effective_grammar(request: &ChatRequest) -> Option<String> {
+    if let Some(grammar) = &request.grammar {
+        return Some(grammar.clone());
+    }
+    match &request.response_format {
+        Some(ResponseFormat::JsonObject) => Some(crate::grammar::JSON_OBJECT_GRAMMAR.to_string()),
+        Some(ResponseFormat::JsonSchema { json_schema }) => {
+            Some(crate::grammar::json_schema_to_gbnf(&json_schema.schema))
+        }
+        Some(ResponseFormat::Text) | None => None,
+    }
+}
+
+/// How the local provider handles tool calling for a chat request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolMode {
+    /// No tools offered, or `tool_choice: none`: plain generation.
+    Disabled,
+    /// `tool_choice: auto` (the default when tools are present): inject a
+    /// tool-instruction preamble and best-effort parse `<tool_call>` blocks; no
+    /// grammar constraint.
+    Auto,
+    /// `tool_choice: required` or a named function: force a tool-call grammar.
+    Forced,
+}
+
+/// The resolved tool plan: the mode plus, for a named choice, the forced name.
+struct ToolPlan {
+    mode: ToolMode,
+    forced: Option<String>,
+}
+
+/// Classify a chat request's tool intent.
+///
+/// Tools present with no explicit `tool_choice` default to `auto`. `none`
+/// disables tools even when they are offered. A named function forces that call.
+fn tool_plan(request: &ChatRequest) -> ToolPlan {
+    let has_tools = request.tools.as_deref().is_some_and(|t| !t.is_empty());
+    if !has_tools {
+        return ToolPlan {
+            mode: ToolMode::Disabled,
+            forced: None,
+        };
+    }
+    match &request.tool_choice {
+        None | Some(ToolChoice::Mode(ToolChoiceMode::Auto)) => ToolPlan {
+            mode: ToolMode::Auto,
+            forced: None,
+        },
+        Some(ToolChoice::Mode(ToolChoiceMode::None)) => ToolPlan {
+            mode: ToolMode::Disabled,
+            forced: None,
+        },
+        Some(ToolChoice::Mode(ToolChoiceMode::Required)) => ToolPlan {
+            mode: ToolMode::Forced,
+            forced: None,
+        },
+        Some(ToolChoice::Named(NamedToolChoice::Function { function })) => ToolPlan {
+            mode: ToolMode::Forced,
+            forced: Some(function.name.clone()),
+        },
+    }
+}
+
+/// The GBNF grammar to constrain generation, honoring tool intent.
+///
+/// Precedence: an explicit raw `grammar` wins; then a forced tool-call grammar
+/// (`tool_choice: required`/named) overrides `response_format`; then
+/// `response_format`; else none. `tool_choice: auto` does not constrain
+/// generation (tools are parsed best-effort from the output).
+fn resolve_grammar(request: &ChatRequest, plan: &ToolPlan) -> Option<String> {
+    if request.grammar.is_none() && plan.mode == ToolMode::Forced {
+        // `Forced` implies a non-empty tool set (see `tool_plan`), so the
+        // `unwrap_or_default` fallback is unreachable.
+        let tools = request.tools.as_deref().unwrap_or_default();
+        return Some(crate::tool_grammar::tool_call_grammar(
+            tools,
+            plan.forced.as_deref(),
+        ));
+    }
+    effective_grammar(request)
+}
+
+/// A system preamble describing the offered tools and the `<tool_call>` calling
+/// convention, injected for `tool_choice: auto` (best-effort).
+///
+/// This is model-dependent by design: small local models may not comply.
+fn tool_preamble(tools: &[Tool]) -> String {
+    let mut out = String::from(
+        "You can call tools. To call a tool, emit a single block of the form \
+         <tool_call>{\"name\": \"<tool_name>\", \"arguments\": { ... }}</tool_call> \
+         and nothing else. If no tool is needed, answer the user normally.\n\n\
+         Available tools:\n",
+    );
+    for tool in tools {
+        let function = crate::tool_grammar::function_of(tool);
+        // Writing to a `String` is infallible.
+        let _ = write!(out, "- {}", function.name);
+        if let Some(description) = &function.description {
+            let _ = write!(out, ": {description}");
+        }
+        if let Some(parameters) = &function.parameters {
+            if let Ok(schema) = serde_json::to_string(parameters) {
+                let _ = write!(out, " (arguments JSON schema: {schema})");
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wire::{FunctionDef, ToolChoiceFunction};
+
+    // -----------------------------------------------------------------------
+    // effective_grammar unit tests (no libllama needed)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn effective_grammar_none_for_text() {
+        let mut req = ChatRequest {
+            prompt: Some("hi".into()),
+            ..Default::default()
+        };
+        assert!(effective_grammar(&req).is_none());
+        req.response_format = Some(ResponseFormat::Text);
+        assert!(effective_grammar(&req).is_none());
+    }
+
+    #[test]
+    fn effective_grammar_explicit_grammar_wins() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            grammar: Some("root ::= \"x\"".into()),
+            response_format: Some(ResponseFormat::JsonObject),
+            ..Default::default()
+        };
+        assert_eq!(effective_grammar(&req).as_deref(), Some("root ::= \"x\""));
+    }
+
+    #[test]
+    fn effective_grammar_json_object_and_schema() {
+        let obj = ChatRequest {
+            prompt: Some("hi".into()),
+            response_format: Some(ResponseFormat::JsonObject),
+            ..Default::default()
+        };
+        assert!(effective_grammar(&obj)
+            .unwrap()
+            .contains("root   ::= object"));
+
+        let schema = ChatRequest {
+            prompt: Some("hi".into()),
+            response_format: Some(ResponseFormat::JsonSchema {
+                json_schema: crate::wire::JsonSchemaSpec {
+                    name: "p".into(),
+                    description: None,
+                    schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {"n": {"type": "string"}},
+                        "required": ["n"]
+                    }),
+                    strict: None,
+                },
+            }),
+            ..Default::default()
+        };
+        let g = effective_grammar(&schema).unwrap();
+        assert!(g.starts_with("root ::= obj-"));
+        assert!(g.contains("\\\"n\\\""));
+    }
+
+    // -----------------------------------------------------------------------
+    // tool_plan / resolve_grammar unit tests (no libllama needed)
+    // -----------------------------------------------------------------------
+
+    fn weather_tool() -> Tool {
+        Tool::Function {
+            function: FunctionDef {
+                name: "get_weather".into(),
+                description: Some("look up weather".into()),
+                parameters: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"]
+                })),
+                strict: None,
+            },
+        }
+    }
+
+    fn chat_with_tools(choice: Option<ToolChoice>) -> ChatRequest {
+        ChatRequest {
+            prompt: Some("hi".into()),
+            tools: Some(vec![weather_tool()]),
+            tool_choice: choice,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn tool_plan_no_tools_is_disabled() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            ..Default::default()
+        };
+        assert_eq!(tool_plan(&req).mode, ToolMode::Disabled);
+    }
+
+    #[test]
+    fn tool_plan_defaults_to_auto_when_tools_present() {
+        let plan = tool_plan(&chat_with_tools(None));
+        assert_eq!(plan.mode, ToolMode::Auto);
+        assert!(plan.forced.is_none());
+    }
+
+    #[test]
+    fn tool_plan_none_disables_even_with_tools() {
+        let plan = tool_plan(&chat_with_tools(Some(ToolChoice::Mode(
+            ToolChoiceMode::None,
+        ))));
+        assert_eq!(plan.mode, ToolMode::Disabled);
+    }
+
+    #[test]
+    fn tool_plan_required_is_forced() {
+        let plan = tool_plan(&chat_with_tools(Some(ToolChoice::Mode(
+            ToolChoiceMode::Required,
+        ))));
+        assert_eq!(plan.mode, ToolMode::Forced);
+        assert!(plan.forced.is_none());
+    }
+
+    #[test]
+    fn tool_plan_named_is_forced_with_name() {
+        let plan = tool_plan(&chat_with_tools(Some(ToolChoice::Named(
+            NamedToolChoice::Function {
+                function: ToolChoiceFunction {
+                    name: "get_weather".into(),
+                },
+            },
+        ))));
+        assert_eq!(plan.mode, ToolMode::Forced);
+        assert_eq!(plan.forced.as_deref(), Some("get_weather"));
+    }
+
+    #[test]
+    fn resolve_grammar_none_without_tools_or_format() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            ..Default::default()
+        };
+        let plan = tool_plan(&req);
+        assert!(resolve_grammar(&req, &plan).is_none());
+    }
+
+    #[test]
+    fn resolve_grammar_forced_produces_tool_grammar() {
+        let req = chat_with_tools(Some(ToolChoice::Mode(ToolChoiceMode::Required)));
+        let plan = tool_plan(&req);
+        let g = resolve_grammar(&req, &plan).expect("a tool grammar");
+        assert!(g.contains("\\\"get_weather\\\""), "tool name literal: {g}");
+        assert!(g.contains("\\\"name\\\""), "tool-call shape: {g}");
+    }
+
+    #[test]
+    fn resolve_grammar_explicit_grammar_wins_over_tools() {
+        let mut req = chat_with_tools(Some(ToolChoice::Mode(ToolChoiceMode::Required)));
+        req.grammar = Some("root ::= \"x\"".into());
+        let plan = tool_plan(&req);
+        assert_eq!(
+            resolve_grammar(&req, &plan).as_deref(),
+            Some("root ::= \"x\"")
+        );
+    }
+
+    #[test]
+    fn resolve_grammar_auto_uses_response_format_not_tools() {
+        let mut req = chat_with_tools(Some(ToolChoice::Mode(ToolChoiceMode::Auto)));
+        req.response_format = Some(ResponseFormat::JsonObject);
+        let plan = tool_plan(&req);
+        let g = resolve_grammar(&req, &plan).expect("a grammar");
+        // Auto does not force a tool-call grammar; `response_format` applies.
+        assert!(g.contains("root   ::= object"), "json-object grammar: {g}");
+        assert!(!g.contains("\\\"name\\\""), "not a tool-call grammar: {g}");
+    }
 
     // -----------------------------------------------------------------------
     // check_stop_sequences unit tests (no libllama needed)

@@ -48,6 +48,22 @@
         "requires_network": {
           "description": "Whether the operation requires network access.",
           "type": "boolean"
+        },
+        "supports_json_object": {
+          "description": "Whether `response_format: json_object` is honored.",
+          "type": "boolean"
+        },
+        "supports_json_schema": {
+          "description": "Whether `response_format: json_schema` (structured output) is honored.",
+          "type": "boolean"
+        },
+        "supports_logprobs": {
+          "description": "Whether `logprobs` are returned in the response.",
+          "type": "boolean"
+        },
+        "supports_tools": {
+          "description": "Whether chat requests may offer `tools` (function calling).",
+          "type": "boolean"
         }
       },
       "required": [
@@ -61,7 +77,11 @@
         "requires_api_key",
         "provider_feature_enabled",
         "network_enabled",
-        "embedding_dim"
+        "embedding_dim",
+        "supports_tools",
+        "supports_json_object",
+        "supports_json_schema",
+        "supports_logprobs"
       ],
       "type": "object"
     },

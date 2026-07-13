@@ -24,8 +24,16 @@
 
 pub mod api;
 mod error;
+// Compiled unconditionally so its unit tests run without the `local` feature;
+// only `provider/local.rs` consumes it, so it is dead code when `local` is off.
+#[cfg_attr(not(feature = "local"), allow(dead_code))]
+mod grammar;
 pub mod registry;
 pub mod runtime;
+// Compiled unconditionally alongside `grammar` (same rationale); only
+// `provider/local.rs` consumes it, so it is dead code when `local` is off.
+#[cfg_attr(not(feature = "local"), allow(dead_code))]
+mod tool_grammar;
 pub mod wire;
 
 #[cfg(feature = "local")]
@@ -65,8 +73,10 @@ pub use runtime::{
 };
 pub use wire::{
     ChatChoice, ChatMessage, ChatRequest, ChatResponse, EmbedInput, EmbeddingItem,
-    EmbeddingsRequest, EmbeddingsResponse, FinishReason, InputType, Mirostat, ModelConfig, Pooling,
-    RerankRequest, RerankResponse, RerankResult, ResponseFormat, Role, Usage,
+    EmbeddingsRequest, EmbeddingsResponse, FinishReason, FunctionDef, InputType, JsonSchemaSpec,
+    LogProbs, Mirostat, ModelConfig, NamedToolChoice, Pooling, RerankRequest, RerankResponse,
+    RerankResult, ResponseFormat, Role, TokenLogProb, Tool, ToolCall, ToolCallFunction, ToolChoice,
+    ToolChoiceFunction, ToolChoiceMode, TopLogProb, Usage,
 };
 
 #[cfg(feature = "local")]

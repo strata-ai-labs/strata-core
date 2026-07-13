@@ -231,9 +231,28 @@ correct llama.cpp order (grammar → penalties → top_k → typical_p → top_p
   errors, regen + fixtures.
 - **E. CLI** — verbs/flags/render.
 - **F. SDK `db.ai`** — namespace + Model handle (after the cloud-vs-local wheel
-  decision).
-- **G. (phase 2) tools/function-calling + `response_format: json_schema`**
-  end-to-end; multimodal content parts.
+  decision). *Pending.*
+- **G. tools/function-calling + `response_format: json_schema` + logprobs** —
+  **DONE** (sub-slices G1–G5):
+  - G1: complete wire DTO surface (`tools`/`tool_choice`/`tool_calls`,
+    `ResponseFormat::JsonSchema`, `LogProbs`).
+  - G2: OpenAI native (tools, tool_choice, json_schema strict, logprobs);
+    `generate_chat` now returns `ChatResponse`.
+  - G3: Anthropic (tool_use/tool_result blocks, forced-tool json_schema) and
+    Google (functionDeclarations/toolConfig/responseSchema, responseLogprobs).
+  - G4: local — JSON-schema→GBNF converter (G4a), structured outputs via the
+    grammar sampler (G4b), and grammar-forced / preamble-parsed tool calling
+    (G4c).
+  - G5: capability matrix (`supports_tools`/`_json_object`/`_json_schema`/
+    `_logprobs`), executor re-exports, CLI flags
+    (`--tools-json`/`--tool-choice`/`--response-schema`/`--logprobs`), IDL regen
+    + re-blessed fixtures.
+
+  **Deferred (documented, honest capability):** local `logprobs`
+  (`supports_logprobs = false` for local/Anthropic — the decode-loop change is
+  high-risk, low-value versus working cloud logprobs); local multi-tool
+  argument grammars fall back to a generic JSON object (the `name` is always
+  constrained); multimodal content parts.
 
 ## Testing
 

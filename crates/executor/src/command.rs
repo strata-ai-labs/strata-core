@@ -17,6 +17,11 @@ const fn is_false(value: &bool) -> bool {
 }
 
 /// Serializable executor command.
+// `Command` is the serialized wire enum; its variants are inherently large
+// (chat request bodies, graph node payloads) and are constructed one-at-a-time,
+// not held in bulk. Boxing a variant would change the generated JSON Schema
+// (schemars does not treat `Box<T>` transparently), so we accept the size spread.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]

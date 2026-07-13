@@ -10,7 +10,11 @@
     "provider": "anthropic",
     "provider_feature_enabled": true,
     "requires_api_key": true,
-    "requires_network": true
+    "requires_network": true,
+    "supports_json_object": false,
+    "supports_json_schema": true,
+    "supports_logprobs": false,
+    "supports_tools": true
   },
   "type": "inference_capability"
 }

@@ -113,6 +113,10 @@ fn inference_outputs_round_trip_through_json() {
         provider_feature_enabled: true,
         network_enabled: true,
         embedding_dim: 0,
+        supports_tools: true,
+        supports_json_object: true,
+        supports_json_schema: true,
+        supports_logprobs: true,
     };
     let cases = vec![
         Output::InferenceModels {
@@ -130,6 +134,7 @@ fn inference_outputs_round_trip_through_json() {
                 index: 0,
                 message: ChatMessage::new(Role::Assistant, "hello"),
                 finish_reason: FinishReason::Stop,
+                logprobs: None,
             }],
             usage: Usage {
                 prompt_tokens: 2,

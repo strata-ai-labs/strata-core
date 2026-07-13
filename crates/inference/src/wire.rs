@@ -40,34 +40,47 @@ pub enum Role {
     Tool,
 }
 
-/// One chat message. (Content is text in this phase; typed multimodal parts and
-/// tool calls arrive in a later phase.)
+/// One chat message. (Content is text in this phase; typed multimodal parts
+/// arrive in a later phase.)
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 pub struct ChatMessage {
     /// Message author.
     pub role: Role,
-    /// Message text.
+    /// Message text. Empty (or omitted) for an assistant turn that only calls
+    /// tools.
+    #[serde(default)]
     pub content: String,
     /// Optional author name (OpenAI `name`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Tool calls emitted by the assistant (function calling). Present on an
+    /// assistant message that invokes one or more tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    /// For a `tool` message: the id of the [`ToolCall`] this message answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 impl ChatMessage {
-    /// A convenience constructor.
+    /// A convenience constructor for a plain text message.
     pub fn new(role: Role, content: impl Into<String>) -> Self {
         Self {
             role,
             content: content.into(),
             name: None,
+            tool_calls: None,
+            tool_call_id: None,
         }
     }
 }
 
-/// Output format constraint. (`json_schema` and tools arrive with structured
-/// outputs in a later phase.)
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// Output format constraint.
+///
+/// `JsonSchema` carries the schema as an opaque [`serde_json::Value`], so this
+/// enum is [`PartialEq`] but not [`Eq`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseFormat {
@@ -75,6 +88,133 @@ pub enum ResponseFormat {
     Text,
     /// Constrain output to a single JSON object.
     JsonObject,
+    /// Constrain output to a caller-supplied JSON Schema (structured outputs).
+    JsonSchema {
+        /// The named schema the output must conform to.
+        json_schema: JsonSchemaSpec,
+    },
+}
+
+/// A named JSON Schema for structured outputs (OpenAI `json_schema` block).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
+pub struct JsonSchemaSpec {
+    /// Schema name (the identifier the model is told to conform to).
+    pub name: String,
+    /// Human-readable description of the schema's intent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The JSON Schema the output must validate against.
+    pub schema: serde_json::Value,
+    /// Enforce strict adherence (no additional properties). Provider-dependent;
+    /// enforced exactly for local (GBNF) and OpenAI structured outputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
+}
+
+// ---------------------------------------------------------------------------
+// Tools (function calling)
+// ---------------------------------------------------------------------------
+
+/// A tool the model may call. Only `function` tools exist today (OpenAI-shaped);
+/// the tagged form reserves room for future tool kinds.
+///
+/// Holds a JSON-Schema [`serde_json::Value`], so this type is [`PartialEq`] but
+/// not [`Eq`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Tool {
+    /// A function tool with a JSON-Schema parameter contract.
+    Function {
+        /// The function definition.
+        function: FunctionDef,
+    },
+}
+
+/// A function tool definition.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
+pub struct FunctionDef {
+    /// Function name the model calls.
+    pub name: String,
+    /// What the function does (helps the model decide when to call it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// JSON Schema describing the arguments object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<serde_json::Value>,
+    /// Enforce strict schema adherence. Provider-dependent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
+}
+
+/// How the model should choose among the offered `tools`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+pub enum ToolChoice {
+    /// A coarse mode: `none`, `auto`, or `required`.
+    Mode(ToolChoiceMode),
+    /// Force a specific named function.
+    Named(NamedToolChoice),
+}
+
+/// Coarse tool-choice mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ToolChoiceMode {
+    /// Never call a tool.
+    None,
+    /// Model decides whether to call a tool.
+    Auto,
+    /// Model must call at least one tool.
+    Required,
+}
+
+/// Force a specific function call (`{"type":"function","function":{"name":…}}`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum NamedToolChoice {
+    /// Require the named function.
+    Function {
+        /// The function to force.
+        function: ToolChoiceFunction,
+    },
+}
+
+/// The function a [`NamedToolChoice`] forces.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
+pub struct ToolChoiceFunction {
+    /// Function name to force.
+    pub name: String,
+}
+
+/// A tool call emitted by the assistant.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolCall {
+    /// A function invocation.
+    Function {
+        /// Provider-assigned call id (echoed in the answering `tool` message).
+        id: String,
+        /// The invoked function and its arguments.
+        function: ToolCallFunction,
+    },
+}
+
+/// The function invoked by a [`ToolCall`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
+pub struct ToolCallFunction {
+    /// Function name.
+    pub name: String,
+    /// Arguments as a JSON-encoded string (OpenAI convention).
+    pub arguments: String,
 }
 
 /// Mirostat perplexity-control sampling (llama.cpp extension).
@@ -142,6 +282,12 @@ pub struct ChatRequest {
     /// Output format constraint.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ResponseFormat>,
+    /// Tools (functions) the model may call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Tool>>,
+    /// How the model should choose among `tools`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ToolChoice>,
 
     // --- Strata / llama.cpp extensions (flat, documented) ---
     /// Top-k sampling cutoff.
@@ -280,8 +426,48 @@ pub struct Usage {
     pub total_tokens: u32,
 }
 
+/// Per-token log-probabilities for a choice (OpenAI `logprobs.content`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
+pub struct LogProbs {
+    /// One entry per generated token, in order.
+    pub content: Vec<TokenLogProb>,
+}
+
+/// Log-probability of one generated token.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
+pub struct TokenLogProb {
+    /// The token text.
+    pub token: String,
+    /// Natural-log probability of the token.
+    pub logprob: f32,
+    /// Raw UTF-8 bytes of the token (present when it is not standalone-UTF-8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<Vec<u8>>,
+    /// The most likely alternatives at this position (up to `top_logprobs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_logprobs: Vec<TopLogProb>,
+}
+
+/// One alternative token and its log-probability.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
+pub struct TopLogProb {
+    /// The token text.
+    pub token: String,
+    /// Natural-log probability of the token.
+    pub logprob: f32,
+    /// Raw UTF-8 bytes of the token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<Vec<u8>>,
+}
+
 /// One generation choice.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+///
+/// Carries optional f32 log-probabilities, so this type is [`PartialEq`] but
+/// not [`Eq`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 pub struct ChatChoice {
     /// Choice index.
@@ -290,10 +476,13 @@ pub struct ChatChoice {
     pub message: ChatMessage,
     /// Why this choice stopped.
     pub finish_reason: FinishReason,
+    /// Per-token log-probabilities, when requested via `logprobs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<LogProbs>,
 }
 
 /// A generation response (OpenAI-shaped, minimal).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 pub struct ChatResponse {
     /// Resolved model spec.
@@ -318,6 +507,7 @@ impl ChatResponse {
                 index: 0,
                 message: ChatMessage::new(Role::Assistant, response.text),
                 finish_reason: response.stop_reason.into(),
+                logprobs: None,
             }],
             usage,
         }
@@ -670,6 +860,147 @@ mod tests {
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: EmbeddingsRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(req, back);
+    }
+
+    #[test]
+    fn tool_serializes_openai_shape() {
+        let tool = Tool::Function {
+            function: FunctionDef {
+                name: "get_weather".into(),
+                description: Some("look up weather".into()),
+                parameters: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": { "city": { "type": "string" } },
+                    "required": ["city"],
+                })),
+                strict: None,
+            },
+        };
+        let json = serde_json::to_value(&tool).unwrap();
+        assert_eq!(json["type"], "function");
+        assert_eq!(json["function"]["name"], "get_weather");
+        assert_eq!(json["function"]["parameters"]["required"][0], "city");
+        let back: Tool = serde_json::from_value(json).unwrap();
+        assert_eq!(tool, back);
+    }
+
+    #[test]
+    fn tool_choice_mode_and_named() {
+        assert_eq!(
+            serde_json::to_string(&ToolChoice::Mode(ToolChoiceMode::Auto)).unwrap(),
+            r#""auto""#
+        );
+        let named = ToolChoice::Named(NamedToolChoice::Function {
+            function: ToolChoiceFunction { name: "f".into() },
+        });
+        let json = serde_json::to_value(&named).unwrap();
+        assert_eq!(json["type"], "function");
+        assert_eq!(json["function"]["name"], "f");
+        // Untagged: a bare string deserializes back to a mode.
+        let parsed: ToolChoice = serde_json::from_str(r#""required""#).unwrap();
+        assert_eq!(parsed, ToolChoice::Mode(ToolChoiceMode::Required));
+        let parsed_named: ToolChoice = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed_named, named);
+    }
+
+    #[test]
+    fn tool_call_round_trips_on_assistant_message() {
+        let msg = ChatMessage {
+            role: Role::Assistant,
+            content: String::new(),
+            name: None,
+            tool_calls: Some(vec![ToolCall::Function {
+                id: "call_1".into(),
+                function: ToolCallFunction {
+                    name: "get_weather".into(),
+                    arguments: r#"{"city":"Paris"}"#.into(),
+                },
+            }]),
+            tool_call_id: None,
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["tool_calls"][0]["type"], "function");
+        assert_eq!(json["tool_calls"][0]["id"], "call_1");
+        assert_eq!(json["tool_calls"][0]["function"]["name"], "get_weather");
+        let back: ChatMessage = serde_json::from_value(json).unwrap();
+        assert_eq!(msg, back);
+    }
+
+    #[test]
+    fn tool_message_omits_content_when_absent() {
+        // OpenAI omits `content` on assistant tool-call turns; parsing tolerates it.
+        let json = r#"{"role":"assistant","tool_calls":[{"type":"function","id":"c1","function":{"name":"f","arguments":"{}"}}]}"#;
+        let msg: ChatMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.content, "");
+        assert_eq!(msg.tool_calls.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn response_format_json_schema_tag() {
+        let rf = ResponseFormat::JsonSchema {
+            json_schema: JsonSchemaSpec {
+                name: "person".into(),
+                description: None,
+                schema: serde_json::json!({ "type": "object" }),
+                strict: Some(true),
+            },
+        };
+        let json = serde_json::to_value(&rf).unwrap();
+        assert_eq!(json["type"], "json_schema");
+        assert_eq!(json["json_schema"]["name"], "person");
+        assert_eq!(json["json_schema"]["strict"], true);
+        let back: ResponseFormat = serde_json::from_value(json).unwrap();
+        assert_eq!(rf, back);
+    }
+
+    #[test]
+    fn logprobs_round_trip_on_choice() {
+        let choice = ChatChoice {
+            index: 0,
+            message: ChatMessage::new(Role::Assistant, "hi"),
+            finish_reason: FinishReason::Stop,
+            logprobs: Some(LogProbs {
+                content: vec![TokenLogProb {
+                    token: "hi".into(),
+                    logprob: -0.1,
+                    bytes: None,
+                    top_logprobs: vec![TopLogProb {
+                        token: "hey".into(),
+                        logprob: -1.5,
+                        bytes: None,
+                    }],
+                }],
+            }),
+        };
+        let json = serde_json::to_string(&choice).unwrap();
+        let back: ChatChoice = serde_json::from_str(&json).unwrap();
+        assert_eq!(choice, back);
+        // Omitted when None.
+        let bare = ChatChoice {
+            logprobs: None,
+            ..choice
+        };
+        assert!(!serde_json::to_string(&bare).unwrap().contains("logprobs"));
+    }
+
+    #[test]
+    fn chat_request_with_tools_round_trips() {
+        let req = ChatRequest {
+            messages: Some(vec![ChatMessage::new(Role::User, "weather?")]),
+            tools: Some(vec![Tool::Function {
+                function: FunctionDef {
+                    name: "get_weather".into(),
+                    description: None,
+                    parameters: Some(serde_json::json!({ "type": "object" })),
+                    strict: None,
+                },
+            }]),
+            tool_choice: Some(ToolChoice::Mode(ToolChoiceMode::Auto)),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: ChatRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(req, back);
     }
 }
