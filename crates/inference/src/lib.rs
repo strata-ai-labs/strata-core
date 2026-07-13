@@ -24,6 +24,10 @@
 
 pub mod api;
 mod error;
+// Compiled unconditionally so its unit tests run without the `local` feature;
+// only `provider/local.rs` consumes it, so it is dead code when `local` is off.
+#[cfg_attr(not(feature = "local"), allow(dead_code))]
+mod grammar;
 pub mod registry;
 pub mod runtime;
 pub mod wire;
