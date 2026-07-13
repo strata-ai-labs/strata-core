@@ -100,6 +100,10 @@ fn diagnostics_dtos_round_trip_without_provider_payloads() {
         provider_feature_enabled: cfg!(feature = "openai"),
         network_enabled: true,
         embedding_dim: 1536,
+        supports_tools: true,
+        supports_json_object: true,
+        supports_json_schema: true,
+        supports_logprobs: true,
     };
     assert_eq!(round_trip(&capability), capability);
 

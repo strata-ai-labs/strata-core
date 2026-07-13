@@ -1396,6 +1396,12 @@ fn inference_command(command: options::InferenceCommand) -> Result<Command, CliE
             n_ctx,
             n_gpu_layers,
             chat_format,
+            tools_json,
+            tool_choice,
+            response_schema,
+            response_schema_name,
+            logprobs,
+            top_logprobs,
         } => {
             let request = if let Some(body) = json_body {
                 serde_json::from_str::<strata_executor::InferenceChatRequest>(&body)
@@ -1459,6 +1465,33 @@ fn inference_command(command: options::InferenceCommand) -> Result<Command, CliE
                         strata_executor::InferenceResponseFormat::JsonObject
                     }
                 });
+                // --response-schema takes precedence over --response-format.
+                if let Some(schema_json) = response_schema {
+                    let schema: serde_json::Value = serde_json::from_str(&schema_json)
+                        .map_err(|e| CliError::usage(format!("invalid --response-schema: {e}")))?;
+                    request.response_format =
+                        Some(strata_executor::InferenceResponseFormat::JsonSchema {
+                            json_schema: strata_executor::InferenceJsonSchemaSpec {
+                                name: response_schema_name.unwrap_or_else(|| "response".to_owned()),
+                                description: None,
+                                schema,
+                                strict: None,
+                            },
+                        });
+                }
+                if let Some(tools_json) = tools_json {
+                    let tools: Vec<strata_executor::InferenceTool> =
+                        serde_json::from_str(&tools_json)
+                            .map_err(|e| CliError::usage(format!("invalid --tools-json: {e}")))?;
+                    request.tools = (!tools.is_empty()).then_some(tools);
+                }
+                if let Some(choice) = tool_choice {
+                    request.tool_choice = Some(parse_tool_choice(&choice));
+                }
+                if logprobs || top_logprobs.is_some() {
+                    request.logprobs = Some(true);
+                    request.top_logprobs = top_logprobs;
+                }
                 if n_ctx.is_some() || n_gpu_layers.is_some() || chat_format.is_some() {
                     request.model_config = Some(strata_executor::InferenceModelConfig {
                         n_ctx,
@@ -1547,6 +1580,25 @@ fn parse_chat_message(spec: &str) -> Result<strata_executor::InferenceChatMessag
     ))
 }
 
+/// Parse a `--tool-choice` value: `auto` | `none` | `required` (case-insensitive)
+/// select a mode; anything else names a function to force.
+fn parse_tool_choice(value: &str) -> strata_executor::InferenceToolChoice {
+    use strata_executor::{
+        InferenceNamedToolChoice, InferenceToolChoice, InferenceToolChoiceFunction,
+        InferenceToolChoiceMode,
+    };
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" => InferenceToolChoice::Mode(InferenceToolChoiceMode::Auto),
+        "none" => InferenceToolChoice::Mode(InferenceToolChoiceMode::None),
+        "required" => InferenceToolChoice::Mode(InferenceToolChoiceMode::Required),
+        _ => InferenceToolChoice::Named(InferenceNamedToolChoice::Function {
+            function: InferenceToolChoiceFunction {
+                name: value.trim().to_owned(),
+            },
+        }),
+    }
+}
+
 #[cfg(all(test, feature = "inference"))]
 mod inference_command_tests {
     use super::{inference_command, options, parse_chat_message};
@@ -1581,6 +1633,12 @@ mod inference_command_tests {
             n_ctx: None,
             n_gpu_layers: None,
             chat_format: None,
+            tools_json: None,
+            tool_choice: None,
+            response_schema: None,
+            response_schema_name: None,
+            logprobs: false,
+            top_logprobs: None,
         }
     }
 
@@ -1626,6 +1684,86 @@ mod inference_command_tests {
     fn no_input_is_a_usage_error() {
         let err = inference_command(generate(None, None, vec![], None)).unwrap_err();
         assert!(err.to_string().contains("prompt"), "got: {err}");
+    }
+
+    fn generate_with(f: impl FnOnce(&mut options::InferenceCommand)) -> options::InferenceCommand {
+        let mut cmd = generate(Some("hi"), None, vec![], None);
+        f(&mut cmd);
+        cmd
+    }
+
+    #[test]
+    fn tools_and_tool_choice_are_built() {
+        let cmd = generate_with(|c| {
+            if let options::InferenceCommand::Generate {
+                tools_json,
+                tool_choice,
+                ..
+            } = c
+            {
+                *tools_json = Some(
+                    r#"[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]"#
+                        .to_owned(),
+                );
+                *tool_choice = Some("required".to_owned());
+            }
+        });
+        let req = body(cmd);
+        assert_eq!(req["tools"][0]["type"], "function");
+        assert_eq!(req["tools"][0]["function"]["name"], "get_weather");
+        assert_eq!(req["tool_choice"], "required");
+    }
+
+    #[test]
+    fn named_tool_choice_forces_function() {
+        let cmd = generate_with(|c| {
+            if let options::InferenceCommand::Generate { tool_choice, .. } = c {
+                *tool_choice = Some("get_weather".to_owned());
+            }
+        });
+        let req = body(cmd);
+        assert_eq!(req["tool_choice"]["type"], "function");
+        assert_eq!(req["tool_choice"]["function"]["name"], "get_weather");
+    }
+
+    #[test]
+    fn response_schema_sets_json_schema_format() {
+        let cmd = generate_with(|c| {
+            if let options::InferenceCommand::Generate {
+                response_schema,
+                response_schema_name,
+                ..
+            } = c
+            {
+                *response_schema = Some(r#"{"type":"object"}"#.to_owned());
+                *response_schema_name = Some("person".to_owned());
+            }
+        });
+        let req = body(cmd);
+        assert_eq!(req["response_format"]["type"], "json_schema");
+        assert_eq!(req["response_format"]["json_schema"]["name"], "person");
+        assert_eq!(
+            req["response_format"]["json_schema"]["schema"]["type"],
+            "object"
+        );
+    }
+
+    #[test]
+    fn logprobs_flag_is_built() {
+        let cmd = generate_with(|c| {
+            if let options::InferenceCommand::Generate {
+                logprobs,
+                top_logprobs,
+                ..
+            } = c
+            {
+                *logprobs = true;
+                *top_logprobs = Some(3);
+            }
+        });
+        let req = body(cmd);
+        assert_eq!(req["logprobs"], true);
+        assert_eq!(req["top_logprobs"], 3);
     }
 
     #[test]
