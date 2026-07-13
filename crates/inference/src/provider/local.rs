@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::llama::context::LlamaCppContext;
 use crate::llama::ffi::{llama_api_lock, LlamaSampler};
-use crate::wire::{ChatRequest, ChatResponse, ModelConfig, Role};
+use crate::wire::{ChatRequest, ChatResponse, ModelConfig, ResponseFormat, Role};
 use crate::{GenerateRequest, GenerateResponse, InferenceError, StopReason};
 
 /// Local generation provider using llama.cpp.
@@ -315,9 +315,11 @@ impl LocalProvider {
         let api = &self.ctx.api;
         let chain = api.sampler_chain_init(api.sampler_chain_default_params());
 
-        if let Some(grammar) = &request.grammar {
+        // Grammar constraint first — masks tokens that violate the grammar. An
+        // explicit `grammar` wins; otherwise `response_format` maps to one.
+        if let Some(grammar) = effective_grammar(request) {
             let g = api
-                .sampler_init_grammar(self.ctx.vocab, grammar, "root")
+                .sampler_init_grammar(self.ctx.vocab, &grammar, "root")
                 .map_err(InferenceError::LlamaCpp)?;
             api.sampler_chain_add(chain, g);
         }
@@ -498,9 +500,86 @@ fn role_str(role: Role) -> &'static str {
     }
 }
 
+/// The GBNF grammar to constrain local generation, if any.
+///
+/// An explicit raw `grammar` (the low-level GBNF escape hatch) takes precedence.
+/// Otherwise `response_format` maps to a grammar: `json_object` uses the
+/// canonical JSON-object grammar, and `json_schema` is converted via
+/// [`crate::grammar::json_schema_to_gbnf`]. Free-form text yields `None`.
+fn effective_grammar(request: &ChatRequest) -> Option<String> {
+    if let Some(grammar) = &request.grammar {
+        return Some(grammar.clone());
+    }
+    match &request.response_format {
+        Some(ResponseFormat::JsonObject) => Some(crate::grammar::JSON_OBJECT_GRAMMAR.to_string()),
+        Some(ResponseFormat::JsonSchema { json_schema }) => {
+            Some(crate::grammar::json_schema_to_gbnf(&json_schema.schema))
+        }
+        Some(ResponseFormat::Text) | None => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // effective_grammar unit tests (no libllama needed)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn effective_grammar_none_for_text() {
+        let mut req = ChatRequest {
+            prompt: Some("hi".into()),
+            ..Default::default()
+        };
+        assert!(effective_grammar(&req).is_none());
+        req.response_format = Some(ResponseFormat::Text);
+        assert!(effective_grammar(&req).is_none());
+    }
+
+    #[test]
+    fn effective_grammar_explicit_grammar_wins() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            grammar: Some("root ::= \"x\"".into()),
+            response_format: Some(ResponseFormat::JsonObject),
+            ..Default::default()
+        };
+        assert_eq!(effective_grammar(&req).as_deref(), Some("root ::= \"x\""));
+    }
+
+    #[test]
+    fn effective_grammar_json_object_and_schema() {
+        let obj = ChatRequest {
+            prompt: Some("hi".into()),
+            response_format: Some(ResponseFormat::JsonObject),
+            ..Default::default()
+        };
+        assert!(effective_grammar(&obj)
+            .unwrap()
+            .contains("root   ::= object"));
+
+        let schema = ChatRequest {
+            prompt: Some("hi".into()),
+            response_format: Some(ResponseFormat::JsonSchema {
+                json_schema: crate::wire::JsonSchemaSpec {
+                    name: "p".into(),
+                    description: None,
+                    schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {"n": {"type": "string"}},
+                        "required": ["n"]
+                    }),
+                    strict: None,
+                },
+            }),
+            ..Default::default()
+        };
+        let g = effective_grammar(&schema).unwrap();
+        assert!(g.starts_with("root ::= obj-"));
+        assert!(g.contains("\\\"n\\\""));
+    }
 
     // -----------------------------------------------------------------------
     // check_stop_sequences unit tests (no libllama needed)
