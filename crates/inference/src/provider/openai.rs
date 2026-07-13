@@ -3,7 +3,7 @@
 //! Sends generation requests to `https://api.openai.com/v1/chat/completions`
 //! and maps the response to [`GenerateResponse`].
 
-use crate::provider::cloud::{chat_turns, reject_local_only};
+use crate::provider::cloud::reject_local_only;
 use crate::wire::{
     ChatChoice, ChatMessage, ChatRequest, ChatResponse, FinishReason, LogProbs, ResponseFormat,
     Role, TokenLogProb, ToolCall, ToolCallFunction, TopLogProb, Usage,
@@ -163,18 +163,24 @@ pub(crate) fn build_chat_request_json(
 ) -> Result<String, InferenceError> {
     reject_local_only(request, "OpenAI")?;
 
-    let messages: Vec<serde_json::Value> = chat_turns(request)
-        .into_iter()
-        .map(|(role, content)| {
-            let role = match role {
-                Role::System => "system",
-                Role::User => "user",
-                Role::Assistant => "assistant",
-                Role::Tool => "tool",
-            };
-            serde_json::json!({"role": role, "content": content})
-        })
-        .collect();
+    // The wire `ChatMessage` is already OpenAI-shaped (snake_case roles;
+    // `tool_calls` / `tool_call_id` serialize to OpenAI's exact format), so map
+    // each message directly — this preserves multi-turn tool calls and tool
+    // results, which the lossy `(role, content)` projection dropped. A raw
+    // `prompt` becomes a single user turn.
+    let messages: Vec<serde_json::Value> = if let Some(prompt) = &request.prompt {
+        vec![serde_json::json!({ "role": "user", "content": prompt })]
+    } else {
+        request
+            .messages
+            .iter()
+            .flatten()
+            .map(|message| {
+                serde_json::to_value(message)
+                    .map_err(|e| InferenceError::Provider(format!("OpenAI: invalid message: {e}")))
+            })
+            .collect::<Result<_, _>>()?
+    };
 
     let mut obj = serde_json::json!({
         "model": model,
@@ -794,6 +800,51 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0]["role"], "user");
         assert_eq!(messages[0]["content"], "just this");
+    }
+
+    #[test]
+    fn chat_json_preserves_tool_calls_and_tool_results() {
+        use crate::wire::{ToolCall, ToolCallFunction};
+        // A multi-turn tool exchange: user → assistant(tool_calls) → tool(result).
+        // The assistant turn must keep `tool_calls` and the tool turn must keep
+        // `tool_call_id`, or OpenAI rejects the request (400).
+        let req = ChatRequest {
+            messages: Some(vec![
+                ChatMessage::new(Role::User, "weather?"),
+                ChatMessage {
+                    role: Role::Assistant,
+                    content: String::new(),
+                    name: None,
+                    tool_calls: Some(vec![ToolCall::Function {
+                        id: "call_1".into(),
+                        function: ToolCallFunction {
+                            name: "get_weather".into(),
+                            arguments: r#"{"city":"Paris"}"#.into(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+                ChatMessage {
+                    role: Role::Tool,
+                    content: "18C".into(),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: Some("call_1".into()),
+                },
+            ]),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json("gpt-4", &req).unwrap()).unwrap();
+        let msgs = json["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[1]["role"], "assistant");
+        assert_eq!(msgs[1]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(msgs[1]["tool_calls"][0]["type"], "function");
+        assert_eq!(msgs[1]["tool_calls"][0]["function"]["name"], "get_weather");
+        assert_eq!(msgs[2]["role"], "tool");
+        assert_eq!(msgs[2]["tool_call_id"], "call_1");
+        assert_eq!(msgs[2]["content"], "18C");
     }
 
     #[test]
