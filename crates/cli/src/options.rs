@@ -211,19 +211,24 @@ pub(crate) enum AgentsCommand {
 pub(crate) enum ConfigCommand {
     /// Print sanitized config.
     Get,
-    /// Print one sanitized config value (`hub.url` reads the user config).
+    /// Print one sanitized config value. Keys: `hub.url`, `openai.api_key`,
+    /// `anthropic.api_key`, `google.api_key` (API keys print redacted).
     GetKey {
         /// Config key.
         key: String,
     },
-    /// Set a user-config key (V1: `hub.url`) in the global strata config.
+    /// Set a user-config key in the global strata config. Keys: `hub.url`,
+    /// `openai.api_key`, `anthropic.api_key`, `google.api_key`. API keys are
+    /// stored with 0600 permissions; a matching env var (e.g. `OPENAI_API_KEY`)
+    /// always overrides.
     Set {
         /// Config key.
         key: String,
         /// New value.
         value: String,
     },
-    /// Remove a user-config key (V1: `hub.url`) from the global config.
+    /// Remove a user-config key from the global config. Keys: `hub.url`,
+    /// `openai.api_key`, `anthropic.api_key`, `google.api_key`.
     Unset {
         /// Config key.
         key: String,

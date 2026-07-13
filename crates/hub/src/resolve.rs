@@ -300,6 +300,146 @@ pub fn unset_global_hub_url() -> Result<Option<PathBuf>, HubUrlError> {
     Ok(Some(path))
 }
 
+// ---------------------------------------------------------------------------
+// Provider API keys — `[providers.<name>].api_key` in the *global* config only.
+//
+// Deliberately global-only (unlike `hub.url`, which has a per-project layer): a
+// key in a project's `.strata/config.toml` risks being committed to source
+// control. Environment variables still take precedence over these (the CLI
+// resolves env first). Provider names are opaque here — the CLI validates them
+// against the known cloud providers.
+// ---------------------------------------------------------------------------
+
+/// Reads `[providers.<provider>].api_key` from the global config; `Ok(None)`
+/// when the file, section, or key is absent.
+///
+/// # Errors
+///
+/// [`HubUrlError::MalformedSource`] when the file exists but is invalid.
+pub fn read_global_provider_key(provider: &str) -> Result<Option<String>, HubUrlError> {
+    let Some(path) = global_config_path() else {
+        return Ok(None);
+    };
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let source = path.display().to_string();
+    let text = std::fs::read_to_string(&path).map_err(|error| HubUrlError::MalformedSource {
+        source: source.clone(),
+        detail: format!("unreadable: {error}"),
+    })?;
+    let value: toml::Value =
+        toml::from_str(&text).map_err(|error| HubUrlError::MalformedSource {
+            source: source.clone(),
+            detail: format!("malformed TOML: {error}"),
+        })?;
+    let key = value
+        .get("providers")
+        .and_then(|providers| providers.get(provider))
+        .and_then(|table| table.get("api_key"));
+    let Some(key) = key else {
+        return Ok(None);
+    };
+    let key = key.as_str().ok_or_else(|| HubUrlError::MalformedSource {
+        source,
+        detail: format!("[providers.{provider}].api_key is not a string"),
+    })?;
+    Ok(Some(key.to_owned()))
+}
+
+/// Writes `[providers.<provider>].api_key` into the global config, preserving
+/// other keys and creating the file (`0600` on Unix) on first use. Returns the
+/// file path written.
+///
+/// # Errors
+///
+/// [`HubUrlError::MalformedSource`] when the config directory is unavailable or
+/// the existing file is unreadable/unwritable.
+pub fn write_global_provider_key(provider: &str, api_key: &str) -> Result<PathBuf, HubUrlError> {
+    let path = global_config_path().ok_or_else(|| HubUrlError::MalformedSource {
+        source: "global config".to_owned(),
+        detail: "the platform exposes no user config directory".to_owned(),
+    })?;
+    edit_global_providers(&path, provider, |table| {
+        table.insert(
+            "api_key".to_owned(),
+            toml::Value::String(api_key.to_owned()),
+        );
+    })?;
+    Ok(path)
+}
+
+/// Removes `[providers.<provider>].api_key` from the global config. Returns the
+/// file path when the file existed.
+///
+/// # Errors
+///
+/// [`HubUrlError::MalformedSource`] on unreadable/unwritable state.
+pub fn unset_global_provider_key(provider: &str) -> Result<Option<PathBuf>, HubUrlError> {
+    let Some(path) = global_config_path() else {
+        return Ok(None);
+    };
+    if !path.is_file() {
+        return Ok(None);
+    }
+    edit_global_providers(&path, provider, |table| {
+        table.remove("api_key");
+    })?;
+    Ok(Some(path))
+}
+
+/// Edits the `[providers.<provider>]` sub-table of the global config, reading,
+/// mutating, and writing back with restrictive permissions. Self-contained to
+/// keep the `hub.url` path (`edit_global_config`) untouched.
+fn edit_global_providers(
+    path: &Path,
+    provider: &str,
+    edit: impl FnOnce(&mut toml::map::Map<String, toml::Value>),
+) -> Result<(), HubUrlError> {
+    let source = path.display().to_string();
+    let malformed = |detail: String| HubUrlError::MalformedSource {
+        source: source.clone(),
+        detail,
+    };
+    let mut root: toml::Value = if path.is_file() {
+        let text = std::fs::read_to_string(path)
+            .map_err(|error| malformed(format!("unreadable: {error}")))?;
+        toml::from_str(&text).map_err(|error| malformed(format!("malformed TOML: {error}")))?
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+    let table = root
+        .as_table_mut()
+        .ok_or_else(|| malformed("config root is not a table".to_owned()))?;
+    let providers = table
+        .entry("providers")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let providers = providers
+        .as_table_mut()
+        .ok_or_else(|| malformed("[providers] is not a table".to_owned()))?;
+    let provider_table = providers
+        .entry(provider.to_owned())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let provider_table = provider_table
+        .as_table_mut()
+        .ok_or_else(|| malformed(format!("[providers.{provider}] is not a table")))?;
+    edit(provider_table);
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| malformed(format!("config directory: {error}")))?;
+    }
+    let rendered = toml::to_string_pretty(&root)
+        .map_err(|error| malformed(format!("config serialization: {error}")))?;
+    std::fs::write(path, rendered).map_err(|error| malformed(format!("write failed: {error}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
 fn edit_global_config(
     path: &Path,
     edit: impl FnOnce(&mut toml::map::Map<String, toml::Value>),

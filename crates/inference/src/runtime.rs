@@ -930,9 +930,21 @@ fn api_key(provider: ProviderKind) -> Result<String, InferenceError> {
     }
     let env_var = api_key_env_var(provider);
     std::env::var(env_var).map_err(|_| {
-        InferenceError::Provider(format!(
-            "{env_var} not set (required for {provider} provider)"
-        ))
+        // Keep the phrase "API key" + "not set" so the error classifies as
+        // `inference.missing_api_key`. Name the exact variable, where to get a
+        // key, and both ways to set it — Strata is embedded and ships no keys.
+        let provider_name = provider.to_string();
+        let message = match crate::provider_key_info(&provider_name) {
+            Some(info) => format!(
+                "{env_var} is not set: the {provider} API key is missing. Get a key at \
+                 {url}, then set it with `strata config set {name}.api_key <KEY>` or by \
+                 exporting {env_var}.",
+                url = info.acquisition_url,
+                name = info.provider,
+            ),
+            None => format!("{env_var} is not set: the {provider} API key is missing."),
+        };
+        InferenceError::Provider(message)
     })
 }
 

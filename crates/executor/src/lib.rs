@@ -35,6 +35,11 @@ pub use strata_engine::{
 };
 #[cfg(feature = "inference")]
 pub use strata_inference::{
+    provider_key_info as inference_provider_key_info, ProviderKeyInfo as InferenceProviderKeyInfo,
+    CLOUD_PROVIDER_KEYS as INFERENCE_CLOUD_PROVIDER_KEYS,
+};
+#[cfg(feature = "inference")]
+pub use strata_inference::{
     ChatMessage as InferenceChatMessage, ChatRequest as InferenceChatRequest,
     ChatResponse as InferenceChatResponse, EmbedInput as InferenceEmbedInput,
     EmbeddingsRequest as InferenceEmbeddingsRequest,
