@@ -8,7 +8,7 @@
 //! (avoids leaking credentials in URL logs).
 
 use crate::provider::cloud::{chat_turns, reject_local_only};
-use crate::wire::{ChatRequest, ResponseFormat, Role};
+use crate::wire::{ChatRequest, ChatResponse, ResponseFormat, Role};
 use crate::{GenerateRequest, GenerateResponse, InferenceError, StopReason};
 
 const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -63,9 +63,10 @@ impl GoogleProvider {
     pub(crate) fn generate_chat(
         &self,
         request: &ChatRequest,
-    ) -> Result<GenerateResponse, InferenceError> {
+    ) -> Result<ChatResponse, InferenceError> {
         let body = build_chat_request_json(request)?;
-        self.post(body)
+        // Text-only wrap until G3 adds native tool/structured-output mapping.
+        Ok(ChatResponse::from_internal(&self.model, self.post(body)?))
     }
 
     /// Send a prepared request body and parse the response. The URL carries the

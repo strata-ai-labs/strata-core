@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::llama::context::LlamaCppContext;
 use crate::llama::ffi::{llama_api_lock, LlamaSampler};
-use crate::wire::{ChatRequest, ModelConfig, Role};
+use crate::wire::{ChatRequest, ChatResponse, ModelConfig, Role};
 use crate::{GenerateRequest, GenerateResponse, InferenceError, StopReason};
 
 /// Local generation provider using llama.cpp.
@@ -160,14 +160,18 @@ impl LocalProvider {
     pub(crate) fn generate_chat(
         &mut self,
         request: &ChatRequest,
-    ) -> Result<GenerateResponse, InferenceError> {
+    ) -> Result<ChatResponse, InferenceError> {
         let _api_guard = llama_api_lock();
         let prompt = self.render_chat(request)?;
         let sampler = self.build_sampler_chat(request)?;
         let max_tokens = request.max_tokens.unwrap_or(256) as usize;
         let stop_sequences = request.stop.clone().unwrap_or_default();
         let stop_tokens = request.stop_token_ids.clone().unwrap_or_default();
-        self.run_generation(&prompt, sampler, max_tokens, &stop_sequences, &stop_tokens)
+        let generated =
+            self.run_generation(&prompt, sampler, max_tokens, &stop_sequences, &stop_tokens)?;
+        // Text-only wrap until G4 adds GBNF-constrained structured outputs and
+        // tool-call parsing. `model` is normalized to the caller's spec upstream.
+        Ok(ChatResponse::from_internal("local", generated))
     }
 
     /// Runs the autoregressive decode loop with a pre-built sampler.

@@ -4,7 +4,7 @@
 //! maps the response to [`GenerateResponse`].
 
 use crate::provider::cloud::{chat_turns, reject_local_only};
-use crate::wire::{ChatRequest, Role};
+use crate::wire::{ChatRequest, ChatResponse, Role};
 use crate::{GenerateRequest, GenerateResponse, InferenceError, StopReason};
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -59,9 +59,10 @@ impl AnthropicProvider {
     pub(crate) fn generate_chat(
         &self,
         request: &ChatRequest,
-    ) -> Result<GenerateResponse, InferenceError> {
+    ) -> Result<ChatResponse, InferenceError> {
         let body = build_chat_request_json(&self.model, request)?;
-        self.post(body)
+        // Text-only wrap until G3 adds native tool/structured-output mapping.
+        Ok(ChatResponse::from_internal(&self.model, self.post(body)?))
     }
 
     /// Send a prepared request body and parse the response.

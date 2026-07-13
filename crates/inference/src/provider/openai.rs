@@ -4,7 +4,10 @@
 //! and maps the response to [`GenerateResponse`].
 
 use crate::provider::cloud::{chat_turns, reject_local_only};
-use crate::wire::{ChatRequest, ResponseFormat, Role};
+use crate::wire::{
+    ChatChoice, ChatMessage, ChatRequest, ChatResponse, FinishReason, LogProbs, ResponseFormat,
+    Role, TokenLogProb, ToolCall, ToolCallFunction, TopLogProb, Usage,
+};
 use crate::{GenerateRequest, GenerateResponse, InferenceError, StopReason};
 
 const API_URL: &str = "https://api.openai.com/v1/chat/completions";
@@ -55,18 +58,28 @@ impl OpenAIProvider {
     }
 
     /// Generate from an OpenAI-shaped chat request, mapping messages natively
-    /// (system/user/assistant/tool turns preserved) and forwarding supported
-    /// sampling knobs.
+    /// (system/user/assistant/tool turns preserved), forwarding supported
+    /// sampling knobs, tools/tool_choice, structured-output `response_format`,
+    /// and `logprobs`, and parsing tool calls + log-probabilities back into the
+    /// [`ChatResponse`].
     pub(crate) fn generate_chat(
         &self,
         request: &ChatRequest,
-    ) -> Result<GenerateResponse, InferenceError> {
+    ) -> Result<ChatResponse, InferenceError> {
         let body = build_chat_request_json(&self.model, request)?;
-        self.post(body)
+        let response_body = self.send(body)?;
+        parse_chat_response_json(&response_body, &self.model)
     }
 
-    /// Send a prepared request body and parse the response.
+    /// Send a prepared completion request body and parse the response.
     fn post(&self, body: String) -> Result<GenerateResponse, InferenceError> {
+        let response_body = self.send(body)?;
+        parse_response_json(&response_body)
+    }
+
+    /// POST a prepared JSON body to the chat-completions endpoint and return the
+    /// raw response body (shared by the completion and chat parsers).
+    fn send(&self, body: String) -> Result<String, InferenceError> {
         let agent = ureq::Agent::new_with_config(
             ureq::config::Config::builder()
                 .timeout_global(Some(std::time::Duration::from_secs(30)))
@@ -79,11 +92,10 @@ impl OpenAIProvider {
             .send(body)
             .map_err(|e| map_http_error("OpenAI", e))?;
 
-        let response_body = response.body_mut().read_to_string().map_err(|e| {
-            InferenceError::Provider(format!("OpenAI: failed to read response: {e}"))
-        })?;
-
-        parse_response_json(&response_body)
+        response
+            .body_mut()
+            .read_to_string()
+            .map_err(|e| InferenceError::Provider(format!("OpenAI: failed to read response: {e}")))
     }
 
     pub(crate) fn model(&self) -> &str {
@@ -195,8 +207,50 @@ pub(crate) fn build_chat_request_json(
             obj["stop"] = serde_json::json!(stop);
         }
     }
-    if request.response_format == Some(ResponseFormat::JsonObject) {
-        obj["response_format"] = serde_json::json!({"type": "json_object"});
+
+    // response_format: text (omitted) | json_object | json_schema.
+    match &request.response_format {
+        Some(ResponseFormat::JsonObject) => {
+            obj["response_format"] = serde_json::json!({ "type": "json_object" });
+        }
+        Some(ResponseFormat::JsonSchema { json_schema }) => {
+            let mut spec = serde_json::json!({
+                "name": json_schema.name,
+                "schema": json_schema.schema,
+            });
+            if let Some(description) = &json_schema.description {
+                spec["description"] = serde_json::json!(description);
+            }
+            if let Some(strict) = json_schema.strict {
+                spec["strict"] = serde_json::json!(strict);
+            }
+            obj["response_format"] = serde_json::json!({
+                "type": "json_schema",
+                "json_schema": spec,
+            });
+        }
+        Some(ResponseFormat::Text) | None => {}
+    }
+
+    // tools / tool_choice: the wire DTOs are already OpenAI-shaped, so they
+    // serialize straight through.
+    if let Some(tools) = &request.tools {
+        if !tools.is_empty() {
+            obj["tools"] = serde_json::to_value(tools)
+                .map_err(|e| InferenceError::Provider(format!("OpenAI: invalid tools: {e}")))?;
+        }
+    }
+    if let Some(tool_choice) = &request.tool_choice {
+        obj["tool_choice"] = serde_json::to_value(tool_choice)
+            .map_err(|e| InferenceError::Provider(format!("OpenAI: invalid tool_choice: {e}")))?;
+    }
+
+    // logprobs (+ optional per-token alternatives).
+    if request.logprobs == Some(true) {
+        obj["logprobs"] = serde_json::json!(true);
+        if let Some(top_logprobs) = request.top_logprobs {
+            obj["top_logprobs"] = serde_json::json!(top_logprobs);
+        }
     }
 
     Ok(obj.to_string())
@@ -271,6 +325,178 @@ pub(crate) fn parse_response_json(body: &str) -> Result<GenerateResponse, Infere
         prompt_tokens,
         completion_tokens,
     })
+}
+
+/// Parse the OpenAI Chat Completions response JSON into a rich [`ChatResponse`]
+/// (content, tool calls, finish reason, log-probabilities, and usage).
+pub(crate) fn parse_chat_response_json(
+    body: &str,
+    fallback_model: &str,
+) -> Result<ChatResponse, InferenceError> {
+    let json: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| InferenceError::Provider(format!("OpenAI: invalid JSON response: {e}")))?;
+
+    if let Some(error) = json.get("error") {
+        let msg = error
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown error");
+        return Err(InferenceError::Provider(format!("OpenAI API error: {msg}")));
+    }
+
+    let choices = json
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .ok_or_else(|| {
+            InferenceError::Provider("OpenAI: missing or invalid 'choices' array".to_string())
+        })?;
+    let choice = choices.first().ok_or_else(|| {
+        InferenceError::Provider("OpenAI: empty choices array in response".to_string())
+    })?;
+
+    let message = choice
+        .get("message")
+        .ok_or_else(|| InferenceError::Provider("OpenAI: choice missing 'message'".to_string()))?;
+    let content = message
+        .get("content")
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string();
+    let tool_calls = parse_tool_calls(message.get("tool_calls"));
+
+    // A choice must carry either content or tool calls.
+    if content.is_empty() && tool_calls.is_none() {
+        return Err(InferenceError::Provider(
+            "OpenAI: response missing message content".to_string(),
+        ));
+    }
+
+    let finish_reason = match choice.get("finish_reason").and_then(|r| r.as_str()) {
+        Some("stop") => FinishReason::Stop,
+        Some("length") => FinishReason::Length,
+        Some("tool_calls") => FinishReason::ToolCalls,
+        Some("content_filter") => FinishReason::ContentFilter,
+        Some(other) => {
+            tracing::warn!(reason = ?other, "Unknown finish_reason from OpenAI, defaulting to Stop");
+            FinishReason::Stop
+        }
+        None if tool_calls.is_some() => FinishReason::ToolCalls,
+        None => FinishReason::Stop,
+    };
+
+    let logprobs = parse_logprobs(choice.get("logprobs"));
+
+    let usage = json.get("usage");
+    let prompt_tokens = usage
+        .and_then(|u| u.get("prompt_tokens"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as u32;
+    let completion_tokens = usage
+        .and_then(|u| u.get("completion_tokens"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as u32;
+
+    let model = json
+        .get("model")
+        .and_then(|m| m.as_str())
+        .unwrap_or(fallback_model)
+        .to_string();
+
+    Ok(ChatResponse {
+        model,
+        choices: vec![ChatChoice {
+            index: 0,
+            message: ChatMessage {
+                role: Role::Assistant,
+                content,
+                name: None,
+                tool_calls,
+                tool_call_id: None,
+            },
+            finish_reason,
+            logprobs,
+        }],
+        usage: Usage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens + completion_tokens,
+        },
+    })
+}
+
+/// Parse an OpenAI `tool_calls` array into [`ToolCall`]s (None when absent/empty).
+fn parse_tool_calls(value: Option<&serde_json::Value>) -> Option<Vec<ToolCall>> {
+    let array = value?.as_array()?;
+    let calls: Vec<ToolCall> = array
+        .iter()
+        .filter_map(|call| {
+            let id = call.get("id").and_then(|i| i.as_str())?.to_string();
+            let function = call.get("function")?;
+            let name = function.get("name").and_then(|n| n.as_str())?.to_string();
+            let arguments = function
+                .get("arguments")
+                .and_then(|a| a.as_str())
+                .unwrap_or("")
+                .to_string();
+            Some(ToolCall::Function {
+                id,
+                function: ToolCallFunction { name, arguments },
+            })
+        })
+        .collect();
+    (!calls.is_empty()).then_some(calls)
+}
+
+/// Parse an OpenAI chat `logprobs` object into [`LogProbs`] (None when absent).
+fn parse_logprobs(value: Option<&serde_json::Value>) -> Option<LogProbs> {
+    let content = value?.get("content")?.as_array()?;
+    let tokens = content
+        .iter()
+        .map(|entry| TokenLogProb {
+            token: token_str(entry),
+            logprob: logprob_f32(entry),
+            bytes: parse_token_bytes(entry.get("bytes")),
+            top_logprobs: entry
+                .get("top_logprobs")
+                .and_then(|t| t.as_array())
+                .map(|alts| {
+                    alts.iter()
+                        .map(|alt| TopLogProb {
+                            token: token_str(alt),
+                            logprob: logprob_f32(alt),
+                            bytes: parse_token_bytes(alt.get("bytes")),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
+        .collect();
+    Some(LogProbs { content: tokens })
+}
+
+fn token_str(entry: &serde_json::Value) -> String {
+    entry
+        .get("token")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn logprob_f32(entry: &serde_json::Value) -> f32 {
+    entry
+        .get("logprob")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0) as f32
+}
+
+fn parse_token_bytes(value: Option<&serde_json::Value>) -> Option<Vec<u8>> {
+    let array = value?.as_array()?;
+    Some(
+        array
+            .iter()
+            .filter_map(|b| b.as_u64().map(|n| n as u8))
+            .collect(),
+    )
 }
 
 // =========================================================================
@@ -653,6 +879,198 @@ mod tests {
         };
         let err = build_chat_request_json("gpt-4", &req).unwrap_err();
         assert!(matches!(err, InferenceError::Provider(_)), "err: {err}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Chat request: tools / structured outputs / logprobs (Phase G2)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn chat_json_tools_pass_through() {
+        use crate::wire::{FunctionDef, Tool};
+        let req = ChatRequest {
+            prompt: Some("weather?".into()),
+            tools: Some(vec![Tool::Function {
+                function: FunctionDef {
+                    name: "get_weather".into(),
+                    description: Some("look up weather".into()),
+                    parameters: Some(serde_json::json!({
+                        "type": "object",
+                        "properties": { "city": { "type": "string" } },
+                    })),
+                    strict: None,
+                },
+            }]),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json("gpt-4", &req).unwrap()).unwrap();
+        assert_eq!(json["tools"][0]["type"], "function");
+        assert_eq!(json["tools"][0]["function"]["name"], "get_weather");
+        assert_eq!(json["tools"][0]["function"]["parameters"]["type"], "object");
+    }
+
+    #[test]
+    fn chat_json_tool_choice_modes() {
+        use crate::wire::{NamedToolChoice, ToolChoice, ToolChoiceFunction, ToolChoiceMode};
+        let auto = ChatRequest {
+            prompt: Some("hi".into()),
+            tool_choice: Some(ToolChoice::Mode(ToolChoiceMode::Auto)),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json("gpt-4", &auto).unwrap()).unwrap();
+        assert_eq!(json["tool_choice"], "auto");
+
+        let named = ChatRequest {
+            prompt: Some("hi".into()),
+            tool_choice: Some(ToolChoice::Named(NamedToolChoice::Function {
+                function: ToolChoiceFunction {
+                    name: "get_weather".into(),
+                },
+            })),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json("gpt-4", &named).unwrap()).unwrap();
+        assert_eq!(json["tool_choice"]["type"], "function");
+        assert_eq!(json["tool_choice"]["function"]["name"], "get_weather");
+    }
+
+    #[test]
+    fn chat_json_response_format_json_schema() {
+        use crate::wire::JsonSchemaSpec;
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            response_format: Some(ResponseFormat::JsonSchema {
+                json_schema: JsonSchemaSpec {
+                    name: "person".into(),
+                    description: Some("a person".into()),
+                    schema: serde_json::json!({
+                        "type": "object",
+                        "properties": { "name": { "type": "string" } },
+                    }),
+                    strict: Some(true),
+                },
+            }),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json("gpt-4", &req).unwrap()).unwrap();
+        assert_eq!(json["response_format"]["type"], "json_schema");
+        assert_eq!(json["response_format"]["json_schema"]["name"], "person");
+        assert_eq!(json["response_format"]["json_schema"]["strict"], true);
+        assert_eq!(
+            json["response_format"]["json_schema"]["schema"]["type"],
+            "object"
+        );
+    }
+
+    #[test]
+    fn chat_json_logprobs_forwarded() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            logprobs: Some(true),
+            top_logprobs: Some(5),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json("gpt-4", &req).unwrap()).unwrap();
+        assert_eq!(json["logprobs"], true);
+        assert_eq!(json["top_logprobs"], 5);
+    }
+
+    #[test]
+    fn chat_json_extensions_omitted_when_unset() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json("gpt-4", &req).unwrap()).unwrap();
+        assert!(json.get("logprobs").is_none());
+        assert!(json.get("tools").is_none());
+        assert!(json.get("tool_choice").is_none());
+        assert!(json.get("response_format").is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Chat response parsing: tool calls / logprobs (Phase G2)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_chat_response_text() {
+        let body = r#"{
+            "model": "gpt-4o-mini",
+            "choices": [{"index":0,"message":{"role":"assistant","content":"Hello world"},"finish_reason":"stop"}],
+            "usage": {"prompt_tokens":5,"completion_tokens":2}
+        }"#;
+        let resp = parse_chat_response_json(body, "gpt-4").unwrap();
+        assert_eq!(resp.model, "gpt-4o-mini");
+        assert_eq!(resp.choices[0].message.content, "Hello world");
+        assert_eq!(resp.choices[0].finish_reason, FinishReason::Stop);
+        assert_eq!(resp.usage.total_tokens, 7);
+        assert!(resp.choices[0].message.tool_calls.is_none());
+    }
+
+    #[test]
+    fn parse_chat_response_tool_calls() {
+        let body = r#"{
+            "choices": [{
+                "index":0,
+                "message":{"role":"assistant","content":null,"tool_calls":[
+                    {"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}
+                ]},
+                "finish_reason":"tool_calls"
+            }],
+            "usage":{"prompt_tokens":10,"completion_tokens":8}
+        }"#;
+        let resp = parse_chat_response_json(body, "gpt-4").unwrap();
+        assert_eq!(resp.choices[0].finish_reason, FinishReason::ToolCalls);
+        let calls = resp.choices[0].message.tool_calls.as_ref().unwrap();
+        assert_eq!(calls.len(), 1);
+        let ToolCall::Function { id, function } = &calls[0];
+        assert_eq!(id, "call_1");
+        assert_eq!(function.name, "get_weather");
+        assert!(function.arguments.contains("Paris"));
+        // content null alongside tool_calls is valid.
+        assert_eq!(resp.choices[0].message.content, "");
+    }
+
+    #[test]
+    fn parse_chat_response_logprobs() {
+        let body = r#"{
+            "choices":[{
+                "index":0,
+                "message":{"role":"assistant","content":"hi"},
+                "finish_reason":"stop",
+                "logprobs":{"content":[
+                    {"token":"hi","logprob":-0.05,"bytes":[104,105],"top_logprobs":[{"token":"hey","logprob":-2.3,"bytes":[104,101,121]}]}
+                ]}
+            }],
+            "usage":{"prompt_tokens":1,"completion_tokens":1}
+        }"#;
+        let resp = parse_chat_response_json(body, "gpt-4").unwrap();
+        let lp = resp.choices[0].logprobs.as_ref().unwrap();
+        assert_eq!(lp.content.len(), 1);
+        assert_eq!(lp.content[0].token, "hi");
+        assert!((lp.content[0].logprob + 0.05).abs() < 1e-6);
+        assert_eq!(lp.content[0].bytes.as_ref().unwrap(), &vec![104u8, 105]);
+        assert_eq!(lp.content[0].top_logprobs[0].token, "hey");
+    }
+
+    #[test]
+    fn parse_chat_response_missing_content_and_tools_errors() {
+        let body = r#"{"choices":[{"message":{"role":"assistant"},"finish_reason":"stop"}]}"#;
+        let err = parse_chat_response_json(body, "gpt-4").unwrap_err();
+        assert!(err.to_string().contains("missing message content"));
+    }
+
+    #[test]
+    fn parse_chat_response_api_error() {
+        let body = r#"{"error":{"message":"bad key"}}"#;
+        let err = parse_chat_response_json(body, "gpt-4").unwrap_err();
+        assert!(err.to_string().contains("bad key"));
     }
 
     // -----------------------------------------------------------------------

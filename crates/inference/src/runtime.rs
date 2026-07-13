@@ -382,10 +382,9 @@ impl InferenceRuntime {
                     model_spec,
                     request.model_config.as_ref(),
                 )?;
-                let response = engine.generate_chat(request)?;
-                return Ok(crate::wire::ChatResponse::from_internal(
-                    model_spec, response,
-                ));
+                let mut response = engine.generate_chat(request)?;
+                response.model = model_spec.to_string();
+                return Ok(response);
             }
 
             if !self.config.network_enabled {
@@ -402,10 +401,9 @@ impl InferenceRuntime {
             #[cfg(any(feature = "anthropic", feature = "openai", feature = "google"))]
             {
                 let mut engine = self.cloud_generation_engine(model_spec)?;
-                let response = engine.generate_chat(request)?;
-                Ok(crate::wire::ChatResponse::from_internal(
-                    model_spec, response,
-                ))
+                let mut response = engine.generate_chat(request)?;
+                response.model = model_spec.to_string();
+                Ok(response)
             }
         }
 

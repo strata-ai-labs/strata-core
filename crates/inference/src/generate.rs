@@ -14,9 +14,9 @@ use tracing::info;
 
 #[cfg(feature = "local")]
 use crate::provider::local::LocalProvider;
-use crate::wire::ChatRequest;
 #[cfg(feature = "local")]
 use crate::wire::ModelConfig;
+use crate::wire::{ChatRequest, ChatResponse};
 use crate::{GenerateRequest, GenerateResponse, InferenceError, ProviderKind};
 
 #[cfg(test)]
@@ -284,10 +284,7 @@ impl GenerationEngine {
     /// Local applies the model's chat template and the full sampler chain;
     /// cloud providers map messages natively (system prompt, multi-turn history,
     /// assistant prefill) and forward every knob the provider supports.
-    pub fn generate_chat(
-        &mut self,
-        request: &ChatRequest,
-    ) -> Result<GenerateResponse, InferenceError> {
+    pub fn generate_chat(&mut self, request: &ChatRequest) -> Result<ChatResponse, InferenceError> {
         match &mut self.provider {
             #[cfg(feature = "local")]
             Provider::Local(p) => p.generate_chat(request),
