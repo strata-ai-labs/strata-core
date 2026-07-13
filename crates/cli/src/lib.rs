@@ -271,6 +271,9 @@ pub(crate) fn execute_parsed_command(
         options::TopCommand::Arrow(args) => executor.execute(arrow_command(args.command, scope))?,
         #[cfg(feature = "inference")]
         options::TopCommand::Inference(args) => {
+            // Make config-file provider keys visible to the runtime (which reads
+            // the environment). Env vars already set win — this only fills gaps.
+            load_provider_keys_into_env();
             executor.execute(inference_command(args.command)?)?
         }
         options::TopCommand::Command(args) => executor.execute(raw_command(args.command)?)?,
@@ -329,8 +332,8 @@ fn top_level_without_database(command: &options::TopCommand) -> Result<TopLevelA
             ConfigCommand::Unset { key } => Ok(TopLevelAction::NoDatabase(user_config_unset(key)?)),
             ConfigCommand::Path => Ok(TopLevelAction::NoDatabase(user_config_path()?)),
             ConfigCommand::Show => Ok(TopLevelAction::NoDatabase(user_config_show())),
-            ConfigCommand::GetKey { key } if key == "hub.url" => {
-                Ok(TopLevelAction::NoDatabase(user_config_get()?))
+            ConfigCommand::GetKey { key } if is_user_config_key(key) => {
+                Ok(TopLevelAction::NoDatabase(user_config_get(key)?))
             }
             _ => Ok(TopLevelAction::NeedsDatabase),
         },
@@ -359,36 +362,123 @@ fn config_command(command: ConfigCommand) -> Command {
     }
 }
 
-/// `strata config set hub.url <url>` — writes the global user config.
+/// The canonical provider name behind a `<provider>.api_key` config key,
+/// validated against the known cloud providers, or `None`.
+#[cfg(feature = "inference")]
+fn provider_api_key_target(key: &str) -> Option<&'static str> {
+    let provider = key.strip_suffix(".api_key")?;
+    strata_executor::inference_provider_key_info(provider).map(|info| info.provider)
+}
+
+#[cfg(not(feature = "inference"))]
+fn provider_api_key_target(_key: &str) -> Option<&'static str> {
+    None
+}
+
+/// Whether `key` is a user-config key handled without opening a database
+/// (`hub.url` or a `<provider>.api_key`).
+fn is_user_config_key(key: &str) -> bool {
+    key == "hub.url" || provider_api_key_target(key).is_some()
+}
+
+/// Mask a secret to a short non-secret prefix, e.g. `sk-ant-****`.
+fn redact_key(value: &str) -> String {
+    let prefix: String = value.chars().take(7).collect();
+    format!("{prefix}****")
+}
+
+fn unknown_config_key(key: &str) -> CliError {
+    CliError::usage(format!(
+        "unknown config key `{key}`; settable keys: hub.url, openai.api_key, \
+         anthropic.api_key, google.api_key"
+    ))
+}
+
+/// `strata config set <key> <value>` — writes the global user config.
+/// `hub.url` sets the hub; `<provider>.api_key` stores a cloud API key (0600,
+/// never echoed back in plaintext).
 fn user_config_set(key: &str, value: &str) -> Result<serde_json::Value, CliError> {
-    require_hub_url_key(key)?;
-    let path = strata_hub::write_global_hub_url(value)
-        .map_err(|error| CliError::usage(error.to_string()))?;
-    Ok(serde_json::json!({
-        "key": key,
-        "value": value,
-        "path": path.display().to_string(),
-    }))
+    if key == "hub.url" {
+        let path = strata_hub::write_global_hub_url(value)
+            .map_err(|error| CliError::usage(error.to_string()))?;
+        return Ok(serde_json::json!({
+            "key": key,
+            "value": value,
+            "path": path.display().to_string(),
+        }));
+    }
+    if let Some(provider) = provider_api_key_target(key) {
+        let path = strata_hub::write_global_provider_key(provider, value)
+            .map_err(|error| CliError::usage(error.to_string()))?;
+        return Ok(serde_json::json!({
+            "key": key,
+            "value": redact_key(value),
+            "path": path.display().to_string(),
+            "note": "API key stored (env var overrides it)",
+        }));
+    }
+    Err(unknown_config_key(key))
 }
 
 fn user_config_unset(key: &str) -> Result<serde_json::Value, CliError> {
-    require_hub_url_key(key)?;
-    let path =
-        strata_hub::unset_global_hub_url().map_err(|error| CliError::usage(error.to_string()))?;
-    Ok(serde_json::json!({
-        "key": key,
-        "unset": true,
-        "path": path.map(|path| path.display().to_string()),
-    }))
+    if key == "hub.url" {
+        let path = strata_hub::unset_global_hub_url()
+            .map_err(|error| CliError::usage(error.to_string()))?;
+        return Ok(serde_json::json!({
+            "key": key,
+            "unset": true,
+            "path": path.map(|path| path.display().to_string()),
+        }));
+    }
+    if let Some(provider) = provider_api_key_target(key) {
+        let path = strata_hub::unset_global_provider_key(provider)
+            .map_err(|error| CliError::usage(error.to_string()))?;
+        return Ok(serde_json::json!({
+            "key": key,
+            "unset": true,
+            "path": path.map(|path| path.display().to_string()),
+        }));
+    }
+    Err(unknown_config_key(key))
 }
 
-fn user_config_get() -> Result<serde_json::Value, CliError> {
-    let value =
-        strata_hub::read_global_hub_url().map_err(|error| CliError::usage(error.to_string()))?;
-    Ok(serde_json::json!({
-        "key": "hub.url",
-        "value": value.map(|url| url.to_string()),
-    }))
+fn user_config_get(key: &str) -> Result<serde_json::Value, CliError> {
+    if key == "hub.url" {
+        let value = strata_hub::read_global_hub_url()
+            .map_err(|error| CliError::usage(error.to_string()))?;
+        return Ok(serde_json::json!({
+            "key": "hub.url",
+            "value": value.map(|url| url.to_string()),
+        }));
+    }
+    if let Some(provider) = provider_api_key_target(key) {
+        // Never surface the raw key — report set/unset with a redacted preview.
+        let value = strata_hub::read_global_provider_key(provider)
+            .map_err(|error| CliError::usage(error.to_string()))?;
+        return Ok(serde_json::json!({
+            "key": key,
+            "set": value.is_some(),
+            "value": value.as_deref().map(redact_key),
+        }));
+    }
+    Err(unknown_config_key(key))
+}
+
+/// Populate provider API-key environment variables from the global config for
+/// any that are not already set (the environment always wins). The inference
+/// runtime reads these variables, so this bridges `strata config set
+/// <provider>.api_key` to the runtime without the inference layer needing to
+/// know about `~/.strata`.
+#[cfg(feature = "inference")]
+fn load_provider_keys_into_env() {
+    for info in strata_executor::INFERENCE_CLOUD_PROVIDER_KEYS {
+        if std::env::var_os(info.env_var).is_some() {
+            continue;
+        }
+        if let Ok(Some(key)) = strata_hub::read_global_provider_key(info.provider) {
+            std::env::set_var(info.env_var, key);
+        }
+    }
 }
 
 fn user_config_path() -> Result<serde_json::Value, CliError> {
@@ -410,15 +500,6 @@ fn user_config_show() -> serde_json::Value {
             "detail": error.to_string(),
         }),
     }
-}
-
-fn require_hub_url_key(key: &str) -> Result<(), CliError> {
-    if key == "hub.url" {
-        return Ok(());
-    }
-    Err(CliError::usage(
-        "only `hub.url` is a settable user-config key in V1",
-    ))
 }
 
 fn branch_command(command: BranchCommand) -> Result<Command, CliError> {
@@ -1596,6 +1677,40 @@ fn parse_tool_choice(value: &str) -> strata_executor::InferenceToolChoice {
                 name: value.trim().to_owned(),
             },
         }),
+    }
+}
+
+#[cfg(all(test, feature = "inference"))]
+mod config_key_tests {
+    use super::{is_user_config_key, provider_api_key_target, redact_key};
+
+    #[test]
+    fn redacts_to_a_non_secret_prefix() {
+        // Real keys are long, so only a public-ish prefix is ever revealed.
+        assert_eq!(
+            redact_key("sk-ant-api03-averylongsecretvalue"),
+            "sk-ant-****"
+        );
+        assert_eq!(redact_key("AIzaSyD-averylongsecretvalue"), "AIzaSyD****");
+    }
+
+    #[test]
+    fn provider_api_key_targets_are_validated() {
+        assert_eq!(provider_api_key_target("openai.api_key"), Some("openai"));
+        assert_eq!(
+            provider_api_key_target("anthropic.api_key"),
+            Some("anthropic")
+        );
+        assert_eq!(provider_api_key_target("google.api_key"), Some("google"));
+        assert_eq!(provider_api_key_target("bogus.api_key"), None);
+        assert_eq!(provider_api_key_target("openai.base_url"), None);
+    }
+
+    #[test]
+    fn user_config_keys_recognized() {
+        assert!(is_user_config_key("hub.url"));
+        assert!(is_user_config_key("openai.api_key"));
+        assert!(!is_user_config_key("nonsense"));
     }
 }
 

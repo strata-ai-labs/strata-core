@@ -342,6 +342,51 @@ pub(crate) fn api_key_env_var(provider: ProviderKind) -> &'static str {
     }
 }
 
+/// Public metadata for a cloud provider's API key: the canonical provider name,
+/// the environment variable Strata reads, and where a user acquires a key.
+///
+/// Strata is embedded and ships no keys — callers bring their own. This is the
+/// one source of truth the CLI's `config` surface and the missing-key error
+/// both draw on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProviderKeyInfo {
+    /// Canonical provider name (`openai` / `anthropic` / `google`).
+    pub provider: &'static str,
+    /// Environment variable Strata reads for this provider's key.
+    pub env_var: &'static str,
+    /// URL where a user acquires an API key for this provider.
+    pub acquisition_url: &'static str,
+}
+
+/// Key metadata for every cloud provider, in a stable order.
+pub const CLOUD_PROVIDER_KEYS: &[ProviderKeyInfo] = &[
+    ProviderKeyInfo {
+        provider: "openai",
+        env_var: "OPENAI_API_KEY",
+        acquisition_url: "https://platform.openai.com/api-keys",
+    },
+    ProviderKeyInfo {
+        provider: "anthropic",
+        env_var: "ANTHROPIC_API_KEY",
+        acquisition_url: "https://console.anthropic.com/settings/keys",
+    },
+    ProviderKeyInfo {
+        provider: "google",
+        env_var: "GOOGLE_API_KEY",
+        acquisition_url: "https://aistudio.google.com/apikey",
+    },
+];
+
+/// Look up a cloud provider's key metadata by canonical name (case-insensitive).
+/// Returns `None` for unknown or non-cloud providers.
+#[must_use]
+pub fn provider_key_info(provider: &str) -> Option<&'static ProviderKeyInfo> {
+    let provider = provider.trim();
+    CLOUD_PROVIDER_KEYS
+        .iter()
+        .find(|info| info.provider.eq_ignore_ascii_case(provider))
+}
+
 pub(crate) fn generation_provider_feature_enabled(provider: ProviderKind) -> bool {
     match provider {
         ProviderKind::Local => cfg!(feature = "local"),
