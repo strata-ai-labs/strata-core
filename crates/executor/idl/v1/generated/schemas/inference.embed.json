@@ -1,15 +1,166 @@
 {
   "$defs": {
-    "EmbedRequest": {
-      "description": "Embedding request.",
-      "properties": {
-        "text": {
-          "description": "Text to embed.",
+    "EmbedInput": {
+      "anyOf": [
+        {
+          "description": "One text.",
           "type": "string"
+        },
+        {
+          "description": "A batch of texts.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "Embedding input: a single string or a batch."
+    },
+    "EmbeddingItem": {
+      "description": "One embedding result.",
+      "properties": {
+        "embedding": {
+          "description": "The embedding vector.",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "index": {
+          "description": "Position in the input batch.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [
-        "text"
+        "index",
+        "embedding"
+      ],
+      "type": "object"
+    },
+    "EmbeddingsRequest": {
+      "description": "An embeddings request (the OpenAI Embeddings body plus extensions).",
+      "properties": {
+        "dimensions": {
+          "description": "Truncate to this many dimensions (matryoshka), then renormalize.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input": {
+          "$ref": "#/$defs/EmbedInput",
+          "description": "Text(s) to embed."
+        },
+        "input_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InputType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Query vs document role for instruction-tuned embedders."
+        },
+        "instruction": {
+          "description": "Explicit instruction prefix override.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "normalize": {
+          "description": "Force L2 normalization on/off (default per-model).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "input"
+      ],
+      "type": "object"
+    },
+    "EmbeddingsResponse": {
+      "description": "An embeddings response (OpenAI-shaped).",
+      "properties": {
+        "data": {
+          "description": "One item per input, in order.",
+          "items": {
+            "$ref": "#/$defs/EmbeddingItem"
+          },
+          "type": "array"
+        },
+        "dimension": {
+          "description": "Embedding dimension.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "description": "Resolved model spec.",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage",
+          "description": "Token usage (when known)."
+        }
+      },
+      "required": [
+        "model",
+        "data",
+        "dimension",
+        "usage"
+      ],
+      "type": "object"
+    },
+    "InputType": {
+      "description": "Instruction-tuned embedder input role.",
+      "oneOf": [
+        {
+          "const": "query",
+          "description": "Embed as a search query.",
+          "type": "string"
+        },
+        {
+          "const": "document",
+          "description": "Embed as a document/passage.",
+          "type": "string"
+        }
+      ]
+    },
+    "Usage": {
+      "description": "Token usage accounting.",
+      "properties": {
+        "completion_tokens": {
+          "description": "Completion token count.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "prompt_tokens": {
+          "description": "Prompt token count.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total_tokens": {
+          "description": "Total tokens.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens"
       ],
       "type": "object"
     }
@@ -19,14 +170,14 @@
   "command": "inference.embed",
   "request": {
     "additionalProperties": false,
-    "description": "Embeds one text with an inference model.",
+    "description": "Embeds one or more texts with an inference model.",
     "properties": {
       "model": {
         "description": "Model spec.",
         "type": "string"
       },
       "request": {
-        "$ref": "#/$defs/EmbedRequest",
+        "$ref": "#/$defs/EmbeddingsRequest",
         "description": "Embedding request."
       },
       "type": {
@@ -42,17 +193,13 @@
     "type": "object"
   },
   "response": {
-    "description": "Inference embedding vector.",
+    "description": "Inference embedding output.",
     "properties": {
       "data": {
-        "items": {
-          "format": "float",
-          "type": "number"
-        },
-        "type": "array"
+        "$ref": "#/$defs/EmbeddingsResponse"
       },
       "type": {
-        "const": "inference_embedding",
+        "const": "inference_embeddings",
         "type": "string"
       }
     },

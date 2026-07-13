@@ -2,6 +2,6 @@
   "type": "inference_embed",
   "model": "miniLM",
   "request": {
-    "text": "hello world"
+    "input": "hello world"
   }
 }

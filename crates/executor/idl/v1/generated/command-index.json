@@ -4367,9 +4367,9 @@
       "family": "inference",
       "op": "embed",
       "kind": "inference.runtime_op",
-      "title": "Embed one text",
-      "summary": "Embed one text into a vector.",
-      "description": "Embeds one text with an embedding-capable model and returns the resulting vector. The vector's dimension is fixed by the model. Local embedding models require a build with the local execution feature; cloud embedding providers (OpenAI, Google) require the matching provider feature and an API key. To embed several texts in one call, use `inference embed-batch`.",
+      "title": "Embed one or more texts",
+      "summary": "Embed one or more texts into vectors.",
+      "description": "Embeds text with an embedding-capable model and returns one vector per input, in order. The `input` field takes either a single string or an array of strings, so single and batch embedding share one command. The vector dimension is fixed by the model. Local embedding models require a build with the local execution feature; cloud embedding providers (OpenAI, Google) require the matching provider feature and an API key.",
       "docs": "/docs/inference/embed",
       "cli": {
         "path": [
@@ -4380,17 +4380,17 @@
       },
       "mcp": {
         "name": "strata_inference_embed",
-        "description": "Use this when the user wants to turn a single piece of text into an embedding vector with an inference model."
+        "description": "Use this when the user wants to turn text into embedding vectors with an inference model. The input accepts a single string or an array of strings."
       },
       "feature": "core",
       "access": "read",
       "input": "Command::InferenceEmbed",
-      "output": "Output::InferenceEmbedding",
+      "output": "Output::InferenceEmbeddings",
       "outputs": [
-        "Output::InferenceEmbedding"
+        "Output::InferenceEmbeddings"
       ],
       "wire_status": "stable",
-      "response_model": "EmbeddingVector",
+      "response_model": "EmbeddingsResponse",
       "commit": "none",
       "pagination": "none",
       "batch": "none",
@@ -4455,98 +4455,6 @@
       }
     },
     {
-      "id": "inference.embed_batch",
-      "family": "inference",
-      "op": "embed_batch",
-      "kind": "inference.runtime_op",
-      "title": "Embed multiple texts",
-      "summary": "Embed multiple texts into vectors.",
-      "description": "Embeds an ordered list of texts with an embedding-capable model and returns one outcome per input in the same order, alongside the embedding dimension. Each item is either a successful vector or a per-item error carrying a stable code and a redacted message, so one bad input does not fail the whole batch. Local embedding models require a build with the local execution feature; cloud embedding providers (OpenAI, Google) require the matching provider feature and an API key.",
-      "docs": "/docs/inference/embed_batch",
-      "cli": {
-        "path": [
-          "inference",
-          "embed-batch"
-        ],
-        "surface": "verb"
-      },
-      "mcp": {
-        "name": "strata_inference_embed_batch",
-        "description": "Use this when the user wants to embed several texts at once and get one vector per input, preserving order."
-      },
-      "feature": "core",
-      "access": "read",
-      "input": "Command::InferenceEmbedBatch",
-      "output": "Output::InferenceEmbeddings",
-      "outputs": [
-        "Output::InferenceEmbeddings"
-      ],
-      "wire_status": "stable",
-      "response_model": "EmbedResponse",
-      "commit": "none",
-      "pagination": "none",
-      "batch": "none",
-      "errors": [
-        {
-          "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
-        },
-        {
-          "code": "not_found.engine.branch",
-          "docs": "https://stratadb.org/e/not_found.engine.branch"
-        },
-        {
-          "code": "inference.unsupported_operation",
-          "docs": "https://stratadb.org/e/inference.unsupported_operation"
-        },
-        {
-          "code": "inference.missing_model",
-          "docs": "https://stratadb.org/e/inference.missing_model"
-        },
-        {
-          "code": "inference.model_load_failed",
-          "docs": "https://stratadb.org/e/inference.model_load_failed"
-        },
-        {
-          "code": "inference.local_runtime_failed",
-          "docs": "https://stratadb.org/e/inference.local_runtime_failed"
-        },
-        {
-          "code": "inference.missing_api_key",
-          "docs": "https://stratadb.org/e/inference.missing_api_key"
-        },
-        {
-          "code": "inference.provider_unavailable",
-          "docs": "https://stratadb.org/e/inference.provider_unavailable"
-        },
-        {
-          "code": "inference.provider_malformed_response",
-          "docs": "https://stratadb.org/e/inference.provider_malformed_response"
-        },
-        {
-          "code": "inference.unsupported_provider",
-          "docs": "https://stratadb.org/e/inference.unsupported_provider"
-        },
-        {
-          "code": "inference.unsupported_parameter",
-          "docs": "https://stratadb.org/e/inference.unsupported_parameter"
-        },
-        {
-          "code": "inference.registry_corrupt",
-          "docs": "https://stratadb.org/e/inference.registry_corrupt"
-        }
-      ],
-      "fixtures": {
-        "request": "requests/v1/inference/embed_batch.json",
-        "response": "responses/v1/inference/embed_batch.json",
-        "replay_skip": "embedding runs a model: local execution needs the local build feature and cloud execution needs a provider API key"
-      },
-      "source": {
-        "command": "crates/executor/idl/v1/commands/inference.yaml",
-        "prose": "commands/inference.embed_batch.md"
-      }
-    },
-    {
       "id": "inference.generate",
       "family": "inference",
       "op": "generate",
@@ -4574,7 +4482,7 @@
         "Output::InferenceGeneration"
       ],
       "wire_status": "stable",
-      "response_model": "GenerateResponse",
+      "response_model": "ChatResponse",
       "commit": "none",
       "pagination": "none",
       "batch": "none",

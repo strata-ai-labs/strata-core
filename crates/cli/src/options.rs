@@ -1499,13 +1499,13 @@ pub(crate) enum InferenceCommand {
         prompt: String,
         /// Maximum completion tokens (default 256).
         #[arg(long)]
-        max_tokens: Option<usize>,
+        max_tokens: Option<u32>,
         /// Sampling temperature (default 0.0, greedy).
         #[arg(long)]
         temperature: Option<f32>,
         /// Top-k sampling cutoff.
         #[arg(long)]
-        top_k: Option<usize>,
+        top_k: Option<u32>,
         /// Nucleus sampling cutoff.
         #[arg(long)]
         top_p: Option<f32>,
@@ -1546,14 +1546,6 @@ pub(crate) enum InferenceCommand {
         model: String,
         /// Text to embed.
         text: String,
-    },
-    /// Embed multiple texts in order.
-    EmbedBatch {
-        /// Model spec.
-        model: String,
-        /// Texts to embed.
-        #[arg(required = true)]
-        texts: Vec<String>,
     },
     /// Rank passages against a query.
     Rank {

@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use std::sync::Once;
 
 use strata_executor::{Command, Executor, Output};
-use strata_inference::{EmbedRequest, GenerateRequest, InferenceRuntime, InferenceRuntimeConfig};
+use strata_inference::{
+    ChatRequest, EmbedInput, EmbeddingsRequest, InferenceRuntime, InferenceRuntimeConfig,
+};
 #[cfg(feature = "inference-local")]
 use strata_inference::{RankRequest, RankRuntimeOutcome};
 
@@ -77,6 +79,14 @@ fn assert_finite_embedding(vector: &[f32]) {
     assert!(vector.iter().all(|value| value.is_finite()));
 }
 
+fn first_embedding(response: &strata_inference::EmbeddingsResponse) -> Vec<f32> {
+    response
+        .data
+        .first()
+        .map(|item| item.embedding.clone())
+        .expect("embeddings response has at least one item")
+}
+
 #[cfg(feature = "inference-local")]
 fn env_path(name: &str) -> Option<String> {
     std::env::var(name)
@@ -94,20 +104,26 @@ fn executor_openai_generation_uses_real_api() {
     let output = executor
         .execute(Command::InferenceGenerate {
             model,
-            request: GenerateRequest {
-                prompt: "Reply with exactly one short sentence about embedded databases."
-                    .to_owned(),
-                max_tokens: 32,
-                temperature: 0.0,
-                ..GenerateRequest::default()
+            request: ChatRequest {
+                prompt: Some(
+                    "Reply with exactly one short sentence about embedded databases.".to_owned(),
+                ),
+                max_tokens: Some(32),
+                temperature: Some(0.0),
+                ..ChatRequest::default()
             },
         })
         .expect("OpenAI generation succeeds through executor");
     let Output::InferenceGeneration(response) = output else {
         panic!("expected generation output");
     };
-    assert!(!response.text.trim().is_empty());
-    assert!(response.completion_tokens <= 64);
+    let text = response
+        .choices
+        .first()
+        .map(|choice| choice.message.content.as_str())
+        .unwrap_or_default();
+    assert!(!text.trim().is_empty());
+    assert!(response.usage.completion_tokens <= 64);
 }
 
 #[test]
@@ -123,20 +139,26 @@ fn executor_anthropic_generation_uses_real_api() {
     let output = executor
         .execute(Command::InferenceGenerate {
             model,
-            request: GenerateRequest {
-                prompt: "Reply with exactly one short sentence about embedded databases."
-                    .to_owned(),
-                max_tokens: 32,
-                temperature: 0.0,
-                ..GenerateRequest::default()
+            request: ChatRequest {
+                prompt: Some(
+                    "Reply with exactly one short sentence about embedded databases.".to_owned(),
+                ),
+                max_tokens: Some(32),
+                temperature: Some(0.0),
+                ..ChatRequest::default()
             },
         })
         .expect("Anthropic generation succeeds through executor");
     let Output::InferenceGeneration(response) = output else {
         panic!("expected generation output");
     };
-    assert!(!response.text.trim().is_empty());
-    assert!(response.completion_tokens <= 64);
+    let text = response
+        .choices
+        .first()
+        .map(|choice| choice.message.content.as_str())
+        .unwrap_or_default();
+    assert!(!text.trim().is_empty());
+    assert!(response.usage.completion_tokens <= 64);
 }
 
 #[test]
@@ -149,20 +171,26 @@ fn executor_google_generation_uses_real_api() {
     let output = executor
         .execute(Command::InferenceGenerate {
             model,
-            request: GenerateRequest {
-                prompt: "Reply with exactly one short sentence about embedded databases."
-                    .to_owned(),
-                max_tokens: 32,
-                temperature: 0.0,
-                ..GenerateRequest::default()
+            request: ChatRequest {
+                prompt: Some(
+                    "Reply with exactly one short sentence about embedded databases.".to_owned(),
+                ),
+                max_tokens: Some(32),
+                temperature: Some(0.0),
+                ..ChatRequest::default()
             },
         })
         .expect("Google generation succeeds through executor");
     let Output::InferenceGeneration(response) = output else {
         panic!("expected generation output");
     };
-    assert!(!response.text.trim().is_empty());
-    assert!(response.completion_tokens <= 64);
+    let text = response
+        .choices
+        .first()
+        .map(|choice| choice.message.content.as_str())
+        .unwrap_or_default();
+    assert!(!text.trim().is_empty());
+    assert!(response.usage.completion_tokens <= 64);
 }
 
 #[test]
@@ -178,15 +206,19 @@ fn executor_openai_embedding_uses_real_api() {
     let output = executor
         .execute(Command::InferenceEmbed {
             model,
-            request: EmbedRequest {
-                text: "embedded database".to_owned(),
+            request: EmbeddingsRequest {
+                input: EmbedInput::One("embedded database".to_owned()),
+                dimensions: None,
+                normalize: None,
+                input_type: None,
+                instruction: None,
             },
         })
         .expect("OpenAI embedding succeeds through executor");
-    let Output::InferenceEmbedding(vector) = output else {
+    let Output::InferenceEmbeddings(response) = output else {
         panic!("expected embedding output");
     };
-    assert_finite_embedding(&vector);
+    assert_finite_embedding(&first_embedding(&response));
 }
 
 #[test]
@@ -202,15 +234,19 @@ fn executor_google_embedding_uses_real_api() {
     let output = executor
         .execute(Command::InferenceEmbed {
             model,
-            request: EmbedRequest {
-                text: "embedded database".to_owned(),
+            request: EmbeddingsRequest {
+                input: EmbedInput::One("embedded database".to_owned()),
+                dimensions: None,
+                normalize: None,
+                input_type: None,
+                instruction: None,
             },
         })
         .expect("Google embedding succeeds through executor");
-    let Output::InferenceEmbedding(vector) = output else {
+    let Output::InferenceEmbeddings(response) = output else {
         panic!("expected embedding output");
     };
-    assert_finite_embedding(&vector);
+    assert_finite_embedding(&first_embedding(&response));
 }
 
 #[test]
@@ -228,18 +264,23 @@ fn executor_local_generation_and_tokenizer_use_real_gguf() {
     let output = executor
         .execute(Command::InferenceGenerate {
             model: model.clone(),
-            request: GenerateRequest {
-                prompt: "Write one short sentence about embedded databases.".to_owned(),
-                max_tokens: 32,
-                temperature: 0.0,
-                ..GenerateRequest::default()
+            request: ChatRequest {
+                prompt: Some("Write one short sentence about embedded databases.".to_owned()),
+                max_tokens: Some(32),
+                temperature: Some(0.0),
+                ..ChatRequest::default()
             },
         })
         .expect("local generation succeeds through executor");
     let Output::InferenceGeneration(response) = output else {
         panic!("expected generation output");
     };
-    assert!(!response.text.trim().is_empty());
+    let text = response
+        .choices
+        .first()
+        .map(|choice| choice.message.content.as_str())
+        .unwrap_or_default();
+    assert!(!text.trim().is_empty());
 
     let output = executor
         .execute(Command::InferenceTokenize {
@@ -277,27 +318,41 @@ fn executor_local_embedding_uses_real_gguf() {
     let output = executor
         .execute(Command::InferenceEmbed {
             model: model.clone(),
-            request: EmbedRequest {
-                text: "embedded database".to_owned(),
+            request: EmbeddingsRequest {
+                input: EmbedInput::One("embedded database".to_owned()),
+                dimensions: None,
+                normalize: None,
+                input_type: None,
+                instruction: None,
             },
         })
         .expect("local embedding succeeds through executor");
-    let Output::InferenceEmbedding(vector) = output else {
+    let Output::InferenceEmbeddings(response) = output else {
         panic!("expected embedding output");
     };
+    let vector = first_embedding(&response);
     assert!(!vector.is_empty());
     assert!(vector.iter().all(|value| value.is_finite()));
 
     let output = executor
-        .execute(Command::InferenceEmbedBatch {
+        .execute(Command::InferenceEmbed {
             model,
-            texts: vec!["embedded database".to_owned(), "storage engine".to_owned()],
+            request: EmbeddingsRequest {
+                input: EmbedInput::Many(vec![
+                    "embedded database".to_owned(),
+                    "storage engine".to_owned(),
+                ]),
+                dimensions: None,
+                normalize: None,
+                input_type: None,
+                instruction: None,
+            },
         })
         .expect("local batch embedding succeeds through executor");
     let Output::InferenceEmbeddings(response) = output else {
         panic!("expected batch embedding output");
     };
-    assert_eq!(response.items.len(), 2);
+    assert_eq!(response.data.len(), 2);
     assert!(response.dimension > 0);
 }
 

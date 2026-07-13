@@ -610,19 +610,16 @@ pub enum Output {
     InferenceCapability(strata_inference::InferenceCapability),
     /// Inference generation output.
     #[cfg(feature = "inference")]
-    InferenceGeneration(strata_inference::GenerateResponse),
+    InferenceGeneration(strata_inference::ChatResponse),
     /// Inference token ids.
     #[cfg(feature = "inference")]
     InferenceTokenIds(Vec<u32>),
     /// Inference detokenized text.
     #[cfg(feature = "inference")]
     InferenceText(String),
-    /// Inference embedding vector.
+    /// Inference embedding output.
     #[cfg(feature = "inference")]
-    InferenceEmbedding(Vec<f32>),
-    /// Inference batch embedding output.
-    #[cfg(feature = "inference")]
-    InferenceEmbeddings(strata_inference::EmbedResponse),
+    InferenceEmbeddings(strata_inference::EmbeddingsResponse),
     /// Inference ranking output.
     #[cfg(feature = "inference")]
     InferenceRanking(strata_inference::RankResponse),

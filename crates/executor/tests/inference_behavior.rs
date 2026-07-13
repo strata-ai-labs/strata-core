@@ -9,10 +9,10 @@ use strata_executor::{
     PageInfo, RetryPolicy,
 };
 use strata_inference::{
-    EmbedRequest, EmbedResponse, EmbedRuntimeOutcome, GenerateRequest, GenerateResponse,
-    InferenceCapability, InferenceError, InferenceRuntime, InferenceRuntimeConfig,
-    ModelCacheStatus, ModelInfo, ModelTask, PullModelOutput, RankRequest, RankResponse,
-    RankRuntimeOutcome, StopReason,
+    ChatChoice, ChatMessage, ChatRequest, ChatResponse, EmbedInput, EmbeddingItem,
+    EmbeddingsRequest, EmbeddingsResponse, FinishReason, InferenceCapability, InferenceError,
+    InferenceRuntime, InferenceRuntimeConfig, ModelCacheStatus, ModelInfo, ModelTask,
+    PullModelOutput, RankRequest, RankResponse, RankRuntimeOutcome, Role, Usage,
 };
 
 fn output_round_trip(value: &Output) -> Output {
@@ -33,10 +33,10 @@ fn inference_commands_round_trip_through_json() {
         },
         Command::InferenceGenerate {
             model: "openai:gpt-4o-mini".to_owned(),
-            request: GenerateRequest {
-                prompt: "hello".to_owned(),
-                max_tokens: 8,
-                ..GenerateRequest::default()
+            request: ChatRequest {
+                prompt: Some("hello".to_owned()),
+                max_tokens: Some(8),
+                ..ChatRequest::default()
             },
         },
         Command::InferenceTokenize {
@@ -50,13 +50,23 @@ fn inference_commands_round_trip_through_json() {
         },
         Command::InferenceEmbed {
             model: "openai:text-embedding-3-small".to_owned(),
-            request: EmbedRequest {
-                text: "hello".to_owned(),
+            request: EmbeddingsRequest {
+                input: EmbedInput::One("hello".to_owned()),
+                dimensions: None,
+                normalize: None,
+                input_type: None,
+                instruction: None,
             },
         },
-        Command::InferenceEmbedBatch {
+        Command::InferenceEmbed {
             model: "openai:text-embedding-3-small".to_owned(),
-            texts: vec!["a".to_owned(), "b".to_owned()],
+            request: EmbeddingsRequest {
+                input: EmbedInput::Many(vec!["a".to_owned(), "b".to_owned()]),
+                dimensions: None,
+                normalize: None,
+                input_type: None,
+                instruction: None,
+            },
         },
         Command::InferenceRank {
             model: "local:jina-reranker-v1-tiny".to_owned(),
@@ -114,26 +124,39 @@ fn inference_outputs_round_trip_through_json() {
             path: PathBuf::from("/tmp/miniLM.gguf"),
         }),
         Output::InferenceCapability(capability),
-        Output::InferenceGeneration(GenerateResponse {
-            text: "hello".to_owned(),
-            stop_reason: StopReason::StopToken,
-            prompt_tokens: 2,
-            completion_tokens: 1,
+        Output::InferenceGeneration(ChatResponse {
+            model: "openai:gpt-4o-mini".to_owned(),
+            choices: vec![ChatChoice {
+                index: 0,
+                message: ChatMessage::new(Role::Assistant, "hello"),
+                finish_reason: FinishReason::Stop,
+            }],
+            usage: Usage {
+                prompt_tokens: 2,
+                completion_tokens: 1,
+                total_tokens: 3,
+            },
         }),
         Output::InferenceTokenIds(vec![1, 2, 3]),
         Output::InferenceText("hello".to_owned()),
-        Output::InferenceEmbedding(vec![0.1, 0.2, 0.3]),
-        Output::InferenceEmbeddings(EmbedResponse {
-            dimension: 3,
-            items: vec![
-                EmbedRuntimeOutcome::Ok {
-                    vector: vec![0.1, 0.2, 0.3],
+        Output::InferenceEmbeddings(EmbeddingsResponse {
+            model: "openai:text-embedding-3-small".to_owned(),
+            data: vec![
+                EmbeddingItem {
+                    index: 0,
+                    embedding: vec![0.1, 0.2, 0.3],
                 },
-                EmbedRuntimeOutcome::Error {
-                    code: "inference.provider_timeout".to_owned(),
-                    message: "provider timed out".to_owned(),
+                EmbeddingItem {
+                    index: 1,
+                    embedding: vec![0.4, 0.5, 0.6],
                 },
             ],
+            dimension: 3,
+            usage: Usage {
+                prompt_tokens: 4,
+                completion_tokens: 0,
+                total_tokens: 4,
+            },
         }),
         Output::InferenceRanking(RankResponse {
             items: vec![
@@ -247,10 +270,10 @@ fn cloud_generate_reports_missing_api_key_without_env() {
     let err = executor
         .execute(Command::InferenceGenerate {
             model: "openai:gpt-4o-mini".to_owned(),
-            request: GenerateRequest {
-                prompt: "hello".to_owned(),
-                max_tokens: 4,
-                ..GenerateRequest::default()
+            request: ChatRequest {
+                prompt: Some("hello".to_owned()),
+                max_tokens: Some(4),
+                ..ChatRequest::default()
             },
         })
         .expect_err("missing API key is reported before provider call");

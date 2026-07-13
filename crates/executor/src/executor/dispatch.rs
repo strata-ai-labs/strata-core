@@ -991,7 +991,7 @@ impl Executor {
             #[cfg(feature = "inference")]
             Command::InferenceGenerate { model, request } => self
                 .inference
-                .generate(&model, &request)
+                .chat(&model, &request)
                 .map(Output::InferenceGeneration)
                 .map_err(ExecutorError::from),
             #[cfg(feature = "inference")]
@@ -1013,13 +1013,7 @@ impl Executor {
             #[cfg(feature = "inference")]
             Command::InferenceEmbed { model, request } => self
                 .inference
-                .embed(&model, &request)
-                .map(Output::InferenceEmbedding)
-                .map_err(ExecutorError::from),
-            #[cfg(feature = "inference")]
-            Command::InferenceEmbedBatch { model, texts } => self
-                .inference
-                .embed_batch(&model, &texts)
+                .embeddings(&model, &request)
                 .map(Output::InferenceEmbeddings)
                 .map_err(ExecutorError::from),
             #[cfg(feature = "inference")]

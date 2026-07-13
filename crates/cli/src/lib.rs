@@ -1380,23 +1380,21 @@ fn inference_command(command: options::InferenceCommand) -> Command {
             stop_sequences,
             stop_tokens,
             grammar,
-        } => {
-            let defaults = strata_executor::InferenceGenerateRequest::default();
-            Command::InferenceGenerate {
-                model,
-                request: strata_executor::InferenceGenerateRequest {
-                    prompt,
-                    max_tokens: max_tokens.unwrap_or(defaults.max_tokens),
-                    temperature: temperature.unwrap_or(defaults.temperature),
-                    top_k: top_k.unwrap_or(defaults.top_k),
-                    top_p: top_p.unwrap_or(defaults.top_p),
-                    seed,
-                    stop_sequences,
-                    stop_tokens,
-                    grammar,
-                },
-            }
-        }
+        } => Command::InferenceGenerate {
+            model,
+            request: strata_executor::InferenceChatRequest {
+                prompt: Some(prompt),
+                max_tokens,
+                temperature,
+                top_k,
+                top_p,
+                seed,
+                stop: (!stop_sequences.is_empty()).then_some(stop_sequences),
+                stop_token_ids: (!stop_tokens.is_empty()).then_some(stop_tokens),
+                grammar,
+                ..Default::default()
+            },
+        },
         Inf::Tokenize {
             model,
             text,
@@ -1409,9 +1407,14 @@ fn inference_command(command: options::InferenceCommand) -> Command {
         Inf::Detokenize { model, ids } => Command::InferenceDetokenize { model, ids },
         Inf::Embed { model, text } => Command::InferenceEmbed {
             model,
-            request: strata_executor::InferenceEmbedRequest { text },
+            request: strata_executor::InferenceEmbeddingsRequest {
+                input: strata_executor::InferenceEmbedInput::One(text),
+                dimensions: None,
+                normalize: None,
+                input_type: None,
+                instruction: None,
+            },
         },
-        Inf::EmbedBatch { model, texts } => Command::InferenceEmbedBatch { model, texts },
         Inf::Rank {
             model,
             query,

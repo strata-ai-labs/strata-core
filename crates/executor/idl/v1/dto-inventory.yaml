@@ -91,11 +91,10 @@ response_models:
   - Page<ModelInfo, String>
   - PullModelOutput
   - InferenceCapability
-  - GenerateResponse
+  - ChatResponse
   - TokenIds
   - DetokenizedText
-  - EmbeddingVector
-  - EmbedResponse
+  - EmbeddingsResponse
   - RankResponse
   - UnloadResult
   - ModelCacheStatus

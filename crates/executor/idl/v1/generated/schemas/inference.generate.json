@@ -1,31 +1,188 @@
 {
   "$defs": {
-    "GenerateRequest": {
-      "description": "A request for text generation, provider-agnostic.",
+    "ChatChoice": {
+      "description": "One generation choice.",
       "properties": {
-        "grammar": {
-          "default": null,
-          "description": "Optional GBNF grammar string for constrained generation.\n\nFor local models, this is passed to llama.cpp's grammar sampler.\nFor OpenAI, this enables JSON mode (`response_format: json_object`).\nFor Anthropic/Google, this field is silently ignored.",
+        "finish_reason": {
+          "$ref": "#/$defs/FinishReason",
+          "description": "Why this choice stopped."
+        },
+        "index": {
+          "description": "Choice index.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "message": {
+          "$ref": "#/$defs/ChatMessage",
+          "description": "The assistant message."
+        }
+      },
+      "required": [
+        "index",
+        "message",
+        "finish_reason"
+      ],
+      "type": "object"
+    },
+    "ChatMessage": {
+      "description": "One chat message. (Content is text in this phase; typed multimodal parts and\ntool calls arrive in a later phase.)",
+      "properties": {
+        "content": {
+          "description": "Message text.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Optional author name (OpenAI `name`).",
           "type": [
             "string",
             "null"
           ]
         },
+        "role": {
+          "$ref": "#/$defs/Role",
+          "description": "Message author."
+        }
+      },
+      "required": [
+        "role",
+        "content"
+      ],
+      "type": "object"
+    },
+    "ChatRequest": {
+      "description": "A generation request: the OpenAI Chat Completions body plus Strata /\nllama.cpp extension fields.\n\nExactly one of `messages` (chat) or `prompt` (raw completion) must be set.\nUnknown fields are ignored (OpenAI-compatible, forward-compatible with\nprovider `extra_body`), a deliberate exception to Strata's strict-wire\ndefault for this knob-rich body.",
+      "properties": {
+        "frequency_penalty": {
+          "description": "Frequency penalty.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "grammar": {
+          "description": "GBNF grammar for constrained generation (local).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "logit_bias": {
+          "additionalProperties": false,
+          "description": "Per-token logit bias (token id → bias).",
+          "patternProperties": {
+            "^\\d+$": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "logprobs": {
+          "description": "Whether to return log-probabilities.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "max_tokens": {
-          "default": 256,
-          "description": "Maximum number of completion tokens to produce.",
-          "format": "uint",
+          "description": "Maximum completion tokens.",
+          "format": "uint32",
           "minimum": 0,
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "messages": {
+          "description": "Chat messages (system/user/assistant/tool).",
+          "items": {
+            "$ref": "#/$defs/ChatMessage"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "min_p": {
+          "description": "Min-p sampling cutoff.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "mirostat": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Mirostat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Mirostat sampling."
+        },
+        "model_config": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Per-model load/context configuration."
+        },
+        "presence_penalty": {
+          "description": "Presence penalty.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
         },
         "prompt": {
-          "default": "",
-          "description": "Input prompt text.",
-          "type": "string"
+          "description": "Raw completion prompt (base models / full control).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repeat_last_n": {
+          "description": "Repetition penalty look-back window.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "repeat_penalty": {
+          "description": "Repetition penalty.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "response_format": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResponseFormat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Output format constraint."
         },
         "seed": {
-          "default": null,
-          "description": "Optional deterministic sampling seed for providers that support it.",
+          "description": "Deterministic sampling seed.",
           "format": "uint64",
           "minimum": 0,
           "type": [
@@ -33,102 +190,340 @@
             "null"
           ]
         },
-        "stop_sequences": {
-          "default": [],
-          "description": "String stop sequences.",
+        "stop": {
+          "description": "Stop sequences.",
           "items": {
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
-        "stop_tokens": {
-          "default": [],
-          "description": "Token-id stop sequences for local providers.",
+        "stop_token_ids": {
+          "description": "Token-id stop sequences (local).",
           "items": {
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "temperature": {
-          "default": 0.0,
           "description": "Sampling temperature.",
           "format": "float",
-          "type": "number"
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "tfs_z": {
+          "description": "Tail-free sampling z.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
         },
         "top_k": {
-          "default": 0,
-          "description": "Top-k sampling cutoff for providers that support it.",
-          "format": "uint",
+          "description": "Top-k sampling cutoff.",
+          "format": "uint32",
           "minimum": 0,
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "top_logprobs": {
+          "description": "Number of top log-probabilities to return per token.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "top_p": {
-          "default": 1.0,
-          "description": "Nucleus sampling cutoff for providers that support it.",
+          "description": "Nucleus sampling cutoff.",
           "format": "float",
-          "type": "number"
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "typical_p": {
+          "description": "Typical-p (locally typical) sampling.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
         }
       },
       "type": "object"
     },
-    "GenerateResponse": {
-      "description": "The result of a generation request.",
+    "ChatResponse": {
+      "description": "A generation response (OpenAI-shaped, minimal).",
       "properties": {
-        "completion_tokens": {
-          "description": "Provider-reported completion token count.",
-          "format": "uint",
-          "minimum": 0,
-          "type": "integer"
+        "choices": {
+          "description": "Generation choices (one today).",
+          "items": {
+            "$ref": "#/$defs/ChatChoice"
+          },
+          "type": "array"
         },
-        "prompt_tokens": {
-          "description": "Provider-reported prompt token count.",
-          "format": "uint",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "stop_reason": {
-          "$ref": "#/$defs/StopReason",
-          "description": "Why generation stopped."
-        },
-        "text": {
-          "description": "Generated output text.",
+        "model": {
+          "description": "Resolved model spec.",
           "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage",
+          "description": "Token usage."
         }
       },
       "required": [
-        "text",
-        "stop_reason",
-        "prompt_tokens",
-        "completion_tokens"
+        "model",
+        "choices",
+        "usage"
       ],
       "type": "object"
     },
-    "StopReason": {
-      "description": "Why generation stopped.",
+    "FinishReason": {
+      "description": "Why generation stopped (OpenAI `finish_reason` + Strata `cancelled`).",
       "oneOf": [
         {
-          "const": "stop_token",
-          "description": "Generation reached a stop token or stop sequence.",
+          "const": "stop",
+          "description": "Hit a stop token or stop sequence.",
           "type": "string"
         },
         {
-          "const": "max_tokens",
-          "description": "Generation reached the configured maximum token count.",
+          "const": "length",
+          "description": "Hit the max-token or context limit.",
           "type": "string"
         },
         {
-          "const": "context_length",
-          "description": "Generation reached the model context limit.",
+          "const": "tool_calls",
+          "description": "Stopped to call tools (phase 2).",
+          "type": "string"
+        },
+        {
+          "const": "content_filter",
+          "description": "Stopped by a content filter.",
           "type": "string"
         },
         {
           "const": "cancelled",
-          "description": "Generation was cancelled by provider policy or caller control.",
+          "description": "Cancelled by provider policy or caller control.",
           "type": "string"
         }
       ]
+    },
+    "Mirostat": {
+      "description": "Mirostat perplexity-control sampling (llama.cpp extension).",
+      "properties": {
+        "eta": {
+          "description": "Learning rate (eta).",
+          "format": "float",
+          "type": "number"
+        },
+        "mode": {
+          "description": "Algorithm version: 1 or 2.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tau": {
+          "description": "Target entropy (tau).",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "mode",
+        "tau",
+        "eta"
+      ],
+      "type": "object"
+    },
+    "ModelConfig": {
+      "description": "Per-model load/context configuration (llama.cpp local; ignored by cloud).\nSet once and cache-keyed — not repeated per call.",
+      "properties": {
+        "chat_format": {
+          "description": "Named chat template (e.g. `\"chatml\"`, `\"llama3\"`, `\"gemma\"`) overriding\nthe model's embedded `tokenizer.chat_template`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "flash_attn": {
+          "description": "Enable flash attention.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "n_batch": {
+          "description": "Logical batch size.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "n_ctx": {
+          "description": "Context window size.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "n_gpu_layers": {
+          "description": "GPU layers to offload (-1 = all).",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "n_threads": {
+          "description": "CPU threads.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pooling": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Pooling"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Embedding pooling strategy."
+        }
+      },
+      "type": "object"
+    },
+    "Pooling": {
+      "description": "Embedding pooling strategy (a context-creation param — load-time).",
+      "oneOf": [
+        {
+          "const": "mean",
+          "description": "Mean over tokens.",
+          "type": "string"
+        },
+        {
+          "const": "cls",
+          "description": "CLS token.",
+          "type": "string"
+        },
+        {
+          "const": "last",
+          "description": "Last token.",
+          "type": "string"
+        },
+        {
+          "const": "rank",
+          "description": "Reranker pooling.",
+          "type": "string"
+        }
+      ]
+    },
+    "ResponseFormat": {
+      "description": "Output format constraint. (`json_schema` and tools arrive with structured\noutputs in a later phase.)",
+      "oneOf": [
+        {
+          "description": "Free-form text (default).",
+          "properties": {
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Constrain output to a single JSON object.",
+          "properties": {
+            "type": {
+              "const": "json_object",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Role": {
+      "description": "A chat message role.",
+      "oneOf": [
+        {
+          "const": "system",
+          "description": "System / developer instructions.",
+          "type": "string"
+        },
+        {
+          "const": "user",
+          "description": "End-user turn.",
+          "type": "string"
+        },
+        {
+          "const": "assistant",
+          "description": "Model turn (also used for assistant prefill).",
+          "type": "string"
+        },
+        {
+          "const": "tool",
+          "description": "Tool result turn (function calling — phase 2).",
+          "type": "string"
+        }
+      ]
+    },
+    "Usage": {
+      "description": "Token usage accounting.",
+      "properties": {
+        "completion_tokens": {
+          "description": "Completion token count.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "prompt_tokens": {
+          "description": "Prompt token count.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total_tokens": {
+          "description": "Total tokens.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens"
+      ],
+      "type": "object"
     }
   },
   "$id": "https://stratadb.org/idl/v1/schemas/inference.generate.json",
@@ -143,7 +538,7 @@
         "type": "string"
       },
       "request": {
-        "$ref": "#/$defs/GenerateRequest",
+        "$ref": "#/$defs/ChatRequest",
         "description": "Generation request."
       },
       "type": {
@@ -162,7 +557,7 @@
     "description": "Inference generation output.",
     "properties": {
       "data": {
-        "$ref": "#/$defs/GenerateResponse"
+        "$ref": "#/$defs/ChatResponse"
       },
       "type": {
         "const": "inference_generation",
