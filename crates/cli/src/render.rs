@@ -73,7 +73,6 @@ fn render_human(value: &Value) -> Result<(), CliError> {
             "inference_generation" => print_inference_generation(data, true),
             "inference_text" => println!("{}", data.as_str().unwrap_or_default()),
             "inference_token_ids" => print_token_ids(data),
-            "inference_embedding" => print_embedding_summary(data),
             "inference_embeddings" => print_embeddings_summary(data),
             "inference_ranking" => print_ranking(data),
             "inference_models" => print_inference_models(data),
@@ -184,7 +183,7 @@ fn render_raw(value: &Value) {
             print_token_ids(data);
             return;
         }
-        "inference_embedding" => {
+        "inference_embeddings" => {
             print_embedding_values(data);
             return;
         }
@@ -233,18 +232,28 @@ fn tagged_output(value: &Value) -> Option<(&str, &Value)> {
 /// Prints generated text; with `stats` a trailing summary line follows so the
 /// human can see why generation stopped (raw mode prints the text alone).
 fn print_inference_generation(data: &Value, stats: bool) {
-    println!("{}", data.get("text").and_then(Value::as_str).unwrap_or(""));
+    let choice = data
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first());
+    let text = choice
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    println!("{text}");
     if stats {
-        let stop = data
-            .get("stop_reason")
+        let stop = choice
+            .and_then(|choice| choice.get("finish_reason"))
             .and_then(Value::as_str)
             .unwrap_or("unknown");
-        let prompt = data
-            .get("prompt_tokens")
+        let usage = data.get("usage");
+        let prompt = usage
+            .and_then(|usage| usage.get("prompt_tokens"))
             .and_then(Value::as_u64)
             .unwrap_or(0);
-        let completion = data
-            .get("completion_tokens")
+        let completion = usage
+            .and_then(|usage| usage.get("completion_tokens"))
             .and_then(Value::as_u64)
             .unwrap_or(0);
         println!("-- stop: {stop} · prompt {prompt} tok · completion {completion} tok");
@@ -266,54 +275,55 @@ fn print_token_ids(data: &Value) {
     println!("{ids}");
 }
 
-fn print_embedding_summary(data: &Value) {
-    let Some(values) = data.as_array() else {
-        println!("(nil)");
-        return;
-    };
-    let preview = values
-        .iter()
-        .take(6)
-        .filter_map(Value::as_f64)
-        .map(|v| format!("{v:.4}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let ellipsis = if values.len() > 6 { ", …" } else { "" };
-    println!("dim {}: [{preview}{ellipsis}]", values.len());
-}
-
+/// Prints raw embedding vectors, one line per input, values space-joined.
 fn print_embedding_values(data: &Value) {
-    let values = data
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_f64)
-                .map(|v| v.to_string())
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
+    let items = data
+        .get("data")
+        .and_then(Value::as_array)
+        .cloned()
         .unwrap_or_default();
-    println!("{values}");
+    for item in &items {
+        let values = item
+            .get("embedding")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_f64)
+                    .map(|value| value.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default();
+        println!("{values}");
+    }
 }
 
 fn print_embeddings_summary(data: &Value) {
     let dimension = data.get("dimension").and_then(Value::as_u64).unwrap_or(0);
     let items = data
-        .get("items")
+        .get("data")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let ok = items
-        .iter()
-        .filter(|item| item.get("status").and_then(Value::as_str) == Some("ok"))
-        .count();
-    println!("{ok}/{} embeddings · dim {dimension}", items.len());
-    for (index, item) in items.iter().enumerate() {
-        if item.get("status").and_then(Value::as_str) == Some("error") {
-            let code = item.get("code").and_then(Value::as_str).unwrap_or("error");
-            println!("  [{index}] failed: {code}");
-        }
+    println!("{} embeddings · dim {dimension}", items.len());
+    for item in &items {
+        let index = item.get("index").and_then(Value::as_u64).unwrap_or(0);
+        let preview = item.get("embedding").and_then(Value::as_array).map_or_else(
+            || "[]".to_string(),
+            |values| {
+                let head = values
+                    .iter()
+                    .take(6)
+                    .filter_map(Value::as_f64)
+                    .map(|value| format!("{value:.4}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let ellipsis = if values.len() > 6 { ", …" } else { "" };
+                format!("[{head}{ellipsis}]")
+            },
+        );
+        println!("  [{index}] {preview}");
     }
 }
 

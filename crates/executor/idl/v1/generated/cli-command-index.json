@@ -4,11 +4,11 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "05c8096a58c09d699819e09ee246169f39704c66978aa6f34e2baa7ca689a723",
+    "checksum_sha256": "abb6d48ef8946e61b5cfea894c35ab5c42a6f78d27d8ad1ac8879ae29894da8d",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
-  "command_count": 126,
+  "command_count": 125,
   "families": [
     {
       "id": "admin",
@@ -101,13 +101,12 @@
     },
     {
       "id": "inference",
-      "command_count": 12,
+      "command_count": 11,
       "commands": [
         "inference.cache_status",
         "inference.capability",
         "inference.detokenize",
         "inference.embed",
-        "inference.embed_batch",
         "inference.generate",
         "inference.models.list",
         "inference.models.local",
@@ -3788,9 +3787,9 @@
       "family": "inference",
       "op": "embed",
       "kind": "inference.runtime_op",
-      "title": "Embed one text",
-      "summary": "Embed one text into a vector.",
-      "description": "Embeds one text with an embedding-capable model and returns the resulting vector. The vector's dimension is fixed by the model. Local embedding models require a build with the local execution feature; cloud embedding providers (OpenAI, Google) require the matching provider feature and an API key. To embed several texts in one call, use `inference embed-batch`.",
+      "title": "Embed one or more texts",
+      "summary": "Embed one or more texts into vectors.",
+      "description": "Embeds text with an embedding-capable model and returns one vector per input, in order. The `input` field takes either a single string or an array of strings, so single and batch embedding share one command. The vector dimension is fixed by the model. Local embedding models require a build with the local execution feature; cloud embedding providers (OpenAI, Google) require the matching provider feature and an API key.",
       "docs": "/docs/inference/embed",
       "feature": "core",
       "access": "read",
@@ -3799,9 +3798,9 @@
       "batch": "none",
       "input": "Command::InferenceEmbed",
       "outputs": [
-        "Output::InferenceEmbedding"
+        "Output::InferenceEmbeddings"
       ],
-      "response_model": "EmbeddingVector",
+      "response_model": "EmbeddingsResponse",
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
@@ -3860,88 +3859,6 @@
       "wire_status": "stable"
     },
     {
-      "id": "inference.embed_batch",
-      "path": [
-        "inference",
-        "embed-batch"
-      ],
-      "path_display": "inference embed-batch",
-      "surface": "verb",
-      "family": "inference",
-      "op": "embed_batch",
-      "kind": "inference.runtime_op",
-      "title": "Embed multiple texts",
-      "summary": "Embed multiple texts into vectors.",
-      "description": "Embeds an ordered list of texts with an embedding-capable model and returns one outcome per input in the same order, alongside the embedding dimension. Each item is either a successful vector or a per-item error carrying a stable code and a redacted message, so one bad input does not fail the whole batch. Local embedding models require a build with the local execution feature; cloud embedding providers (OpenAI, Google) require the matching provider feature and an API key.",
-      "docs": "/docs/inference/embed_batch",
-      "feature": "core",
-      "access": "read",
-      "commit": "none",
-      "pagination": "none",
-      "batch": "none",
-      "input": "Command::InferenceEmbedBatch",
-      "outputs": [
-        "Output::InferenceEmbeddings"
-      ],
-      "response_model": "EmbedResponse",
-      "errors": [
-        {
-          "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
-        },
-        {
-          "code": "not_found.engine.branch",
-          "docs": "https://stratadb.org/e/not_found.engine.branch"
-        },
-        {
-          "code": "inference.unsupported_operation",
-          "docs": "https://stratadb.org/e/inference.unsupported_operation"
-        },
-        {
-          "code": "inference.missing_model",
-          "docs": "https://stratadb.org/e/inference.missing_model"
-        },
-        {
-          "code": "inference.model_load_failed",
-          "docs": "https://stratadb.org/e/inference.model_load_failed"
-        },
-        {
-          "code": "inference.local_runtime_failed",
-          "docs": "https://stratadb.org/e/inference.local_runtime_failed"
-        },
-        {
-          "code": "inference.missing_api_key",
-          "docs": "https://stratadb.org/e/inference.missing_api_key"
-        },
-        {
-          "code": "inference.provider_unavailable",
-          "docs": "https://stratadb.org/e/inference.provider_unavailable"
-        },
-        {
-          "code": "inference.provider_malformed_response",
-          "docs": "https://stratadb.org/e/inference.provider_malformed_response"
-        },
-        {
-          "code": "inference.unsupported_provider",
-          "docs": "https://stratadb.org/e/inference.unsupported_provider"
-        },
-        {
-          "code": "inference.unsupported_parameter",
-          "docs": "https://stratadb.org/e/inference.unsupported_parameter"
-        },
-        {
-          "code": "inference.registry_corrupt",
-          "docs": "https://stratadb.org/e/inference.registry_corrupt"
-        }
-      ],
-      "fixtures": {
-        "request": "requests/v1/inference/embed_batch.json",
-        "response": "responses/v1/inference/embed_batch.json",
-        "replay_skip": "embedding runs a model: local execution needs the local build feature and cloud execution needs a provider API key"
-      },
-      "wire_status": "stable"
-    },
-    {
       "id": "inference.generate",
       "path": [
         "inference",
@@ -3965,7 +3882,7 @@
       "outputs": [
         "Output::InferenceGeneration"
       ],
-      "response_model": "GenerateResponse",
+      "response_model": "ChatResponse",
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
@@ -7836,10 +7753,10 @@
       "admin.describe": 12,
       "admin.health": 54,
       "admin.hub_clone": 9,
-      "admin.info": 67,
-      "admin.metrics": 97,
-      "admin.ping": 98,
-      "admin.remote": 99,
+      "admin.info": 66,
+      "admin.metrics": 96,
+      "admin.ping": 97,
+      "admin.remote": 98,
       "arrow.export": 0,
       "arrow.import": 1,
       "branch.create": 2,
@@ -7894,69 +7811,68 @@
       "inference.capability": 56,
       "inference.detokenize": 57,
       "inference.embed": 58,
-      "inference.embed_batch": 59,
-      "inference.generate": 60,
-      "inference.models.list": 61,
-      "inference.models.local": 62,
-      "inference.models.pull": 63,
-      "inference.rank": 64,
-      "inference.tokenize": 65,
-      "inference.unload": 66,
-      "json.batch_delete": 68,
-      "json.batch_exists": 69,
-      "json.batch_get": 70,
-      "json.batch_set": 71,
-      "json.count": 72,
-      "json.delete": 73,
-      "json.exists": 74,
-      "json.get": 75,
-      "json.history": 76,
-      "json.index.create": 77,
-      "json.index.drop": 78,
-      "json.index.list": 79,
-      "json.list": 80,
-      "json.sample": 81,
-      "json.scan": 82,
-      "json.set": 83,
-      "kv.batch_delete": 84,
-      "kv.batch_exists": 85,
-      "kv.batch_get": 86,
-      "kv.batch_put": 87,
-      "kv.count": 88,
-      "kv.delete": 89,
-      "kv.exists": 90,
-      "kv.get": 91,
-      "kv.history": 92,
-      "kv.list": 93,
-      "kv.put": 94,
-      "kv.sample": 95,
-      "kv.scan": 96,
-      "space.create": 100,
-      "space.delete": 101,
-      "space.exists": 102,
-      "space.list": 103,
-      "vector.batch_delete": 104,
-      "vector.batch_exists": 105,
-      "vector.batch_get": 106,
-      "vector.batch_upsert": 107,
-      "vector.collection.create": 108,
-      "vector.collection.delete": 109,
-      "vector.collection.list": 110,
-      "vector.collection.stats": 111,
-      "vector.count": 112,
-      "vector.delete": 113,
-      "vector.delete_all": 114,
-      "vector.delete_by_filter": 115,
-      "vector.exists": 116,
-      "vector.get": 117,
-      "vector.history": 118,
-      "vector.index.query": 119,
-      "vector.keys": 120,
-      "vector.metadata.update": 124,
-      "vector.query": 121,
-      "vector.sample": 122,
-      "vector.scan": 123,
-      "vector.upsert": 125
+      "inference.generate": 59,
+      "inference.models.list": 60,
+      "inference.models.local": 61,
+      "inference.models.pull": 62,
+      "inference.rank": 63,
+      "inference.tokenize": 64,
+      "inference.unload": 65,
+      "json.batch_delete": 67,
+      "json.batch_exists": 68,
+      "json.batch_get": 69,
+      "json.batch_set": 70,
+      "json.count": 71,
+      "json.delete": 72,
+      "json.exists": 73,
+      "json.get": 74,
+      "json.history": 75,
+      "json.index.create": 76,
+      "json.index.drop": 77,
+      "json.index.list": 78,
+      "json.list": 79,
+      "json.sample": 80,
+      "json.scan": 81,
+      "json.set": 82,
+      "kv.batch_delete": 83,
+      "kv.batch_exists": 84,
+      "kv.batch_get": 85,
+      "kv.batch_put": 86,
+      "kv.count": 87,
+      "kv.delete": 88,
+      "kv.exists": 89,
+      "kv.get": 90,
+      "kv.history": 91,
+      "kv.list": 92,
+      "kv.put": 93,
+      "kv.sample": 94,
+      "kv.scan": 95,
+      "space.create": 99,
+      "space.delete": 100,
+      "space.exists": 101,
+      "space.list": 102,
+      "vector.batch_delete": 103,
+      "vector.batch_exists": 104,
+      "vector.batch_get": 105,
+      "vector.batch_upsert": 106,
+      "vector.collection.create": 107,
+      "vector.collection.delete": 108,
+      "vector.collection.list": 109,
+      "vector.collection.stats": 110,
+      "vector.count": 111,
+      "vector.delete": 112,
+      "vector.delete_all": 113,
+      "vector.delete_by_filter": 114,
+      "vector.exists": 115,
+      "vector.get": 116,
+      "vector.history": 117,
+      "vector.index.query": 118,
+      "vector.keys": 119,
+      "vector.metadata.update": 123,
+      "vector.query": 120,
+      "vector.sample": 121,
+      "vector.scan": 122,
+      "vector.upsert": 124
     },
     "by_path": {
       "arrow export": "arrow.export",
@@ -8018,7 +7934,6 @@
       "inference capability": "inference.capability",
       "inference detokenize": "inference.detokenize",
       "inference embed": "inference.embed",
-      "inference embed-batch": "inference.embed_batch",
       "inference generate": "inference.generate",
       "inference models list": "inference.models.list",
       "inference models local": "inference.models.local",

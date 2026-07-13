@@ -1,8 +1,22 @@
 {
-  "data": [
-    0.0,
-    0.5,
-    -0.5
-  ],
-  "type": "inference_embedding"
+  "type": "inference_embeddings",
+  "data": {
+    "model": "miniLM",
+    "data": [
+      {
+        "index": 0,
+        "embedding": [
+          0.1,
+          0.2,
+          0.3
+        ]
+      }
+    ],
+    "dimension": 3,
+    "usage": {
+      "prompt_tokens": 4,
+      "completion_tokens": 0,
+      "total_tokens": 4
+    }
+  }
 }

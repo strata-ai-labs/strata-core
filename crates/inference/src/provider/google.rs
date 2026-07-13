@@ -7,6 +7,8 @@
 //! The API key is passed via the `x-goog-api-key` header for security
 //! (avoids leaking credentials in URL logs).
 
+use crate::provider::cloud::{chat_turns, reject_local_only};
+use crate::wire::{ChatRequest, ResponseFormat, Role};
 use crate::{GenerateRequest, GenerateResponse, InferenceError, StopReason};
 
 const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -51,8 +53,25 @@ impl GoogleProvider {
             ));
         }
 
-        let url = build_url(&self.model);
         let body = build_request_json(request);
+        self.post(body)
+    }
+
+    /// Generate from an OpenAI-shaped chat request, mapping messages natively
+    /// (system prompt hoisted to `system_instruction`, assistant turns become
+    /// `model` turns).
+    pub(crate) fn generate_chat(
+        &self,
+        request: &ChatRequest,
+    ) -> Result<GenerateResponse, InferenceError> {
+        let body = build_chat_request_json(request)?;
+        self.post(body)
+    }
+
+    /// Send a prepared request body and parse the response. The URL carries the
+    /// model name, so it is built here from `self.model`.
+    fn post(&self, body: String) -> Result<GenerateResponse, InferenceError> {
+        let url = build_url(&self.model);
 
         let agent = ureq::Agent::new_with_config(
             ureq::config::Config::builder()
@@ -63,7 +82,7 @@ impl GoogleProvider {
             .post(&url)
             .header("x-goog-api-key", &self.api_key)
             .header("content-type", "application/json")
-            .send(&body)
+            .send(body)
             .map_err(|e| map_http_error("Google", e))?;
 
         let response_body = response.body_mut().read_to_string().map_err(|e| {
@@ -131,6 +150,84 @@ pub(crate) fn build_request_json(request: &GenerateRequest) -> String {
     });
 
     obj.to_string()
+}
+
+/// Build the Google Gemini API request JSON from an OpenAI-shaped chat request.
+///
+/// System-role turns are hoisted to `system_instruction`; user turns become
+/// `user` `contents` and assistant turns become `model` `contents`. Supported
+/// knobs (`max_tokens`, `temperature`, `top_p`, `top_k`, `stop`,
+/// `response_format`) are forwarded when set. Seed, penalties, logit_bias, and
+/// the llama.cpp extensions have no Gemini equivalent and are ignored.
+pub(crate) fn build_chat_request_json(request: &ChatRequest) -> Result<String, InferenceError> {
+    reject_local_only(request, "Google")?;
+
+    let mut system = String::new();
+    let mut contents: Vec<serde_json::Value> = Vec::new();
+    for (role, content) in chat_turns(request) {
+        match role {
+            Role::System => {
+                if !system.is_empty() {
+                    system.push('\n');
+                }
+                system.push_str(&content);
+            }
+            Role::User => {
+                contents.push(serde_json::json!({
+                    "role": "user",
+                    "parts": [{"text": content}]
+                }));
+            }
+            Role::Assistant => {
+                contents.push(serde_json::json!({
+                    "role": "model",
+                    "parts": [{"text": content}]
+                }));
+            }
+            Role::Tool => {
+                return Err(InferenceError::Provider(
+                    "Google: tool messages are not yet supported".to_string(),
+                ));
+            }
+        }
+    }
+
+    let mut gen_config = serde_json::json!({});
+    if let Some(max_tokens) = request.max_tokens {
+        gen_config["maxOutputTokens"] = serde_json::json!(max_tokens);
+    }
+    if let Some(temperature) = request.temperature {
+        gen_config["temperature"] = serde_json::json!(temperature);
+    }
+    if let Some(top_p) = request.top_p {
+        gen_config["topP"] = serde_json::json!(top_p);
+    }
+    if let Some(top_k) = request.top_k {
+        gen_config["topK"] = serde_json::json!(top_k);
+    }
+    if let Some(stop) = &request.stop {
+        if !stop.is_empty() {
+            gen_config["stopSequences"] = serde_json::json!(stop);
+        }
+    }
+    if request.response_format == Some(ResponseFormat::JsonObject) {
+        gen_config["responseMimeType"] = serde_json::json!("application/json");
+    }
+
+    // Default: disable thinking. Without this, gemini-2.5 spends the whole
+    // budget on internal reasoning and returns no text; a `thinking` knob is a
+    // later phase.
+    gen_config["thinkingConfig"] = serde_json::json!({"thinkingBudget": 0});
+
+    let mut obj = serde_json::json!({
+        "contents": contents,
+        "generationConfig": gen_config,
+    });
+    if !system.is_empty() {
+        obj["system_instruction"] = serde_json::json!({"parts": [{"text": system}]});
+    }
+
+    Ok(obj.to_string())
 }
 
 /// Parse the Google Gemini API response JSON into a `GenerateResponse`.
@@ -569,6 +666,131 @@ mod tests {
 
         assert!(json.get("stop_tokens").is_none());
         assert!(json["generationConfig"].get("stop_tokens").is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Chat request JSON building (Phase C)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn chat_json_system_hoisted_and_assistant_is_model() {
+        let req = ChatRequest {
+            messages: Some(vec![
+                crate::wire::ChatMessage::new(Role::System, "sys"),
+                crate::wire::ChatMessage::new(Role::User, "u"),
+                crate::wire::ChatMessage::new(Role::Assistant, "a"),
+            ]),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json(&req).unwrap()).unwrap();
+
+        assert_eq!(json["system_instruction"]["parts"][0]["text"], "sys");
+        let contents = json["contents"].as_array().unwrap();
+        assert_eq!(contents.len(), 2, "system is not a content turn");
+        assert_eq!(contents[0]["role"], "user");
+        assert_eq!(contents[0]["parts"][0]["text"], "u");
+        // Assistant maps to Gemini's `model` role.
+        assert_eq!(contents[1]["role"], "model");
+        assert_eq!(contents[1]["parts"][0]["text"], "a");
+    }
+
+    #[test]
+    fn chat_json_prompt_becomes_single_user_turn() {
+        let req = ChatRequest {
+            prompt: Some("just this".into()),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json(&req).unwrap()).unwrap();
+        let contents = json["contents"].as_array().unwrap();
+        assert_eq!(contents.len(), 1);
+        assert_eq!(contents[0]["role"], "user");
+        assert_eq!(contents[0]["parts"][0]["text"], "just this");
+        assert!(json.get("system_instruction").is_none());
+    }
+
+    #[test]
+    fn chat_json_does_not_force_top_k_and_forwards_user_knobs() {
+        // Gemini must NOT invent a topK, and must forward the caller's knobs.
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            max_tokens: Some(128),
+            temperature: Some(0.3),
+            top_p: Some(0.8),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json(&req).unwrap()).unwrap();
+        let cfg = &json["generationConfig"];
+        assert!(cfg.get("topK").is_none(), "topK must not be forced: {json}");
+        assert_eq!(cfg["maxOutputTokens"], 128);
+        let temp = cfg["temperature"].as_f64().unwrap();
+        assert!((temp - 0.3).abs() < 1e-6);
+        let top_p = cfg["topP"].as_f64().unwrap();
+        assert!((top_p - 0.8).abs() < 1e-6);
+        // Thinking is disabled by default so 2.5 models return text.
+        assert_eq!(cfg["thinkingConfig"]["thinkingBudget"], 0);
+    }
+
+    #[test]
+    fn chat_json_top_k_forwarded_when_set() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            top_k: Some(20),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json(&req).unwrap()).unwrap();
+        assert_eq!(json["generationConfig"]["topK"], 20);
+    }
+
+    #[test]
+    fn chat_json_response_format_sets_mime() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            response_format: Some(ResponseFormat::JsonObject),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json(&req).unwrap()).unwrap();
+        assert_eq!(
+            json["generationConfig"]["responseMimeType"],
+            "application/json"
+        );
+    }
+
+    #[test]
+    fn chat_json_stop_sequences_forwarded() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            stop: Some(vec!["END".into()]),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json(&req).unwrap()).unwrap();
+        assert_eq!(json["generationConfig"]["stopSequences"][0], "END");
+    }
+
+    #[test]
+    fn chat_json_grammar_rejected() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            grammar: Some("g".into()),
+            ..Default::default()
+        };
+        let err = build_chat_request_json(&req).unwrap_err();
+        assert!(matches!(err, InferenceError::Provider(_)), "err: {err}");
+    }
+
+    #[test]
+    fn chat_json_tool_message_errors() {
+        let req = ChatRequest {
+            messages: Some(vec![crate::wire::ChatMessage::new(Role::Tool, "r")]),
+            ..Default::default()
+        };
+        let err = build_chat_request_json(&req).unwrap_err();
+        assert!(matches!(err, InferenceError::Provider(_)), "err: {err}");
     }
 
     // -----------------------------------------------------------------------

@@ -3,6 +3,8 @@
 //! Sends generation requests to `https://api.openai.com/v1/chat/completions`
 //! and maps the response to [`GenerateResponse`].
 
+use crate::provider::cloud::{chat_turns, reject_local_only};
+use crate::wire::{ChatRequest, ResponseFormat, Role};
 use crate::{GenerateRequest, GenerateResponse, InferenceError, StopReason};
 
 const API_URL: &str = "https://api.openai.com/v1/chat/completions";
@@ -49,7 +51,22 @@ impl OpenAIProvider {
         }
 
         let body = build_request_json(&self.model, request);
+        self.post(body)
+    }
 
+    /// Generate from an OpenAI-shaped chat request, mapping messages natively
+    /// (system/user/assistant/tool turns preserved) and forwarding supported
+    /// sampling knobs.
+    pub(crate) fn generate_chat(
+        &self,
+        request: &ChatRequest,
+    ) -> Result<GenerateResponse, InferenceError> {
+        let body = build_chat_request_json(&self.model, request)?;
+        self.post(body)
+    }
+
+    /// Send a prepared request body and parse the response.
+    fn post(&self, body: String) -> Result<GenerateResponse, InferenceError> {
         let agent = ureq::Agent::new_with_config(
             ureq::config::Config::builder()
                 .timeout_global(Some(std::time::Duration::from_secs(30)))
@@ -59,7 +76,7 @@ impl OpenAIProvider {
             .post(API_URL)
             .header("Authorization", &format!("Bearer {}", self.api_key))
             .header("content-type", "application/json")
-            .send(&body)
+            .send(body)
             .map_err(|e| map_http_error("OpenAI", e))?;
 
         let response_body = response.body_mut().read_to_string().map_err(|e| {
@@ -118,6 +135,71 @@ pub(crate) fn build_request_json(model: &str, request: &GenerateRequest) -> Stri
     // grammar: mapped to response_format above (GBNF string itself is not sent)
 
     obj.to_string()
+}
+
+/// Build the OpenAI Chat Completions API request JSON from an OpenAI-shaped
+/// chat request.
+///
+/// Turns map directly to `messages` (roles serialize to their wire strings).
+/// Every knob OpenAI honors — `max_tokens`, `temperature`, `top_p`, `seed`,
+/// `frequency_penalty`, `presence_penalty`, `logit_bias`, `stop`,
+/// `response_format` — is forwarded when set. `top_k` and the llama.cpp
+/// extensions have no OpenAI equivalent and are ignored.
+pub(crate) fn build_chat_request_json(
+    model: &str,
+    request: &ChatRequest,
+) -> Result<String, InferenceError> {
+    reject_local_only(request, "OpenAI")?;
+
+    let messages: Vec<serde_json::Value> = chat_turns(request)
+        .into_iter()
+        .map(|(role, content)| {
+            let role = match role {
+                Role::System => "system",
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::Tool => "tool",
+            };
+            serde_json::json!({"role": role, "content": content})
+        })
+        .collect();
+
+    let mut obj = serde_json::json!({
+        "model": model,
+        "messages": messages,
+    });
+
+    if let Some(max_tokens) = request.max_tokens {
+        obj["max_tokens"] = serde_json::json!(max_tokens);
+    }
+    if let Some(temperature) = request.temperature {
+        obj["temperature"] = serde_json::json!(temperature);
+    }
+    if let Some(top_p) = request.top_p {
+        obj["top_p"] = serde_json::json!(top_p);
+    }
+    if let Some(seed) = request.seed {
+        obj["seed"] = serde_json::json!(seed);
+    }
+    if let Some(frequency_penalty) = request.frequency_penalty {
+        obj["frequency_penalty"] = serde_json::json!(frequency_penalty);
+    }
+    if let Some(presence_penalty) = request.presence_penalty {
+        obj["presence_penalty"] = serde_json::json!(presence_penalty);
+    }
+    if let Some(logit_bias) = &request.logit_bias {
+        obj["logit_bias"] = serde_json::json!(logit_bias);
+    }
+    if let Some(stop) = &request.stop {
+        if !stop.is_empty() {
+            obj["stop"] = serde_json::json!(stop);
+        }
+    }
+    if request.response_format == Some(ResponseFormat::JsonObject) {
+        obj["response_format"] = serde_json::json!({"type": "json_object"});
+    }
+
+    Ok(obj.to_string())
 }
 
 /// Parse the OpenAI Chat Completions API response JSON into a `GenerateResponse`.
@@ -441,6 +523,136 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         assert!(json.get("stop").is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Chat request JSON building (Phase C)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn chat_json_roles_map_to_wire_strings() {
+        let req = ChatRequest {
+            messages: Some(vec![
+                crate::wire::ChatMessage::new(Role::System, "sys"),
+                crate::wire::ChatMessage::new(Role::User, "u"),
+                crate::wire::ChatMessage::new(Role::Assistant, "a"),
+            ]),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json("gpt-4", &req).unwrap()).unwrap();
+        let messages = json["messages"].as_array().unwrap();
+        assert_eq!(
+            messages.len(),
+            3,
+            "system stays inline as a message for OpenAI"
+        );
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "sys");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[2]["role"], "assistant");
+        assert_eq!(messages[2]["content"], "a");
+        // max_tokens omitted → not sent.
+        assert!(json.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn chat_json_prompt_becomes_single_user_turn() {
+        let req = ChatRequest {
+            prompt: Some("just this".into()),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json("gpt-4", &req).unwrap()).unwrap();
+        let messages = json["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"], "just this");
+    }
+
+    #[test]
+    fn chat_json_includes_seed_and_penalties() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            seed: Some(42),
+            frequency_penalty: Some(0.5),
+            presence_penalty: Some(0.25),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json("gpt-4", &req).unwrap()).unwrap();
+        assert_eq!(json["seed"], 42);
+        let fp = json["frequency_penalty"].as_f64().unwrap();
+        assert!((fp - 0.5).abs() < 1e-6);
+        let pp = json["presence_penalty"].as_f64().unwrap();
+        assert!((pp - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn chat_json_response_format_json_object() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            response_format: Some(ResponseFormat::JsonObject),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json("gpt-4", &req).unwrap()).unwrap();
+        assert_eq!(json["response_format"]["type"], "json_object");
+    }
+
+    #[test]
+    fn chat_json_response_format_text_omitted() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            response_format: Some(ResponseFormat::Text),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json("gpt-4", &req).unwrap()).unwrap();
+        assert!(json.get("response_format").is_none());
+    }
+
+    #[test]
+    fn chat_json_logit_bias_serialized() {
+        let mut bias = std::collections::BTreeMap::new();
+        bias.insert(1234u32, -1.5f32);
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            logit_bias: Some(bias),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json("gpt-4", &req).unwrap()).unwrap();
+        let val = json["logit_bias"]["1234"].as_f64().unwrap();
+        assert!((val + 1.5).abs() < 1e-6, "logit_bias: {json}");
+    }
+
+    #[test]
+    fn chat_json_stop_and_top_p_forwarded_top_k_ignored() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            top_p: Some(0.8),
+            top_k: Some(40),
+            stop: Some(vec!["\n\n".into()]),
+            ..Default::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&build_chat_request_json("gpt-4", &req).unwrap()).unwrap();
+        let top_p = json["top_p"].as_f64().unwrap();
+        assert!((top_p - 0.8).abs() < 1e-6);
+        assert_eq!(json["stop"][0], "\n\n");
+        assert!(json.get("top_k").is_none(), "top_k unsupported by OpenAI");
+    }
+
+    #[test]
+    fn chat_json_grammar_rejected() {
+        let req = ChatRequest {
+            prompt: Some("hi".into()),
+            grammar: Some("g".into()),
+            ..Default::default()
+        };
+        let err = build_chat_request_json("gpt-4", &req).unwrap_err();
+        assert!(matches!(err, InferenceError::Provider(_)), "err: {err}");
     }
 
     // -----------------------------------------------------------------------

@@ -13,6 +13,7 @@ use super::ffi::{
     llama_api_lock, LlamaContext, LlamaCppApi, LlamaModel, LlamaToken, LlamaVocab,
     LLAMA_POOLING_TYPE_MEAN, LLAMA_POOLING_TYPE_RANK,
 };
+use crate::wire::ModelConfig;
 use crate::InferenceError;
 
 /// Shared llama.cpp model and context state.
@@ -142,16 +143,16 @@ impl LlamaCppContext {
     /// Load a model configured for text generation.
     pub(crate) fn load_for_generation(
         path: &Path,
-        ctx_override: Option<usize>,
+        config: Option<&ModelConfig>,
     ) -> Result<Self, InferenceError> {
         let _api_guard = llama_api_lock();
         let api = Arc::new(LlamaCppApi::load().map_err(InferenceError::LlamaCpp)?);
 
         let c_path = path_to_cstring(path)?;
 
-        // Model params: default with GPU offloading
+        // Model params: offload all layers by default; ModelConfig overrides.
         let mut mparams = api.model_default_params();
-        mparams.n_gpu_layers = 999; // offload all layers
+        mparams.n_gpu_layers = config.and_then(|c| c.n_gpu_layers).unwrap_or(999);
 
         info!(path = %path.display(), "Loading model via llama.cpp");
         let model = api
@@ -184,11 +185,21 @@ impl LlamaCppContext {
         let mut cparams = api.context_default_params();
         cparams.embeddings = false;
 
-        let n_ctx = match ctx_override {
-            Some(ctx) => ctx.min(train_ctx),
+        let n_ctx = match config.and_then(|c| c.n_ctx) {
+            Some(ctx) => (ctx as usize).min(train_ctx),
             None => train_ctx.min(4096), // default cap
         };
         cparams.n_ctx = n_ctx as u32;
+        if let Some(c) = config {
+            if let Some(n_batch) = c.n_batch {
+                cparams.n_batch = n_batch;
+            }
+            if let Some(n_threads) = c.n_threads {
+                let n = i32::try_from(n_threads).unwrap_or(i32::MAX);
+                cparams.n_threads = n;
+                cparams.n_threads_batch = n;
+            }
+        }
         let n_seq_max = cparams.n_seq_max as usize;
 
         let ctx = api.init_from_model(model, cparams).map_err(|e| {
@@ -302,6 +313,11 @@ impl LlamaCppContext {
     }
 
     /// Clear the KV cache / memory state for a fresh inference.
+    /// The model's embedded chat template (`tokenizer.chat_template`), if any.
+    pub(crate) fn chat_template(&self) -> Option<String> {
+        self.api.model_chat_template(self.model, None)
+    }
+
     pub(crate) fn clear_memory(&self) {
         let mem = self.api.get_memory(self.ctx);
         self.api.memory_clear(mem, true);

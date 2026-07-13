@@ -1,9 +1,21 @@
 {
+  "type": "inference_generation",
   "data": {
-    "completion_tokens": 17,
-    "prompt_tokens": 9,
-    "stop_reason": "stop_token",
-    "text": "Rows in the deep dark,\nindexes light the query path,\nStrata answers fast."
-  },
-  "type": "inference_generation"
+    "model": "anthropic:claude-3-5-haiku-latest",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "Rows in the deep dark,\nindexes light the query path,\nStrata answers fast."
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 10,
+      "completion_tokens": 8,
+      "total_tokens": 18
+    }
+  }
 }

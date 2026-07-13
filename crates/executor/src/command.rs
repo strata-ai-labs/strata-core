@@ -1678,7 +1678,7 @@ pub enum Command {
         /// Model spec.
         model: String,
         /// Generation request.
-        request: strata_inference::GenerateRequest,
+        request: strata_inference::ChatRequest,
     },
     /// Tokenizes text with a local inference model.
     #[cfg(feature = "inference")]
@@ -1699,21 +1699,13 @@ pub enum Command {
         /// Token ids.
         ids: Vec<u32>,
     },
-    /// Embeds one text with an inference model.
+    /// Embeds one or more texts with an inference model.
     #[cfg(feature = "inference")]
     InferenceEmbed {
         /// Model spec.
         model: String,
         /// Embedding request.
-        request: strata_inference::EmbedRequest,
-    },
-    /// Embeds multiple texts with an inference model.
-    #[cfg(feature = "inference")]
-    InferenceEmbedBatch {
-        /// Model spec.
-        model: String,
-        /// Ordered texts to embed.
-        texts: Vec<String>,
+        request: strata_inference::EmbeddingsRequest,
     },
     /// Ranks passages against a query with an inference model.
     #[cfg(feature = "inference")]
@@ -1869,8 +1861,6 @@ impl Command {
             Self::InferenceDetokenize { .. } => "inference_detokenize",
             #[cfg(feature = "inference")]
             Self::InferenceEmbed { .. } => "inference_embed",
-            #[cfg(feature = "inference")]
-            Self::InferenceEmbedBatch { .. } => "inference_embed_batch",
             #[cfg(feature = "inference")]
             Self::InferenceRank { .. } => "inference_rank",
             #[cfg(feature = "inference")]

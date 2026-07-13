@@ -11,6 +11,7 @@ use std::path::Path;
 
 use crate::llama::context::LlamaCppContext;
 use crate::llama::ffi::{llama_api_lock, LlamaSampler};
+use crate::wire::{ChatRequest, ModelConfig, Role};
 use crate::{GenerateRequest, GenerateResponse, InferenceError, StopReason};
 
 /// Local generation provider using llama.cpp.
@@ -22,9 +23,12 @@ pub(crate) struct LocalProvider {
 }
 
 impl LocalProvider {
-    /// Load from a GGUF file with an optional context size override.
-    pub(crate) fn from_gguf(path: &Path, ctx_size: Option<usize>) -> Result<Self, InferenceError> {
-        let ctx = LlamaCppContext::load_for_generation(path, ctx_size)?;
+    /// Load from a GGUF file with an optional model/context configuration.
+    pub(crate) fn from_gguf(
+        path: &Path,
+        config: Option<&ModelConfig>,
+    ) -> Result<Self, InferenceError> {
+        let ctx = LlamaCppContext::load_for_generation(path, config)?;
         Ok(Self { ctx })
     }
 
@@ -150,6 +154,226 @@ impl LocalProvider {
         })
     }
 
+    /// Generates from an OpenAI-shaped chat request: applies the model's chat
+    /// template (or uses the raw prompt), builds the full sampler chain, and
+    /// runs the decode loop.
+    pub(crate) fn generate_chat(
+        &mut self,
+        request: &ChatRequest,
+    ) -> Result<GenerateResponse, InferenceError> {
+        let _api_guard = llama_api_lock();
+        let prompt = self.render_chat(request)?;
+        let sampler = self.build_sampler_chat(request)?;
+        let max_tokens = request.max_tokens.unwrap_or(256) as usize;
+        let stop_sequences = request.stop.clone().unwrap_or_default();
+        let stop_tokens = request.stop_token_ids.clone().unwrap_or_default();
+        self.run_generation(&prompt, sampler, max_tokens, &stop_sequences, &stop_tokens)
+    }
+
+    /// Runs the autoregressive decode loop with a pre-built sampler.
+    ///
+    /// The caller must hold the llama API lock. This frees `sampler` on every
+    /// path. (The legacy [`Self::generate`] keeps its own inline loop until the
+    /// Phase-D cutover removes it in favor of this method.)
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one linear FFI decode loop; splitting it would obscure the tokenize/prefill/decode/cleanup sequence"
+    )]
+    fn run_generation(
+        &mut self,
+        prompt: &str,
+        sampler: LlamaSampler,
+        max_tokens: usize,
+        stop_sequences: &[String],
+        stop_tokens: &[u32],
+    ) -> Result<GenerateResponse, InferenceError> {
+        let mut prompt_tokens = self.ctx.tokenize(prompt, true);
+        let prompt_token_count = prompt_tokens.len();
+
+        if prompt_tokens.is_empty() {
+            self.ctx.api.sampler_free(sampler);
+            return Err(InferenceError::LlamaCpp(
+                "prompt tokenized to empty sequence".to_string(),
+            ));
+        }
+        if prompt_tokens.len() >= self.ctx.n_ctx {
+            self.ctx.api.sampler_free(sampler);
+            return Err(InferenceError::LlamaCpp(format!(
+                "prompt length ({}) exceeds context size ({})",
+                prompt_tokens.len(),
+                self.ctx.n_ctx,
+            )));
+        }
+        if max_tokens == 0 {
+            self.ctx.api.sampler_free(sampler);
+            return Ok(GenerateResponse {
+                text: String::new(),
+                stop_reason: StopReason::MaxTokens,
+                prompt_tokens: prompt_token_count,
+                completion_tokens: 0,
+            });
+        }
+
+        self.ctx.clear_memory();
+
+        let batch = self.ctx.api.batch_get_one(&mut prompt_tokens);
+        if let Err(e) = self.ctx.api.decode(self.ctx.ctx, batch) {
+            self.ctx.api.sampler_free(sampler);
+            self.ctx.clear_memory();
+            return Err(InferenceError::LlamaCpp(e));
+        }
+
+        let mut next_token = self.ctx.api.sampler_sample(sampler, self.ctx.ctx, -1);
+        let mut generated_ids: Vec<u32> = Vec::new();
+        let mut stop_reason = StopReason::MaxTokens;
+        let mut pos = prompt_tokens.len();
+
+        for _step in 0..max_tokens {
+            if self.ctx.api.vocab_is_eog(self.ctx.vocab, next_token) {
+                stop_reason = StopReason::StopToken;
+                break;
+            }
+            if stop_tokens.contains(&(next_token as u32)) {
+                stop_reason = StopReason::StopToken;
+                break;
+            }
+            generated_ids.push(next_token as u32);
+            pos += 1;
+            if pos >= self.ctx.n_ctx {
+                stop_reason = StopReason::ContextLength;
+                break;
+            }
+            let mut single = [next_token];
+            let batch = self.ctx.api.batch_get_one(&mut single);
+            if let Err(e) = self.ctx.api.decode(self.ctx.ctx, batch) {
+                self.ctx.api.sampler_free(sampler);
+                self.ctx.clear_memory();
+                return Err(InferenceError::LlamaCpp(e));
+            }
+            next_token = self.ctx.api.sampler_sample(sampler, self.ctx.ctx, -1);
+        }
+
+        self.ctx.api.sampler_free(sampler);
+        self.ctx.clear_memory();
+
+        let i32_ids: Vec<i32> = generated_ids.iter().map(|&id| id as i32).collect();
+        let text = self.ctx.detokenize(&i32_ids);
+        let (final_text, final_reason) = check_stop_sequences(&text, stop_sequences, stop_reason);
+
+        Ok(GenerateResponse {
+            text: final_text,
+            stop_reason: final_reason,
+            prompt_tokens: prompt_token_count,
+            completion_tokens: generated_ids.len(),
+        })
+    }
+
+    /// Renders a chat request to a prompt via the chat-template cascade: the
+    /// model's embedded `tokenizer.chat_template`, falling back to chatml.
+    fn render_chat(&self, request: &ChatRequest) -> Result<String, InferenceError> {
+        if let Some(prompt) = &request.prompt {
+            return Ok(prompt.clone());
+        }
+        let messages: Vec<(String, String)> = request
+            .messages
+            .iter()
+            .flatten()
+            .map(|m| (role_str(m.role).to_string(), m.content.clone()))
+            .collect();
+        if messages.is_empty() {
+            return Err(InferenceError::InvalidSpec(
+                "chat request has no messages".to_string(),
+            ));
+        }
+        // Cascade: explicit chat_format name (a built-in llama.cpp template) ->
+        // the model's embedded template -> chatml fallback.
+        let explicit = request
+            .model_config
+            .as_ref()
+            .and_then(|c| c.chat_format.clone());
+        let embedded = self.ctx.chat_template();
+        let apply = |tmpl: &str| self.ctx.api.chat_apply_template(tmpl, &messages, true);
+        let rendered = if let Some(name) = &explicit {
+            apply(name)
+        } else if let Some(tmpl) = &embedded {
+            apply(tmpl).or_else(|_| apply("chatml"))
+        } else {
+            apply("chatml")
+        };
+        rendered.map_err(InferenceError::LlamaCpp)
+    }
+
+    /// Builds the full llama.cpp sampler chain from a chat request's knobs, in
+    /// the correct order (grammar, penalties, then the truncation chain or a
+    /// terminal mirostat sampler). `tfs_z` has no sampler in this llama.cpp and
+    /// is ignored for local.
+    fn build_sampler_chat(&self, request: &ChatRequest) -> Result<LlamaSampler, InferenceError> {
+        let api = &self.ctx.api;
+        let chain = api.sampler_chain_init(api.sampler_chain_default_params());
+
+        if let Some(grammar) = &request.grammar {
+            let g = api
+                .sampler_init_grammar(self.ctx.vocab, grammar, "root")
+                .map_err(InferenceError::LlamaCpp)?;
+            api.sampler_chain_add(chain, g);
+        }
+
+        let temperature = request.temperature.unwrap_or(0.0);
+        if temperature <= 0.0 {
+            api.sampler_chain_add(chain, api.sampler_init_greedy());
+            return Ok(chain);
+        }
+
+        let repeat = request.repeat_penalty.unwrap_or(1.0);
+        let freq = request.frequency_penalty.unwrap_or(0.0);
+        let present = request.presence_penalty.unwrap_or(0.0);
+        if (repeat - 1.0).abs() > f32::EPSILON || freq != 0.0 || present != 0.0 {
+            let last_n = request.repeat_last_n.map_or(64, |n| n as i32);
+            api.sampler_chain_add(
+                chain,
+                api.sampler_init_penalties(last_n, repeat, freq, present),
+            );
+        }
+
+        let seed = request.seed.unwrap_or(0xFFFF_FFFF) as u32;
+
+        // Mirostat is terminal: it replaces the truncation chain.
+        if let Some(m) = &request.mirostat {
+            api.sampler_chain_add(chain, api.sampler_init_temp(temperature));
+            let sampler = if m.mode >= 2 {
+                api.sampler_init_mirostat_v2(seed, m.tau, m.eta)
+            } else {
+                api.sampler_init_mirostat(self.ctx.vocab_size as i32, seed, m.tau, m.eta, 100)
+            };
+            api.sampler_chain_add(chain, sampler);
+            return Ok(chain);
+        }
+
+        if let Some(k) = request.top_k {
+            if k > 0 {
+                api.sampler_chain_add(chain, api.sampler_init_top_k(k as i32));
+            }
+        }
+        if let Some(p) = request.typical_p {
+            if p < 1.0 {
+                api.sampler_chain_add(chain, api.sampler_init_typical(p, 1));
+            }
+        }
+        if let Some(p) = request.top_p {
+            if p < 1.0 {
+                api.sampler_chain_add(chain, api.sampler_init_top_p(p, 1));
+            }
+        }
+        if let Some(p) = request.min_p {
+            if p > 0.0 {
+                api.sampler_chain_add(chain, api.sampler_init_min_p(p, 1));
+            }
+        }
+        api.sampler_chain_add(chain, api.sampler_init_temp(temperature));
+        api.sampler_chain_add(chain, api.sampler_init_dist(seed));
+        Ok(chain)
+    }
+
     /// Build a llama.cpp sampler chain from request parameters.
     ///
     /// - Grammar constraint first (masks invalid tokens)
@@ -257,6 +481,16 @@ fn check_stop_sequences(
     match earliest_pos {
         Some(pos) => (text[..pos].to_string(), StopReason::StopToken),
         None => (text.to_string(), original_reason),
+    }
+}
+
+/// The wire role name llama.cpp chat templates expect.
+fn role_str(role: Role) -> &'static str {
+    match role {
+        Role::System => "system",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
     }
 }
 

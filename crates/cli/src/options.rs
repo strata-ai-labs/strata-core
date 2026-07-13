@@ -1478,11 +1478,35 @@ pub(crate) struct InferenceArgs {
 
 /// Model execution commands.
 ///
+/// Output-format choice for `inference generate`.
+#[cfg(feature = "inference")]
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub(crate) enum ResponseFormatArg {
+    /// Free-form text.
+    Text,
+    /// Constrain to a single JSON object.
+    JsonObject,
+}
+
+/// Instruction-tuned embedder input role for `inference embed`.
+#[cfg(feature = "inference")]
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub(crate) enum InputTypeArg {
+    /// Embed as a search query.
+    Query,
+    /// Embed as a document/passage.
+    Document,
+}
+
 /// Model specs are catalog names (`tinyllama`, `qwen3:1.7b`), catalog
 /// name:quant pairs (`tinyllama:q8_0`), local GGUF paths, or provider specs
 /// (`anthropic:claude-...`) depending on the enabled features.
 #[cfg(feature = "inference")]
 #[derive(Debug, Subcommand)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "clap subcommand enum; the Generate variant carries the full chat-flag set and boxing clap fields is not ergonomic"
+)]
 pub(crate) enum InferenceCommand {
     /// Model catalog and local model management.
     Models(InferenceModelsArgs),
@@ -1495,20 +1519,45 @@ pub(crate) enum InferenceCommand {
     Generate {
         /// Model spec.
         model: String,
-        /// Prompt text (chat models expect their chat template verbatim).
-        prompt: String,
-        /// Maximum completion tokens (default 256).
+        /// Prompt for raw completion. Omit when using --message/--system; if
+        /// given alongside chat flags it becomes a trailing user message.
+        prompt: Option<String>,
+        /// System instruction (chat).
         #[arg(long)]
-        max_tokens: Option<usize>,
-        /// Sampling temperature (default 0.0, greedy).
+        system: Option<String>,
+        /// Chat message as "role:content" (repeatable; role = system|user|assistant|tool).
+        #[arg(long = "message", value_name = "ROLE:CONTENT")]
+        messages: Vec<String>,
+        /// Chat messages as a JSON array (appended after --system/--message).
+        #[arg(long)]
+        messages_json: Option<String>,
+        /// Full `ChatRequest` JSON body (escape hatch; overrides all other flags).
+        #[arg(long)]
+        json_body: Option<String>,
+        /// Maximum completion tokens.
+        #[arg(long)]
+        max_tokens: Option<u32>,
+        /// Sampling temperature (0.0 = greedy).
         #[arg(long)]
         temperature: Option<f32>,
         /// Top-k sampling cutoff.
         #[arg(long)]
-        top_k: Option<usize>,
-        /// Nucleus sampling cutoff.
+        top_k: Option<u32>,
+        /// Nucleus (top-p) sampling cutoff.
         #[arg(long)]
         top_p: Option<f32>,
+        /// Min-p sampling cutoff.
+        #[arg(long)]
+        min_p: Option<f32>,
+        /// Repetition penalty.
+        #[arg(long)]
+        repeat_penalty: Option<f32>,
+        /// Frequency penalty.
+        #[arg(long)]
+        frequency_penalty: Option<f32>,
+        /// Presence penalty.
+        #[arg(long)]
+        presence_penalty: Option<f32>,
         /// Deterministic sampling seed.
         #[arg(long)]
         seed: Option<u64>,
@@ -1518,9 +1567,21 @@ pub(crate) enum InferenceCommand {
         /// Stop token id (repeatable; local models only).
         #[arg(long = "stop-token", value_name = "ID")]
         stop_tokens: Vec<u32>,
+        /// Constrain output format.
+        #[arg(long, value_enum)]
+        response_format: Option<ResponseFormatArg>,
         /// GBNF grammar for constrained generation (local models).
         #[arg(long)]
         grammar: Option<String>,
+        /// Context window size (local load param).
+        #[arg(long)]
+        n_ctx: Option<u32>,
+        /// GPU layers to offload; -1 = all (local load param).
+        #[arg(long)]
+        n_gpu_layers: Option<i32>,
+        /// Named chat template override, e.g. chatml/llama3/gemma (local).
+        #[arg(long)]
+        chat_format: Option<String>,
     },
     /// Tokenize text with a local model.
     Tokenize {
@@ -1540,20 +1601,22 @@ pub(crate) enum InferenceCommand {
         #[arg(required = true)]
         ids: Vec<u32>,
     },
-    /// Embed one text.
+    /// Embed one or more texts.
     Embed {
         /// Model spec.
         model: String,
-        /// Text to embed.
-        text: String,
-    },
-    /// Embed multiple texts in order.
-    EmbedBatch {
-        /// Model spec.
-        model: String,
-        /// Texts to embed.
+        /// Text(s) to embed.
         #[arg(required = true)]
-        texts: Vec<String>,
+        inputs: Vec<String>,
+        /// Truncate embeddings to N dimensions (matryoshka).
+        #[arg(long)]
+        dimensions: Option<u32>,
+        /// L2-normalize the output vectors.
+        #[arg(long)]
+        normalize: bool,
+        /// Instruction-tuned embedder role.
+        #[arg(long, value_enum)]
+        input_type: Option<InputTypeArg>,
     },
     /// Rank passages against a query.
     Rank {

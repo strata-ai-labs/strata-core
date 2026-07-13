@@ -3,7 +3,8 @@
 #![cfg(feature = "local")]
 
 use strata_inference::{
-    EmbedRequest, GenerateRequest, InferenceRuntime, InferenceRuntimeConfig, RankRequest,
+    ChatMessage, ChatRequest, EmbedRequest, FinishReason, GenerateRequest, InferenceRuntime,
+    InferenceRuntimeConfig, ModelConfig, RankRequest, Role,
 };
 
 fn integration_enabled() -> bool {
@@ -45,6 +46,103 @@ fn local_generation_uses_real_gguf() {
         )
         .expect("local generation succeeds");
     assert!(!response.text.trim().is_empty());
+}
+
+#[test]
+#[cfg(feature = "local")]
+fn local_chat_applies_template_and_full_sampler() {
+    if !integration_enabled() {
+        return;
+    }
+    let Some(path) = env_path("STRATA_INFERENCE_GENERATION_GGUF") else {
+        return;
+    };
+    let model = format!("local:{path}");
+    // messages (not a raw prompt) exercise the chat-template cascade; the
+    // extension knobs exercise the full sampler chain.
+    let request = ChatRequest {
+        messages: Some(vec![
+            ChatMessage::new(Role::System, "You are terse. Answer in one word."),
+            ChatMessage::new(Role::User, "What is the capital of France?"),
+        ]),
+        max_tokens: Some(16),
+        temperature: Some(0.7),
+        top_k: Some(40),
+        min_p: Some(0.05),
+        repeat_penalty: Some(1.1),
+        seed: Some(42),
+        ..ChatRequest::default()
+    };
+    let response = runtime()
+        .chat(&model, &request)
+        .expect("local chat succeeds");
+    assert_eq!(response.choices.len(), 1);
+    assert!(
+        !response.choices[0].message.content.trim().is_empty(),
+        "empty generation: {:?}",
+        response.choices[0].message.content
+    );
+    assert!(matches!(
+        response.choices[0].finish_reason,
+        FinishReason::Stop | FinishReason::Length
+    ));
+    assert!(response.usage.prompt_tokens > 0);
+    assert_eq!(
+        response.usage.total_tokens,
+        response.usage.prompt_tokens + response.usage.completion_tokens
+    );
+}
+
+#[test]
+#[cfg(feature = "local")]
+fn local_chat_raw_prompt_greedy() {
+    if !integration_enabled() {
+        return;
+    }
+    let Some(path) = env_path("STRATA_INFERENCE_GENERATION_GGUF") else {
+        return;
+    };
+    let model = format!("local:{path}");
+    // Raw-prompt path (no template) + greedy (temperature omitted -> 0).
+    let request = ChatRequest {
+        prompt: Some("The capital of France is".to_owned()),
+        max_tokens: Some(8),
+        ..ChatRequest::default()
+    };
+    let response = runtime()
+        .chat(&model, &request)
+        .expect("raw-prompt chat succeeds");
+    assert!(!response.choices[0].message.content.trim().is_empty());
+}
+
+#[test]
+#[cfg(feature = "local")]
+fn local_chat_honors_model_config_n_ctx() {
+    if !integration_enabled() {
+        return;
+    }
+    let Some(path) = env_path("STRATA_INFERENCE_GENERATION_GGUF") else {
+        return;
+    };
+    let model = format!("local:{path}");
+    // A tiny n_ctx from ModelConfig; a long prompt must exceed it, proving the
+    // load param was threaded through (a distinct cache-keyed engine).
+    let request = ChatRequest {
+        prompt: Some("word ".repeat(500)),
+        max_tokens: Some(4),
+        model_config: Some(ModelConfig {
+            n_ctx: Some(64),
+            ..ModelConfig::default()
+        }),
+        ..ChatRequest::default()
+    };
+    let err = runtime()
+        .chat(&model, &request)
+        .expect_err("prompt should exceed the 64-token context");
+    assert!(
+        err.to_string().contains("exceeds context size"),
+        "expected context-size error, got: {err}"
+    );
 }
 
 #[test]

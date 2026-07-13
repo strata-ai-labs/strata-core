@@ -271,7 +271,7 @@ pub(crate) fn execute_parsed_command(
         options::TopCommand::Arrow(args) => executor.execute(arrow_command(args.command, scope))?,
         #[cfg(feature = "inference")]
         options::TopCommand::Inference(args) => {
-            executor.execute(inference_command(args.command))?
+            executor.execute(inference_command(args.command)?)?
         }
         options::TopCommand::Command(args) => executor.execute(raw_command(args.command)?)?,
         options::TopCommand::Search(_)
@@ -1360,9 +1360,13 @@ fn arrow_command(command: ArrowCommand, scope: &Scope) -> Command {
 /// Builds executor commands for the inference family. Inference is
 /// database-independent (models are process state), so no scope is injected.
 #[cfg(feature = "inference")]
-fn inference_command(command: options::InferenceCommand) -> Command {
+#[allow(
+    clippy::too_many_lines,
+    reason = "one flat match over the inference verbs; the Generate arm assembles the chat body inline"
+)]
+fn inference_command(command: options::InferenceCommand) -> Result<Command, CliError> {
     use options::{InferenceCommand as Inf, InferenceModelsCommand as Models};
-    match command {
+    Ok(match command {
         Inf::Models(args) => match args.command {
             Models::List => Command::InferenceModelsList,
             Models::Local => Command::InferenceModelsLocal,
@@ -1372,30 +1376,100 @@ fn inference_command(command: options::InferenceCommand) -> Command {
         Inf::Generate {
             model,
             prompt,
+            system,
+            messages,
+            messages_json,
+            json_body,
             max_tokens,
             temperature,
             top_k,
             top_p,
+            min_p,
+            repeat_penalty,
+            frequency_penalty,
+            presence_penalty,
             seed,
             stop_sequences,
             stop_tokens,
+            response_format,
             grammar,
+            n_ctx,
+            n_gpu_layers,
+            chat_format,
         } => {
-            let defaults = strata_executor::InferenceGenerateRequest::default();
-            Command::InferenceGenerate {
-                model,
-                request: strata_executor::InferenceGenerateRequest {
-                    prompt,
-                    max_tokens: max_tokens.unwrap_or(defaults.max_tokens),
-                    temperature: temperature.unwrap_or(defaults.temperature),
-                    top_k: top_k.unwrap_or(defaults.top_k),
-                    top_p: top_p.unwrap_or(defaults.top_p),
-                    seed,
-                    stop_sequences,
-                    stop_tokens,
-                    grammar,
-                },
-            }
+            let request = if let Some(body) = json_body {
+                serde_json::from_str::<strata_executor::InferenceChatRequest>(&body)
+                    .map_err(|error| CliError::usage(format!("invalid --json-body: {error}")))?
+            } else {
+                let mut turns: Vec<strata_executor::InferenceChatMessage> = Vec::new();
+                if let Some(system) = system {
+                    turns.push(strata_executor::InferenceChatMessage::new(
+                        strata_executor::InferenceRole::System,
+                        system,
+                    ));
+                }
+                for spec in &messages {
+                    turns.push(parse_chat_message(spec)?);
+                }
+                if let Some(json) = messages_json {
+                    let parsed: Vec<strata_executor::InferenceChatMessage> =
+                        serde_json::from_str(&json).map_err(|error| {
+                            CliError::usage(format!("invalid --messages-json: {error}"))
+                        })?;
+                    turns.extend(parsed);
+                }
+
+                let mut request = strata_executor::InferenceChatRequest::default();
+                if turns.is_empty() {
+                    match prompt {
+                        Some(prompt) => request.prompt = Some(prompt),
+                        None => {
+                            return Err(CliError::usage(
+                                "provide a prompt, --system/--message, or --json-body".to_owned(),
+                            ))
+                        }
+                    }
+                } else {
+                    if let Some(prompt) = prompt {
+                        turns.push(strata_executor::InferenceChatMessage::new(
+                            strata_executor::InferenceRole::User,
+                            prompt,
+                        ));
+                    }
+                    request.messages = Some(turns);
+                }
+
+                request.max_tokens = max_tokens;
+                request.temperature = temperature;
+                request.top_p = top_p;
+                request.top_k = top_k;
+                request.min_p = min_p;
+                request.repeat_penalty = repeat_penalty;
+                request.frequency_penalty = frequency_penalty;
+                request.presence_penalty = presence_penalty;
+                request.seed = seed;
+                request.stop = (!stop_sequences.is_empty()).then_some(stop_sequences);
+                request.stop_token_ids = (!stop_tokens.is_empty()).then_some(stop_tokens);
+                request.grammar = grammar;
+                request.response_format = response_format.map(|format| match format {
+                    options::ResponseFormatArg::Text => {
+                        strata_executor::InferenceResponseFormat::Text
+                    }
+                    options::ResponseFormatArg::JsonObject => {
+                        strata_executor::InferenceResponseFormat::JsonObject
+                    }
+                });
+                if n_ctx.is_some() || n_gpu_layers.is_some() || chat_format.is_some() {
+                    request.model_config = Some(strata_executor::InferenceModelConfig {
+                        n_ctx,
+                        n_gpu_layers,
+                        chat_format,
+                        ..Default::default()
+                    });
+                }
+                request
+            };
+            Command::InferenceGenerate { model, request }
         }
         Inf::Tokenize {
             model,
@@ -1407,11 +1481,36 @@ fn inference_command(command: options::InferenceCommand) -> Command {
             add_special: special,
         },
         Inf::Detokenize { model, ids } => Command::InferenceDetokenize { model, ids },
-        Inf::Embed { model, text } => Command::InferenceEmbed {
+        Inf::Embed {
             model,
-            request: strata_executor::InferenceEmbedRequest { text },
-        },
-        Inf::EmbedBatch { model, texts } => Command::InferenceEmbedBatch { model, texts },
+            inputs,
+            dimensions,
+            normalize,
+            input_type,
+        } => {
+            let input = if inputs.len() == 1 {
+                strata_executor::InferenceEmbedInput::One(
+                    inputs.into_iter().next().expect("one input present"),
+                )
+            } else {
+                strata_executor::InferenceEmbedInput::Many(inputs)
+            };
+            Command::InferenceEmbed {
+                model,
+                request: strata_executor::InferenceEmbeddingsRequest {
+                    input,
+                    dimensions,
+                    normalize: normalize.then_some(true),
+                    input_type: input_type.map(|kind| match kind {
+                        options::InputTypeArg::Query => strata_executor::InferenceInputType::Query,
+                        options::InputTypeArg::Document => {
+                            strata_executor::InferenceInputType::Document
+                        }
+                    }),
+                    instruction: None,
+                },
+            }
+        }
         Inf::Rank {
             model,
             query,
@@ -1422,6 +1521,143 @@ fn inference_command(command: options::InferenceCommand) -> Command {
         },
         Inf::Unload { model } => Command::InferenceUnload { model },
         Inf::CacheStatus => Command::InferenceCacheStatus,
+    })
+}
+
+/// Parses a `--message "role:content"` spec into a chat message.
+#[cfg(feature = "inference")]
+fn parse_chat_message(spec: &str) -> Result<strata_executor::InferenceChatMessage, CliError> {
+    let (role, content) = spec.split_once(':').ok_or_else(|| {
+        CliError::usage(format!("--message must be \"role:content\", got {spec:?}"))
+    })?;
+    let role = match role.trim() {
+        "system" => strata_executor::InferenceRole::System,
+        "user" => strata_executor::InferenceRole::User,
+        "assistant" => strata_executor::InferenceRole::Assistant,
+        "tool" => strata_executor::InferenceRole::Tool,
+        other => {
+            return Err(CliError::usage(format!(
+                "unknown message role {other:?} (expected system|user|assistant|tool)"
+            )))
+        }
+    };
+    Ok(strata_executor::InferenceChatMessage::new(
+        role,
+        content.to_owned(),
+    ))
+}
+
+#[cfg(all(test, feature = "inference"))]
+mod inference_command_tests {
+    use super::{inference_command, options, parse_chat_message};
+    use serde_json::json;
+
+    fn generate(
+        prompt: Option<&str>,
+        system: Option<&str>,
+        messages: Vec<&str>,
+        json_body: Option<&str>,
+    ) -> options::InferenceCommand {
+        options::InferenceCommand::Generate {
+            model: "m".to_owned(),
+            prompt: prompt.map(str::to_owned),
+            system: system.map(str::to_owned),
+            messages: messages.into_iter().map(str::to_owned).collect(),
+            messages_json: None,
+            json_body: json_body.map(str::to_owned),
+            max_tokens: None,
+            temperature: None,
+            top_k: None,
+            top_p: None,
+            min_p: None,
+            repeat_penalty: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
+            stop_sequences: vec![],
+            stop_tokens: vec![],
+            response_format: None,
+            grammar: None,
+            n_ctx: None,
+            n_gpu_layers: None,
+            chat_format: None,
+        }
+    }
+
+    fn body(command: options::InferenceCommand) -> serde_json::Value {
+        let command = inference_command(command).expect("builds");
+        serde_json::to_value(&command).expect("serializes")["request"].clone()
+    }
+
+    #[test]
+    fn system_plus_prompt_becomes_messages() {
+        let req = body(generate(Some("hello"), Some("be terse"), vec![], None));
+        assert_eq!(
+            req["messages"][0],
+            json!({"role": "system", "content": "be terse"})
+        );
+        assert_eq!(
+            req["messages"][1],
+            json!({"role": "user", "content": "hello"})
+        );
+        assert!(req.get("prompt").is_none());
+    }
+
+    #[test]
+    fn prompt_only_is_raw_completion() {
+        let req = body(generate(Some("once upon"), None, vec![], None));
+        assert_eq!(req["prompt"], "once upon");
+        assert!(req.get("messages").is_none());
+    }
+
+    #[test]
+    fn json_body_overrides_everything() {
+        let req = body(generate(
+            None,
+            None,
+            vec![],
+            Some(r#"{"messages":[{"role":"user","content":"hi"}],"max_tokens":5}"#),
+        ));
+        assert_eq!(req["max_tokens"], 5);
+        assert_eq!(req["messages"][0]["content"], "hi");
+    }
+
+    #[test]
+    fn no_input_is_a_usage_error() {
+        let err = inference_command(generate(None, None, vec![], None)).unwrap_err();
+        assert!(err.to_string().contains("prompt"), "got: {err}");
+    }
+
+    #[test]
+    fn message_roles_parse_and_reject() {
+        assert!(parse_chat_message("user:hi").is_ok());
+        assert!(parse_chat_message("assistant:sure").is_ok());
+        assert!(parse_chat_message("no-colon").is_err());
+        assert!(parse_chat_message("wizard:hi").is_err());
+    }
+
+    #[test]
+    fn embed_single_and_batch() {
+        let one = body(options::InferenceCommand::Embed {
+            model: "m".to_owned(),
+            inputs: vec!["a".to_owned()],
+            dimensions: None,
+            normalize: false,
+            input_type: None,
+        });
+        assert_eq!(one["input"], "a");
+
+        let many = body(options::InferenceCommand::Embed {
+            model: "m".to_owned(),
+            inputs: vec!["a".to_owned(), "b".to_owned()],
+            dimensions: Some(256),
+            normalize: true,
+            input_type: Some(options::InputTypeArg::Query),
+        });
+        assert_eq!(many["input"], json!(["a", "b"]));
+        assert_eq!(many["dimensions"], 256);
+        assert_eq!(many["normalize"], true);
+        assert_eq!(many["input_type"], "query");
     }
 }
 

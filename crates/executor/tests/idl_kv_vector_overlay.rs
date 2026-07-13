@@ -125,7 +125,6 @@ const REQUIRED_INFERENCE: &[&str] = &[
     "inference.tokenize",
     "inference.detokenize",
     "inference.embed",
-    "inference.embed_batch",
     "inference.rank",
     "inference.unload",
     "inference.cache_status",

@@ -6,6 +6,9 @@
 #[cfg(feature = "local")]
 pub(crate) mod local;
 
+#[cfg(any(feature = "anthropic", feature = "openai", feature = "google"))]
+pub(crate) mod cloud;
+
 #[cfg(feature = "anthropic")]
 pub(crate) mod anthropic;
 
