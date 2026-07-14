@@ -9,6 +9,30 @@ Imports an Arrow-compatible file (Parquet, CSV, or JSONL) into a product primiti
 
 Status commands return a scalar or compact status payload and do not mutate database state.
 
+## Examples
+
+Import a primitive's rows from a Parquet file written by export.
+
+### CLI
+
+```console
+$ strata kv put greeting hello
+$ strata arrow export kv parquet /tmp/exports/kv.parquet
+$ strata kv delete greeting
+$ strata arrow import /tmp/exports/kv.parquet kv  # Rows are keyed by their source column; kv restores greeting=hello.
+$ strata kv get greeting
+```
+
+### Wire
+
+```json
+{"key":"Z3JlZXRpbmc=","type":"kv_put","value":"aGVsbG8="}
+{"format":"parquet","path":"/tmp/exports/kv.parquet","primitive":"kv","type":"arrow_export"}
+{"key":"Z3JlZXRpbmc=","type":"kv_delete"}
+{"file_path":"/tmp/exports/kv.parquet","target":"kv","type":"arrow_import"}
+{"key":"Z3JlZXRpbmc=","type":"kv_get"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

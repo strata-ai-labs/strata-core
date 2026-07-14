@@ -254,6 +254,11 @@ pub(super) fn verify_examples(
     let examples = load_examples(repo_root)?;
     validate_examples(repo_root, index, schemas, &examples)?;
     for (id, example) in &examples {
+        // A per-example scratch dir backs `{tmpdir}` file-path placeholders (a
+        // round-trip export/import writes and reads within one example).
+        let tmpdir = tempfile::tempdir()
+            .map_err(|error| invalid(format!("example `{id}`: scratch dir failed: {error}")))?;
+        let tmpdir_path = tmpdir.path().to_string_lossy();
         let mut executor = Executor::open_cache().map_err(|error| {
             invalid(format!("example `{id}`: scratch executor failed: {error}"))
         })?;
@@ -261,7 +266,7 @@ pub(super) fn verify_examples(
             let schema = schemas
                 .get(&step.call)
                 .ok_or_else(|| invalid(format!("example `{id}`: no schema for `{}`", step.call)))?;
-            let wire = step_wire_json(id, position, step, schema)?;
+            let wire = step_wire_json(id, position, step, schema, &tmpdir_path)?;
             let command: Command =
                 serde_json::from_value(wire).map_err(|source| IdlError::Json {
                     path: PathBuf::from(format!("examples/{id}.yaml")),
@@ -321,9 +326,41 @@ fn assert_result(
     Ok(())
 }
 
+/// Representative scratch directory shown in rendered docs wherever a spec
+/// uses the `{tmpdir}` path placeholder; the replay substitutes a real
+/// per-example temp dir instead.
+const DOC_TMPDIR: &str = "/tmp/exports";
+
+/// Substitutes the `{tmpdir}` placeholder in string arg values (at any depth)
+/// with `tmpdir`. File-path arguments are written as `{tmpdir}/<file>` so the
+/// replay targets a real scratch dir and the docs render a representative one.
+fn resolve_tmpdir(value: &Value, tmpdir: &str) -> Value {
+    match value {
+        Value::String(text) if text.contains("{tmpdir}") => {
+            Value::String(text.replace("{tmpdir}", tmpdir))
+        }
+        Value::Array(items) => {
+            Value::Array(items.iter().map(|item| resolve_tmpdir(item, tmpdir)).collect())
+        }
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, item)| (key.clone(), resolve_tmpdir(item, tmpdir)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 /// Builds the wire command JSON for a step (`{ "type": <tag>, <args> }`),
-/// base64-encoding arguments whose schema type is the `Bytes` newtype.
-fn step_wire_json(id: &str, position: usize, step: &ExampleStep, schema: &Value) -> Result<Value> {
+/// base64-encoding arguments whose schema type is the `Bytes` newtype and
+/// substituting the `{tmpdir}` path placeholder with `tmpdir`.
+fn step_wire_json(
+    id: &str,
+    position: usize,
+    step: &ExampleStep,
+    schema: &Value,
+    tmpdir: &str,
+) -> Result<Value> {
     let props = request_properties(schema).ok_or_else(|| {
         invalid(format!(
             "example `{id}` step {position}: `{}` has no request properties",
@@ -344,7 +381,8 @@ fn step_wire_json(id: &str, position: usize, step: &ExampleStep, schema: &Value)
     let mut object = Map::new();
     object.insert("type".to_owned(), Value::String(tag.to_owned()));
     for (name, value) in &step.args {
-        let encoded = encode_arg(value, props.get(name), defs);
+        let resolved = resolve_tmpdir(value, tmpdir);
+        let encoded = encode_arg(&resolved, props.get(name), defs);
         object.insert(name.clone(), encoded);
     }
     Ok(Value::Object(object))
@@ -441,7 +479,7 @@ pub(super) fn render_section(
     out.push_str("```\n\n### Wire\n\n```json\n");
     for step in &example.steps {
         if let Some(schema) = schemas.get(&step.call) {
-            if let Ok(wire) = step_wire_json("", 0, step, schema) {
+            if let Ok(wire) = step_wire_json("", 0, step, schema, DOC_TMPDIR) {
                 writeln!(out, "{}", compact(&wire)).expect(INFALLIBLE);
             }
         }
@@ -462,7 +500,7 @@ fn render_cli(
     // Wire-only commands have no dedicated clap verb; their CLI form is the
     // generic command runner over the exact wire JSON.
     if command.cli.surface != "verb" {
-        if let Some(wire) = schema.and_then(|s| step_wire_json("", 0, step, s).ok()) {
+        if let Some(wire) = schema.and_then(|s| step_wire_json("", 0, step, s, DOC_TMPDIR).ok()) {
             return format!("strata command run --command-json '{}'", compact(&wire));
         }
     }
@@ -477,13 +515,14 @@ fn render_cli(
                 continue;
             }
             if let Some(value) = step.args.get(name) {
-                tokens.push(cli_token(value));
+                tokens.push(cli_token(&resolve_tmpdir(value, DOC_TMPDIR)));
             }
         }
         let required: BTreeSet<&str> = schema_required(schema).into_iter().collect();
         for (name, value) in &step.args {
             if !required.contains(name.as_str()) {
-                tokens.push(format!("--{} {}", name.replace('_', "-"), cli_token(value)));
+                let token = cli_token(&resolve_tmpdir(value, DOC_TMPDIR));
+                tokens.push(format!("--{} {}", name.replace('_', "-"), token));
             }
         }
     }

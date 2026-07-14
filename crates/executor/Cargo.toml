@@ -16,7 +16,7 @@ arrow = ["dep:arrow", "dep:parquet"]
 # HTTP/tokio client stack (the wasm build consumes the executor with
 # default-features = false).
 hub = ["dep:strata-hub"]
-idl-tooling = ["dep:serde_yaml", "dep:sha2", "dep:schemars", "dep:jsonschema", "strata-engine/wire-schemas", "strata-inference?/wire-schemas"]
+idl-tooling = ["dep:serde_yaml", "dep:sha2", "dep:schemars", "dep:jsonschema", "dep:tempfile", "strata-engine/wire-schemas", "strata-inference?/wire-schemas"]
 inference = ["dep:strata-inference"]
 inference-anthropic = ["inference"]
 inference-google = ["inference"]
@@ -42,6 +42,7 @@ serde_json = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde_yaml = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 strata-core = { path = "../core" }
 strata-engine = { path = "../engine", default-features = false }
 strata-hub = { path = "../hub", optional = true }

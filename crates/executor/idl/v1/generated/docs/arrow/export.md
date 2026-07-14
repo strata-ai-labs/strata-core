@@ -9,6 +9,30 @@ Exports a product primitive from the selected branch and space to an Arrow-compa
 
 Status commands return a scalar or compact status payload and do not mutate database state.
 
+## Examples
+
+Export a primitive to a Parquet file, then import it back.
+
+### CLI
+
+```console
+$ strata kv put greeting hello
+$ strata arrow export kv parquet /tmp/exports/kv.parquet  # One file per primitive; Parquet by default.
+$ strata kv delete greeting
+$ strata arrow import /tmp/exports/kv.parquet kv
+$ strata kv get greeting
+```
+
+### Wire
+
+```json
+{"key":"Z3JlZXRpbmc=","type":"kv_put","value":"aGVsbG8="}
+{"format":"parquet","path":"/tmp/exports/kv.parquet","primitive":"kv","type":"arrow_export"}
+{"key":"Z3JlZXRpbmc=","type":"kv_delete"}
+{"file_path":"/tmp/exports/kv.parquet","target":"kv","type":"arrow_import"}
+{"key":"Z3JlZXRpbmc=","type":"kv_get"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

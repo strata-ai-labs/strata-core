@@ -3,8 +3,6 @@
 # Remove an entry when its example lands; never add without a reason.
 missing:
   - admin.hub_clone
-  - arrow.export
-  - arrow.import
   - branch.fork_at_timestamp
   - branch.fork_at_version
   - inference.detokenize
