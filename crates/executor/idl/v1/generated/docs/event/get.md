@@ -9,6 +9,26 @@ Reads one event from the selected branch and space by sequence number. The optio
 
 Optional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.
 
+## Examples
+
+Read an event by its sequence number.
+
+### CLI
+
+```console
+$ strata event append user.created {"id":1}
+$ strata event get 0
+$ strata event get 999
+```
+
+### Wire
+
+```json
+{"event_type":"user.created","payload":{"id":1},"type":"event_append"}
+{"sequence":0,"type":"event_get"}
+{"sequence":999,"type":"event_get"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

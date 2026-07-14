@@ -9,6 +9,26 @@ Lists events from the selected branch and space in sequence order. An optional e
 
 Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
 
+## Examples
+
+List events in sequence order.
+
+### CLI
+
+```console
+$ strata event append user.created {"id":1}
+$ strata event append user.updated {"id":2}
+$ strata event list
+```
+
+### Wire
+
+```json
+{"event_type":"user.created","payload":{"id":1},"type":"event_append"}
+{"event_type":"user.updated","payload":{"id":2},"type":"event_append"}
+{"type":"event_list"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

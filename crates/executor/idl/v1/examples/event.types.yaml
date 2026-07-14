@@ -1,0 +1,9 @@
+caption: List the distinct event types seen in the log.
+steps:
+  - call: event.append
+    args: { event_type: user.created, payload: { id: 1 } }
+  - call: event.append
+    args: { event_type: user.updated, payload: { id: 2 } }
+  - call: event.types
+    args: {}
+    returns: [ "user.created", "user.updated" ]

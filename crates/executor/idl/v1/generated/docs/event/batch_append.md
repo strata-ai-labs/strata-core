@@ -9,6 +9,24 @@ Appends multiple events to the selected branch and space in one engine commit. S
 
 Itemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.
 
+## Examples
+
+Append many events in one commit.
+
+### CLI
+
+```console
+$ strata command run --command-json '{"entries":[{"event_type":"user.created","payload":{"id":1}},{"event_type":"user.updated","payload":{"id":2}}],"type":"event_batch_append"}'
+$ strata event count
+```
+
+### Wire
+
+```json
+{"entries":[{"event_type":"user.created","payload":{"id":1}},{"event_type":"user.updated","payload":{"id":2}}],"type":"event_batch_append"}
+{"type":"event_count"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

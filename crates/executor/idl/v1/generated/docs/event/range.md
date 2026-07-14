@@ -9,6 +9,26 @@ Reads events from the selected branch and space by sequence range. The start seq
 
 Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
 
+## Examples
+
+Read a range of events by sequence.
+
+### CLI
+
+```console
+$ strata event append user.created {"id":1}
+$ strata event append user.updated {"id":2}
+$ strata event range 0 forward
+```
+
+### Wire
+
+```json
+{"event_type":"user.created","payload":{"id":1},"type":"event_append"}
+{"event_type":"user.updated","payload":{"id":2},"type":"event_append"}
+{"direction":"forward","start_seq":0,"type":"event_range"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

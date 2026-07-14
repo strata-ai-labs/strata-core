@@ -9,6 +9,24 @@ Appends one event to the selected branch and space. Strata assigns the next sequ
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Append an event to the log.
+
+### CLI
+
+```console
+$ strata event append user.created {"id":1}
+$ strata event count
+```
+
+### Wire
+
+```json
+{"event_type":"user.created","payload":{"id":1},"type":"event_append"}
+{"type":"event_count"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

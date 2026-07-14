@@ -9,6 +9,26 @@ Checks whether one event sequence exists in the selected branch and space withou
 
 Status commands return a scalar or compact status payload and do not mutate database state.
 
+## Examples
+
+Check whether an event sequence exists.
+
+### CLI
+
+```console
+$ strata event append user.created {"id":1}
+$ strata event exists 0
+$ strata event exists 999
+```
+
+### Wire
+
+```json
+{"event_type":"user.created","payload":{"id":1},"type":"event_append"}
+{"sequence":0,"type":"event_exists"}
+{"sequence":999,"type":"event_exists"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

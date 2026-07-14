@@ -9,6 +9,24 @@ Verifies that the visible event log in the selected branch and space is dense an
 
 Status commands return a scalar or compact status payload and do not mutate database state.
 
+## Examples
+
+Verify the integrity of the event hash chain.
+
+### CLI
+
+```console
+$ strata event append user.created {"id":1}
+$ strata event verify-chain
+```
+
+### Wire
+
+```json
+{"event_type":"user.created","payload":{"id":1},"type":"event_append"}
+{"type":"event_verify_chain"}
+```
+
 ## Parameters
 
 _No parameters._

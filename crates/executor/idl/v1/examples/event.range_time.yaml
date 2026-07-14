@@ -1,0 +1,9 @@
+caption: Read a range of events by timestamp.
+steps:
+  - call: event.append
+    args: { event_type: user.created, payload: { id: 1 } }
+  - call: event.append
+    args: { event_type: user.updated, payload: { id: 2 } }
+  - call: event.range_time
+    args: { start_ts: 0, direction: forward }
+    returns: [ { id: 1 }, { id: 2 } ]
