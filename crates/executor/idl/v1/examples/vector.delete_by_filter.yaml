@@ -1,0 +1,17 @@
+caption: Delete every vector whose metadata matches a filter.
+steps:
+  - call: vector.collection.create
+    args: { collection: docs, dimension: 3, metric: cosine }
+  - call: vector.upsert
+    args: { collection: docs, key: a, vector: [1.0, 0.0, 0.0], metadata: { tag: keep } }
+  - call: vector.upsert
+    args: { collection: docs, key: b, vector: [0.0, 1.0, 0.0], metadata: { tag: drop } }
+  - call: vector.delete_by_filter
+    args:
+      collection: docs
+      filter:
+        conditions:
+          - { field: tag, op: eq, value: { type: string, value: drop } }
+  - call: vector.count
+    args: { collection: docs }
+    returns: 1

@@ -1,0 +1,15 @@
+caption: Delete many vectors in one commit.
+steps:
+  - call: vector.collection.create
+    args: { collection: docs, dimension: 3, metric: cosine }
+  - call: vector.batch_upsert
+    args:
+      collection: docs
+      entries:
+        - { key: a, vector: [1.0, 0.0, 0.0] }
+        - { key: b, vector: [0.0, 1.0, 0.0] }
+  - call: vector.batch_delete
+    args: { collection: docs, keys: [a, b] }
+  - call: vector.count
+    args: { collection: docs }
+    returns: 0

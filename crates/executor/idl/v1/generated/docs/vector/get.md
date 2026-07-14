@@ -9,6 +9,28 @@ Reads one visible vector entry. The optional timestamp reads the vector visible 
 
 Optional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.
 
+## Examples
+
+Read a stored vector, or nothing if the key is absent.
+
+### CLI
+
+```console
+$ strata vector collection create docs 3 cosine
+$ strata vector upsert docs a [1.0,0.0,0.0]
+$ strata vector get docs a
+$ strata vector get docs absent
+```
+
+### Wire
+
+```json
+{"collection":"docs","dimension":3,"metric":"cosine","type":"vector_create_collection"}
+{"collection":"docs","key":"a","type":"vector_upsert","vector":[1.0,0.0,0.0]}
+{"collection":"docs","key":"a","type":"vector_get"}
+{"collection":"docs","key":"absent","type":"vector_get"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

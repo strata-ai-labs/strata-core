@@ -9,6 +9,28 @@ Returns a boolean status for one vector key without loading the embedding.
 
 Status commands return a scalar or compact status payload and do not mutate database state.
 
+## Examples
+
+Check whether a key exists in a collection.
+
+### CLI
+
+```console
+$ strata vector collection create docs 3 cosine
+$ strata vector upsert docs a [1.0,0.0,0.0]
+$ strata vector exists docs a
+$ strata vector exists docs absent
+```
+
+### Wire
+
+```json
+{"collection":"docs","dimension":3,"metric":"cosine","type":"vector_create_collection"}
+{"collection":"docs","key":"a","type":"vector_upsert","vector":[1.0,0.0,0.0]}
+{"collection":"docs","key":"a","type":"vector_exists"}
+{"collection":"docs","key":"absent","type":"vector_exists"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

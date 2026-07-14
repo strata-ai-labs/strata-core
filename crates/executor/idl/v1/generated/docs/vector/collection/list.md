@@ -9,6 +9,24 @@ Lists vector collections visible in the selected branch and space, including col
 
 Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
 
+## Examples
+
+List vector collections.
+
+### CLI
+
+```console
+$ strata vector collection create docs 3 cosine
+$ strata vector collection list
+```
+
+### Wire
+
+```json
+{"collection":"docs","dimension":3,"metric":"cosine","type":"vector_create_collection"}
+{"type":"vector_list_collections"}
+```
+
 ## Parameters
 
 _No parameters._

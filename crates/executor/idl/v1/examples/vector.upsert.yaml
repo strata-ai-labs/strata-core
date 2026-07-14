@@ -1,0 +1,9 @@
+caption: Insert or replace a vector with optional metadata.
+steps:
+  - call: vector.collection.create
+    args: { collection: docs, dimension: 3, metric: cosine }
+  - call: vector.upsert
+    args: { collection: docs, key: a, vector: [1.0, 0.0, 0.0], metadata: { tag: x } }
+  - call: vector.exists
+    args: { collection: docs, key: a }
+    returns: true

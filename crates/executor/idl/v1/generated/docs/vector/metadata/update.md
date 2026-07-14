@@ -9,6 +9,28 @@ Applies a top-level metadata patch to one visible vector. Missing vectors return
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Patch the metadata of an existing vector.
+
+### CLI
+
+```console
+$ strata vector collection create docs 3 cosine
+$ strata vector upsert docs a [1.0,0.0,0.0] --metadata {"tag":"x"}
+$ strata vector update-metadata docs a {"tag":"z"}
+$ strata vector get docs a
+```
+
+### Wire
+
+```json
+{"collection":"docs","dimension":3,"metric":"cosine","type":"vector_create_collection"}
+{"collection":"docs","key":"a","metadata":{"tag":"x"},"type":"vector_upsert","vector":[1.0,0.0,0.0]}
+{"collection":"docs","key":"a","patch":{"tag":"z"},"type":"vector_update_metadata"}
+{"collection":"docs","key":"a","type":"vector_get"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

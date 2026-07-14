@@ -9,6 +9,28 @@ Counts vectors visible in the selected collection, branch, and space.
 
 Status commands return a scalar or compact status payload and do not mutate database state.
 
+## Examples
+
+Count vectors in a collection.
+
+### CLI
+
+```console
+$ strata vector collection create docs 3 cosine
+$ strata vector upsert docs a [1.0,0.0,0.0]
+$ strata vector upsert docs b [0.0,1.0,0.0]
+$ strata vector count docs
+```
+
+### Wire
+
+```json
+{"collection":"docs","dimension":3,"metric":"cosine","type":"vector_create_collection"}
+{"collection":"docs","key":"a","type":"vector_upsert","vector":[1.0,0.0,0.0]}
+{"collection":"docs","key":"b","type":"vector_upsert","vector":[0.0,1.0,0.0]}
+{"collection":"docs","type":"vector_count"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

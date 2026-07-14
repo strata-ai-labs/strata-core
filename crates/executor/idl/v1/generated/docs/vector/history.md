@@ -9,6 +9,24 @@ Returns retained history rows for one vector key, including vector revision fact
 
 Optional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.
 
+## Examples
+
+A key that never existed has no history.
+
+### CLI
+
+```console
+$ strata vector collection create docs 3 cosine
+$ strata vector history docs absent
+```
+
+### Wire
+
+```json
+{"collection":"docs","dimension":3,"metric":"cosine","type":"vector_create_collection"}
+{"collection":"docs","key":"absent","type":"vector_history"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

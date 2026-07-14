@@ -1,0 +1,7 @@
+caption: Read a collection's dimension, metric, and size.
+steps:
+  - call: vector.collection.create
+    args: { collection: docs, dimension: 3, metric: cosine }
+  - call: vector.collection.stats
+    args: { collection: docs }
+    returns: 3

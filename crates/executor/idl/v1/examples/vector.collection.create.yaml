@@ -1,0 +1,7 @@
+caption: Create a vector collection, then confirm its dimension.
+steps:
+  - call: vector.collection.create
+    args: { collection: docs, dimension: 3, metric: cosine }
+  - call: vector.collection.stats
+    args: { collection: docs }
+    returns: 3

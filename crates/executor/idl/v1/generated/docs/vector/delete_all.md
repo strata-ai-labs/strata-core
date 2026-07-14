@@ -9,6 +9,28 @@ Deletes all vectors visible in the selected collection while preserving the coll
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Delete every vector in a collection.
+
+### CLI
+
+```console
+$ strata vector collection create docs 3 cosine
+$ strata vector upsert docs a [1.0,0.0,0.0]
+$ strata vector delete-all docs
+$ strata vector count docs
+```
+
+### Wire
+
+```json
+{"collection":"docs","dimension":3,"metric":"cosine","type":"vector_create_collection"}
+{"collection":"docs","key":"a","type":"vector_upsert","vector":[1.0,0.0,0.0]}
+{"collection":"docs","type":"vector_delete_all"}
+{"collection":"docs","type":"vector_count"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

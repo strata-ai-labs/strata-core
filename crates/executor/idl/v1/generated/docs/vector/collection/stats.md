@@ -9,6 +9,24 @@ Reads collection-level facts for one vector collection. The current wire respons
 
 Status commands return a scalar or compact status payload and do not mutate database state.
 
+## Examples
+
+Read a collection's dimension, metric, and size.
+
+### CLI
+
+```console
+$ strata vector collection create docs 3 cosine
+$ strata vector collection stats docs
+```
+
+### Wire
+
+```json
+{"collection":"docs","dimension":3,"metric":"cosine","type":"vector_create_collection"}
+{"collection":"docs","type":"vector_collection_stats"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

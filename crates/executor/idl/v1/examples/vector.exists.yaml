@@ -1,0 +1,12 @@
+caption: Check whether a key exists in a collection.
+steps:
+  - call: vector.collection.create
+    args: { collection: docs, dimension: 3, metric: cosine }
+  - call: vector.upsert
+    args: { collection: docs, key: a, vector: [1.0, 0.0, 0.0] }
+  - call: vector.exists
+    args: { collection: docs, key: a }
+    returns: true
+  - call: vector.exists
+    args: { collection: docs, key: absent }
+    returns: false

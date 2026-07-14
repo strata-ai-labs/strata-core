@@ -9,6 +9,26 @@ Writes multiple vector entries and returns positional mutation results. Valid it
 
 Itemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.
 
+## Examples
+
+Upsert many vectors in one commit.
+
+### CLI
+
+```console
+$ strata vector collection create docs 3 cosine
+$ strata command run --command-json '{"collection":"docs","entries":[{"key":"a","vector":[1.0,0.0,0.0]},{"key":"b","vector":[0.0,1.0,0.0]}],"type":"vector_batch_upsert"}'
+$ strata vector count docs
+```
+
+### Wire
+
+```json
+{"collection":"docs","dimension":3,"metric":"cosine","type":"vector_create_collection"}
+{"collection":"docs","entries":[{"key":"a","vector":[1.0,0.0,0.0]},{"key":"b","vector":[0.0,1.0,0.0]}],"type":"vector_batch_upsert"}
+{"collection":"docs","type":"vector_count"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

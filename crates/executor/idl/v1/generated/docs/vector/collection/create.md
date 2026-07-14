@@ -9,6 +9,24 @@ Creates a collection for dense vectors. The dimension and metric become part of 
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Create a vector collection, then confirm its dimension.
+
+### CLI
+
+```console
+$ strata vector collection create docs 3 cosine
+$ strata vector collection stats docs
+```
+
+### Wire
+
+```json
+{"collection":"docs","dimension":3,"metric":"cosine","type":"vector_create_collection"}
+{"collection":"docs","type":"vector_collection_stats"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

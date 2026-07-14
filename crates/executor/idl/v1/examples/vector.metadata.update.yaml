@@ -1,0 +1,12 @@
+caption: Patch the metadata of an existing vector.
+steps:
+  - call: vector.collection.create
+    args: { collection: docs, dimension: 3, metric: cosine }
+  - call: vector.upsert
+    args: { collection: docs, key: a, vector: [1.0, 0.0, 0.0], metadata: { tag: x } }
+  - call: vector.metadata.update
+    args: { collection: docs, key: a, patch: { tag: z } }
+  - call: vector.get
+    args: { collection: docs, key: a }
+    expr: "{}.data.metadata"
+    returns: { tag: z }

@@ -1,0 +1,11 @@
+caption: Delete every vector in a collection.
+steps:
+  - call: vector.collection.create
+    args: { collection: docs, dimension: 3, metric: cosine }
+  - call: vector.upsert
+    args: { collection: docs, key: a, vector: [1.0, 0.0, 0.0] }
+  - call: vector.delete_all
+    args: { collection: docs }
+  - call: vector.count
+    args: { collection: docs }
+    returns: 0

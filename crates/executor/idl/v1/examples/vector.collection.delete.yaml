@@ -1,0 +1,9 @@
+caption: Delete a collection.
+steps:
+  - call: vector.collection.create
+    args: { collection: temp, dimension: 3, metric: cosine }
+  - call: vector.collection.delete
+    args: { collection: temp }
+  - call: vector.collection.list
+    args: {}
+    returns: []

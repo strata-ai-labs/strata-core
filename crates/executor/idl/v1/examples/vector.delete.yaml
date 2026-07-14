@@ -1,0 +1,11 @@
+caption: Delete one vector.
+steps:
+  - call: vector.collection.create
+    args: { collection: docs, dimension: 3, metric: cosine }
+  - call: vector.upsert
+    args: { collection: docs, key: a, vector: [1.0, 0.0, 0.0] }
+  - call: vector.delete
+    args: { collection: docs, key: a }
+  - call: vector.exists
+    args: { collection: docs, key: a }
+    returns: false

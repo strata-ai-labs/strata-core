@@ -9,6 +9,26 @@ Deletes the selected vector collection from the current branch and space. The cu
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Delete a collection.
+
+### CLI
+
+```console
+$ strata vector collection create temp 3 cosine
+$ strata vector collection delete temp
+$ strata vector collection list
+```
+
+### Wire
+
+```json
+{"collection":"temp","dimension":3,"metric":"cosine","type":"vector_create_collection"}
+{"collection":"temp","type":"vector_delete_collection"}
+{"type":"vector_list_collections"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

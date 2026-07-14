@@ -9,6 +9,30 @@ Scans the collection for visible vectors matching the metadata filter and delete
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Delete every vector whose metadata matches a filter.
+
+### CLI
+
+```console
+$ strata vector collection create docs 3 cosine
+$ strata vector upsert docs a [1.0,0.0,0.0] --metadata {"tag":"keep"}
+$ strata vector upsert docs b [0.0,1.0,0.0] --metadata {"tag":"drop"}
+$ strata vector delete-by-filter docs {"conditions":[{"field":"tag","op":"eq","value":{"type":"string","value":"drop"}}]}
+$ strata vector count docs
+```
+
+### Wire
+
+```json
+{"collection":"docs","dimension":3,"metric":"cosine","type":"vector_create_collection"}
+{"collection":"docs","key":"a","metadata":{"tag":"keep"},"type":"vector_upsert","vector":[1.0,0.0,0.0]}
+{"collection":"docs","key":"b","metadata":{"tag":"drop"},"type":"vector_upsert","vector":[0.0,1.0,0.0]}
+{"collection":"docs","filter":{"conditions":[{"field":"tag","op":"eq","value":{"type":"string","value":"drop"}}]},"type":"vector_delete_by_filter"}
+{"collection":"docs","type":"vector_count"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

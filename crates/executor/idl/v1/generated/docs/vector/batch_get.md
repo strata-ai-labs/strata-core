@@ -9,6 +9,26 @@ Reads several vector keys and returns positional item results. Each item records
 
 Itemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.
 
+## Examples
+
+Read many vectors at once.
+
+### CLI
+
+```console
+$ strata vector collection create docs 3 cosine
+$ strata command run --command-json '{"collection":"docs","entries":[{"key":"a","vector":[1.0,0.0,0.0]},{"key":"b","vector":[0.0,1.0,0.0]}],"type":"vector_batch_upsert"}'
+$ strata command run --command-json '{"collection":"docs","keys":["a","b"],"type":"vector_batch_get"}'
+```
+
+### Wire
+
+```json
+{"collection":"docs","dimension":3,"metric":"cosine","type":"vector_create_collection"}
+{"collection":"docs","entries":[{"key":"a","vector":[1.0,0.0,0.0]},{"key":"b","vector":[0.0,1.0,0.0]}],"type":"vector_batch_upsert"}
+{"collection":"docs","keys":["a","b"],"type":"vector_batch_get"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

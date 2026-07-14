@@ -55,6 +55,11 @@ pub(super) struct ExampleStep {
     pub returns: Option<ExpectedResult>,
     #[serde(default)]
     pub note: Option<String>,
+    /// Optional per-step result-expression override for SDK example renderers
+    /// (`{}` is the call). strata-core validates its shape but does not
+    /// interpret it — CLI/wire rendering and replay use only the call + args.
+    #[serde(default)]
+    pub expr: Option<String>,
 }
 
 /// A step's declared expectation. An absent `returns` (setup step) maps to
@@ -185,6 +190,13 @@ fn validate_step_args(id: &str, position: usize, step: &ExampleStep, schema: &Va
             return Err(invalid(format!(
                 "example `{id}` step {position}: `{}` is missing required argument `{required}`",
                 step.call
+            )));
+        }
+    }
+    if let Some(expr) = &step.expr {
+        if !expr.contains("{}") {
+            return Err(invalid(format!(
+                "example `{id}` step {position}: `expr` must contain the `{{}}` call placeholder"
             )));
         }
     }

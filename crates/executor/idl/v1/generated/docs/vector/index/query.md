@@ -11,6 +11,28 @@ Search responses return a bounded list of matches ordered by the engine. They ar
 
 Diagnostic responses include operational facts intended for debugging and tuning. They should not be required for application correctness.
 
+## Examples
+
+Nearest-neighbor search that also returns index diagnostics.
+
+### CLI
+
+```console
+$ strata vector collection create docs 3 cosine
+$ strata vector upsert docs a [1.0,0.0,0.0]
+$ strata vector upsert docs b [0.0,1.0,0.0]
+$ strata command run --command-json '{"collection":"docs","k":2,"query":[1.0,0.0,0.0],"type":"vector_index_query"}'
+```
+
+### Wire
+
+```json
+{"collection":"docs","dimension":3,"metric":"cosine","type":"vector_create_collection"}
+{"collection":"docs","key":"a","type":"vector_upsert","vector":[1.0,0.0,0.0]}
+{"collection":"docs","key":"b","type":"vector_upsert","vector":[0.0,1.0,0.0]}
+{"collection":"docs","k":2,"query":[1.0,0.0,0.0],"type":"vector_index_query"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

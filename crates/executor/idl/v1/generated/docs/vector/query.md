@@ -9,6 +9,28 @@ Runs vector search through the engine planner and returns the best matches with 
 
 Search responses return a bounded list of matches ordered by the engine. They are not cursor pages unless a later command explicitly advertises pagination.
 
+## Examples
+
+Find the nearest vectors to a query vector.
+
+### CLI
+
+```console
+$ strata vector collection create docs 3 cosine
+$ strata vector upsert docs a [1.0,0.0,0.0]
+$ strata vector upsert docs b [0.0,1.0,0.0]
+$ strata vector query docs [1.0,0.0,0.0] 2
+```
+
+### Wire
+
+```json
+{"collection":"docs","dimension":3,"metric":"cosine","type":"vector_create_collection"}
+{"collection":"docs","key":"a","type":"vector_upsert","vector":[1.0,0.0,0.0]}
+{"collection":"docs","key":"b","type":"vector_upsert","vector":[0.0,1.0,0.0]}
+{"collection":"docs","k":2,"query":[1.0,0.0,0.0],"type":"vector_query"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

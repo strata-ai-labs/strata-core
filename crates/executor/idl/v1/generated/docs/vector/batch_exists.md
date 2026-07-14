@@ -9,6 +9,26 @@ Checks several vector keys in one collection and returns positional boolean stat
 
 Itemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.
 
+## Examples
+
+Check existence for many keys at once.
+
+### CLI
+
+```console
+$ strata vector collection create docs 3 cosine
+$ strata command run --command-json '{"collection":"docs","entries":[{"key":"a","vector":[1.0,0.0,0.0]}],"type":"vector_batch_upsert"}'
+$ strata command run --command-json '{"collection":"docs","keys":["a","missing"],"type":"vector_batch_exists"}'
+```
+
+### Wire
+
+```json
+{"collection":"docs","dimension":3,"metric":"cosine","type":"vector_create_collection"}
+{"collection":"docs","entries":[{"key":"a","vector":[1.0,0.0,0.0]}],"type":"vector_batch_upsert"}
+{"collection":"docs","keys":["a","missing"],"type":"vector_batch_exists"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |
