@@ -9,6 +9,28 @@ Lists a graph's nodes in node-id order. Accepts an optional id prefix filter, an
 
 Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
 
+## Examples
+
+List node ids in a graph, in id order.
+
+### CLI
+
+```console
+$ strata graph create social
+$ strata graph add-node social alice
+$ strata graph add-node social bob
+$ strata graph list-nodes social
+```
+
+### Wire
+
+```json
+{"graph":"social","type":"graph_create"}
+{"graph":"social","node_id":"alice","type":"graph_add_node"}
+{"graph":"social","node_id":"bob","type":"graph_add_node"}
+{"graph":"social","type":"graph_list_nodes"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

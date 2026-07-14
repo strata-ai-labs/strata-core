@@ -9,6 +9,28 @@ Removes a node and every edge incident to it in one commit. Removing a node that
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Remove a node.
+
+### CLI
+
+```console
+$ strata graph create social
+$ strata graph add-node social alice
+$ strata graph remove-node social alice
+$ strata graph get-node social alice
+```
+
+### Wire
+
+```json
+{"graph":"social","type":"graph_create"}
+{"graph":"social","node_id":"alice","type":"graph_add_node"}
+{"graph":"social","node_id":"alice","type":"graph_remove_node"}
+{"graph":"social","node_id":"alice","type":"graph_get_node"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

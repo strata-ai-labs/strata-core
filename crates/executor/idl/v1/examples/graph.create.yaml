@@ -1,0 +1,7 @@
+caption: Create a named graph.
+steps:
+  - call: graph.create
+    args: { graph: social }
+  - call: graph.list
+    args: {}
+    returns: ["social"]

@@ -9,6 +9,24 @@ Lists graph names in lexicographic order. Accepts an optional item limit (defaul
 
 Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
 
+## Examples
+
+List graphs.
+
+### CLI
+
+```console
+$ strata graph create social
+$ strata graph list
+```
+
+### Wire
+
+```json
+{"graph":"social","type":"graph_create"}
+{"type":"graph_list"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

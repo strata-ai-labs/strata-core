@@ -1,0 +1,15 @@
+caption: Remove an edge.
+steps:
+  - call: graph.create
+    args: { graph: social }
+  - call: graph.node.add
+    args: { graph: social, node_id: alice }
+  - call: graph.node.add
+    args: { graph: social, node_id: bob }
+  - call: graph.edge.add
+    args: { graph: social, src: alice, edge_type: knows, dst: bob }
+  - call: graph.edge.remove
+    args: { graph: social, src: alice, edge_type: knows, dst: bob }
+  - call: graph.edge.get
+    args: { graph: social, src: alice, edge_type: knows, dst: bob }
+    returns: null

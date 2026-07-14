@@ -9,6 +9,32 @@ Reads one edge by its `(src, edge_type, dst)` triple, returning its weight, prop
 
 Optional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.
 
+## Examples
+
+Read an edge, or nothing if absent.
+
+### CLI
+
+```console
+$ strata graph create social
+$ strata graph add-node social alice
+$ strata graph add-node social bob
+$ strata graph add-edge social alice knows bob
+$ strata graph get-edge social alice knows bob
+$ strata graph get-edge social alice knows absent
+```
+
+### Wire
+
+```json
+{"graph":"social","type":"graph_create"}
+{"graph":"social","node_id":"alice","type":"graph_add_node"}
+{"graph":"social","node_id":"bob","type":"graph_add_node"}
+{"dst":"bob","edge_type":"knows","graph":"social","src":"alice","type":"graph_add_edge"}
+{"dst":"bob","edge_type":"knows","graph":"social","src":"alice","type":"graph_get_edge"}
+{"dst":"absent","edge_type":"knows","graph":"social","src":"alice","type":"graph_get_edge"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

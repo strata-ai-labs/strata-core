@@ -9,6 +9,30 @@ Adds a directed edge `src -[edge_type]-> dst` or replaces it if the same triple 
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Add a typed edge between two nodes.
+
+### CLI
+
+```console
+$ strata graph create social
+$ strata graph add-node social alice
+$ strata graph add-node social bob
+$ strata graph add-edge social alice knows bob
+$ strata graph get-edge social alice knows bob
+```
+
+### Wire
+
+```json
+{"graph":"social","type":"graph_create"}
+{"graph":"social","node_id":"alice","type":"graph_add_node"}
+{"graph":"social","node_id":"bob","type":"graph_add_node"}
+{"dst":"bob","edge_type":"knows","graph":"social","src":"alice","type":"graph_add_edge"}
+{"dst":"bob","edge_type":"knows","graph":"social","src":"alice","type":"graph_get_edge"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

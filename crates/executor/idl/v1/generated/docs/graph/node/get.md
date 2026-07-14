@@ -9,6 +9,28 @@ Reads one node by id, returning its properties, declared object type, entity bin
 
 Optional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.
 
+## Examples
+
+Read a node's properties, or nothing if absent.
+
+### CLI
+
+```console
+$ strata graph create social
+$ strata graph add-node social alice --object-type person --properties {"age":30}
+$ strata graph get-node social alice
+$ strata graph get-node social absent
+```
+
+### Wire
+
+```json
+{"graph":"social","type":"graph_create"}
+{"graph":"social","node_id":"alice","object_type":"person","properties":{"age":30},"type":"graph_add_node"}
+{"graph":"social","node_id":"alice","type":"graph_get_node"}
+{"graph":"social","node_id":"absent","type":"graph_get_node"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

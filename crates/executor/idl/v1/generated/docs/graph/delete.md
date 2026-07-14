@@ -9,6 +9,26 @@ Deletes a named graph and every visible node, edge, binding, and ontology row it
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Delete a graph.
+
+### CLI
+
+```console
+$ strata graph create temp
+$ strata graph delete temp
+$ strata graph list
+```
+
+### Wire
+
+```json
+{"graph":"temp","type":"graph_create"}
+{"graph":"temp","type":"graph_delete"}
+{"type":"graph_list"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

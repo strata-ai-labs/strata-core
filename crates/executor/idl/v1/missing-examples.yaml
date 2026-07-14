@@ -1,6 +1,8 @@
 # Shrink-only example-coverage allowlist (mirrors uncovered-commands.yaml).
 # Every command must have idl/v1/examples/<id>.yaml OR appear here.
 # Remove an entry when its example lands; never add without a reason.
+# Remaining: graph analytics + ontology (no curated SDK method yet) and a
+# few complex graph ops (batch_write, bindings, bulk_insert, ...).
 missing:
   - admin.config
   - admin.config_key
@@ -30,18 +32,6 @@ missing:
   - graph.batch_write
   - graph.bindings
   - graph.bulk_insert
-  - graph.create
-  - graph.delete
-  - graph.edge.add
-  - graph.edge.get
-  - graph.edge.remove
-  - graph.list
-  - graph.meta
-  - graph.neighbors
-  - graph.node.add
-  - graph.node.get
-  - graph.node.list
-  - graph.node.remove
   - graph.nodes_by_type
   - graph.ontology.define_link_type
   - graph.ontology.define_object_type

@@ -9,6 +9,24 @@ Creates an empty named graph in the selected space and returns its metadata, inc
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Create a named graph.
+
+### CLI
+
+```console
+$ strata graph create social
+$ strata graph list
+```
+
+### Wire
+
+```json
+{"graph":"social","type":"graph_create"}
+{"type":"graph_list"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

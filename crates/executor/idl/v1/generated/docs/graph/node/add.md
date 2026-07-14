@@ -9,6 +9,26 @@ Adds a node to a graph or replaces it if the node id already exists. A node carr
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Add a node with an object type and properties.
+
+### CLI
+
+```console
+$ strata graph create social
+$ strata graph add-node social alice --object-type person --properties {"age":30}
+$ strata graph get-node social alice
+```
+
+### Wire
+
+```json
+{"graph":"social","type":"graph_create"}
+{"graph":"social","node_id":"alice","object_type":"person","properties":{"age":30},"type":"graph_add_node"}
+{"graph":"social","node_id":"alice","type":"graph_get_node"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

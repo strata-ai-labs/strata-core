@@ -9,6 +9,32 @@ Removes one directed edge by its `(src, edge_type, dst)` triple. The endpoints a
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Remove an edge.
+
+### CLI
+
+```console
+$ strata graph create social
+$ strata graph add-node social alice
+$ strata graph add-node social bob
+$ strata graph add-edge social alice knows bob
+$ strata graph remove-edge social alice knows bob
+$ strata graph get-edge social alice knows bob
+```
+
+### Wire
+
+```json
+{"graph":"social","type":"graph_create"}
+{"graph":"social","node_id":"alice","type":"graph_add_node"}
+{"graph":"social","node_id":"bob","type":"graph_add_node"}
+{"dst":"bob","edge_type":"knows","graph":"social","src":"alice","type":"graph_add_edge"}
+{"dst":"bob","edge_type":"knows","graph":"social","src":"alice","type":"graph_remove_edge"}
+{"dst":"bob","edge_type":"knows","graph":"social","src":"alice","type":"graph_get_edge"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

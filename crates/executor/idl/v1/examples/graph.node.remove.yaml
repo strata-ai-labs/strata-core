@@ -1,0 +1,11 @@
+caption: Remove a node.
+steps:
+  - call: graph.create
+    args: { graph: social }
+  - call: graph.node.add
+    args: { graph: social, node_id: alice }
+  - call: graph.node.remove
+    args: { graph: social, node_id: alice }
+  - call: graph.node.get
+    args: { graph: social, node_id: alice }
+    returns: null

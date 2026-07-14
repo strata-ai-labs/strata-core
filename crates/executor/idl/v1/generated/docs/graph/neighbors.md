@@ -9,6 +9,30 @@ Walks a node's edges and returns one hit per traversed edge. Direction is `outgo
 
 Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
 
+## Examples
+
+Find a node's neighbors along outgoing edges.
+
+### CLI
+
+```console
+$ strata graph create social
+$ strata graph add-node social alice
+$ strata graph add-node social bob
+$ strata graph add-edge social alice knows bob
+$ strata graph neighbors social alice outgoing
+```
+
+### Wire
+
+```json
+{"graph":"social","type":"graph_create"}
+{"graph":"social","node_id":"alice","type":"graph_add_node"}
+{"graph":"social","node_id":"bob","type":"graph_add_node"}
+{"dst":"bob","edge_type":"knows","graph":"social","src":"alice","type":"graph_add_edge"}
+{"direction":"outgoing","graph":"social","node_id":"alice","type":"graph_neighbors"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

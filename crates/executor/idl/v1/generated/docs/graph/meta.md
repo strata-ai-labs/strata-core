@@ -9,6 +9,28 @@ Reads a graph's metadata: live node and edge counts plus the create and last-upd
 
 Optional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.
 
+## Examples
+
+Read a graph's node and edge counts.
+
+### CLI
+
+```console
+$ strata graph create social
+$ strata graph add-node social alice
+$ strata graph add-node social bob
+$ strata graph meta social
+```
+
+### Wire
+
+```json
+{"graph":"social","type":"graph_create"}
+{"graph":"social","node_id":"alice","type":"graph_add_node"}
+{"graph":"social","node_id":"bob","type":"graph_add_node"}
+{"graph":"social","type":"graph_get_meta"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |
