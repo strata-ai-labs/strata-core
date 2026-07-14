@@ -18,9 +18,9 @@ local = ["dep:cmake"]
 # Derive JSON schemas on the public wire DTOs for IDL tooling only.
 wire-schemas = ["dep:schemars"]
 download = ["dep:ureq", "dep:sha2"]
-anthropic = ["dep:ureq", "dep:serde_json"]
-openai = ["dep:ureq", "dep:serde_json"]
-google = ["dep:ureq", "dep:serde_json"]
+anthropic = ["dep:ureq"]
+openai = ["dep:ureq"]
+google = ["dep:ureq"]
 testkit = []
 
 [build-dependencies]
@@ -29,11 +29,13 @@ cmake = { version = "0.1", optional = true }
 [dependencies]
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
-serde_json = { workspace = true, optional = true }
+# Base dependency: the wire DTOs, GBNF grammar, and tool-call parsing use
+# serde_json unconditionally (not just the cloud providers), so it must be
+# available in `--no-default-features` builds.
+serde_json = { workspace = true }
 sha2 = { workspace = true, optional = true }
 tracing = { workspace = true }
 ureq = { workspace = true, optional = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
 tempfile = { workspace = true }
