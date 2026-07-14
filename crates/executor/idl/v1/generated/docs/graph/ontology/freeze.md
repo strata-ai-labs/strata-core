@@ -9,6 +9,28 @@ Validates the draft ontology and freezes it. Validation requires at least one de
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Freeze the ontology so its types can no longer change.
+
+### CLI
+
+```console
+$ strata graph create g
+$ strata graph ontology define-object-type g person
+$ strata graph ontology freeze g
+$ strata graph ontology get g
+```
+
+### Wire
+
+```json
+{"graph":"g","type":"graph_create"}
+{"graph":"g","name":"person","type":"graph_define_object_type"}
+{"graph":"g","type":"graph_freeze_ontology"}
+{"graph":"g","type":"graph_get_ontology"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

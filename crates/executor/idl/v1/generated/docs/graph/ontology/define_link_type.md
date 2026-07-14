@@ -9,6 +9,28 @@ Declares a link type in the graph's ontology: a name, its source and target obje
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Define a link (edge) type between two object types.
+
+### CLI
+
+```console
+$ strata graph create g
+$ strata graph ontology define-object-type g person
+$ strata graph ontology define-link-type g knows person person
+$ strata graph ontology get g
+```
+
+### Wire
+
+```json
+{"graph":"g","type":"graph_create"}
+{"graph":"g","name":"person","type":"graph_define_object_type"}
+{"graph":"g","name":"knows","source":"person","target":"person","type":"graph_define_link_type"}
+{"graph":"g","type":"graph_get_ontology"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

@@ -9,6 +9,28 @@ Lists the nodes that declare a given object type, in node-id order. The type ind
 
 Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
 
+## Examples
+
+List nodes of a given object type.
+
+### CLI
+
+```console
+$ strata graph create g
+$ strata graph add-node g a --object-type person
+$ strata graph add-node g b --object-type person
+$ strata graph nodes-by-type g person
+```
+
+### Wire
+
+```json
+{"graph":"g","type":"graph_create"}
+{"graph":"g","node_id":"a","object_type":"person","type":"graph_add_node"}
+{"graph":"g","node_id":"b","object_type":"person","type":"graph_add_node"}
+{"graph":"g","object_type":"person","type":"graph_nodes_by_type"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

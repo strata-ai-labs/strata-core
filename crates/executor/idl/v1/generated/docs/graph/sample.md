@@ -9,6 +9,28 @@ Returns a deterministic representative sample of nodes from a graph: the total l
 
 Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
 
+## Examples
+
+A representative sample of nodes plus the total count.
+
+### CLI
+
+```console
+$ strata graph create g
+$ strata graph add-node g a
+$ strata graph add-node g b
+$ strata graph sample g
+```
+
+### Wire
+
+```json
+{"graph":"g","type":"graph_create"}
+{"graph":"g","node_id":"a","type":"graph_add_node"}
+{"graph":"g","node_id":"b","type":"graph_add_node"}
+{"graph":"g","type":"graph_sample"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

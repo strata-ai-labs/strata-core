@@ -9,6 +9,26 @@ Reads the graph's ontology annotated with per-type usage: a node count for each 
 
 Optional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.
 
+## Examples
+
+Summarize the ontology's object types.
+
+### CLI
+
+```console
+$ strata graph create g
+$ strata graph ontology define-object-type g person
+$ strata graph ontology summary g
+```
+
+### Wire
+
+```json
+{"graph":"g","type":"graph_create"}
+{"graph":"g","name":"person","type":"graph_define_object_type"}
+{"graph":"g","type":"graph_ontology_summary"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

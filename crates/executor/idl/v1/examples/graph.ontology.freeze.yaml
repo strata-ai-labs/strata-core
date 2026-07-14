@@ -1,0 +1,11 @@
+caption: Freeze the ontology so its types can no longer change.
+steps:
+  - call: graph.create
+    args: { graph: g }
+  - call: graph.ontology.define_object_type
+    args: { graph: g, name: person }
+  - call: graph.ontology.freeze
+    args: { graph: g }
+  - call: graph.ontology.get
+    args: { graph: g }
+    returns: frozen

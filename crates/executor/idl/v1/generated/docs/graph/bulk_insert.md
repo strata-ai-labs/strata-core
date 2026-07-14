@@ -9,6 +9,26 @@ Ingests a payload of nodes and edges in chunked commits: nodes first, then edges
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Insert many nodes and edges in one commit.
+
+### CLI
+
+```console
+$ strata graph create g
+$ strata graph bulk-insert g --edges [{"dst":"b","edge_type":"knows","src":"a"}] --nodes [{"node_id":"a","object_type":"person"},{"node_id":"b","object_type":"person"}]
+$ strata graph meta g
+```
+
+### Wire
+
+```json
+{"graph":"g","type":"graph_create"}
+{"edges":[{"dst":"b","edge_type":"knows","src":"a"}],"graph":"g","nodes":[{"node_id":"a","object_type":"person"},{"node_id":"b","object_type":"person"}],"type":"graph_bulk_insert"}
+{"graph":"g","type":"graph_get_meta"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

@@ -1,0 +1,17 @@
+caption: Weakly-connected components.
+steps:
+  - call: graph.create
+    args: { graph: g }
+  - call: graph.node.add
+    args: { graph: g, node_id: a }
+  - call: graph.node.add
+    args: { graph: g, node_id: b }
+  - call: graph.node.add
+    args: { graph: g, node_id: c }
+  - call: graph.edge.add
+    args: { graph: g, src: a, edge_type: knows, dst: b }
+  - call: graph.edge.add
+    args: { graph: g, src: b, edge_type: knows, dst: c }
+  - call: graph.analytics.wcc
+    args: { graph: g }
+    returns: 1

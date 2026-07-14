@@ -9,6 +9,34 @@ Computes the local clustering coefficient for every node over a consistent snaps
 
 Analytics commands compute over a consistent snapshot of the visible graph and return a complete result payload in one response. They accept optional snapshot budgets and an `as_of` timestamp for time travel; results are deterministic for a fixed graph state.
 
+## Examples
+
+Local clustering coefficient per node.
+
+### CLI
+
+```console
+$ strata graph create g
+$ strata graph add-node g a
+$ strata graph add-node g b
+$ strata graph add-node g c
+$ strata graph add-edge g a knows b
+$ strata graph add-edge g b knows c
+$ strata graph lcc g
+```
+
+### Wire
+
+```json
+{"graph":"g","type":"graph_create"}
+{"graph":"g","node_id":"a","type":"graph_add_node"}
+{"graph":"g","node_id":"b","type":"graph_add_node"}
+{"graph":"g","node_id":"c","type":"graph_add_node"}
+{"dst":"b","edge_type":"knows","graph":"g","src":"a","type":"graph_add_edge"}
+{"dst":"c","edge_type":"knows","graph":"g","src":"b","type":"graph_add_edge"}
+{"graph":"g","type":"graph_lcc"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

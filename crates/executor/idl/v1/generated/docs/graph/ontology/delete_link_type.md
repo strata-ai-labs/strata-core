@@ -9,6 +9,28 @@ Removes a link type from the graph's draft ontology. Deleting a type that was ne
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Remove a link type from the ontology.
+
+### CLI
+
+```console
+$ strata graph create g
+$ strata graph ontology define-object-type g person
+$ strata graph ontology define-link-type g knows person person
+$ strata graph ontology delete-link-type g knows
+```
+
+### Wire
+
+```json
+{"graph":"g","type":"graph_create"}
+{"graph":"g","name":"person","type":"graph_define_object_type"}
+{"graph":"g","name":"knows","source":"person","target":"person","type":"graph_define_link_type"}
+{"graph":"g","name":"knows","type":"graph_delete_link_type"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

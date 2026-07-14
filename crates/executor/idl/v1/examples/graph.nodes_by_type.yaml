@@ -1,0 +1,11 @@
+caption: List nodes of a given object type.
+steps:
+  - call: graph.create
+    args: { graph: g }
+  - call: graph.node.add
+    args: { graph: g, node_id: a, object_type: person }
+  - call: graph.node.add
+    args: { graph: g, node_id: b, object_type: person }
+  - call: graph.nodes_by_type
+    args: { graph: g, object_type: person }
+    returns: ["a", "b"]

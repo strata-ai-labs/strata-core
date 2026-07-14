@@ -9,6 +9,30 @@ Removes an object type from the graph's draft ontology. Deleting a type that was
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Remove an object type from the ontology.
+
+### CLI
+
+```console
+$ strata graph create g
+$ strata graph ontology define-object-type g person
+$ strata graph ontology define-object-type g company
+$ strata graph ontology delete-object-type g company
+$ strata graph ontology summary g
+```
+
+### Wire
+
+```json
+{"graph":"g","type":"graph_create"}
+{"graph":"g","name":"person","type":"graph_define_object_type"}
+{"graph":"g","name":"company","type":"graph_define_object_type"}
+{"graph":"g","name":"company","type":"graph_delete_object_type"}
+{"graph":"g","type":"graph_ontology_summary"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |
