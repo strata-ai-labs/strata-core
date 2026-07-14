@@ -83,11 +83,19 @@ where
     }))
 }
 
-/// `missing-examples.yaml`: the shrink-only example-coverage allowlist.
+/// `missing-examples.yaml`: the shrink-only example-coverage allowlist, split
+/// by *why* a command has no hermetic example.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MissingExamplesSource {
-    missing: Vec<String>,
+    /// A hermetic cache-mode example is possible but not yet written.
+    #[serde(default)]
+    uncovered: Vec<String>,
+    /// Covered by a gated integration test or reference-only, because a
+    /// cache-mode replay cannot supply the resource (hub, model, API key,
+    /// network, machine disk). Not pending.
+    #[serde(default)]
+    non_hermetic: Vec<String>,
 }
 
 fn examples_dir(repo_root: &Path) -> PathBuf {
@@ -215,7 +223,7 @@ fn enforce_example_coverage(
     let allowlist: MissingExamplesSource =
         read_yaml(&repo_root.join(super::IDL_DIR).join(MISSING_EXAMPLES_FILE))?;
     let mut listed = BTreeSet::new();
-    for id in &allowlist.missing {
+    for id in allowlist.uncovered.iter().chain(allowlist.non_hermetic.iter()) {
         if !ids.contains(id.as_str()) {
             return Err(invalid(format!(
                 "{MISSING_EXAMPLES_FILE} lists `{id}` which is not a command"

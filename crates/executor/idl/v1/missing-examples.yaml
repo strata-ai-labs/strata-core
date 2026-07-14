@@ -1,15 +1,22 @@
-# Shrink-only example-coverage allowlist (mirrors uncovered-commands.yaml).
-# Every command must have idl/v1/examples/<id>.yaml OR appear here.
-# Remove an entry when its example lands; never add without a reason.
-missing:
-  - admin.hub_clone
-  - branch.fork_at_timestamp
-  - branch.fork_at_version
-  - inference.detokenize
-  - inference.embed
-  - inference.generate
-  - inference.models.local
-  - inference.models.pull
-  - inference.rank
-  - inference.tokenize
-  - inference.unload
+# Shrink-only example-coverage allowlist. Every command must have
+# idl/v1/examples/<id>.yaml OR appear in exactly one list below. A listed
+# command that gains an example must be removed (both lists only shrink).
+#
+# uncovered:    a hermetic cache-mode example is possible but not yet written.
+# non_hermetic: covered by a gated integration test or reference-only, because a
+#               cache-mode replay cannot supply the resource (hub, model, API
+#               key, network, machine disk). Not pending — see each reason.
+uncovered:
+  - branch.fork_at_timestamp   # needs cross-step commit-version references
+  - branch.fork_at_version     # needs cross-step commit-version references
+  - inference.unload           # trivial empty-cache no-op; not yet written
+
+non_hermetic:
+  - admin.hub_clone            # network + hub — Strata.clone, tests/test_hub_clone.py
+  - inference.generate         # local model or cloud key — tests/test_inference_local.py
+  - inference.embed            # local model or cloud key — tests/test_inference_local.py
+  - inference.rank             # reranker model or cloud key
+  - inference.tokenize         # local model — tests/test_inference_local.py
+  - inference.detokenize       # local model — tests/test_inference_local.py
+  - inference.models.local     # machine-specific on-disk model state
+  - inference.models.pull      # network download
