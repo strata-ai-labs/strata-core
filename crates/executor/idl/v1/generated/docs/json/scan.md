@@ -9,6 +9,24 @@ Scans visible JSON documents starting at an optional document key. Each item inc
 
 Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
 
+## Examples
+
+Scan documents from the start, in key order.
+
+### CLI
+
+```console
+$ strata command run --command-json '{"entries":[{"key":"a","path":"$","value":{"v":1}},{"key":"b","path":"$","value":{"v":2}}],"type":"json_batch_set"}'
+$ strata json scan
+```
+
+### Wire
+
+```json
+{"entries":[{"key":"a","path":"$","value":{"v":1}},{"key":"b","path":"$","value":{"v":2}}],"type":"json_batch_set"}
+{"type":"json_scan"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

@@ -9,6 +9,28 @@ Reads the JSON value at a path inside a document. Current reads return the value
 
 Optional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.
 
+## Examples
+
+Read a whole document, a value at a JSON path, or nothing.
+
+### CLI
+
+```console
+$ strata json set user $ {"age":30,"name":"alice"}
+$ strata json get user $
+$ strata json get user $.name
+$ strata json get absent $
+```
+
+### Wire
+
+```json
+{"key":"user","path":"$","type":"json_set","value":{"age":30,"name":"alice"}}
+{"key":"user","path":"$","type":"json_get"}
+{"key":"user","path":"$.name","type":"json_get"}
+{"key":"absent","path":"$","type":"json_get"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

@@ -9,6 +9,24 @@ Lists visible JSON document keys in byte order. Prefix, cursor, limit, and times
 
 Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
 
+## Examples
+
+List document keys under a prefix, in key order.
+
+### CLI
+
+```console
+$ strata command run --command-json '{"entries":[{"key":"user:1","path":"$","value":{"v":1}},{"key":"user:2","path":"$","value":{"v":2}},{"key":"other","path":"$","value":{"v":3}}],"type":"json_batch_set"}'
+$ strata json list --prefix user:
+```
+
+### Wire
+
+```json
+{"entries":[{"key":"user:1","path":"$","value":{"v":1}},{"key":"user:2","path":"$","value":{"v":2}},{"key":"other","path":"$","value":{"v":3}}],"type":"json_batch_set"}
+{"prefix":"user:","type":"json_list"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

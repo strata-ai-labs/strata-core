@@ -9,6 +9,26 @@ Counts visible JSON documents in the selected branch and space, optionally const
 
 Status commands return a scalar or compact status payload and do not mutate database state.
 
+## Examples
+
+Count stored documents.
+
+### CLI
+
+```console
+$ strata json set a $ {"v":1}
+$ strata json set b $ {"v":2}
+$ strata json count
+```
+
+### Wire
+
+```json
+{"key":"a","path":"$","type":"json_set","value":{"v":1}}
+{"key":"b","path":"$","type":"json_set","value":{"v":2}}
+{"type":"json_count"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

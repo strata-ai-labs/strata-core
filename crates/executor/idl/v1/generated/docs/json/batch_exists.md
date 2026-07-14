@@ -9,6 +9,24 @@ Checks several JSON documents and returns positional boolean status values. The 
 
 Itemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.
 
+## Examples
+
+Check existence for many document keys at once.
+
+### CLI
+
+```console
+$ strata command run --command-json '{"entries":[{"key":"a","path":"$","value":{"v":1}}],"type":"json_batch_set"}'
+$ strata command run --command-json '{"keys":["a","missing"],"type":"json_batch_exists"}'
+```
+
+### Wire
+
+```json
+{"entries":[{"key":"a","path":"$","value":{"v":1}}],"type":"json_batch_set"}
+{"keys":["a","missing"],"type":"json_batch_exists"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

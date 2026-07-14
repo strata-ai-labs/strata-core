@@ -1,0 +1,11 @@
+caption: List document keys under a prefix, in key order.
+steps:
+  - call: json.batch_set
+    args:
+      entries:
+        - { key: "user:1", path: "$", value: { v: 1 } }
+        - { key: "user:2", path: "$", value: { v: 2 } }
+        - { key: other, path: "$", value: { v: 3 } }
+  - call: json.list
+    args: { prefix: "user:" }
+    returns: ["user:1", "user:2"]

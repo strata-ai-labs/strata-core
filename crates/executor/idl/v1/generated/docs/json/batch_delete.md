@@ -9,6 +9,26 @@ Deletes multiple document/path entries and returns one positional mutation resul
 
 Itemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.
 
+## Examples
+
+Delete many documents in one commit.
+
+### CLI
+
+```console
+$ strata command run --command-json '{"entries":[{"key":"a","path":"$","value":{"v":1}}],"type":"json_batch_set"}'
+$ strata command run --command-json '{"entries":[{"key":"a","path":"$"}],"type":"json_batch_delete"}'
+$ strata json exists a
+```
+
+### Wire
+
+```json
+{"entries":[{"key":"a","path":"$","value":{"v":1}}],"type":"json_batch_set"}
+{"entries":[{"key":"a","path":"$"}],"type":"json_batch_delete"}
+{"key":"a","type":"json_exists"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

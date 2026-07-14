@@ -9,6 +9,24 @@ Writes a JSON value at a path inside a document, creating the document and any m
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Store a JSON document, then read it back.
+
+### CLI
+
+```console
+$ strata json set user $ {"age":30,"name":"alice"}
+$ strata json get user $
+```
+
+### Wire
+
+```json
+{"key":"user","path":"$","type":"json_set","value":{"age":30,"name":"alice"}}
+{"key":"user","path":"$","type":"json_get"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

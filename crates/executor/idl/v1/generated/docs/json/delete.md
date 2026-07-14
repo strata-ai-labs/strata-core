@@ -9,6 +9,26 @@ Deletes the root path `$` to remove the whole document, or a nested path to remo
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Delete a document.
+
+### CLI
+
+```console
+$ strata json set temp $ {"x":1}
+$ strata json delete temp $
+$ strata json exists temp
+```
+
+### Wire
+
+```json
+{"key":"temp","path":"$","type":"json_set","value":{"x":1}}
+{"key":"temp","path":"$","type":"json_delete"}
+{"key":"temp","type":"json_exists"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

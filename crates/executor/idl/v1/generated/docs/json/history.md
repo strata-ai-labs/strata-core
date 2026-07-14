@@ -9,6 +9,22 @@ Returns retained full-document history rows for a JSON document, newest first, i
 
 Optional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.
 
+## Examples
+
+A document that never existed has no history.
+
+### CLI
+
+```console
+$ strata json history absent
+```
+
+### Wire
+
+```json
+{"key":"absent","type":"json_history"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

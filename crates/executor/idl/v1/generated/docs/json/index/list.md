@@ -9,6 +9,24 @@ Lists JSON secondary index definitions in the selected branch and space, includi
 
 Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
 
+## Examples
+
+List secondary indexes.
+
+### CLI
+
+```console
+$ strata json index create by_name $.name tag
+$ strata json index list
+```
+
+### Wire
+
+```json
+{"field_path":"$.name","index_type":"tag","name":"by_name","type":"json_create_index"}
+{"type":"json_list_indexes"}
+```
+
 ## Parameters
 
 _No parameters._

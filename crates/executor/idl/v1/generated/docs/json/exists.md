@@ -9,6 +9,26 @@ Returns a boolean status for one JSON document key without loading the stored do
 
 Status commands return a scalar or compact status payload and do not mutate database state.
 
+## Examples
+
+Check whether a document exists.
+
+### CLI
+
+```console
+$ strata json set user $ {"name":"alice"}
+$ strata json exists user
+$ strata json exists absent
+```
+
+### Wire
+
+```json
+{"key":"user","path":"$","type":"json_set","value":{"name":"alice"}}
+{"key":"user","type":"json_exists"}
+{"key":"absent","type":"json_exists"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

@@ -9,6 +9,24 @@ Returns a bounded sample of visible JSON documents plus the total matching count
 
 Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
 
+## Examples
+
+A representative sample plus the total population size.
+
+### CLI
+
+```console
+$ strata command run --command-json '{"entries":[{"key":"a","path":"$","value":{"v":1}},{"key":"b","path":"$","value":{"v":2}},{"key":"c","path":"$","value":{"v":3}}],"type":"json_batch_set"}'
+$ strata json sample
+```
+
+### Wire
+
+```json
+{"entries":[{"key":"a","path":"$","value":{"v":1}},{"key":"b","path":"$","value":{"v":2}},{"key":"c","path":"$","value":{"v":3}}],"type":"json_batch_set"}
+{"type":"json_sample"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

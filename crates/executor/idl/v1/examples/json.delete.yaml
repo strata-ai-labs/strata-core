@@ -1,0 +1,9 @@
+caption: Delete a document.
+steps:
+  - call: json.set
+    args: { key: temp, path: "$", value: { x: 1 } }
+  - call: json.delete
+    args: { key: temp, path: "$" }
+  - call: json.exists
+    args: { key: temp }
+    returns: false

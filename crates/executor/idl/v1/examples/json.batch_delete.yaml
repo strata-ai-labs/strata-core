@@ -1,0 +1,13 @@
+caption: Delete many documents in one commit.
+steps:
+  - call: json.batch_set
+    args:
+      entries:
+        - { key: a, path: "$", value: { v: 1 } }
+  - call: json.batch_delete
+    args:
+      entries:
+        - { key: a, path: "$" }
+  - call: json.exists
+    args: { key: a }
+    returns: false

@@ -9,6 +9,26 @@ Drops the named JSON secondary index and its stored entries. Documents are unaff
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Drop a secondary index.
+
+### CLI
+
+```console
+$ strata json index create by_name $.name tag
+$ strata json index drop by_name
+$ strata json index list
+```
+
+### Wire
+
+```json
+{"field_path":"$.name","index_type":"tag","name":"by_name","type":"json_create_index"}
+{"name":"by_name","type":"json_drop_index"}
+{"type":"json_list_indexes"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |
