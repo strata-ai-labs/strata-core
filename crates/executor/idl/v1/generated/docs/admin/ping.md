@@ -9,6 +9,22 @@ Lightweight liveness check. Returns the engine package version without touching 
 
 Status commands return a scalar or compact status payload and do not mutate database state.
 
+## Examples
+
+Check the database handle is live.
+
+### CLI
+
+```console
+$ strata ping
+```
+
+### Wire
+
+```json
+{"type":"ping"}
+```
+
 ## Parameters
 
 _No parameters._

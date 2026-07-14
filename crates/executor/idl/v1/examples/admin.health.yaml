@@ -1,0 +1,5 @@
+caption: Read control-plane health.
+steps:
+  - call: admin.health
+    args: {}
+    returns: healthy

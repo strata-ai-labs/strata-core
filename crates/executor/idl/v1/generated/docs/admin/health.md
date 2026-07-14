@@ -9,6 +9,22 @@ Returns control-plane health facts: the worst overall status plus per-subsystem 
 
 Status commands return a scalar or compact status payload and do not mutate database state.
 
+## Examples
+
+Read control-plane health.
+
+### CLI
+
+```console
+$ strata health
+```
+
+### Wire
+
+```json
+{"type":"health"}
+```
+
 ## Parameters
 
 _No parameters._

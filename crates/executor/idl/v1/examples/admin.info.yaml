@@ -1,0 +1,5 @@
+caption: Read database identity and catalog counts.
+steps:
+  - call: admin.info
+    args: {}
+    returns: 1

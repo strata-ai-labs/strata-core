@@ -9,6 +9,26 @@ Drops the product space from the branch catalog. The `default` space refuses del
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Delete a product space.
+
+### CLI
+
+```console
+$ strata space create temp
+$ strata space delete temp
+$ strata space exists temp
+```
+
+### Wire
+
+```json
+{"space":"temp","type":"space_create"}
+{"space":"temp","type":"space_delete"}
+{"space":"temp","type":"space_exists"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

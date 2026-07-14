@@ -2,24 +2,11 @@
 # Every command must have idl/v1/examples/<id>.yaml OR appear here.
 # Remove an entry when its example lands; never add without a reason.
 missing:
-  - admin.config
-  - admin.config_key
-  - admin.describe
-  - admin.health
   - admin.hub_clone
-  - admin.info
-  - admin.metrics
-  - admin.ping
-  - admin.remote
   - arrow.export
   - arrow.import
-  - branch.create
-  - branch.delete
-  - branch.fork
   - branch.fork_at_timestamp
   - branch.fork_at_version
-  - branch.get
-  - branch.list
   - graph.apply_delete_policy
   - graph.batch_write
   - graph.bindings
@@ -34,7 +21,3 @@ missing:
   - inference.rank
   - inference.tokenize
   - inference.unload
-  - space.create
-  - space.delete
-  - space.exists
-  - space.list

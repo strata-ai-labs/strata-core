@@ -9,6 +9,22 @@ Reads the remote origin recorded when this database was cloned from a hub: the r
 
 Optional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.
 
+## Examples
+
+Read where this database was cloned from (a local database has no origin).
+
+### CLI
+
+```console
+$ strata remote
+```
+
+### Wire
+
+```json
+{"type":"remote_get"}
+```
+
 ## Parameters
 
 _No parameters._

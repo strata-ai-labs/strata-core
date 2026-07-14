@@ -9,6 +9,22 @@ Returns a compact description of the database for one branch: engine version, op
 
 Status commands return a scalar or compact status payload and do not mutate database state.
 
+## Examples
+
+Describe the database.
+
+### CLI
+
+```console
+$ strata describe
+```
+
+### Wire
+
+```json
+{"type":"describe"}
+```
+
 ## Parameters
 
 _No parameters._

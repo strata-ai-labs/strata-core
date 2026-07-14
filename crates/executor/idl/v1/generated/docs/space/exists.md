@@ -9,6 +9,26 @@ Reports whether the named product space is cataloged on the target branch. A mis
 
 Status commands return a scalar or compact status payload and do not mutate database state.
 
+## Examples
+
+Check whether a product space exists.
+
+### CLI
+
+```console
+$ strata space create app
+$ strata space exists app
+$ strata space exists nope
+```
+
+### Wire
+
+```json
+{"space":"app","type":"space_create"}
+{"space":"app","type":"space_exists"}
+{"space":"nope","type":"space_exists"}
+```
+
 ## Parameters
 
 _No parameters._

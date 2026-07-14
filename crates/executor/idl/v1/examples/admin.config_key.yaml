@@ -1,0 +1,5 @@
+caption: Read one configuration value by key, or nothing if unknown.
+steps:
+  - call: admin.config_key
+    args: { key: missing }
+    returns: null

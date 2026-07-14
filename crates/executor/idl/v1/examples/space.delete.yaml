@@ -1,0 +1,9 @@
+caption: Delete a product space.
+steps:
+  - call: space.create
+    args: { space: temp }
+  - call: space.delete
+    args: { space: temp }
+  - call: space.exists
+    args: { space: temp }
+    returns: false

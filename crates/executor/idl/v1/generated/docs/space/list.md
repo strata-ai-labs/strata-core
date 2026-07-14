@@ -9,6 +9,24 @@ Lists the product space names cataloged on the target branch as a terminal page.
 
 Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
 
+## Examples
+
+List product spaces.
+
+### CLI
+
+```console
+$ strata space create app
+$ strata space list
+```
+
+### Wire
+
+```json
+{"space":"app","type":"space_create"}
+{"type":"space_list"}
+```
+
 ## Parameters
 
 _No parameters._

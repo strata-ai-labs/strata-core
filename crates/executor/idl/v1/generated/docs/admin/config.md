@@ -9,6 +9,22 @@ Returns sanitized configuration facts: the open target, whether this open create
 
 Status commands return a scalar or compact status payload and do not mutate database state.
 
+## Examples
+
+Read sanitized configuration facts.
+
+### CLI
+
+```console
+$ strata config get
+```
+
+### Wire
+
+```json
+{"type":"config_get"}
+```
+
 ## Parameters
 
 _No parameters._

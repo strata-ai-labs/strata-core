@@ -9,6 +9,22 @@ Returns database identity and a catalog summary for one branch: engine version, 
 
 Status commands return a scalar or compact status payload and do not mutate database state.
 
+## Examples
+
+Read database identity and catalog counts.
+
+### CLI
+
+```console
+$ strata info
+```
+
+### Wire
+
+```json
+{"type":"info"}
+```
+
 ## Parameters
 
 _No parameters._

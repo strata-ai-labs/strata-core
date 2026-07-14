@@ -9,6 +9,22 @@ Returns lightweight database metrics: the open target, durability, whether the h
 
 Status commands return a scalar or compact status payload and do not mutate database state.
 
+## Examples
+
+Read lightweight database metrics.
+
+### CLI
+
+```console
+$ strata metrics
+```
+
+### Wire
+
+```json
+{"type":"metrics"}
+```
+
 ## Parameters
 
 _No parameters._

@@ -1,0 +1,5 @@
+caption: Check the database handle is live.
+steps:
+  - call: admin.ping
+    args: {}
+    returns: true

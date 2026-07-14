@@ -9,6 +9,24 @@ Reads the summary for one branch: name, deterministic branch id, generation, sta
 
 Status commands return a scalar or compact status payload and do not mutate database state.
 
+## Examples
+
+Read one branch by name.
+
+### CLI
+
+```console
+$ strata branch create feature
+$ strata branch get feature
+```
+
+### Wire
+
+```json
+{"branch":"feature","type":"branch_create"}
+{"branch":"feature","type":"branch_get"}
+```
+
 ## Parameters
 
 _No parameters._

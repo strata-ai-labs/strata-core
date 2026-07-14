@@ -9,6 +9,24 @@ Creates an empty root branch with no parent and no data. This is not a fork: the
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Create a new empty branch.
+
+### CLI
+
+```console
+$ strata branch create feature
+$ strata branch list
+```
+
+### Wire
+
+```json
+{"branch":"feature","type":"branch_create"}
+{"type":"branch_list"}
+```
+
 ## Parameters
 
 _No parameters._

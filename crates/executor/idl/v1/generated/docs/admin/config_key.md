@@ -9,6 +9,22 @@ Returns one sanitized configuration value from the allowlist by key, or a null v
 
 Optional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.
 
+## Examples
+
+Read one configuration value by key, or nothing if unknown.
+
+### CLI
+
+```console
+$ strata config get-key missing
+```
+
+### Wire
+
+```json
+{"key":"missing","type":"configure_get_key"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

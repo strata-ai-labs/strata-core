@@ -9,6 +9,26 @@ Deletes an active branch and reports the deleted branch summary, generation fact
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Delete a branch.
+
+### CLI
+
+```console
+$ strata branch create temp
+$ strata branch delete temp
+$ strata branch list
+```
+
+### Wire
+
+```json
+{"branch":"temp","type":"branch_create"}
+{"branch":"temp","type":"branch_delete"}
+{"type":"branch_list"}
+```
+
 ## Parameters
 
 _No parameters._

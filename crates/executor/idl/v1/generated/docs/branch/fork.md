@@ -11,6 +11,24 @@ On the CLI, all three fork commands share the single verb `strata branch fork <S
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Fork a branch from another branch's head.
+
+### CLI
+
+```console
+$ strata branch fork default experiment
+$ strata branch list
+```
+
+### Wire
+
+```json
+{"branch":"experiment","source":"default","type":"branch_fork_current"}
+{"type":"branch_list"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

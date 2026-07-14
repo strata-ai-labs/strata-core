@@ -1,0 +1,9 @@
+caption: Delete a branch.
+steps:
+  - call: branch.create
+    args: { branch: temp }
+  - call: branch.delete
+    args: { branch: temp }
+  - call: branch.list
+    args: {}
+    returns: ["default"]

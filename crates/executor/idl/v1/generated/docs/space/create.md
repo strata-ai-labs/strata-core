@@ -9,6 +9,24 @@ Creates a product space in the branch catalog. Creation is idempotent: creating 
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Create a product space.
+
+### CLI
+
+```console
+$ strata space create app
+$ strata space list
+```
+
+### Wire
+
+```json
+{"space":"app","type":"space_create"}
+{"type":"space_list"}
+```
+
 ## Parameters
 
 _No parameters._
