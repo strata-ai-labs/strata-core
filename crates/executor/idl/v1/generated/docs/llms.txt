@@ -1,0 +1,158 @@
+# StrataDB — command reference
+
+> Generated from the Strata IDL. Every reference page below is also available as Markdown by appending `.md` to its URL.
+
+## admin
+
+- [Read sanitized config](https://stratadb.org/docs/admin/config.md): Read sanitized configuration facts.
+- [Read one config value](https://stratadb.org/docs/admin/config_key.md): Read one sanitized configuration value by key.
+- [Describe database](https://stratadb.org/docs/admin/describe.md): Read a compact description of the database.
+- [Read database health](https://stratadb.org/docs/admin/health.md): Read control-plane health facts.
+- [Clone hub dataset](https://stratadb.org/docs/admin/hub_clone.md): Clone a dataset from a hub into a new local database.
+- [Read database info](https://stratadb.org/docs/admin/info.md): Read database identity and a catalog summary.
+- [Read database metrics](https://stratadb.org/docs/admin/metrics.md): Read lightweight database metrics.
+- [Ping database](https://stratadb.org/docs/admin/ping.md): Check that the database handle is live.
+- [Read remote origin](https://stratadb.org/docs/admin/remote.md): Read where this database was cloned from.
+
+## arrow
+
+- [Export Arrow file](https://stratadb.org/docs/arrow/export.md): Export a product primitive to an Arrow-compatible file.
+- [Import Arrow file](https://stratadb.org/docs/arrow/import.md): Import an Arrow-compatible file into a product primitive.
+
+## branch
+
+- [Create empty branch](https://stratadb.org/docs/branch/create.md): Create a new empty root branch.
+- [Delete branch](https://stratadb.org/docs/branch/delete.md): Delete an active branch and release its storage claims.
+- [Fork branch from current head](https://stratadb.org/docs/branch/fork.md): Fork a new branch from the current head of a source branch.
+- [Fork branch at timestamp](https://stratadb.org/docs/branch/fork_at_timestamp.md): Fork a new branch from a retained source timestamp.
+- [Fork branch at version](https://stratadb.org/docs/branch/fork_at_version.md): Fork a new branch from a retained source commit version.
+- [Read one branch](https://stratadb.org/docs/branch/get.md): Read one branch summary by name.
+- [List branches](https://stratadb.org/docs/branch/list.md): List active branches with their lineage facts.
+
+## event
+
+- [Append event](https://stratadb.org/docs/event/append.md): Append one event to the branch event log.
+- [Batch append events](https://stratadb.org/docs/event/batch_append.md): Append multiple events in one commit.
+- [Count events](https://stratadb.org/docs/event/count.md): Count visible events in the log.
+- [Check event existence](https://stratadb.org/docs/event/exists.md): Check whether an event sequence exists.
+- [Get event](https://stratadb.org/docs/event/get.md): Read one event by sequence number.
+- [List events](https://stratadb.org/docs/event/list.md): List events with optional type filter and cursor.
+- [Read event sequence range](https://stratadb.org/docs/event/range.md): Read a range of events by sequence number.
+- [Read event time range](https://stratadb.org/docs/event/range_time.md): Read a range of events by occurrence time.
+- [List event types](https://stratadb.org/docs/event/types.md): List distinct event types in the log.
+- [Verify event chain](https://stratadb.org/docs/event/verify_chain.md): Verify event log density and hash linkage.
+
+## graph
+
+- [Traverse graph breadth-first](https://stratadb.org/docs/graph/analytics/bfs.md): Run a bounded breadth-first traversal.
+- [Detect graph communities](https://stratadb.org/docs/graph/analytics/cdlp.md): Detect communities via label propagation.
+- [Compute graph clustering coefficients](https://stratadb.org/docs/graph/analytics/lcc.md): Compute local clustering coefficients.
+- [Compute graph pagerank](https://stratadb.org/docs/graph/analytics/pagerank.md): Compute PageRank importance scores.
+- [Compute graph shortest paths](https://stratadb.org/docs/graph/analytics/sssp.md): Compute shortest-path distances from a source.
+- [Compute graph connected components](https://stratadb.org/docs/graph/analytics/wcc.md): Compute weakly connected components.
+- [Apply graph delete policy](https://stratadb.org/docs/graph/apply_delete_policy.md): Apply a delete policy to bound graph facts.
+- [Batch write graph](https://stratadb.org/docs/graph/batch_write.md): Apply graph mutations atomically.
+- [List graph bindings for entity](https://stratadb.org/docs/graph/bindings.md): Find graph nodes bound to an entity.
+- [Bulk insert graph data](https://stratadb.org/docs/graph/bulk_insert.md): Bulk-load nodes and edges in chunks.
+- [Create graph](https://stratadb.org/docs/graph/create.md): Create a named graph.
+- [Delete graph](https://stratadb.org/docs/graph/delete.md): Delete a graph and its visible data.
+- [Add graph edge](https://stratadb.org/docs/graph/edge/add.md): Add or replace a graph edge.
+- [Get graph edge](https://stratadb.org/docs/graph/edge/get.md): Read one graph edge.
+- [Remove graph edge](https://stratadb.org/docs/graph/edge/remove.md): Remove a graph edge.
+- [List graphs](https://stratadb.org/docs/graph/list.md): List graph names.
+- [Read graph metadata](https://stratadb.org/docs/graph/meta.md): Read graph metadata and counts.
+- [List graph neighbors](https://stratadb.org/docs/graph/neighbors.md): List a node's neighbors.
+- [Add graph node](https://stratadb.org/docs/graph/node/add.md): Add or replace a graph node.
+- [Get graph node](https://stratadb.org/docs/graph/node/get.md): Read one graph node.
+- [List graph nodes](https://stratadb.org/docs/graph/node/list.md): List graph nodes.
+- [Remove graph node](https://stratadb.org/docs/graph/node/remove.md): Remove a graph node and its edges.
+- [List graph nodes by type](https://stratadb.org/docs/graph/nodes_by_type.md): List nodes declaring an object type.
+- [Define graph link type](https://stratadb.org/docs/graph/ontology/define_link_type.md): Define a graph link type.
+- [Define graph object type](https://stratadb.org/docs/graph/ontology/define_object_type.md): Define a graph object type.
+- [Delete graph link type](https://stratadb.org/docs/graph/ontology/delete_link_type.md): Delete a draft link type.
+- [Delete graph object type](https://stratadb.org/docs/graph/ontology/delete_object_type.md): Delete a draft object type.
+- [Freeze graph ontology](https://stratadb.org/docs/graph/ontology/freeze.md): Freeze the graph ontology.
+- [Read graph ontology](https://stratadb.org/docs/graph/ontology/get.md): Read the graph ontology.
+- [Read graph ontology summary](https://stratadb.org/docs/graph/ontology/summary.md): Read the ontology with usage counts.
+- [Sample graph nodes](https://stratadb.org/docs/graph/sample.md): Sample graph nodes.
+
+## inference
+
+- [Report model cache](https://stratadb.org/docs/inference/cache_status.md): Report loaded model cache state.
+- [Report model capabilities](https://stratadb.org/docs/inference/capability.md): Report capabilities for a model spec.
+- [Detokenize token ids](https://stratadb.org/docs/inference/detokenize.md): Detokenize token ids with a local model.
+- [Embed one or more texts](https://stratadb.org/docs/inference/embed.md): Embed one or more texts into vectors.
+- [Generate text](https://stratadb.org/docs/inference/generate.md): Generate text with an inference model.
+- [List catalog models](https://stratadb.org/docs/inference/models/list.md): List catalog inference models.
+- [List local models](https://stratadb.org/docs/inference/models/local.md): List locally downloaded inference models.
+- [Download a model](https://stratadb.org/docs/inference/models/pull.md): Download an inference model locally.
+- [Rank passages](https://stratadb.org/docs/inference/rank.md): Rank passages against a query.
+- [Tokenize text](https://stratadb.org/docs/inference/tokenize.md): Tokenize text with a local model.
+- [Unload cached models](https://stratadb.org/docs/inference/unload.md): Unload cached inference models.
+
+## json
+
+- [Batch delete JSON values](https://stratadb.org/docs/json/batch_delete.md): Delete multiple JSON documents or paths in one itemwise batch.
+- [Batch check JSON document existence](https://stratadb.org/docs/json/batch_exists.md): Check existence for multiple JSON documents.
+- [Batch get JSON values](https://stratadb.org/docs/json/batch_get.md): Read multiple JSON values by document and path.
+- [Batch set JSON values](https://stratadb.org/docs/json/batch_set.md): Set multiple JSON values in one itemwise batch.
+- [Count JSON documents](https://stratadb.org/docs/json/count.md): Count visible JSON documents.
+- [Delete JSON value](https://stratadb.org/docs/json/delete.md): Delete a whole JSON document or one path inside it.
+- [Check JSON document existence](https://stratadb.org/docs/json/exists.md): Check whether one JSON document exists.
+- [Get JSON value](https://stratadb.org/docs/json/get.md): Read the current or historical JSON value at a document path.
+- [Read JSON document history](https://stratadb.org/docs/json/history.md): Read retained version history for one JSON document.
+- [Create JSON index](https://stratadb.org/docs/json/index/create.md): Create a JSON secondary index on a field path.
+- [Drop JSON index](https://stratadb.org/docs/json/index/drop.md): Drop a JSON secondary index by name.
+- [List JSON indexes](https://stratadb.org/docs/json/index/list.md): List JSON secondary indexes.
+- [List JSON document keys](https://stratadb.org/docs/json/list.md): List JSON document keys with optional prefix filtering.
+- [Sample JSON documents](https://stratadb.org/docs/json/sample.md): Sample visible JSON documents.
+- [Scan JSON documents](https://stratadb.org/docs/json/scan.md): Scan JSON documents with values and version facts.
+- [Set JSON value](https://stratadb.org/docs/json/set.md): Set a JSON value at a document path, creating the document when missing.
+
+## kv
+
+- [Batch delete KV values](https://stratadb.org/docs/kv/batch_delete.md): Delete multiple KV keys in one itemwise batch.
+- [Batch check KV existence](https://stratadb.org/docs/kv/batch_exists.md): Check existence for multiple KV keys.
+- [Batch get KV values](https://stratadb.org/docs/kv/batch_get.md): Read multiple KV values by key.
+- [Batch put KV values](https://stratadb.org/docs/kv/batch_put.md): Store multiple KV values in one itemwise batch.
+- [Count KV keys](https://stratadb.org/docs/kv/count.md): Count visible KV keys.
+- [Delete KV value](https://stratadb.org/docs/kv/delete.md): Delete one visible KV key.
+- [Check KV existence](https://stratadb.org/docs/kv/exists.md): Check whether one KV key exists.
+- [Get KV value](https://stratadb.org/docs/kv/get.md): Read the current or historical value for one KV key.
+- [Read KV history](https://stratadb.org/docs/kv/history.md): Read retained version history for one KV key.
+- [List KV keys](https://stratadb.org/docs/kv/list.md): List KV keys with optional prefix filtering.
+- [Put KV value](https://stratadb.org/docs/kv/put.md): Store or replace a KV value by key.
+- [Sample KV rows](https://stratadb.org/docs/kv/sample.md): Sample visible KV rows.
+- [Scan KV rows](https://stratadb.org/docs/kv/scan.md): Scan KV rows with values and version facts.
+
+## space
+
+- [Create product space](https://stratadb.org/docs/space/create.md): Create a product space on a branch.
+- [Delete product space](https://stratadb.org/docs/space/delete.md): Delete a product space from a branch.
+- [Check product space existence](https://stratadb.org/docs/space/exists.md): Check whether a product space exists on a branch.
+- [List product spaces](https://stratadb.org/docs/space/list.md): List product spaces on a branch.
+
+## vector
+
+- [Batch delete vectors](https://stratadb.org/docs/vector/batch_delete.md): Delete multiple vectors by key.
+- [Batch check vector existence](https://stratadb.org/docs/vector/batch_exists.md): Check existence for multiple vector keys.
+- [Batch get vectors](https://stratadb.org/docs/vector/batch_get.md): Read multiple vectors by key.
+- [Batch upsert vectors](https://stratadb.org/docs/vector/batch_upsert.md): Upsert multiple vectors in one itemwise batch.
+- [Create vector collection](https://stratadb.org/docs/vector/collection/create.md): Create a vector collection with a dimension and metric.
+- [Delete vector collection](https://stratadb.org/docs/vector/collection/delete.md): Delete a vector collection.
+- [List vector collections](https://stratadb.org/docs/vector/collection/list.md): List vector collections.
+- [Read vector collection stats](https://stratadb.org/docs/vector/collection/stats.md): Read facts for one vector collection.
+- [Count vectors](https://stratadb.org/docs/vector/count.md): Count visible vectors in a collection.
+- [Delete vector](https://stratadb.org/docs/vector/delete.md): Delete one vector key.
+- [Delete all vectors](https://stratadb.org/docs/vector/delete_all.md): Delete all vectors in a collection.
+- [Delete vectors by filter](https://stratadb.org/docs/vector/delete_by_filter.md): Delete vectors matching a metadata filter.
+- [Check vector existence](https://stratadb.org/docs/vector/exists.md): Check whether one vector key exists.
+- [Get vector](https://stratadb.org/docs/vector/get.md): Read one vector by key.
+- [Read vector history](https://stratadb.org/docs/vector/history.md): Read retained vector history for one key.
+- [Query vector index](https://stratadb.org/docs/vector/index/query.md): Search vectors and return index diagnostics.
+- [List vector keys](https://stratadb.org/docs/vector/keys.md): List vector keys in a collection.
+- [Update vector metadata](https://stratadb.org/docs/vector/metadata/update.md): Patch metadata for one vector.
+- [Query vectors](https://stratadb.org/docs/vector/query.md): Search a vector collection.
+- [Sample vectors](https://stratadb.org/docs/vector/sample.md): Sample vectors with values and version facts.
+- [Scan vectors](https://stratadb.org/docs/vector/scan.md): Scan vectors with values and version facts.
+- [Upsert vector](https://stratadb.org/docs/vector/upsert.md): Insert or replace one vector.

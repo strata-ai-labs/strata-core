@@ -1,0 +1,27 @@
+---
+title: "Ping database"
+description: "Check that the database handle is live."
+source: strata-core@1.0.0
+section: admin
+---
+
+Lightweight liveness check. Returns the engine package version without touching branches, spaces, or primitive data. Use it to confirm the handle is open and responsive before issuing heavier commands.
+
+Status commands return a scalar or compact status payload and do not mutate database state.
+
+## Parameters
+
+_No parameters._
+
+## Returns
+
+`StatusResponse<PingInfo>`.
+
+## Errors
+
+- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
+
+## Invocation
+
+- CLI: `strata ping`
+- Wire type: `ping`

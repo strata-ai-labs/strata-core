@@ -11,6 +11,7 @@ use thiserror::Error;
 
 use crate::{public_error_code_entries, Command, Output};
 
+mod docs;
 mod schemas;
 mod verify;
 
@@ -105,6 +106,14 @@ pub enum IdlError {
         "{path} is stale; run `cargo run -p strata-executor --features idl-tooling --bin strata-idl -- generate-cli`"
     )]
     CliStale {
+        /// Generated file path.
+        path: PathBuf,
+    },
+    /// Generated reference documentation is stale.
+    #[error(
+        "{path} is stale; run `cargo run -p strata-executor --features idl-tooling --bin strata-idl -- generate-docs`"
+    )]
+    DocsStale {
         /// Generated file path.
         path: PathBuf,
     },
@@ -861,6 +870,17 @@ pub fn generate_cli(repo_root: &Path) -> Result<()> {
 pub fn verify_fixtures(repo_root: &Path, update: bool) -> Result<Vec<PathBuf>> {
     let index = resolve_index(repo_root)?;
     verify::verify_fixtures(repo_root, &index, update)
+}
+
+/// Generates the reference documentation tree under `generated/docs/`
+/// (per-command pages, per-family indexes, and `llms.txt`) from the IDL.
+pub fn generate_docs(repo_root: &Path) -> Result<()> {
+    docs::generate_docs(repo_root)
+}
+
+/// Checks whether the generated reference documentation tree is fresh.
+pub fn check_docs(repo_root: &Path) -> Result<()> {
+    docs::check_docs(repo_root)
 }
 
 /// Checks whether the generated CLI command metadata is fresh.

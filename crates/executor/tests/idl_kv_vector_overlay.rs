@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 
 use strata_executor::idl_tooling::{
-    check, check_cli, default_repo_root, resolve_cli_index, resolve_default_cli_index,
+    check, check_cli, check_docs, default_repo_root, resolve_cli_index, resolve_default_cli_index,
     resolve_default_index, resolve_default_schemas, to_generated_cli_json, to_generated_json,
 };
 
@@ -434,6 +434,45 @@ fn generated_cli_command_index_is_fresh_and_deterministic() {
         .join("cli-command-index.json");
     let checked_in = fs::read_to_string(path).expect("generated CLI file is readable");
     assert_eq!(generated, checked_in);
+}
+
+#[test]
+fn generated_reference_docs_are_fresh_and_complete() {
+    let root = default_repo_root();
+    // Drift guard: every rendered page matches on disk and no stale file lingers.
+    check_docs(&root).expect("generated reference docs are fresh");
+
+    // Coverage: reference generation is total over the catalog, so every
+    // command must have a page at its `docs` URL, plus a per-family index and
+    // the machine-layer `llms.txt`.
+    let index = resolve_default_index().expect("IDL resolves");
+    let docs_dir = root.join("crates/executor/idl/v1/generated/docs");
+    let mut families = BTreeSet::new();
+    for command in &index.commands {
+        let rel = command
+            .docs
+            .strip_prefix("/docs/")
+            .expect("docs path is under /docs/");
+        let page = docs_dir.join(format!("{rel}.md"));
+        assert!(
+            page.is_file(),
+            "missing generated reference page for `{}` at {}",
+            command.id,
+            page.display()
+        );
+        families.insert(command.family.clone());
+    }
+    for family in &families {
+        let family_index = docs_dir.join(family).join("index.md");
+        assert!(
+            family_index.is_file(),
+            "missing generated family index for `{family}`"
+        );
+    }
+    assert!(
+        docs_dir.join("llms.txt").is_file(),
+        "missing generated llms.txt"
+    );
 }
 
 #[test]
