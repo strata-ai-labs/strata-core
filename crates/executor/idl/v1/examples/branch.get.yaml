@@ -1,0 +1,7 @@
+caption: Read one branch by name.
+steps:
+  - call: branch.create
+    args: { branch: feature }
+  - call: branch.get
+    args: { branch: feature }
+    returns: feature

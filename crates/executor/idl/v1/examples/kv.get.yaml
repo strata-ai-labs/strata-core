@@ -1,0 +1,10 @@
+caption: Read a value back; a missing key returns nothing.
+steps:
+  - call: kv.put
+    args: { key: greeting, value: hello }
+  - call: kv.get
+    args: { key: greeting }
+    returns: hello
+  - call: kv.get
+    args: { key: absent }
+    returns: null

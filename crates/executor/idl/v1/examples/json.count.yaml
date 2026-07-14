@@ -1,0 +1,9 @@
+caption: Count stored documents.
+steps:
+  - call: json.set
+    args: { key: a, path: "$", value: { v: 1 } }
+  - call: json.set
+    args: { key: b, path: "$", value: { v: 2 } }
+  - call: json.count
+    args: {}
+    returns: 2

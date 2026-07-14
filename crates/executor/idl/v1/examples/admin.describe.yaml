@@ -1,0 +1,5 @@
+caption: Describe the database.
+steps:
+  - call: admin.describe
+    args: {}
+    returns: default

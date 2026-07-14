@@ -1,0 +1,12 @@
+caption: Check existence for many keys at once.
+steps:
+  - call: vector.collection.create
+    args: { collection: docs, dimension: 3, metric: cosine }
+  - call: vector.batch_upsert
+    args:
+      collection: docs
+      entries:
+        - { key: a, vector: [1.0, 0.0, 0.0] }
+  - call: vector.batch_exists
+    args: { collection: docs, keys: [a, missing] }
+    returns: [true, false]

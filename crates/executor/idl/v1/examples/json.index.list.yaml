@@ -1,0 +1,7 @@
+caption: List secondary indexes.
+steps:
+  - call: json.index.create
+    args: { name: by_name, field_path: "$.name", index_type: tag }
+  - call: json.index.list
+    args: {}
+    returns: ["by_name"]

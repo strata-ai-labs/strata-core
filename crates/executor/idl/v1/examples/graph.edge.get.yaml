@@ -1,0 +1,16 @@
+caption: Read an edge, or nothing if absent.
+steps:
+  - call: graph.create
+    args: { graph: social }
+  - call: graph.node.add
+    args: { graph: social, node_id: alice }
+  - call: graph.node.add
+    args: { graph: social, node_id: bob }
+  - call: graph.edge.add
+    args: { graph: social, src: alice, edge_type: knows, dst: bob }
+  - call: graph.edge.get
+    args: { graph: social, src: alice, edge_type: knows, dst: bob }
+    returns: knows
+  - call: graph.edge.get
+    args: { graph: social, src: alice, edge_type: knows, dst: absent }
+    returns: null

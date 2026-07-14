@@ -1,0 +1,7 @@
+caption: List branches.
+steps:
+  - call: branch.create
+    args: { branch: feature }
+  - call: branch.list
+    args: {}
+    returns: ["default", "feature"]

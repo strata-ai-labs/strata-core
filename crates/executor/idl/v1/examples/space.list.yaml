@@ -1,0 +1,7 @@
+caption: List product spaces.
+steps:
+  - call: space.create
+    args: { space: app }
+  - call: space.list
+    args: {}
+    returns: ["app", "default"]

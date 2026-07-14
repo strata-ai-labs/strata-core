@@ -1,0 +1,7 @@
+caption: A key that never existed has no history.
+steps:
+  - call: vector.collection.create
+    args: { collection: docs, dimension: 3, metric: cosine }
+  - call: vector.history
+    args: { collection: docs, key: absent }
+    returns: null

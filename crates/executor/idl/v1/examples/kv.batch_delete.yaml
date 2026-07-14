@@ -1,0 +1,12 @@
+caption: Delete many keys in one commit.
+steps:
+  - call: kv.batch_put
+    args:
+      entries:
+        - { key: a, value: "1" }
+        - { key: b, value: "2" }
+  - call: kv.batch_delete
+    args: { keys: [a, b] }
+  - call: kv.batch_exists
+    args: { keys: [a, b] }
+    returns: [false, false]

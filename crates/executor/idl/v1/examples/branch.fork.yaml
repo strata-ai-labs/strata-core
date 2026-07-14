@@ -1,0 +1,7 @@
+caption: Fork a branch from another branch's head.
+steps:
+  - call: branch.fork
+    args: { source: default, branch: experiment }
+  - call: branch.list
+    args: {}
+    returns: ["default", "experiment"]

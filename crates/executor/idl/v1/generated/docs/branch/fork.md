@@ -1,0 +1,55 @@
+---
+title: "Fork branch from current head"
+description: "Fork a new branch from the current head of a source branch."
+source: strata-core@1.0.0
+section: branch
+---
+
+Forks a new branch from the source branch's current head. The new branch sees all data visible on the source at fork time; later writes on either branch stay isolated. The returned branch summary records the parent name, fork version, and generation.
+
+On the CLI, all three fork commands share the single verb `strata branch fork <SOURCE> <BRANCH>`: with no flags it runs this command, while `--version` routes to `branch.fork_at_version` and `--timestamp` routes to `branch.fork_at_timestamp` (both wire-surface commands).
+
+Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
+
+## Examples
+
+Fork a branch from another branch's head.
+
+### CLI
+
+```console
+$ strata branch fork default experiment
+$ strata branch list
+```
+
+### Wire
+
+```json
+{"branch":"experiment","source":"default","type":"branch_fork_current"}
+{"type":"branch_list"}
+```
+
+## Parameters
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `source` | `string` | yes | Source branch name. |
+
+Plus the optional scope: `branch` and `space` (default to the session branch and the `"default"` space).
+
+## Returns
+
+`MutationAck<BranchItem>`.
+
+## Errors
+
+- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
+- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
+- [`invalid_argument.engine.branch_name`](https://stratadb.org/e/invalid_argument.engine.branch_name)
+- [`invalid_argument.engine.branch_name_reserved`](https://stratadb.org/e/invalid_argument.engine.branch_name_reserved)
+- [`already_exists.engine.branch`](https://stratadb.org/e/already_exists.engine.branch)
+
+## Invocation
+
+- CLI: `strata branch fork`
+- Wire type: `branch_fork_current`

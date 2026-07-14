@@ -1,0 +1,13 @@
+caption: Write many documents in one commit.
+steps:
+  - call: json.batch_set
+    args:
+      entries:
+        - { key: a, path: "$", value: { v: 1 } }
+        - { key: b, path: "$", value: { v: 2 } }
+  - call: json.batch_get
+    args:
+      entries:
+        - { key: a, path: "$" }
+        - { key: b, path: "$" }
+    returns: [ { v: 1 }, { v: 2 } ]

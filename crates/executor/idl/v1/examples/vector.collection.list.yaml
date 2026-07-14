@@ -1,0 +1,7 @@
+caption: List vector collections.
+steps:
+  - call: vector.collection.create
+    args: { collection: docs, dimension: 3, metric: cosine }
+  - call: vector.collection.list
+    args: {}
+    returns: ["docs"]

@@ -1,0 +1,12 @@
+caption: Read a stored vector, or nothing if the key is absent.
+steps:
+  - call: vector.collection.create
+    args: { collection: docs, dimension: 3, metric: cosine }
+  - call: vector.upsert
+    args: { collection: docs, key: a, vector: [1.0, 0.0, 0.0] }
+  - call: vector.get
+    args: { collection: docs, key: a }
+    returns: a
+  - call: vector.get
+    args: { collection: docs, key: absent }
+    returns: null

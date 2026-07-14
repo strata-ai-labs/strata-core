@@ -1,0 +1,19 @@
+# Shrink-only example-coverage allowlist. Every command must have
+# idl/v1/examples/<id>.yaml OR appear in exactly one list below. A listed
+# command that gains an example must be removed (both lists only shrink).
+#
+# uncovered:    a hermetic cache-mode example is possible but not yet written.
+# non_hermetic: covered by a gated integration test or reference-only, because a
+#               cache-mode replay cannot supply the resource (hub, model, API
+#               key, network, machine disk). Not pending — see each reason.
+uncovered: []                  # empty — every hermetic-possible command is covered
+
+non_hermetic:
+  - admin.hub_clone            # network + hub — Strata.clone, tests/test_hub_clone.py
+  - inference.generate         # local model or cloud key — tests/test_inference_local.py
+  - inference.embed            # local model or cloud key — tests/test_inference_local.py
+  - inference.rank             # reranker model or cloud key
+  - inference.tokenize         # local model — tests/test_inference_local.py
+  - inference.detokenize       # local model — tests/test_inference_local.py
+  - inference.models.local     # machine-specific on-disk model state
+  - inference.models.pull      # network download

@@ -1,0 +1,13 @@
+caption: Read a whole document, a value at a JSON path, or nothing.
+steps:
+  - call: json.set
+    args: { key: user, path: "$", value: { name: alice, age: 30 } }
+  - call: json.get
+    args: { key: user, path: "$" }
+    returns: { name: alice, age: 30 }
+  - call: json.get
+    args: { key: user, path: "$.name" }
+    returns: alice
+  - call: json.get
+    args: { key: absent, path: "$" }
+    returns: null

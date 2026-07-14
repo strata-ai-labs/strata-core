@@ -1,0 +1,11 @@
+caption: Nearest-neighbor search that also returns index diagnostics.
+steps:
+  - call: vector.collection.create
+    args: { collection: docs, dimension: 3, metric: cosine }
+  - call: vector.upsert
+    args: { collection: docs, key: a, vector: [1.0, 0.0, 0.0] }
+  - call: vector.upsert
+    args: { collection: docs, key: b, vector: [0.0, 1.0, 0.0] }
+  - call: vector.index.query
+    args: { collection: docs, query: [1.0, 0.0, 0.0], k: 2 }
+    returns: ["a", "b"]

@@ -1,0 +1,5 @@
+caption: Read sanitized configuration facts.
+steps:
+  - call: admin.config
+    args: {}
+    returns: default

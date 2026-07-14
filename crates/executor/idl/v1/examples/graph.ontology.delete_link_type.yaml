@@ -1,0 +1,10 @@
+caption: Remove a link type from the ontology.
+steps:
+  - call: graph.create
+    args: { graph: g }
+  - call: graph.ontology.define_object_type
+    args: { graph: g, name: person }
+  - call: graph.ontology.define_link_type
+    args: { graph: g, name: knows, source: person, target: person }
+  - call: graph.ontology.delete_link_type
+    args: { graph: g, name: knows }

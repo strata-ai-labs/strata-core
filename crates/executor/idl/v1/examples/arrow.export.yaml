@@ -1,0 +1,14 @@
+caption: Export a primitive to a Parquet file, then import it back.
+steps:
+  - call: kv.put
+    args: { key: greeting, value: hello }
+  - call: arrow.export
+    args: { primitive: kv, format: parquet, path: "{tmpdir}/kv.parquet" }
+    note: One file per primitive; Parquet by default.
+  - call: kv.delete
+    args: { key: greeting }
+  - call: arrow.import
+    args: { file_path: "{tmpdir}/kv.parquet", target: kv }
+  - call: kv.get
+    args: { key: greeting }
+    returns: hello

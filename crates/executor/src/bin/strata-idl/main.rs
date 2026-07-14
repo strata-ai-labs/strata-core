@@ -8,7 +8,7 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let Some(command) = env::args().nth(1) else {
         eprintln!(
-            "usage: cargo run -p strata-executor --features idl-tooling --bin strata-idl -- <generate|check|generate-cli|check-cli|verify-fixtures [--update]>"
+            "usage: cargo run -p strata-executor --features idl-tooling --bin strata-idl -- <generate|check|generate-cli|check-cli|generate-docs|check-docs|verify-examples|verify-fixtures [--update]>"
         );
         return ExitCode::from(2);
     };
@@ -19,6 +19,9 @@ fn main() -> ExitCode {
         "check" => strata_executor::idl_tooling::check(&root),
         "generate-cli" => strata_executor::idl_tooling::generate_cli(&root),
         "check-cli" => strata_executor::idl_tooling::check_cli(&root),
+        "generate-docs" => strata_executor::idl_tooling::generate_docs(&root),
+        "check-docs" => strata_executor::idl_tooling::check_docs(&root),
+        "verify-examples" => strata_executor::idl_tooling::verify_examples(&root),
         "verify-fixtures" => {
             let update = env::args().nth(2).is_some_and(|flag| flag == "--update");
             strata_executor::idl_tooling::verify_fixtures(&root, update).map(|blessed| {

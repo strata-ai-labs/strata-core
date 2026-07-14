@@ -256,3 +256,24 @@ fn run_repo_init(apply: bool) -> Result<Value, CliError> {
         }
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Consistency guard: the generated CLI agent guide has a catalog section
+    /// for every command family, so a family cannot silently drop out of the
+    /// guide an agent reads (mirrors the SDK-side agent-guide coverage guard).
+    #[test]
+    fn guide_covers_every_catalog_family() {
+        let guide = guide_markdown().expect("agent guide renders");
+        let catalog = catalog().expect("embedded catalog resolves");
+        for family in catalog.families() {
+            assert!(
+                guide.contains(&format!("### {}", family.id)),
+                "agent guide is missing the section for family `{}`",
+                family.id
+            );
+        }
+    }
+}

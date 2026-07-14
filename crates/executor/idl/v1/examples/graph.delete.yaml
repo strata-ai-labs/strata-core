@@ -1,0 +1,9 @@
+caption: Delete a graph.
+steps:
+  - call: graph.create
+    args: { graph: temp }
+  - call: graph.delete
+    args: { graph: temp }
+  - call: graph.list
+    args: {}
+    returns: []

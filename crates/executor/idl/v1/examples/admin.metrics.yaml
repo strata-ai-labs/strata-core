@@ -1,0 +1,5 @@
+caption: Read lightweight database metrics.
+steps:
+  - call: admin.metrics
+    args: {}
+    returns: 1

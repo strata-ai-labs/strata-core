@@ -1,0 +1,7 @@
+caption: Verify the integrity of the event hash chain.
+steps:
+  - call: event.append
+    args: { event_type: user.created, payload: { id: 1 } }
+  - call: event.verify_chain
+    args: {}
+    returns: true

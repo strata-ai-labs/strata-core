@@ -1,0 +1,11 @@
+caption: List node ids in a graph, in id order.
+steps:
+  - call: graph.create
+    args: { graph: social }
+  - call: graph.node.add
+    args: { graph: social, node_id: alice }
+  - call: graph.node.add
+    args: { graph: social, node_id: bob }
+  - call: graph.node.list
+    args: { graph: social }
+    returns: ["alice", "bob"]

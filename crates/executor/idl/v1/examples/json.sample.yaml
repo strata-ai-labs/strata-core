@@ -1,0 +1,11 @@
+caption: A representative sample plus the total population size.
+steps:
+  - call: json.batch_set
+    args:
+      entries:
+        - { key: a, path: "$", value: { v: 1 } }
+        - { key: b, path: "$", value: { v: 2 } }
+        - { key: c, path: "$", value: { v: 3 } }
+  - call: json.sample
+    args: {}
+    returns: 3

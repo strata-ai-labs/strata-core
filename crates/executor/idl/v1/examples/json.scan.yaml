@@ -1,0 +1,10 @@
+caption: Scan documents from the start, in key order.
+steps:
+  - call: json.batch_set
+    args:
+      entries:
+        - { key: a, path: "$", value: { v: 1 } }
+        - { key: b, path: "$", value: { v: 2 } }
+  - call: json.scan
+    args: {}
+    returns: ["a", "b"]

@@ -1,0 +1,13 @@
+caption: Find a node's neighbors along outgoing edges.
+steps:
+  - call: graph.create
+    args: { graph: social }
+  - call: graph.node.add
+    args: { graph: social, node_id: alice }
+  - call: graph.node.add
+    args: { graph: social, node_id: bob }
+  - call: graph.edge.add
+    args: { graph: social, src: alice, edge_type: knows, dst: bob }
+  - call: graph.neighbors
+    args: { graph: social, node_id: alice, direction: outgoing }
+    returns: ["bob"]

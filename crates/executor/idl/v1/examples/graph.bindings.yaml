@@ -1,0 +1,14 @@
+caption: List graph nodes bound to a product entity.
+steps:
+  - call: graph.create
+    args: { graph: kb }
+  - call: graph.node.add
+    args:
+      graph: kb
+      node_id: ada
+      binding: { target: { primitive: kv, space: default, key: "user:1" } }
+    note: Bind the node to a KV entity so retrieval can cross primitives.
+  - call: graph.bindings
+    args:
+      target: { primitive: kv, space: default, key: "user:1" }
+    returns: ["ada"]

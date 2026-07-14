@@ -1,0 +1,12 @@
+caption: Define a link (edge) type between two object types.
+steps:
+  - call: graph.create
+    args: { graph: g }
+  - call: graph.ontology.define_object_type
+    args: { graph: g, name: person }
+  - call: graph.ontology.define_link_type
+    args: { graph: g, name: knows, source: person, target: person }
+  - call: graph.ontology.get
+    args: { graph: g }
+    expr: "[l.name for l in {}.link_types]"
+    returns: ["knows"]

@@ -35,6 +35,7 @@ core
 6. **Engineering standards** — `docs/architecture/v1-engineering-standards.md`
 7. **Error contract** — `docs/architecture/v1-error-and-diagnostics-contract.md`
 8. **Storage format spec** — `docs/spec/strata-storage-format-v1.md`
+9. **Adding/changing a command** — `crates/executor/idl/v1/README.md` (the IDL runbook: authored files, regenerate/verify sequence, coverage guards, SDK wiring)
 
 Architecture docs are authoritative. This file restates only the hard invariants needed during slice work — when in doubt, the contract wins.
 

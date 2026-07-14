@@ -1,0 +1,7 @@
+caption: Store a JSON document, then read it back.
+steps:
+  - call: json.set
+    args: { key: user, path: "$", value: { name: alice, age: 30 } }
+  - call: json.get
+    args: { key: user, path: "$" }
+    returns: { name: alice, age: 30 }

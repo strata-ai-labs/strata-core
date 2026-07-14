@@ -1,0 +1,11 @@
+caption: A representative sample plus the total population size.
+steps:
+  - call: kv.batch_put
+    args:
+      entries:
+        - { key: a, value: "1" }
+        - { key: b, value: "2" }
+        - { key: c, value: "3" }
+  - call: kv.sample
+    args: {}
+    returns: 3

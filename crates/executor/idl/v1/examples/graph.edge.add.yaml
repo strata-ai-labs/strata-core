@@ -1,0 +1,13 @@
+caption: Add a typed edge between two nodes.
+steps:
+  - call: graph.create
+    args: { graph: social }
+  - call: graph.node.add
+    args: { graph: social, node_id: alice }
+  - call: graph.node.add
+    args: { graph: social, node_id: bob }
+  - call: graph.edge.add
+    args: { graph: social, src: alice, edge_type: knows, dst: bob }
+  - call: graph.edge.get
+    args: { graph: social, src: alice, edge_type: knows, dst: bob }
+    returns: knows

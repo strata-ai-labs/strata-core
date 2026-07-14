@@ -1,0 +1,15 @@
+caption: Apply several node and edge mutations in one atomic commit.
+steps:
+  - call: graph.create
+    args: { graph: g }
+  - call: graph.batch_write
+    args:
+      graph: g
+      operations:
+        - { type: upsert_node, node_id: a, data: { object_type: person } }
+        - { type: upsert_node, node_id: b, data: { object_type: person } }
+        - { type: upsert_edge, src: a, edge_type: knows, dst: b, data: {} }
+    note: All operations land in one engine commit, or none do.
+  - call: graph.meta
+    args: { graph: g }
+    returns: 2

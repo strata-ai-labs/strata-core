@@ -1,0 +1,10 @@
+caption: Read an event by its sequence number.
+steps:
+  - call: event.append
+    args: { event_type: user.created, payload: { id: 1 } }
+  - call: event.get
+    args: { sequence: 0 }
+    returns: { id: 1 }
+  - call: event.get
+    args: { sequence: 999 }
+    returns: null

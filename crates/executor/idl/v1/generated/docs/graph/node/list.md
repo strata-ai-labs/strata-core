@@ -1,0 +1,62 @@
+---
+title: "List graph nodes"
+description: "List graph nodes."
+source: strata-core@1.0.0
+section: graph
+---
+
+Lists a graph's nodes in node-id order. Accepts an optional id prefix filter, an item limit (default 100), an exclusive cursor, and `as_of` for time travel. Each item carries the full node payload: properties, declared type, binding, and commit coordinates.
+
+Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
+
+## Examples
+
+List node ids in a graph, in id order.
+
+### CLI
+
+```console
+$ strata graph create social
+$ strata graph add-node social alice
+$ strata graph add-node social bob
+$ strata graph list-nodes social
+```
+
+### Wire
+
+```json
+{"graph":"social","type":"graph_create"}
+{"graph":"social","node_id":"alice","type":"graph_add_node"}
+{"graph":"social","node_id":"bob","type":"graph_add_node"}
+{"graph":"social","type":"graph_list_nodes"}
+```
+
+## Parameters
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `as_of` | `integer` | no | Optional timestamp in microseconds. Reads the graph state visible at that instant. |
+| `cursor` | `string` | no | Optional exclusive node id cursor. |
+| `graph` | `string` | yes | Graph name. |
+| `limit` | `integer` | no | Optional item limit. Defaults to 100. |
+| `prefix` | `string` | no | Optional node id prefix. |
+
+Plus the optional scope: `branch` and `space` (default to the session branch and the `"default"` space).
+
+## Returns
+
+`Page<GraphNodeDataOutput, String>`.
+
+## Errors
+
+- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
+- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
+- [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space)
+- [`invalid_argument.engine.graph_name`](https://stratadb.org/e/invalid_argument.engine.graph_name)
+- [`not_found.engine.graph`](https://stratadb.org/e/not_found.engine.graph)
+- [`invalid_argument.engine.graph_node_id`](https://stratadb.org/e/invalid_argument.engine.graph_node_id)
+
+## Invocation
+
+- CLI: `strata graph list-nodes`
+- Wire type: `graph_list_nodes`

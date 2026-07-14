@@ -1,0 +1,15 @@
+caption: Insert many nodes and edges in one commit.
+steps:
+  - call: graph.create
+    args: { graph: g }
+  - call: graph.bulk_insert
+    args:
+      graph: g
+      nodes:
+        - { node_id: a, object_type: person }
+        - { node_id: b, object_type: person }
+      edges:
+        - { src: a, edge_type: knows, dst: b }
+  - call: graph.meta
+    args: { graph: g }
+    returns: 2

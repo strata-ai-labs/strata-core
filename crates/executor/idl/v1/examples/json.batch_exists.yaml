@@ -1,0 +1,9 @@
+caption: Check existence for many document keys at once.
+steps:
+  - call: json.batch_set
+    args:
+      entries:
+        - { key: a, path: "$", value: { v: 1 } }
+  - call: json.batch_exists
+    args: { keys: [a, missing] }
+    returns: [true, false]

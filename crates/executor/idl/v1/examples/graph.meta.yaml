@@ -1,0 +1,11 @@
+caption: Read a graph's node and edge counts.
+steps:
+  - call: graph.create
+    args: { graph: social }
+  - call: graph.node.add
+    args: { graph: social, node_id: alice }
+  - call: graph.node.add
+    args: { graph: social, node_id: bob }
+  - call: graph.meta
+    args: { graph: social }
+    returns: 2

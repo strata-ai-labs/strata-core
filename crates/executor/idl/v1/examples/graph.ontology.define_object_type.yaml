@@ -1,0 +1,9 @@
+caption: Define an object (node) type.
+steps:
+  - call: graph.create
+    args: { graph: g }
+  - call: graph.ontology.define_object_type
+    args: { graph: g, name: person }
+  - call: graph.ontology.summary
+    args: { graph: g }
+    returns: ["person"]

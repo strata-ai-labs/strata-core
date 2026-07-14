@@ -1,0 +1,9 @@
+caption: Drop a secondary index.
+steps:
+  - call: json.index.create
+    args: { name: by_name, field_path: "$.name", index_type: tag }
+  - call: json.index.drop
+    args: { name: by_name }
+  - call: json.index.list
+    args: {}
+    returns: []

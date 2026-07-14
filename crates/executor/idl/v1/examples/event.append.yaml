@@ -1,0 +1,7 @@
+caption: Append an event to the log.
+steps:
+  - call: event.append
+    args: { event_type: user.created, payload: { id: 1 } }
+  - call: event.count
+    args: {}
+    returns: 1

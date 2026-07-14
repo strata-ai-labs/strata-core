@@ -1,0 +1,17 @@
+caption: Cascade-delete graph facts bound to an entity.
+steps:
+  - call: graph.create
+    args: { graph: kb }
+  - call: graph.node.add
+    args:
+      graph: kb
+      node_id: ada
+      binding: { target: { primitive: kv, space: default, key: "user:1" } }
+  - call: graph.apply_delete_policy
+    args:
+      target: { primitive: kv, space: default, key: "user:1" }
+      policy: cascade
+    note: cascade removes the bound node and its incident edges.
+  - call: graph.node.get
+    args: { graph: kb, node_id: ada }
+    returns: null

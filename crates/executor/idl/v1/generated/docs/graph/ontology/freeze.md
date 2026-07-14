@@ -1,0 +1,59 @@
+---
+title: "Freeze graph ontology"
+description: "Freeze the graph ontology."
+source: strata-core@1.0.0
+section: graph
+---
+
+Validates the draft ontology and freezes it. Validation requires at least one declared type and rejects link types whose source or target reference undeclared object types (`failed_precondition.engine.graph_ontology_freeze`). After freezing, writes enforce declared node object types, required properties, and link-type endpoint rules; the ontology itself can no longer change (`failed_precondition.engine.graph_ontology_frozen`).
+
+Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
+
+## Examples
+
+Freeze the ontology so its types can no longer change.
+
+### CLI
+
+```console
+$ strata graph create g
+$ strata graph ontology define-object-type g person
+$ strata graph ontology freeze g
+$ strata graph ontology get g
+```
+
+### Wire
+
+```json
+{"graph":"g","type":"graph_create"}
+{"graph":"g","name":"person","type":"graph_define_object_type"}
+{"graph":"g","type":"graph_freeze_ontology"}
+{"graph":"g","type":"graph_get_ontology"}
+```
+
+## Parameters
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `graph` | `string` | yes | Graph name. |
+
+Plus the optional scope: `branch` and `space` (default to the session branch and the `"default"` space).
+
+## Returns
+
+`MutationAck<GraphOntologyFreeze>`.
+
+## Errors
+
+- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
+- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
+- [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space)
+- [`invalid_argument.engine.graph_name`](https://stratadb.org/e/invalid_argument.engine.graph_name)
+- [`not_found.engine.graph`](https://stratadb.org/e/not_found.engine.graph)
+- [`failed_precondition.engine.graph_ontology_freeze`](https://stratadb.org/e/failed_precondition.engine.graph_ontology_freeze)
+- [`failed_precondition.engine.graph_ontology_frozen`](https://stratadb.org/e/failed_precondition.engine.graph_ontology_frozen)
+
+## Invocation
+
+- CLI: `strata graph ontology freeze`
+- Wire type: `graph_freeze_ontology`

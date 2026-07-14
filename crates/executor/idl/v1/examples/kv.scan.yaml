@@ -1,0 +1,10 @@
+caption: Scan full rows from the start, in key order.
+steps:
+  - call: kv.batch_put
+    args:
+      entries:
+        - { key: a, value: "1" }
+        - { key: b, value: "2" }
+  - call: kv.scan
+    args: {}
+    returns: ["a", "b"]

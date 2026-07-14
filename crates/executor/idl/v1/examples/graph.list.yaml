@@ -1,0 +1,7 @@
+caption: List graphs.
+steps:
+  - call: graph.create
+    args: { graph: social }
+  - call: graph.list
+    args: {}
+    returns: ["social"]

@@ -1,0 +1,13 @@
+# Canonical example for kv.put. Language-neutral step list; the docs
+# generator renders it to CLI + wire, and the SDKs render it to their own
+# calls. `verify-examples` replays it against a scratch cache executor.
+caption: Store a value, then replace it.
+steps:
+  - call: kv.put
+    args: { key: setting, value: "v1" }
+  - call: kv.put
+    args: { key: setting, value: "v2" }
+    note: replaces the visible value
+  - call: kv.get
+    args: { key: setting }
+    returns: "v2"

@@ -1,0 +1,10 @@
+caption: Check whether an event sequence exists.
+steps:
+  - call: event.append
+    args: { event_type: user.created, payload: { id: 1 } }
+  - call: event.exists
+    args: { sequence: 0 }
+    returns: true
+  - call: event.exists
+    args: { sequence: 999 }
+    returns: false

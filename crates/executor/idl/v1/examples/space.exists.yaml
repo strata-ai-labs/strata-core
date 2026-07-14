@@ -1,0 +1,10 @@
+caption: Check whether a product space exists.
+steps:
+  - call: space.create
+    args: { space: app }
+  - call: space.exists
+    args: { space: app }
+    returns: true
+  - call: space.exists
+    args: { space: nope }
+    returns: false

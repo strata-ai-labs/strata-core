@@ -1,0 +1,11 @@
+caption: List keys under a prefix, in key order.
+steps:
+  - call: kv.batch_put
+    args:
+      entries:
+        - { key: "user:1", value: a }
+        - { key: "user:2", value: b }
+        - { key: other, value: c }
+  - call: kv.list
+    args: { prefix: "user:" }
+    returns: ["user:1", "user:2"]
