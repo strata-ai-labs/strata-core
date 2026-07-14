@@ -328,27 +328,79 @@ fn step_wire_json(id: &str, position: usize, step: &ExampleStep, schema: &Value)
                 step.call
             ))
         })?;
+    let defs = schema.get("$defs").and_then(Value::as_object);
     let mut object = Map::new();
     object.insert("type".to_owned(), Value::String(tag.to_owned()));
     for (name, value) in &step.args {
-        let encoded = encode_arg(value, props.get(name));
+        let encoded = encode_arg(value, props.get(name), defs);
         object.insert(name.clone(), encoded);
     }
     Ok(Value::Object(object))
 }
 
-/// Encodes an argument for the wire: a string bound to a `Bytes` field is
-/// base64-encoded; everything else passes through unchanged.
-fn encode_arg(value: &Value, prop: Option<&Value>) -> Value {
-    let is_bytes = prop
-        .and_then(|p| p.get("$ref"))
-        .and_then(Value::as_str)
-        .is_some_and(|reference| reference.ends_with("/Bytes"));
-    match (is_bytes, value) {
-        (true, Value::String(text)) => {
-            Value::String(base64::engine::general_purpose::STANDARD.encode(text.as_bytes()))
+/// Encodes an argument for the wire against its schema, resolving `$ref`s and
+/// recursing through arrays, objects, and `anyOf` so a `Bytes` field at any
+/// depth (e.g. `entries[].value`, `keys[]`, a nullable `prefix`) is
+/// base64-encoded. Non-`Bytes` values pass through unchanged.
+fn encode_arg(value: &Value, schema: Option<&Value>, defs: Option<&Map<String, Value>>) -> Value {
+    let Some(schema) = schema else {
+        return value.clone();
+    };
+    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+        let name = reference.rsplit('/').next().unwrap_or(reference);
+        if name == "Bytes" {
+            return match value {
+                Value::String(text) => {
+                    Value::String(base64::engine::general_purpose::STANDARD.encode(text.as_bytes()))
+                }
+                other => other.clone(),
+            };
         }
-        _ => value.clone(),
+        return match defs.and_then(|d| d.get(name)) {
+            Some(target) => encode_arg(value, Some(target), defs),
+            None => value.clone(),
+        };
+    }
+    if let Some(arms) = schema.get("anyOf").and_then(Value::as_array) {
+        for arm in arms {
+            if arm.get("type").and_then(Value::as_str) != Some("null") {
+                return encode_arg(value, Some(arm), defs);
+            }
+        }
+        return value.clone();
+    }
+    if schema_type_is(schema, "array") {
+        if let Value::Array(items) = value {
+            let item_schema = schema.get("items");
+            return Value::Array(
+                items
+                    .iter()
+                    .map(|item| encode_arg(item, item_schema, defs))
+                    .collect(),
+            );
+        }
+        return value.clone();
+    }
+    if schema_type_is(schema, "object") {
+        if let (Value::Object(object), Some(props)) =
+            (value, schema.get("properties").and_then(Value::as_object))
+        {
+            let mut out = Map::new();
+            for (key, val) in object {
+                out.insert(key.clone(), encode_arg(val, props.get(key), defs));
+            }
+            return Value::Object(out);
+        }
+        return value.clone();
+    }
+    value.clone()
+}
+
+fn schema_type_is(schema: &Value, wanted: &str) -> bool {
+    match schema.get("type") {
+        Some(Value::String(name)) => name == wanted,
+        Some(Value::Array(names)) => names.iter().any(|value| value.as_str() == Some(wanted)),
+        _ => false,
     }
 }
 
@@ -394,9 +446,17 @@ fn render_cli(
     let Some(command) = by_id.get(step.call.as_str()) else {
         return step.call.clone();
     };
+    let schema = schemas.get(&step.call);
+    // Wire-only commands have no dedicated clap verb; their CLI form is the
+    // generic command runner over the exact wire JSON.
+    if command.cli.surface != "verb" {
+        if let Some(wire) = schema.and_then(|s| step_wire_json("", 0, step, s).ok()) {
+            return format!("strata command run --command-json '{}'", compact(&wire));
+        }
+    }
     let mut tokens = vec![String::from("strata")];
     tokens.extend(command.cli.path.iter().cloned());
-    if let Some(schema) = schemas.get(&step.call) {
+    if let Some(schema) = schema {
         // Required scalars render as positionals in schema order; the rest as
         // long flags. Faithful for the seeded verb commands; broader arg-layout
         // fidelity is a later CLI-golden-runner slice.
@@ -460,8 +520,12 @@ mod tests {
     fn is_miss_reads_the_maybe_found_flag_not_a_bare_null() {
         // The canonical point-read envelope: absence is {found:false,...},
         // presence is {found:true,...} — never a bare null.
-        assert!(is_miss(&json!({"type": "kv_versioned_value", "data": {"found": false, "value": null}})));
-        assert!(!is_miss(&json!({"type": "kv_versioned_value", "data": {"found": true, "value": {}}})));
+        assert!(is_miss(
+            &json!({"type": "kv_versioned_value", "data": {"found": false, "value": null}})
+        ));
+        assert!(!is_miss(
+            &json!({"type": "kv_versioned_value", "data": {"found": true, "value": {}}})
+        ));
         // A status/scalar read (e.g. exists=false) is never a miss.
         assert!(!is_miss(&json!({"type": "kv_bool", "data": false})));
         // A bare-null data still counts as a miss.
@@ -469,15 +533,41 @@ mod tests {
     }
 
     #[test]
-    fn encode_arg_base64s_only_bytes_fields() {
-        let bytes_prop = json!({"$ref": "#/$defs/Bytes"});
+    fn encode_arg_base64s_bytes_at_any_depth() {
+        let bytes = json!({"$ref": "#/$defs/Bytes"});
+        assert_eq!(encode_arg(&json!("a1"), Some(&bytes), None), json!("YTE=")); // base64("a1")
+                                                                                 // Non-Bytes args and unknown schemas pass through unchanged.
         assert_eq!(
-            encode_arg(&json!("a1"), Some(&bytes_prop)),
-            json!("YTE=") // base64("a1")
+            encode_arg(&json!(2), Some(&json!({"type": "integer"})), None),
+            json!(2)
         );
-        // Non-Bytes args pass through unchanged.
-        assert_eq!(encode_arg(&json!(2), Some(&json!({"type": "integer"}))), json!(2));
-        assert_eq!(encode_arg(&json!("raw"), None), json!("raw"));
+        assert_eq!(encode_arg(&json!("raw"), None, None), json!("raw"));
+
+        // Array of Bytes (kv.batch_get `keys`).
+        let key_list = json!({"type": "array", "items": {"$ref": "#/$defs/Bytes"}});
+        assert_eq!(
+            encode_arg(&json!(["a1", "a1"]), Some(&key_list), None),
+            json!(["YTE=", "YTE="])
+        );
+
+        // Bytes nested in an object behind a $ref (kv.batch_put `entries`).
+        let mut defs = Map::new();
+        defs.insert(
+            "Entry".into(),
+            json!({"type": "object", "properties": {"key": {"$ref": "#/$defs/Bytes"}}}),
+        );
+        let entries = json!({"type": "array", "items": {"$ref": "#/$defs/Entry"}});
+        assert_eq!(
+            encode_arg(&json!([{"key": "a1"}]), Some(&entries), Some(&defs)),
+            json!([{"key": "YTE="}])
+        );
+
+        // Bytes inside anyOf (nullable `prefix`).
+        let nullable = json!({"anyOf": [{"$ref": "#/$defs/Bytes"}, {"type": "null"}]});
+        assert_eq!(
+            encode_arg(&json!("a1"), Some(&nullable), None),
+            json!("YTE=")
+        );
     }
 
     #[test]

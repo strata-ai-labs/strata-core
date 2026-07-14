@@ -9,6 +9,22 @@ Returns retained history rows for a KV key when history is available. Missing or
 
 Optional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.
 
+## Examples
+
+A key that never existed has no history.
+
+### CLI
+
+```console
+$ strata kv history absent
+```
+
+### Wire
+
+```json
+{"key":"YWJzZW50","type":"kv_history"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

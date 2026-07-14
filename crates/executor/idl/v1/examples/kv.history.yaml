@@ -1,0 +1,5 @@
+caption: A key that never existed has no history.
+steps:
+  - call: kv.history
+    args: { key: absent }
+    returns: null

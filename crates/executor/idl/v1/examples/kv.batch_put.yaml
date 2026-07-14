@@ -1,0 +1,10 @@
+caption: Write many entries in one commit.
+steps:
+  - call: kv.batch_put
+    args:
+      entries:
+        - { key: a, value: "1" }
+        - { key: b, value: "2" }
+  - call: kv.batch_get
+    args: { keys: [a, b] }
+    returns: ["1", "2"]

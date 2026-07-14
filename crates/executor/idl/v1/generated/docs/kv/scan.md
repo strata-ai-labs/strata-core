@@ -9,6 +9,24 @@ Scans visible KV rows starting at an optional key. Each item includes the key, v
 
 Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
 
+## Examples
+
+Scan full rows from the start, in key order.
+
+### CLI
+
+```console
+$ strata command run --command-json '{"entries":[{"key":"YQ==","value":"MQ=="},{"key":"Yg==","value":"Mg=="}],"type":"kv_batch_put"}'
+$ strata kv scan
+```
+
+### Wire
+
+```json
+{"entries":[{"key":"YQ==","value":"MQ=="},{"key":"Yg==","value":"Mg=="}],"type":"kv_batch_put"}
+{"type":"kv_scan"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

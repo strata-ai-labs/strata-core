@@ -1,0 +1,9 @@
+caption: Check existence for many keys at once.
+steps:
+  - call: kv.batch_put
+    args:
+      entries:
+        - { key: a, value: "1" }
+  - call: kv.batch_exists
+    args: { keys: [a, missing] }
+    returns: [true, false]

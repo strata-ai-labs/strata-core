@@ -9,6 +9,24 @@ Reads several KV keys and returns positional item results. Each item records whe
 
 Itemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.
 
+## Examples
+
+Read many keys at once; a missing key comes back as null.
+
+### CLI
+
+```console
+$ strata command run --command-json '{"entries":[{"key":"YQ==","value":"MQ=="},{"key":"Yg==","value":"Mg=="}],"type":"kv_batch_put"}'
+$ strata command run --command-json '{"keys":["YQ==","Yg==","bWlzc2luZw=="],"type":"kv_batch_get"}'
+```
+
+### Wire
+
+```json
+{"entries":[{"key":"YQ==","value":"MQ=="},{"key":"Yg==","value":"Mg=="}],"type":"kv_batch_put"}
+{"keys":["YQ==","Yg==","bWlzc2luZw=="],"type":"kv_batch_get"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

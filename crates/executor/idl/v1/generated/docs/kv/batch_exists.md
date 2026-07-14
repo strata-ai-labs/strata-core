@@ -9,6 +9,24 @@ Checks several KV keys and returns positional boolean status values. The respons
 
 Itemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.
 
+## Examples
+
+Check existence for many keys at once.
+
+### CLI
+
+```console
+$ strata command run --command-json '{"entries":[{"key":"YQ==","value":"MQ=="}],"type":"kv_batch_put"}'
+$ strata command run --command-json '{"keys":["YQ==","bWlzc2luZw=="],"type":"kv_batch_exists"}'
+```
+
+### Wire
+
+```json
+{"entries":[{"key":"YQ==","value":"MQ=="}],"type":"kv_batch_put"}
+{"keys":["YQ==","bWlzc2luZw=="],"type":"kv_batch_exists"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

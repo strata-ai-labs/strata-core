@@ -9,6 +9,24 @@ Returns a deterministic bounded sample of visible KV rows plus the total matchin
 
 Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
 
+## Examples
+
+A representative sample plus the total population size.
+
+### CLI
+
+```console
+$ strata command run --command-json '{"entries":[{"key":"YQ==","value":"MQ=="},{"key":"Yg==","value":"Mg=="},{"key":"Yw==","value":"Mw=="}],"type":"kv_batch_put"}'
+$ strata kv sample
+```
+
+### Wire
+
+```json
+{"entries":[{"key":"YQ==","value":"MQ=="},{"key":"Yg==","value":"Mg=="},{"key":"Yw==","value":"Mw=="}],"type":"kv_batch_put"}
+{"type":"kv_sample"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

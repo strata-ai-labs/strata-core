@@ -9,6 +9,24 @@ Writes multiple KV entries using the executor batch contract. Valid items share 
 
 Itemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.
 
+## Examples
+
+Write many entries in one commit.
+
+### CLI
+
+```console
+$ strata command run --command-json '{"entries":[{"key":"YQ==","value":"MQ=="},{"key":"Yg==","value":"Mg=="}],"type":"kv_batch_put"}'
+$ strata command run --command-json '{"keys":["YQ==","Yg=="],"type":"kv_batch_get"}'
+```
+
+### Wire
+
+```json
+{"entries":[{"key":"YQ==","value":"MQ=="},{"key":"Yg==","value":"Mg=="}],"type":"kv_batch_put"}
+{"keys":["YQ==","Yg=="],"type":"kv_batch_get"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

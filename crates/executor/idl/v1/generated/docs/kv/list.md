@@ -9,6 +9,24 @@ Lists visible KV keys in byte order. Prefix, cursor, limit, and timestamp parame
 
 Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
 
+## Examples
+
+List keys under a prefix, in key order.
+
+### CLI
+
+```console
+$ strata command run --command-json '{"entries":[{"key":"dXNlcjox","value":"YQ=="},{"key":"dXNlcjoy","value":"Yg=="},{"key":"b3RoZXI=","value":"Yw=="}],"type":"kv_batch_put"}'
+$ strata kv list --prefix user:
+```
+
+### Wire
+
+```json
+{"entries":[{"key":"dXNlcjox","value":"YQ=="},{"key":"dXNlcjoy","value":"Yg=="},{"key":"b3RoZXI=","value":"Yw=="}],"type":"kv_batch_put"}
+{"prefix":"dXNlcjo=","type":"kv_list"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |
