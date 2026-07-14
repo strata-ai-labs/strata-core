@@ -9,6 +9,26 @@ Deletes the current visible value for a KV key. Missing keys produce a no-op del
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Delete a key; it is no longer visible afterward.
+
+### CLI
+
+```console
+$ strata kv put temp scratch
+$ strata kv delete temp
+$ strata kv exists temp
+```
+
+### Wire
+
+```json
+{"key":"dGVtcA==","type":"kv_put","value":"c2NyYXRjaA=="}
+{"key":"dGVtcA==","type":"kv_delete"}
+{"key":"dGVtcA==","type":"kv_exists"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

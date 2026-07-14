@@ -1,0 +1,9 @@
+caption: Delete a key; it is no longer visible afterward.
+steps:
+  - call: kv.put
+    args: { key: temp, value: scratch }
+  - call: kv.delete
+    args: { key: temp }
+  - call: kv.exists
+    args: { key: temp }
+    returns: false

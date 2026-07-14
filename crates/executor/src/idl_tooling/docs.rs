@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use super::examples::{self, Example};
 use super::{invalid, relative_to, resolve_index, schemas, IdlError, ResolvedCommand, Result};
 
 /// Canonical site origin for absolute links in the machine layer, matching the
@@ -113,9 +114,16 @@ pub(super) fn check_docs(repo_root: &Path) -> Result<()> {
 fn render_all(repo_root: &Path) -> Result<BTreeMap<PathBuf, String>> {
     let index = resolve_index(repo_root)?;
     let documents = schemas::schema_documents(&index)?;
+    let example_specs = examples::load_examples(repo_root)?;
+    examples::validate_examples(repo_root, &index, &documents, &example_specs)?;
     let docs_dir = docs_dir_path(repo_root);
     let stamp = source_stamp();
 
+    let by_id: BTreeMap<&str, &ResolvedCommand> = index
+        .commands
+        .iter()
+        .map(|command| (command.id.as_str(), command))
+        .collect();
     let mut families: BTreeMap<&str, Vec<&ResolvedCommand>> = BTreeMap::new();
     let mut files = BTreeMap::new();
     for entry in &index.commands {
@@ -125,7 +133,14 @@ fn render_all(repo_root: &Path) -> Result<BTreeMap<PathBuf, String>> {
             .ok_or_else(|| invalid(format!("no schema document for `{}`", entry.id)))?;
         files.insert(
             docs_dir.join(page_rel_path(entry)?),
-            render_page(entry, schema, &stamp),
+            render_page(
+                entry,
+                schema,
+                &stamp,
+                &by_id,
+                &documents,
+                example_specs.get(&entry.id),
+            ),
         );
     }
 
@@ -150,7 +165,14 @@ fn page_rel_path(entry: &ResolvedCommand) -> Result<PathBuf> {
     Ok(PathBuf::from(format!("{rel}.md")))
 }
 
-fn render_page(entry: &ResolvedCommand, schema: &Value, stamp: &str) -> String {
+fn render_page(
+    entry: &ResolvedCommand,
+    schema: &Value,
+    stamp: &str,
+    by_id: &BTreeMap<&str, &ResolvedCommand>,
+    schemas: &BTreeMap<String, Value>,
+    example: Option<&Example>,
+) -> String {
     let mut out = String::new();
     out.push_str("---\n");
     writeln!(out, "title: {}", yaml_quote(&entry.title)).expect(INFALLIBLE);
@@ -161,6 +183,10 @@ fn render_page(entry: &ResolvedCommand, schema: &Value, stamp: &str) -> String {
 
     out.push_str(entry.description.trim());
     out.push_str("\n\n");
+
+    if let Some(example) = example {
+        out.push_str(&examples::render_section(by_id, schemas, example));
+    }
 
     out.push_str(&render_parameters(schema));
     out.push_str(&render_returns(entry));

@@ -1,0 +1,9 @@
+caption: Count the visible keys.
+steps:
+  - call: kv.put
+    args: { key: a, value: "1" }
+  - call: kv.put
+    args: { key: b, value: "2" }
+  - call: kv.count
+    args: {}
+    returns: 2

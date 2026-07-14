@@ -9,6 +9,26 @@ Returns a boolean status for one KV key without loading the stored value.
 
 Status commands return a scalar or compact status payload and do not mutate database state.
 
+## Examples
+
+Check whether a key currently has a visible value.
+
+### CLI
+
+```console
+$ strata kv put k v
+$ strata kv exists k
+$ strata kv exists absent
+```
+
+### Wire
+
+```json
+{"key":"aw==","type":"kv_put","value":"dg=="}
+{"key":"aw==","type":"kv_exists"}
+{"key":"YWJzZW50","type":"kv_exists"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

@@ -9,6 +9,26 @@ Counts visible KV keys in the selected branch and space, optionally constrained 
 
 Status commands return a scalar or compact status payload and do not mutate database state.
 
+## Examples
+
+Count the visible keys.
+
+### CLI
+
+```console
+$ strata kv put a 1
+$ strata kv put b 2
+$ strata kv count
+```
+
+### Wire
+
+```json
+{"key":"YQ==","type":"kv_put","value":"MQ=="}
+{"key":"Yg==","type":"kv_put","value":"Mg=="}
+{"type":"kv_count"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

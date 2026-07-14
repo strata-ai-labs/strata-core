@@ -65,6 +65,7 @@ jobs:
           cargo run --locked -p strata-executor --features idl-tooling,inference --bin strata-idl -- check
           cargo run --locked -p strata-executor --features idl-tooling,inference --bin strata-idl -- check-cli
           cargo run --locked -p strata-executor --features idl-tooling,inference --bin strata-idl -- check-docs
+          cargo run --locked -p strata-executor --features idl-tooling,inference --bin strata-idl -- verify-examples
           cargo run --locked -p strata-executor --features idl-tooling,inference --bin strata-idl -- verify-fixtures
           cargo test --locked -p strata-executor --features idl-tooling,inference --test idl_kv_vector_overlay
       - name: Doc tests

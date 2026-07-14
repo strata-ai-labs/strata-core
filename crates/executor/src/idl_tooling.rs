@@ -12,6 +12,7 @@ use thiserror::Error;
 use crate::{public_error_code_entries, Command, Output};
 
 mod docs;
+mod examples;
 mod schemas;
 mod verify;
 
@@ -881,6 +882,14 @@ pub fn generate_docs(repo_root: &Path) -> Result<()> {
 /// Checks whether the generated reference documentation tree is fresh.
 pub fn check_docs(repo_root: &Path) -> Result<()> {
     docs::check_docs(repo_root)
+}
+
+/// Validates and replays every canonical example (`idl/v1/examples/`) against
+/// a scratch cache executor, enforcing the example-coverage allowlist.
+pub fn verify_examples(repo_root: &Path) -> Result<()> {
+    let index = resolve_index(repo_root)?;
+    let schemas = schemas::schema_documents(&index)?;
+    examples::verify_examples(repo_root, &index, &schemas)
 }
 
 /// Checks whether the generated CLI command metadata is fresh.

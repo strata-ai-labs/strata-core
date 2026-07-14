@@ -9,6 +9,7 @@ use std::path::Path;
 use strata_executor::idl_tooling::{
     check, check_cli, check_docs, default_repo_root, resolve_cli_index, resolve_default_cli_index,
     resolve_default_index, resolve_default_schemas, to_generated_cli_json, to_generated_json,
+    verify_examples,
 };
 
 const REQUIRED_ADMIN: &[&str] = &[
@@ -473,6 +474,16 @@ fn generated_reference_docs_are_fresh_and_complete() {
         docs_dir.join("llms.txt").is_file(),
         "missing generated llms.txt"
     );
+}
+
+#[test]
+fn canonical_examples_validate_execute_and_cover_the_catalog() {
+    // verify_examples validates every examples/<id>.yaml against the schemas,
+    // enforces the shrink-only missing-examples allowlist (every command has an
+    // example or is listed), and replays each spec against a scratch cache
+    // executor asserting miss-ness — so a stale or wrong example fails here.
+    let root = default_repo_root();
+    verify_examples(&root).expect("canonical examples validate, cover, and execute");
 }
 
 #[test]

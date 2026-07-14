@@ -1,0 +1,10 @@
+caption: Check whether a key currently has a visible value.
+steps:
+  - call: kv.put
+    args: { key: k, value: v }
+  - call: kv.exists
+    args: { key: k }
+    returns: true
+  - call: kv.exists
+    args: { key: absent }
+    returns: false

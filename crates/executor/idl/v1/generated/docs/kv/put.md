@@ -9,6 +9,26 @@ Writes a binary value to the selected KV space. If the key already exists, Strat
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Store a value, then replace it.
+
+### CLI
+
+```console
+$ strata kv put setting v1
+$ strata kv put setting v2  # replaces the visible value
+$ strata kv get setting
+```
+
+### Wire
+
+```json
+{"key":"c2V0dGluZw==","type":"kv_put","value":"djE="}
+{"key":"c2V0dGluZw==","type":"kv_put","value":"djI="}
+{"key":"c2V0dGluZw==","type":"kv_get"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

@@ -9,6 +9,26 @@ Reads one KV key from the selected branch and space. The optional timestamp read
 
 Optional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.
 
+## Examples
+
+Read a value back; a missing key returns nothing.
+
+### CLI
+
+```console
+$ strata kv put greeting hello
+$ strata kv get greeting
+$ strata kv get absent
+```
+
+### Wire
+
+```json
+{"key":"Z3JlZXRpbmc=","type":"kv_put","value":"aGVsbG8="}
+{"key":"Z3JlZXRpbmc=","type":"kv_get"}
+{"key":"YWJzZW50","type":"kv_get"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |
