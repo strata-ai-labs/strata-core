@@ -1,0 +1,5 @@
+caption: List the built-in model catalog (spans embedding, generation, ranking).
+steps:
+  - call: inference.models.list
+    args: {}
+    returns: ["embed", "generate", "rank"]

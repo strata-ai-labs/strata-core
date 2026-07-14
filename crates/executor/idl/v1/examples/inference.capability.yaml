@@ -1,0 +1,6 @@
+caption: Report a model's capabilities without a network call.
+steps:
+  - call: inference.capability
+    args: { model: "openai:gpt-4o-mini" }
+    note: Pure metadata — no request is sent to the provider.
+    returns: openai

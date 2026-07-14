@@ -1,0 +1,5 @@
+caption: Inspect which models are currently loaded in the runtime cache.
+steps:
+  - call: inference.cache_status
+    args: {}
+    returns: []
