@@ -9,6 +9,26 @@ Applies a list of graph operations - `upsert_node`, `delete_node`, `upsert_edge`
 
 Atomic batches validate every operation up front and apply all of them in one engine commit, or none at all. The response still reports one positional item result per operation; all item results share the same commit receipt.
 
+## Examples
+
+Apply several node and edge mutations in one atomic commit.
+
+### CLI
+
+```console
+$ strata graph create g
+$ strata command run --command-json '{"graph":"g","operations":[{"data":{"object_type":"person"},"node_id":"a","type":"upsert_node"},{"data":{"object_type":"person"},"node_id":"b","type":"upsert_node"},{"data":{},"dst":"b","edge_type":"knows","src":"a","type":"upsert_edge"}],"type":"graph_batch_write"}'  # All operations land in one engine commit, or none do.
+$ strata graph meta g
+```
+
+### Wire
+
+```json
+{"graph":"g","type":"graph_create"}
+{"graph":"g","operations":[{"data":{"object_type":"person"},"node_id":"a","type":"upsert_node"},{"data":{"object_type":"person"},"node_id":"b","type":"upsert_node"},{"data":{},"dst":"b","edge_type":"knows","src":"a","type":"upsert_edge"}],"type":"graph_batch_write"}
+{"graph":"g","type":"graph_get_meta"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

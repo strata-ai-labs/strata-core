@@ -7,9 +7,6 @@ missing:
   - arrow.import
   - branch.fork_at_timestamp
   - branch.fork_at_version
-  - graph.apply_delete_policy
-  - graph.batch_write
-  - graph.bindings
   - inference.cache_status
   - inference.capability
   - inference.detokenize

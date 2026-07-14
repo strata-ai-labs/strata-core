@@ -9,6 +9,28 @@ Applies an explicit policy to every graph node bound to the given entity target:
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Cascade-delete graph facts bound to an entity.
+
+### CLI
+
+```console
+$ strata graph create kb
+$ strata graph add-node kb ada --binding {"target":{"key":"user:1","primitive":"kv","space":"default"}}
+$ strata command run --command-json '{"policy":"cascade","target":{"key":"user:1","primitive":"kv","space":"default"},"type":"graph_apply_delete_policy"}'  # cascade removes the bound node and its incident edges.
+$ strata graph get-node kb ada
+```
+
+### Wire
+
+```json
+{"graph":"kb","type":"graph_create"}
+{"binding":{"target":{"key":"user:1","primitive":"kv","space":"default"}},"graph":"kb","node_id":"ada","type":"graph_add_node"}
+{"policy":"cascade","target":{"key":"user:1","primitive":"kv","space":"default"},"type":"graph_apply_delete_policy"}
+{"graph":"kb","node_id":"ada","type":"graph_get_node"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

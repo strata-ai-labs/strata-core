@@ -9,6 +9,26 @@ Searches every graph in the selected branch and space for nodes whose entity bin
 
 Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
 
+## Examples
+
+List graph nodes bound to a product entity.
+
+### CLI
+
+```console
+$ strata graph create kb
+$ strata graph add-node kb ada --binding {"target":{"key":"user:1","primitive":"kv","space":"default"}}  # Bind the node to a KV entity so retrieval can cross primitives.
+$ strata command run --command-json '{"target":{"key":"user:1","primitive":"kv","space":"default"},"type":"graph_bindings_for_entity"}'
+```
+
+### Wire
+
+```json
+{"graph":"kb","type":"graph_create"}
+{"binding":{"target":{"key":"user:1","primitive":"kv","space":"default"}},"graph":"kb","node_id":"ada","type":"graph_add_node"}
+{"target":{"key":"user:1","primitive":"kv","space":"default"},"type":"graph_bindings_for_entity"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |
