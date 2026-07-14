@@ -228,7 +228,11 @@ fn enforce_example_coverage(
     let allowlist: MissingExamplesSource =
         read_yaml(&repo_root.join(super::IDL_DIR).join(MISSING_EXAMPLES_FILE))?;
     let mut listed = BTreeSet::new();
-    for id in allowlist.uncovered.iter().chain(allowlist.non_hermetic.iter()) {
+    for id in allowlist
+        .uncovered
+        .iter()
+        .chain(allowlist.non_hermetic.iter())
+    {
         if !ids.contains(id.as_str()) {
             return Err(invalid(format!(
                 "{MISSING_EXAMPLES_FILE} lists `{id}` which is not a command"
@@ -358,9 +362,12 @@ fn resolve_tmpdir(value: &Value, tmpdir: &str) -> Value {
         Value::String(text) if text.contains("{tmpdir}") => {
             Value::String(text.replace("{tmpdir}", tmpdir))
         }
-        Value::Array(items) => {
-            Value::Array(items.iter().map(|item| resolve_tmpdir(item, tmpdir)).collect())
-        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| resolve_tmpdir(item, tmpdir))
+                .collect(),
+        ),
         Value::Object(map) => Value::Object(
             map.iter()
                 .map(|(key, item)| (key.clone(), resolve_tmpdir(item, tmpdir)))
@@ -392,9 +399,12 @@ fn resolve_refs(value: &Value, bindings: &BTreeMap<String, Value>) -> Value {
             }
             current.clone()
         }
-        Value::Array(items) => {
-            Value::Array(items.iter().map(|item| resolve_refs(item, bindings)).collect())
-        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| resolve_refs(item, bindings))
+                .collect(),
+        ),
         Value::Object(map) => Value::Object(
             map.iter()
                 .map(|(key, item)| (key.clone(), resolve_refs(item, bindings)))
@@ -601,7 +611,8 @@ fn render_cli(
     // Wire-only commands have no dedicated clap verb; their CLI form is the
     // generic command runner over the exact wire JSON.
     if command.cli.surface != "verb" {
-        if let Some(wire) = schema.and_then(|s| step_wire_json("", 0, step, s, DOC_TMPDIR, bindings).ok())
+        if let Some(wire) =
+            schema.and_then(|s| step_wire_json("", 0, step, s, DOC_TMPDIR, bindings).ok())
         {
             return format!("strata command run --command-json '{}'", compact(&wire));
         }
@@ -623,7 +634,11 @@ fn render_cli(
         let required: BTreeSet<&str> = schema_required(schema).into_iter().collect();
         for (name, value) in &step.args {
             if !required.contains(name.as_str()) {
-                tokens.push(format!("--{} {}", name.replace('_', "-"), cli_token(&resolve(value))));
+                tokens.push(format!(
+                    "--{} {}",
+                    name.replace('_', "-"),
+                    cli_token(&resolve(value))
+                ));
             }
         }
     }
