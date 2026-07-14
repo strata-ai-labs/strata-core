@@ -1,0 +1,14 @@
+caption: Fork a branch at an earlier commit version — a snapshot of history.
+steps:
+  - call: kv.put
+    args: { key: greeting, value: original }
+    bind: base
+    note: The receipt carries this commit's version.
+  - call: kv.put
+    args: { key: greeting, value: updated }
+  - call: branch.fork_at_version
+    args: { source: default, branch: snapshot, version: "{base.commit.version}" }
+    note: snapshot forks default's history at that version.
+  - call: kv.get
+    args: { key: greeting, branch: snapshot }
+    returns: original

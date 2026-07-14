@@ -6,10 +6,7 @@
 # non_hermetic: covered by a gated integration test or reference-only, because a
 #               cache-mode replay cannot supply the resource (hub, model, API
 #               key, network, machine disk). Not pending — see each reason.
-uncovered:
-  - branch.fork_at_timestamp   # needs cross-step commit-version references
-  - branch.fork_at_version     # needs cross-step commit-version references
-  - inference.unload           # trivial empty-cache no-op; not yet written
+uncovered: []                  # empty — every hermetic-possible command is covered
 
 non_hermetic:
   - admin.hub_clone            # network + hub — Strata.clone, tests/test_hub_clone.py

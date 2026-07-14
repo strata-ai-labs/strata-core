@@ -11,6 +11,28 @@ This command has no dedicated CLI verb: the CLI expresses it as `strata branch f
 
 Successful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.
 
+## Examples
+
+Fork a branch at an earlier commit timestamp — time-travel into a branch.
+
+### CLI
+
+```console
+$ strata kv put greeting original  # The receipt carries this commit's timestamp (microseconds).
+$ strata kv put greeting updated
+$ strata command run --command-json '{"branch":"snapshot","source":"default","timestamp":3,"type":"branch_fork_at_timestamp"}'  # snapshot forks default's history as of that instant.
+$ strata kv get greeting --branch snapshot
+```
+
+### Wire
+
+```json
+{"key":"Z3JlZXRpbmc=","type":"kv_put","value":"b3JpZ2luYWw="}
+{"key":"Z3JlZXRpbmc=","type":"kv_put","value":"dXBkYXRlZA=="}
+{"branch":"snapshot","source":"default","timestamp":3,"type":"branch_fork_at_timestamp"}
+{"branch":"snapshot","key":"Z3JlZXRpbmc=","type":"kv_get"}
+```
+
 ## Parameters
 
 | Name | Type | Required | Description |

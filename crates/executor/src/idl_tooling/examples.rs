@@ -60,6 +60,11 @@ pub(super) struct ExampleStep {
     /// interpret it — CLI/wire rendering and replay use only the call + args.
     #[serde(default)]
     pub expr: Option<String>,
+    /// Optional name binding this step's result so a later step can reference a
+    /// field of it via `{name.path.to.field}` (e.g. a prior receipt's commit
+    /// version). The SDK renderer binds the call to a variable of this name.
+    #[serde(default)]
+    pub bind: Option<String>,
 }
 
 /// A step's declared expectation. An absent `returns` (setup step) maps to
@@ -270,11 +275,12 @@ pub(super) fn verify_examples(
         let mut executor = Executor::open_cache().map_err(|error| {
             invalid(format!("example `{id}`: scratch executor failed: {error}"))
         })?;
+        let mut bindings = BTreeMap::new();
         for (position, step) in example.steps.iter().enumerate() {
             let schema = schemas
                 .get(&step.call)
                 .ok_or_else(|| invalid(format!("example `{id}`: no schema for `{}`", step.call)))?;
-            let wire = step_wire_json(id, position, step, schema, &tmpdir_path)?;
+            let wire = step_wire_json(id, position, step, schema, &tmpdir_path, &bindings)?;
             let command: Command =
                 serde_json::from_value(wire).map_err(|source| IdlError::Json {
                     path: PathBuf::from(format!("examples/{id}.yaml")),
@@ -286,13 +292,18 @@ pub(super) fn verify_examples(
                     step.call
                 ))
             })?;
+            let value = serde_json::to_value(&output).map_err(|source| IdlError::Json {
+                path: PathBuf::from(format!("examples/{id}.yaml")),
+                source,
+            })?;
             if let Some(expected) = &step.returns {
-                let value = serde_json::to_value(&output).map_err(|source| IdlError::Json {
-                    path: PathBuf::from(format!("examples/{id}.yaml")),
-                    source,
-                })?;
                 let expect_miss = matches!(expected, ExpectedResult::Miss);
                 assert_result(id, position, step, expect_miss, &value)?;
+            }
+            if let Some(name) = &step.bind {
+                if let Some(data) = value.get("data") {
+                    bindings.insert(name.clone(), data.clone());
+                }
             }
         }
     }
@@ -359,15 +370,50 @@ fn resolve_tmpdir(value: &Value, tmpdir: &str) -> Value {
     }
 }
 
+/// Replaces a `{name.path.to.field}` reference string with the value navigated
+/// from `bindings[name]` (a prior `bind:` step's `data`). A partial placeholder
+/// like `{tmpdir}/f` (no wrapping braces) or an unbound name passes through.
+fn resolve_refs(value: &Value, bindings: &BTreeMap<String, Value>) -> Value {
+    match value {
+        Value::String(text) => {
+            let Some(path) = text.strip_prefix('{').and_then(|t| t.strip_suffix('}')) else {
+                return value.clone();
+            };
+            let mut parts = path.split('.');
+            let Some(root) = parts.next().and_then(|name| bindings.get(name)) else {
+                return value.clone();
+            };
+            let mut current = root;
+            for key in parts {
+                match current.get(key) {
+                    Some(next) => current = next,
+                    None => return value.clone(),
+                }
+            }
+            current.clone()
+        }
+        Value::Array(items) => {
+            Value::Array(items.iter().map(|item| resolve_refs(item, bindings)).collect())
+        }
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, item)| (key.clone(), resolve_refs(item, bindings)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 /// Builds the wire command JSON for a step (`{ "type": <tag>, <args> }`),
-/// base64-encoding arguments whose schema type is the `Bytes` newtype and
-/// substituting the `{tmpdir}` path placeholder with `tmpdir`.
+/// base64-encoding `Bytes` arguments, substituting the `{tmpdir}` path
+/// placeholder, and resolving `{name.path}` references against `bindings`.
 fn step_wire_json(
     id: &str,
     position: usize,
     step: &ExampleStep,
     schema: &Value,
     tmpdir: &str,
+    bindings: &BTreeMap<String, Value>,
 ) -> Result<Value> {
     let props = request_properties(schema).ok_or_else(|| {
         invalid(format!(
@@ -389,7 +435,7 @@ fn step_wire_json(
     let mut object = Map::new();
     object.insert("type".to_owned(), Value::String(tag.to_owned()));
     for (name, value) in &step.args {
-        let resolved = resolve_tmpdir(value, tmpdir);
+        let resolved = resolve_refs(&resolve_tmpdir(value, tmpdir), bindings);
         let encoded = encode_arg(&resolved, props.get(name), defs);
         object.insert(name.clone(), encoded);
     }
@@ -464,11 +510,56 @@ fn schema_type_is(schema: &Value, wanted: &str) -> bool {
 
 /// Renders the `## Examples` section (CLI + wire tabs) for one command, given
 /// the whole catalog (steps may call sibling commands) and schemas.
+/// Best-effort replay of an example against a scratch cache executor, returning
+/// the `data`-level output of every `bind:` step keyed by name — so doc
+/// rendering resolves `{name.path}` references to the value they hold at replay.
+/// Empty when nothing binds; render still succeeds if replay errors (the
+/// verify-examples guard is the authority on replay correctness).
+fn resolve_example_bindings(
+    example: &Example,
+    schemas: &BTreeMap<String, Value>,
+) -> BTreeMap<String, Value> {
+    let mut bindings = BTreeMap::new();
+    if example.steps.iter().all(|step| step.bind.is_none()) {
+        return bindings;
+    }
+    let Ok(tmpdir) = tempfile::tempdir() else {
+        return bindings;
+    };
+    let tmpdir_path = tmpdir.path().to_string_lossy();
+    let Ok(mut executor) = Executor::open_cache() else {
+        return bindings;
+    };
+    for step in &example.steps {
+        let Some(schema) = schemas.get(&step.call) else {
+            continue;
+        };
+        let Ok(wire) = step_wire_json("", 0, step, schema, &tmpdir_path, &bindings) else {
+            continue;
+        };
+        let Ok(command) = serde_json::from_value::<Command>(wire) else {
+            continue;
+        };
+        let Ok(output) = executor.execute(command) else {
+            continue;
+        };
+        if let Some(name) = &step.bind {
+            if let Ok(value) = serde_json::to_value(&output) {
+                if let Some(data) = value.get("data") {
+                    bindings.insert(name.clone(), data.clone());
+                }
+            }
+        }
+    }
+    bindings
+}
+
 pub(super) fn render_section(
     by_id: &BTreeMap<&str, &ResolvedCommand>,
     schemas: &BTreeMap<String, Value>,
     example: &Example,
 ) -> String {
+    let bindings = resolve_example_bindings(example, schemas);
     let mut out = String::from("## Examples\n\n");
     if let Some(caption) = &example.caption {
         out.push_str(caption.trim());
@@ -477,7 +568,7 @@ pub(super) fn render_section(
 
     out.push_str("### CLI\n\n```console\n");
     for step in &example.steps {
-        let line = render_cli(by_id, schemas, step);
+        let line = render_cli(by_id, schemas, step, &bindings);
         let note = step
             .note
             .as_deref()
@@ -487,7 +578,7 @@ pub(super) fn render_section(
     out.push_str("```\n\n### Wire\n\n```json\n");
     for step in &example.steps {
         if let Some(schema) = schemas.get(&step.call) {
-            if let Ok(wire) = step_wire_json("", 0, step, schema, DOC_TMPDIR) {
+            if let Ok(wire) = step_wire_json("", 0, step, schema, DOC_TMPDIR, &bindings) {
                 writeln!(out, "{}", compact(&wire)).expect(INFALLIBLE);
             }
         }
@@ -500,15 +591,18 @@ fn render_cli(
     by_id: &BTreeMap<&str, &ResolvedCommand>,
     schemas: &BTreeMap<String, Value>,
     step: &ExampleStep,
+    bindings: &BTreeMap<String, Value>,
 ) -> String {
     let Some(command) = by_id.get(step.call.as_str()) else {
         return step.call.clone();
     };
     let schema = schemas.get(&step.call);
+    let resolve = |value: &Value| resolve_refs(&resolve_tmpdir(value, DOC_TMPDIR), bindings);
     // Wire-only commands have no dedicated clap verb; their CLI form is the
     // generic command runner over the exact wire JSON.
     if command.cli.surface != "verb" {
-        if let Some(wire) = schema.and_then(|s| step_wire_json("", 0, step, s, DOC_TMPDIR).ok()) {
+        if let Some(wire) = schema.and_then(|s| step_wire_json("", 0, step, s, DOC_TMPDIR, bindings).ok())
+        {
             return format!("strata command run --command-json '{}'", compact(&wire));
         }
     }
@@ -523,14 +617,13 @@ fn render_cli(
                 continue;
             }
             if let Some(value) = step.args.get(name) {
-                tokens.push(cli_token(&resolve_tmpdir(value, DOC_TMPDIR)));
+                tokens.push(cli_token(&resolve(value)));
             }
         }
         let required: BTreeSet<&str> = schema_required(schema).into_iter().collect();
         for (name, value) in &step.args {
             if !required.contains(name.as_str()) {
-                let token = cli_token(&resolve_tmpdir(value, DOC_TMPDIR));
-                tokens.push(format!("--{} {}", name.replace('_', "-"), token));
+                tokens.push(format!("--{} {}", name.replace('_', "-"), cli_token(&resolve(value))));
             }
         }
     }

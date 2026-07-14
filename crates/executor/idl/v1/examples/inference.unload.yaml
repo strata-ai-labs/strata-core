@@ -1,0 +1,5 @@
+caption: Evict cached models from the runtime (a no-op when nothing is loaded).
+steps:
+  - call: inference.unload
+    args: {}
+    returns: false
