@@ -1663,6 +1663,7 @@ fn parse_chat_message(spec: &str) -> Result<strata_executor::InferenceChatMessag
 
 /// Parse a `--tool-choice` value: `auto` | `none` | `required` (case-insensitive)
 /// select a mode; anything else names a function to force.
+#[cfg(feature = "inference")]
 fn parse_tool_choice(value: &str) -> strata_executor::InferenceToolChoice {
     use strata_executor::{
         InferenceNamedToolChoice, InferenceToolChoice, InferenceToolChoiceFunction,
