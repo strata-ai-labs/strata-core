@@ -113,10 +113,17 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # The IDL-generated command reference (docs pages + command-index.json +
+      # schemas), consumed by stratadb.org's fetch-from-release pipeline. The
+      # tarball roots at `generated/`. Committed docs are drift-guarded by
+      # check-docs, so at a release tag they match the shipped binary.
+      - name: Package the IDL docs bundle
+        run: tar czf artifacts/strata-idl-docs.tar.gz -C crates/executor/idl/v1 generated
+
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum strata-v* > checksums-sha256.txt
+          sha256sum strata-v* strata-idl-docs.tar.gz > checksums-sha256.txt
           cat checksums-sha256.txt
 
       - name: Create GitHub Release
@@ -127,7 +134,7 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             --title "Strata ${{ github.ref_name }}" \
             --generate-notes \
-            strata-v*.tar.gz checksums-sha256.txt
+            strata-v*.tar.gz strata-idl-docs.tar.gz checksums-sha256.txt
 
   # ---------------------------------------------------------------------------
   # 4. Update the Homebrew tap
