@@ -9,7 +9,7 @@
 # As of the full 120-command family coverage, the residents here are not
 # "unfinished" — they are verbs with no wire command by design:
 #   - CLI-local operations that never reach the executor: init, doctor,
-#     agents {guide,commands,errors,init}, mcp serve, config
+#     agents {guide,commands,errors,init,skill}, mcp serve, config
 #     {path,set,unset,show} (config get/get-key ARE wire commands and are
 #     covered), command {run,print} (the generic escape hatch itself).
 #   - event by-type: a curated clap alias of event.list (EventList) with a
@@ -21,6 +21,7 @@ uncovered:
   - agents errors
   - agents guide
   - agents init
+  - agents skill
   - command print
   - command run
   - config path
