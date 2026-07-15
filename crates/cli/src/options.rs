@@ -204,6 +204,16 @@ pub(crate) enum AgentsCommand {
         #[arg(long)]
         apply: bool,
     },
+    /// Print the Claude Code skill (markdown, version-matched); --write
+    /// installs it at .claude/skills/strata/SKILL.md in the current repo.
+    Skill {
+        /// Install to .claude/skills/strata/SKILL.md instead of printing.
+        #[arg(long)]
+        write: bool,
+        /// With --write: replace an existing SKILL.md whose content differs.
+        #[arg(long, requires = "write")]
+        force: bool,
+    },
 }
 
 /// Config commands.

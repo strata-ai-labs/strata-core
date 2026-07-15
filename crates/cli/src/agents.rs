@@ -31,6 +31,13 @@ pub(crate) fn run(command: &AgentsCommand, format: Format) -> Result<i32, CliErr
         AgentsCommand::Commands => render_value(&commands_value()?, format)?,
         AgentsCommand::Errors => render_value(&errors_value(), format)?,
         AgentsCommand::Init { apply } => render_value(&run_repo_init(*apply)?, format)?,
+        AgentsCommand::Skill { write: false, .. } => {
+            // The skill is markdown; it is the format.
+            println!("{}", skill_markdown());
+        }
+        AgentsCommand::Skill { write: true, force } => {
+            render_value(&run_skill_write(*force)?, format)?;
+        }
     }
     Ok(0)
 }
@@ -145,7 +152,9 @@ commands --json`); every command documents itself via `--help`.\n",
     guide.push_str(
         "## Repo onboarding\n\n`strata agents init` writes `.strata/AGENTS.md` into the current \
 repo; `--apply` also appends a short pointer block to the repo's `AGENTS.md`/`CLAUDE.md` so every \
-future agent session here starts oriented.\n",
+future agent session here starts oriented. `strata agents skill --write` installs the Claude \
+Code skill at `.claude/skills/strata/SKILL.md` — the condensed Python + CLI playbook, loaded \
+automatically when a session touches Strata.\n",
     );
 
     Ok(guide)
@@ -190,6 +199,55 @@ fn errors_value() -> Value {
     })
 }
 
+// ---- skill ------------------------------------------------------------------
+
+/// Path the skill installs to, relative to the repo root (Claude Code's
+/// project-skill location).
+const SKILL_PATH: &str = ".claude/skills/strata/SKILL.md";
+
+/// The Claude Code skill, version-stamped. The template is authored at
+/// `agents_skill.md` and vendored by the Python SDK (which serves the same
+/// text as `stratadb.agents_skill()`), so the two surfaces cannot drift.
+pub(crate) fn skill_markdown() -> String {
+    include_str!("agents_skill.md").replace("{version}", env!("CARGO_PKG_VERSION"))
+}
+
+/// Installs the skill at `.claude/skills/strata/SKILL.md`. Idempotent when
+/// the on-disk content already matches; refuses to replace foreign content
+/// unless `force` (state `pending`, mirroring `agents init`).
+fn run_skill_write(force: bool) -> Result<Value, CliError> {
+    let skill = skill_markdown();
+    let path = Path::new(SKILL_PATH);
+    let mut state = "created";
+    if path.exists() {
+        let existing = fs::read_to_string(path)?;
+        if existing == skill {
+            state = "unchanged";
+        } else if force {
+            state = "replaced";
+        } else {
+            return Ok(json!({
+                "type": "agents_skill",
+                "data": {
+                    "path": SKILL_PATH,
+                    "state": "pending",
+                    "next": "an existing SKILL.md differs; re-run with --force to replace it",
+                }
+            }));
+        }
+    }
+    if state != "unchanged" {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, &skill)?;
+    }
+    Ok(json!({
+        "type": "agents_skill",
+        "data": { "path": SKILL_PATH, "state": state, "next": Value::Null }
+    }))
+}
+
 // ---- repo onboarding --------------------------------------------------------
 
 /// The ~10-line pointer block planted in repos: a pointer, not a manual.
@@ -201,6 +259,7 @@ fn pointer_block() -> String {
 This repo uses Strata (embedded database — SQLite-shaped, zero-config).
 
 - Full usage guide: run `strata agents guide` (offline, version-matched)
+- Claude Code skill: `strata agents skill --write` (installs .claude/skills/strata/SKILL.md)
 - Command catalog: `strata agents commands --json`; errors: `strata agents errors --json`
 - Database targeting: pass a path or set `STRATA_DB`; never rely on cwd
 - Structured output: add `--json` to any command; raw commands via `strata <db> command run --command-json`
@@ -275,5 +334,18 @@ mod tests {
                 family.id
             );
         }
+    }
+
+    /// The skill is a valid Claude Code skill: YAML frontmatter with the
+    /// trigger description, version-stamped body, and the canonical Python
+    /// entry point — with no unexpanded template placeholder left behind.
+    #[test]
+    fn skill_renders_frontmatter_version_and_entry_point() {
+        let skill = skill_markdown();
+        assert!(skill.starts_with("---\nname: strata\ndescription: "));
+        assert!(skill.contains(&format!("# StrataDB {}", env!("CARGO_PKG_VERSION"))));
+        assert!(skill.contains("stratadb.open("));
+        assert!(skill.contains("stratadb.agents_guide()"));
+        assert!(!skill.contains("{version}"));
     }
 }
