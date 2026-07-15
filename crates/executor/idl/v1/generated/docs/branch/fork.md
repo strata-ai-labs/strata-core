@@ -29,11 +29,20 @@ $ strata branch list
 {"type":"branch_list"}
 ```
 
+### Output
+
+One response per step, in order:
+
+```json
+{"data":{"branch_id":"1a29fdd4-745b-5b66-ad18-75b3cf51cef6","created_at":1,"deleted_at":null,"generation":1,"name":"experiment","parent":{"branch_id":"00000000-0000-0000-0000-000000000000","fork_timestamp":null,"fork_version":1,"generation":1,"name":"default"},"state_revision":0,"status":"active"},"type":"branch"}
+{"data":{"cursor":null,"has_more":false,"items":[{"branch_id":"00000000-0000-0000-0000-000000000000","created_at":null,"deleted_at":null,"generation":1,"name":"default","parent":null,"state_revision":0,"status":"active"},{"branch_id":"1a29fdd4-745b-5b66-ad18-75b3cf51cef6","created_at":1,"deleted_at":null,"generation":1,"name":"experiment","parent":{"branch_id":"00000000-0000-0000-0000-000000000000","fork_timestamp":null,"fork_version":1,"generation":1,"name":"default"},"state_revision":0,"status":"active"}]},"type":"branches"}
+```
+
 ## Parameters
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `source` | `string` | yes | Source branch name. |
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `source` | `string` | yes | — | Source branch name. |
 
 Plus the optional scope: `branch` and `space` (default to the session branch and the `"default"` space).
 
@@ -41,15 +50,36 @@ Plus the optional scope: `branch` and `space` (default to the session branch and
 
 `MutationAck<BranchItem>`.
 
+| Field | Type | Description |
+|---|---|---|
+| `branch_id` | `string` |  |
+| `generation` | `integer` |  |
+| `name` | `string` |  |
+| `state_revision` | `integer` |  |
+| `status` | `BranchStatus` |  |
+| `created_at` | `integer` |  |
+| `deleted_at` | `integer` |  |
+| `parent` | `BranchParentItem` |  |
+
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
-- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
-- [`invalid_argument.engine.branch_name`](https://stratadb.org/e/invalid_argument.engine.branch_name)
-- [`invalid_argument.engine.branch_name_reserved`](https://stratadb.org/e/invalid_argument.engine.branch_name_reserved)
-- [`already_exists.engine.branch`](https://stratadb.org/e/already_exists.engine.branch)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
+| [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch) | The requested branch was not found. |
+| [`invalid_argument.engine.branch_name`](https://stratadb.org/e/invalid_argument.engine.branch_name) | The branch name is invalid. |
+| [`invalid_argument.engine.branch_name_reserved`](https://stratadb.org/e/invalid_argument.engine.branch_name_reserved) | The branch name is invalid. |
+| [`already_exists.engine.branch`](https://stratadb.org/e/already_exists.engine.branch) | A branch with this name already exists. |
 
 ## Invocation
 
-- CLI: `strata branch fork`
+```text
+strata branch fork <source> [--branch <branch>] [--space <space>]
+```
+
 - Wire type: `branch_fork_current`
+
+## Related
+
+- [List branches](/docs/branch/list) — List active branches with their lineage facts.
+- [All `branch` commands](/docs/branch/)

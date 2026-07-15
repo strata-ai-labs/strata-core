@@ -27,12 +27,21 @@ $ strata json sample
 {"type":"json_sample"}
 ```
 
+### Output
+
+One response per step, in order:
+
+```json
+{"data":{"applied":true,"commit":{"delete_count":0,"durable":false,"put_count":3,"timestamp":3,"version":3},"items":[{"applied":true,"commit":{"delete_count":0,"durable":false,"put_count":3,"timestamp":3,"version":3},"effect":{"affected_count":1,"applied":true,"kind":"created","matched":false},"error":null,"index":0,"result":{"document_version":1},"status":"ok"},{"applied":true,"commit":{"delete_count":0,"durable":false,"put_count":3,"timestamp":3,"version":3},"effect":{"affected_count":1,"applied":true,"kind":"created","matched":false},"error":null,"index":1,"result":{"document_version":1},"status":"ok"},{"applied":true,"commit":{"delete_count":0,"durable":false,"put_count":3,"timestamp":3,"version":3},"effect":{"affected_count":1,"applied":true,"kind":"created","matched":false},"error":null,"index":2,"result":{"document_version":1},"status":"ok"}],"mode":"itemwise","status":"ok"},"type":"json_batch_results"}
+{"data":{"cursor":null,"has_more":false,"items":[{"document_version":1,"key":"a","timestamp":3,"value":{"v":1},"version":3},{"document_version":1,"key":"b","timestamp":3,"value":{"v":2},"version":3},{"document_version":1,"key":"c","timestamp":3,"value":{"v":3},"version":3}],"total_count":3},"type":"json_sample_result"}
+```
+
 ## Parameters
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `count` | `integer` | no | Optional sample count. Defaults to 10. |
-| `prefix` | `string` | no | Optional document key prefix. |
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `count` | `integer` | no | 10 | Optional sample count. |
+| `prefix` | `string` | no | — | Optional document key prefix. |
 
 Plus the optional scope: `branch` and `space` (default to the session branch and the `"default"` space).
 
@@ -40,14 +49,31 @@ Plus the optional scope: `branch` and `space` (default to the session branch and
 
 `SamplePage<JsonSampleItem>`.
 
+| Field | Type | Description |
+|---|---|---|
+| `has_more` | `boolean` |  |
+| `items` | `JsonSampleItem[]` | Sampled documents. |
+| `total_count` | `integer` | Total matching live documents. |
+| `cursor` | `string` |  |
+
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
-- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
-- [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space)
-- [`invalid_argument.engine.json_document_id`](https://stratadb.org/e/invalid_argument.engine.json_document_id)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
+| [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch) | The requested branch was not found. |
+| [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space) | The requested space operation cannot be completed. |
+| [`invalid_argument.engine.json_document_id`](https://stratadb.org/e/invalid_argument.engine.json_document_id) | The JSON document request is invalid. |
 
 ## Invocation
 
-- CLI: `strata json sample`
+```text
+strata json sample [--count <integer>] [--prefix <string>] [--branch <branch>] [--space <space>]
+```
+
 - Wire type: `json_sample`
+
+## Related
+
+- [Batch set JSON values](/docs/json/batch_set) — Set multiple JSON values in one itemwise batch.
+- [All `json` commands](/docs/json/)

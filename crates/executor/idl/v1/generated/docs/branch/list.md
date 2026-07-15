@@ -27,6 +27,15 @@ $ strata branch list
 {"type":"branch_list"}
 ```
 
+### Output
+
+One response per step, in order:
+
+```json
+{"data":{"branch_id":"dc42122c-83b7-5436-89bc-9ffa4299697c","created_at":3,"deleted_at":null,"generation":1,"name":"feature","parent":null,"state_revision":0,"status":"active"},"type":"branch"}
+{"data":{"cursor":null,"has_more":false,"items":[{"branch_id":"00000000-0000-0000-0000-000000000000","created_at":null,"deleted_at":null,"generation":1,"name":"default","parent":null,"state_revision":0,"status":"active"},{"branch_id":"dc42122c-83b7-5436-89bc-9ffa4299697c","created_at":3,"deleted_at":null,"generation":1,"name":"feature","parent":null,"state_revision":0,"status":"active"}]},"type":"branches"}
+```
+
 ## Parameters
 
 _No parameters._
@@ -35,11 +44,27 @@ _No parameters._
 
 `Page<BranchItem, String>`.
 
+| Field | Type | Description |
+|---|---|---|
+| `has_more` | `boolean` |  |
+| `items` | `BranchItem[]` | Branches in this page. |
+| `cursor` | `string` |  |
+
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
 
 ## Invocation
 
-- CLI: `strata branch list`
+```text
+strata branch list
+```
+
 - Wire type: `branch_list`
+
+## Related
+
+- [Create empty branch](/docs/branch/create) — Create a new empty root branch.
+- [All `branch` commands](/docs/branch/)

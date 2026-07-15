@@ -18,10 +18,15 @@ section: json
 | [Check JSON document existence](/docs/json/exists) | Check whether one JSON document exists. |
 | [Get JSON value](/docs/json/get) | Read the current or historical JSON value at a document path. |
 | [Read JSON document history](/docs/json/history) | Read retained version history for one JSON document. |
-| [Create JSON index](/docs/json/index/create) | Create a JSON secondary index on a field path. |
-| [Drop JSON index](/docs/json/index/drop) | Drop a JSON secondary index by name. |
-| [List JSON indexes](/docs/json/index/list) | List JSON secondary indexes. |
 | [List JSON document keys](/docs/json/list) | List JSON document keys with optional prefix filtering. |
 | [Sample JSON documents](/docs/json/sample) | Sample visible JSON documents. |
 | [Scan JSON documents](/docs/json/scan) | Scan JSON documents with values and version facts. |
 | [Set JSON value](/docs/json/set) | Set a JSON value at a document path, creating the document when missing. |
+
+## Index
+
+| Command | Summary |
+|---|---|
+| [Create JSON index](/docs/json/index/create) | Create a JSON secondary index on a field path. |
+| [Drop JSON index](/docs/json/index/drop) | Drop a JSON secondary index by name. |
+| [List JSON indexes](/docs/json/index/list) | List JSON secondary indexes. |

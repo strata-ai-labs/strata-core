@@ -23,23 +23,58 @@ $ strata inference capability openai:gpt-4o-mini  # Pure metadata — no request
 {"model":"openai:gpt-4o-mini","type":"inference_model_capability"}
 ```
 
+### Output
+
+One response per step, in order:
+
+```json
+{"data":{"can_embed":true,"can_generate":true,"can_rank":false,"can_tokenize":false,"embedding_dim":0,"model":"gpt-4o-mini","network_enabled":true,"provider":"openai","provider_feature_enabled":true,"requires_api_key":true,"requires_network":true,"supports_json_object":true,"supports_json_schema":true,"supports_logprobs":true,"supports_tools":true},"type":"inference_capability"}
+```
+
 ## Parameters
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `model` | `string` | yes | Model spec. |
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `model` | `string` | yes | — | Model spec. |
 
 ## Returns
 
 `InferenceCapability`.
 
+| Field | Type | Description |
+|---|---|---|
+| `can_embed` | `boolean` | Whether embedding is supported. |
+| `can_generate` | `boolean` | Whether generation is supported. |
+| `can_rank` | `boolean` | Whether ranking is supported. |
+| `can_tokenize` | `boolean` | Whether tokenization is supported. |
+| `embedding_dim` | `integer` | Known embedding dimension, if available. |
+| `model` | `string` | Model name or path after provider parsing. |
+| `network_enabled` | `boolean` | Whether this runtime configuration currently allows network access. |
+| `provider` | `ProviderKind` | Provider kind. |
+| `provider_feature_enabled` | `boolean` | Whether this binary was compiled with the provider feature needed for execution. |
+| `requires_api_key` | `boolean` | Whether the provider requires an API key. |
+| `requires_network` | `boolean` | Whether the operation requires network access. |
+| `supports_json_object` | `boolean` | Whether `response_format: json_object` is honored. |
+| `supports_json_schema` | `boolean` | Whether `response_format: json_schema` (structured output) is honored. |
+| `supports_logprobs` | `boolean` | Whether `logprobs` are returned in the response. |
+| `supports_tools` | `boolean` | Whether chat requests may offer `tools` (function calling). |
+
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
-- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
-- [`inference.invalid_request`](https://stratadb.org/e/inference.invalid_request)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
+| [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch) | The requested branch was not found. |
+| [`inference.invalid_request`](https://stratadb.org/e/inference.invalid_request) | The inference request is invalid. |
 
 ## Invocation
 
-- CLI: `strata inference capability`
+```text
+strata inference capability <model>
+```
+
 - Wire type: `inference_model_capability`
+
+## Related
+
+- [All `inference` commands](/docs/inference/)

@@ -23,22 +23,43 @@ $ strata inference unload
 {"type":"inference_unload"}
 ```
 
+### Output
+
+One response per step, in order:
+
+```json
+{"data":{"unloaded":false},"type":"inference_unload_result"}
+```
+
 ## Parameters
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `model` | `string` | no | Optional model spec. |
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `model` | `string` | no | — | Optional model spec. |
 
 ## Returns
 
 `UnloadResult`.
 
+| Field | Type | Description |
+|---|---|---|
+| `unloaded` | `boolean` | True when a cached entry was removed. |
+
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
-- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
+| [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch) | The requested branch was not found. |
 
 ## Invocation
 
-- CLI: `strata inference unload`
+```text
+strata inference unload [--model <string>]
+```
+
 - Wire type: `inference_unload`
+
+## Related
+
+- [All `inference` commands](/docs/inference/)

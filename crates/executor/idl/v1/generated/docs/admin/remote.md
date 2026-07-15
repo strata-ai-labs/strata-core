@@ -25,6 +25,14 @@ $ strata remote
 {"type":"remote_get"}
 ```
 
+### Output
+
+One response per step, in order:
+
+```json
+{"data":{"origin":null},"type":"remote_origin_result"}
+```
+
 ## Parameters
 
 _No parameters._
@@ -33,11 +41,24 @@ _No parameters._
 
 `Maybe<RemoteOriginInfo>` — a miss returns nothing rather than raising.
 
+| Field | Type | Description |
+|---|---|---|
+| `origin` | `RemoteOriginInfo` | The recorded origin, when present. |
+
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
 
 ## Invocation
 
-- CLI: `strata remote`
+```text
+strata remote
+```
+
 - Wire type: `remote_get`
+
+## Related
+
+- [All `admin` commands](/docs/admin/)

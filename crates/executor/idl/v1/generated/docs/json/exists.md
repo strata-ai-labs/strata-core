@@ -29,11 +29,21 @@ $ strata json exists absent
 {"key":"absent","type":"json_exists"}
 ```
 
+### Output
+
+One response per step, in order:
+
+```json
+{"data":{"commit":{"delete_count":0,"durable":false,"put_count":1,"timestamp":3,"version":3},"effect":{"affected_count":1,"applied":true,"kind":"created","matched":false},"key":"user"},"type":"json_write_result"}
+{"data":true,"type":"bool"}
+{"data":false,"type":"bool"}
+```
+
 ## Parameters
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `key` | `string` | yes | Document key. |
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `key` | `string` | yes | — | Document key. |
 
 Plus the optional scope: `branch` and `space` (default to the session branch and the `"default"` space).
 
@@ -43,12 +53,22 @@ Plus the optional scope: `branch` and `space` (default to the session branch and
 
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
-- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
-- [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space)
-- [`invalid_argument.engine.json_document_id`](https://stratadb.org/e/invalid_argument.engine.json_document_id)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
+| [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch) | The requested branch was not found. |
+| [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space) | The requested space operation cannot be completed. |
+| [`invalid_argument.engine.json_document_id`](https://stratadb.org/e/invalid_argument.engine.json_document_id) | The JSON document request is invalid. |
 
 ## Invocation
 
-- CLI: `strata json exists`
+```text
+strata json exists <key> [--branch <branch>] [--space <space>]
+```
+
 - Wire type: `json_exists`
+
+## Related
+
+- [Set JSON value](/docs/json/set) — Set a JSON value at a document path, creating the document when missing.
+- [All `json` commands](/docs/json/)

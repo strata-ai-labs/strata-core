@@ -31,12 +31,12 @@ $ strata event list
 
 ## Parameters
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `after_sequence` | `integer` | no | Optional exclusive sequence cursor. |
-| `as_of` | `integer` | no | Optional timestamp in microseconds. |
-| `event_type` | `string` | no | Optional event type filter. |
-| `limit` | `integer` | no | Optional item limit. |
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `after_sequence` | `integer` | no | — | Optional exclusive sequence cursor. |
+| `as_of` | `integer` | no | — | Optional timestamp in microseconds. |
+| `event_type` | `string` | no | — | Optional event type filter. |
+| `limit` | `integer` | no | — | Optional item limit. |
 
 Plus the optional scope: `branch` and `space` (default to the session branch and the `"default"` space).
 
@@ -44,15 +44,31 @@ Plus the optional scope: `branch` and `space` (default to the session branch and
 
 `Page<EventVersionedData, u64>`.
 
+| Field | Type | Description |
+|---|---|---|
+| `has_more` | `boolean` |  |
+| `items` | `EventVersionedData[]` | Events in this page. |
+| `cursor` | `integer` |  |
+
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
-- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
-- [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space)
-- [`invalid_argument.engine.event_type`](https://stratadb.org/e/invalid_argument.engine.event_type)
-- [`invalid_argument.executor.limit`](https://stratadb.org/e/invalid_argument.executor.limit)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
+| [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch) | The requested branch was not found. |
+| [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space) | The requested space operation cannot be completed. |
+| [`invalid_argument.engine.event_type`](https://stratadb.org/e/invalid_argument.engine.event_type) | The event request is invalid. |
+| [`invalid_argument.executor.limit`](https://stratadb.org/e/invalid_argument.executor.limit) | The requested limit is invalid. |
 
 ## Invocation
 
-- CLI: `strata event list`
+```text
+strata event list [--after-sequence <integer>] [--as-of <integer>] [--event-type <string>] [--limit <integer>] [--branch <branch>] [--space <space>]
+```
+
 - Wire type: `event_list`
+
+## Related
+
+- [Append event](/docs/event/append) — Append one event to the branch event log.
+- [All `event` commands](/docs/event/)

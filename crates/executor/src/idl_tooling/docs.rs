@@ -189,9 +189,10 @@ fn render_page(
     }
 
     out.push_str(&render_parameters(schema));
-    out.push_str(&render_returns(entry));
+    out.push_str(&render_returns(entry, schema));
     out.push_str(&render_errors(entry));
     out.push_str(&render_invocation(entry, schema));
+    out.push_str(&render_related(entry, example, by_id));
 
     let mut result = out.trim_end().to_owned();
     result.push('\n');
@@ -204,21 +205,68 @@ struct ParamRow {
     type_label: String,
     required: bool,
     description: String,
+    default: Option<String>,
 }
 
 impl ParamRow {
     fn from_property(name: &str, prop: &Value, required: bool) -> Self {
+        let raw = prop
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        // A structured schema default wins; otherwise the DTO doc-comments
+        // state defaults as a trailing "Defaults to <x>." sentence — lift it
+        // out of the description into the Default column.
+        let schema_default = prop
+            .get("default")
+            .filter(|value| !value.is_null())
+            .map(|value| {
+                value
+                    .as_str()
+                    .map_or_else(|| value.to_string(), ToOwned::to_owned)
+            });
+        let (description, prose_default) = split_default_sentence(raw);
         Self {
             name: name.to_owned(),
             type_label: type_label(prop),
             required,
-            description: prop
-                .get("description")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
+            description,
+            default: schema_default.or(prose_default),
         }
     }
+}
+
+/// Splits a trailing "Defaults to <x>." sentence out of a description,
+/// returning the remaining description and the default text (period-free).
+fn split_default_sentence(description: &str) -> (String, Option<String>) {
+    const MARKER: &str = "Defaults to ";
+    let Some(start) = description.find(MARKER) else {
+        return (description.to_owned(), None);
+    };
+    let after = &description[start + MARKER.len()..];
+    // The sentence ends at a period that closes the text or precedes
+    // whitespace — a mid-number period ("0.85") does not terminate it.
+    let Some(end) = after.char_indices().find_map(|(pos, ch)| {
+        (ch == '.'
+            && after[pos + 1..]
+                .chars()
+                .next()
+                .is_none_or(char::is_whitespace))
+        .then_some(pos)
+    }) else {
+        return (description.to_owned(), None);
+    };
+    let default = after[..end].trim().to_owned();
+    let mut rest = String::new();
+    rest.push_str(description[..start].trim_end());
+    let tail = after[end + 1..].trim_start();
+    if !tail.is_empty() {
+        if !rest.is_empty() {
+            rest.push(' ');
+        }
+        rest.push_str(tail);
+    }
+    (rest, (!default.is_empty()).then_some(default))
 }
 
 fn render_parameters(schema: &Value) -> String {
@@ -264,19 +312,26 @@ fn render_parameters(schema: &Value) -> String {
         }
     }
 
+    // Stable, scannable order regardless of schema emission order: required
+    // parameters first, each group alphabetical.
+    rows.sort_by(|a, b| b.required.cmp(&a.required).then(a.name.cmp(&b.name)));
+
     let mut out = String::from("## Parameters\n\n");
     if rows.is_empty() {
         out.push_str("_No parameters._\n\n");
     } else {
-        out.push_str("| Name | Type | Required | Description |\n");
-        out.push_str("|---|---|---|---|\n");
+        out.push_str("| Name | Type | Required | Default | Description |\n");
+        out.push_str("|---|---|---|---|---|\n");
         for row in &rows {
             writeln!(
                 out,
-                "| `{}` | `{}` | {} | {} |",
+                "| `{}` | `{}` | {} | {} | {} |",
                 row.name,
                 row.type_label,
                 if row.required { "yes" } else { "no" },
+                row.default
+                    .as_deref()
+                    .map_or_else(|| "—".to_owned(), table_cell),
                 table_cell(&row.description),
             )
             .expect(INFALLIBLE);
@@ -319,7 +374,7 @@ fn expand_object(object: &Value, rows: &mut Vec<ParamRow>) {
     }
 }
 
-fn render_returns(entry: &ResolvedCommand) -> String {
+fn render_returns(entry: &ResolvedCommand, schema: &Value) -> String {
     let mut out = String::from("## Returns\n\n");
     write!(out, "`{}`", entry.response_model).expect(INFALLIBLE);
     // `Maybe<T>` models a miss as absence, never an error — call it out.
@@ -329,7 +384,51 @@ fn render_returns(entry: &ResolvedCommand) -> String {
         out.push('.');
     }
     out.push_str("\n\n");
+
+    // The response schema's `data` node carries the actual payload shape;
+    // surface its fields so a reader never has to guess what comes back.
+    let defs = schema
+        .get("$defs")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(data) = schema.pointer("/response/properties/data") {
+        let resolved = resolve_ref(data, &defs);
+        if let Some(props) = resolved.get("properties").and_then(Value::as_object) {
+            let required = string_set(resolved.get("required"));
+            let mut rows: Vec<ParamRow> = props
+                .iter()
+                .map(|(name, prop)| {
+                    ParamRow::from_property(name, prop, required.contains(name.as_str()))
+                })
+                .collect();
+            rows.sort_by(|a, b| b.required.cmp(&a.required).then(a.name.cmp(&b.name)));
+            out.push_str("| Field | Type | Description |\n|---|---|---|\n");
+            for row in &rows {
+                writeln!(
+                    out,
+                    "| `{}` | `{}` | {} |",
+                    row.name,
+                    row.type_label,
+                    table_cell(&row.description)
+                )
+                .expect(INFALLIBLE);
+            }
+            out.push('\n');
+        }
+    }
     out
+}
+
+/// Follows a top-level `$ref` into the schema's `$defs`, returning the target
+/// (or the value unchanged when it is not a reference or the def is missing).
+fn resolve_ref<'a>(value: &'a Value, defs: &'a Map<String, Value>) -> &'a Value {
+    value
+        .get("$ref")
+        .and_then(Value::as_str)
+        .and_then(|reference| reference.strip_prefix("#/$defs/"))
+        .and_then(|name| defs.get(name))
+        .unwrap_or(value)
 }
 
 fn render_errors(entry: &ResolvedCommand) -> String {
@@ -337,8 +436,19 @@ fn render_errors(entry: &ResolvedCommand) -> String {
     if entry.errors.is_empty() {
         out.push_str("_None specific to this command._\n\n");
     } else {
+        out.push_str("| Code | Meaning |\n|---|---|\n");
         for error in &entry.errors {
-            writeln!(out, "- [`{}`]({})", error.code, error.docs).expect(INFALLIBLE);
+            let meaning = crate::error_registry::public_error_code_entry(&error.code)
+                .map(|registry| registry.message_template)
+                .unwrap_or_default();
+            writeln!(
+                out,
+                "| [`{}`]({}) | {} |",
+                error.code,
+                error.docs,
+                table_cell(meaning)
+            )
+            .expect(INFALLIBLE);
         }
         out.push('\n');
     }
@@ -352,11 +462,94 @@ fn render_invocation(entry: &ResolvedCommand, schema: &Value) -> String {
         .unwrap_or(&entry.id);
     let mut out = String::from("## Invocation\n\n");
     if entry.cli.surface == "verb" {
-        writeln!(out, "- CLI: `strata {}`", entry.cli.path.join(" ")).expect(INFALLIBLE);
+        writeln!(out, "```text\n{}\n```\n", cli_synopsis(entry, schema)).expect(INFALLIBLE);
     } else {
         out.push_str("- CLI: via `strata command run` (no dedicated verb)\n");
     }
     writeln!(out, "- Wire type: `{wire}`").expect(INFALLIBLE);
+    out.push('\n');
+    out
+}
+
+/// Builds the CLI synopsis for a verb command from its request schema:
+/// required parameters as positionals in schema order, optional ones as
+/// `[--flag <type>]`, and the shared scope flags last. Mirrors the argument
+/// layout `render_cli` uses for example invocations.
+fn cli_synopsis(entry: &ResolvedCommand, schema: &Value) -> String {
+    let mut tokens = vec![String::from("strata")];
+    tokens.extend(entry.cli.path.iter().cloned());
+
+    let required = string_set(schema.pointer("/request/required"));
+    let mut has_scope = false;
+    let mut optional = Vec::new();
+    if let Some(props) = schema
+        .pointer("/request/properties")
+        .and_then(Value::as_object)
+    {
+        // Positionals first, in the schema's required order.
+        if let Some(order) = schema
+            .pointer("/request/required")
+            .and_then(Value::as_array)
+        {
+            for name in order.iter().filter_map(Value::as_str) {
+                if name != "type" && name != "branch" && name != "space" {
+                    tokens.push(format!("<{name}>"));
+                }
+            }
+        }
+        for (name, prop) in props {
+            match name.as_str() {
+                "type" => {}
+                "branch" | "space" => has_scope = true,
+                _ if required.contains(name.as_str()) => {}
+                _ => optional.push(format!(
+                    "[--{} <{}>]",
+                    name.replace('_', "-"),
+                    type_label(prop)
+                )),
+            }
+        }
+    }
+    optional.sort();
+    tokens.extend(optional);
+    if has_scope {
+        tokens.push("[--branch <branch>] [--space <space>]".to_owned());
+    }
+    tokens.join(" ")
+}
+
+/// Cross-links the sibling commands this command's canonical example actually
+/// exercises, plus the family index — navigation without hand-curation.
+fn render_related(
+    entry: &ResolvedCommand,
+    example: Option<&Example>,
+    by_id: &BTreeMap<&str, &ResolvedCommand>,
+) -> String {
+    let mut related: BTreeSet<&str> = BTreeSet::new();
+    if let Some(example) = example {
+        for step in &example.steps {
+            if step.call != entry.id {
+                related.insert(step.call.as_str());
+            }
+        }
+    }
+    let mut out = String::from("## Related\n\n");
+    for id in &related {
+        if let Some(sibling) = by_id.get(id) {
+            writeln!(
+                out,
+                "- [{}]({}) — {}",
+                sibling.title, sibling.docs, sibling.summary
+            )
+            .expect(INFALLIBLE);
+        }
+    }
+    writeln!(
+        out,
+        "- [All `{}` commands](/docs/{}/)",
+        entry.family, entry.family
+    )
+    .expect(INFALLIBLE);
     out.push('\n');
     out
 }
@@ -376,18 +569,67 @@ fn render_family_index(family: &str, commands: &[&ResolvedCommand], stamp: &str)
     out.push_str("---\n\n");
     writeln!(out, "# `{family}` — command reference").expect(INFALLIBLE);
     out.push('\n');
-    out.push_str("| Command | Summary |\n|---|---|\n");
+
+    // Mirror the URL hierarchy: flat commands first, then one titled table per
+    // sub-group (`graph/analytics/*`, `vector/collection/*`, ...), so a
+    // 30-command family stays scannable.
+    let prefix = format!("/docs/{family}/");
+    let mut top_level = Vec::new();
+    let mut subgroups: BTreeMap<&str, Vec<&&ResolvedCommand>> = BTreeMap::new();
     for entry in commands {
-        writeln!(
-            out,
-            "| [{}]({}) | {} |",
-            table_cell(&entry.title),
-            entry.docs,
-            table_cell(&entry.summary),
-        )
-        .expect(INFALLIBLE);
+        match entry
+            .docs
+            .strip_prefix(&prefix)
+            .filter(|rest| rest.contains('/'))
+            .and_then(|rest| rest.split('/').next())
+        {
+            Some(group) => subgroups.entry(group).or_default().push(entry),
+            None => top_level.push(entry),
+        }
     }
-    out
+
+    if !top_level.is_empty() {
+        out.push_str("| Command | Summary |\n|---|---|\n");
+        for entry in &top_level {
+            writeln!(
+                out,
+                "| [{}]({}) | {} |",
+                table_cell(&entry.title),
+                entry.docs,
+                table_cell(&entry.summary),
+            )
+            .expect(INFALLIBLE);
+        }
+        out.push('\n');
+    }
+    for (group, entries) in &subgroups {
+        writeln!(out, "## {}", title_case(group)).expect(INFALLIBLE);
+        out.push('\n');
+        out.push_str("| Command | Summary |\n|---|---|\n");
+        for entry in entries {
+            writeln!(
+                out,
+                "| [{}]({}) | {} |",
+                table_cell(&entry.title),
+                entry.docs,
+                table_cell(&entry.summary),
+            )
+            .expect(INFALLIBLE);
+        }
+        out.push('\n');
+    }
+    let mut result = out.trim_end().to_owned();
+    result.push('\n');
+    result
+}
+
+/// Uppercases the first character of a URL segment for a heading.
+fn title_case(segment: &str) -> String {
+    let mut chars = segment.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 fn render_llms_txt(families: &BTreeMap<&str, Vec<&ResolvedCommand>>) -> String {
@@ -585,5 +827,38 @@ mod tests {
     fn yaml_quote_escapes_quotes_and_backslashes() {
         assert_eq!(yaml_quote("Put KV value"), "\"Put KV value\"");
         assert_eq!(yaml_quote("say \"hi\""), "\"say \\\"hi\\\"\"");
+    }
+
+    #[test]
+    fn split_default_sentence_lifts_the_default_and_keeps_the_rest() {
+        assert_eq!(
+            split_default_sentence("Optional damping factor. Defaults to 0.85."),
+            (
+                "Optional damping factor.".to_owned(),
+                Some("0.85".to_owned())
+            )
+        );
+        assert_eq!(
+            split_default_sentence("Defaults to the engine limits. Hard cap applies."),
+            (
+                "Hard cap applies.".to_owned(),
+                Some("the engine limits".to_owned())
+            )
+        );
+        assert_eq!(
+            split_default_sentence("No default sentence here."),
+            ("No default sentence here.".to_owned(), None)
+        );
+        // An unterminated marker sentence is left alone rather than guessed at.
+        assert_eq!(
+            split_default_sentence("Defaults to something unbounded"),
+            ("Defaults to something unbounded".to_owned(), None)
+        );
+    }
+
+    #[test]
+    fn title_case_uppercases_the_first_segment_char() {
+        assert_eq!(title_case("analytics"), "Analytics");
+        assert_eq!(title_case(""), "");
     }
 }

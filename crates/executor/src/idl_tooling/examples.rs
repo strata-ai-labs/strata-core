@@ -354,6 +354,13 @@ fn assert_result(
 /// per-example temp dir instead.
 const DOC_TMPDIR: &str = "/tmp/exports";
 
+/// Commands whose replay output depends on the *machine*, not the example —
+/// stable across back-to-back replays (so the double-replay filter passes
+/// them) but different on another host, where `check-docs` would flag the
+/// committed page as drift. `inference.models.list` reports which models are
+/// pulled into the local cache (`is_local`, `local_path`).
+const MACHINE_DEPENDENT_OUTPUT: &[&str] = &["inference.models.list"];
+
 /// Substitutes the `{tmpdir}` placeholder in string arg values (at any depth)
 /// with `tmpdir`. File-path arguments are written as `{tmpdir}/<file>` so the
 /// replay targets a real scratch dir and the docs render a representative one.
@@ -518,50 +525,68 @@ fn schema_type_is(schema: &Value, wanted: &str) -> bool {
     }
 }
 
-/// Renders the `## Examples` section (CLI + wire tabs) for one command, given
-/// the whole catalog (steps may call sibling commands) and schemas.
-/// Best-effort replay of an example against a scratch cache executor, returning
-/// the `data`-level output of every `bind:` step keyed by name — so doc
-/// rendering resolves `{name.path}` references to the value they hold at replay.
-/// Empty when nothing binds; render still succeeds if replay errors (the
-/// verify-examples guard is the authority on replay correctness).
-fn resolve_example_bindings(
+/// One best-effort replay of an example against a scratch cache executor.
+///
+/// Returns the `data`-level output of every `bind:` step keyed by name (so doc
+/// rendering resolves `{name.path}` references to the value they hold at
+/// replay) plus every step's full serialized output in order (`None` for a
+/// step that failed). Real scratch paths are substituted back to the
+/// representative `DOC_TMPDIR` so rendered output is machine-independent.
+/// Render still succeeds if replay errors (the verify-examples guard is the
+/// authority on replay correctness).
+fn replay_example(
     example: &Example,
     schemas: &BTreeMap<String, Value>,
-) -> BTreeMap<String, Value> {
+) -> (BTreeMap<String, Value>, Vec<Option<Value>>) {
     let mut bindings = BTreeMap::new();
-    if example.steps.iter().all(|step| step.bind.is_none()) {
-        return bindings;
-    }
+    let mut outputs = Vec::with_capacity(example.steps.len());
     let Ok(tmpdir) = tempfile::tempdir() else {
-        return bindings;
+        outputs.resize(example.steps.len(), None);
+        return (bindings, outputs);
     };
     let tmpdir_path = tmpdir.path().to_string_lossy();
     let Ok(mut executor) = Executor::open_cache() else {
-        return bindings;
+        outputs.resize(example.steps.len(), None);
+        return (bindings, outputs);
     };
     for step in &example.steps {
-        let Some(schema) = schemas.get(&step.call) else {
-            continue;
-        };
-        let Ok(wire) = step_wire_json("", 0, step, schema, &tmpdir_path, &bindings) else {
-            continue;
-        };
-        let Ok(command) = serde_json::from_value::<Command>(wire) else {
-            continue;
-        };
-        let Ok(output) = executor.execute(command) else {
-            continue;
-        };
-        if let Some(name) = &step.bind {
-            if let Ok(value) = serde_json::to_value(&output) {
+        let output_value = schemas
+            .get(&step.call)
+            .and_then(|schema| step_wire_json("", 0, step, schema, &tmpdir_path, &bindings).ok())
+            .and_then(|wire| serde_json::from_value::<Command>(wire).ok())
+            .and_then(|command| executor.execute(command).ok())
+            .and_then(|output| serde_json::to_value(&output).ok());
+        if let Some(value) = &output_value {
+            if let Some(name) = &step.bind {
                 if let Some(data) = value.get("data") {
                     bindings.insert(name.clone(), data.clone());
                 }
             }
         }
+        // The scratch dir path leaks into outputs that echo file paths
+        // (arrow export/import); pin it back to the representative dir.
+        outputs.push(output_value.map(|value| replace_str(&value, &tmpdir_path, DOC_TMPDIR)));
     }
-    bindings
+    (bindings, outputs)
+}
+
+/// Replaces every occurrence of `from` inside string values (at any depth).
+fn replace_str(value: &Value, from: &str, to: &str) -> Value {
+    match value {
+        Value::String(text) if text.contains(from) => Value::String(text.replace(from, to)),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| replace_str(item, from, to))
+                .collect(),
+        ),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, item)| (key.clone(), replace_str(item, from, to)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 
 pub(super) fn render_section(
@@ -569,7 +594,20 @@ pub(super) fn render_section(
     schemas: &BTreeMap<String, Value>,
     example: &Example,
 ) -> String {
-    let bindings = resolve_example_bindings(example, schemas);
+    // Replay twice and keep only outputs identical across runs: a value that
+    // varies run-to-run (a timing, a counter) must not land in generated docs,
+    // where `check-docs` would flag it as permanent drift.
+    let (bindings, first_outputs) = replay_example(example, schemas);
+    let (_, second_outputs) = replay_example(example, schemas);
+    let outputs: Vec<Option<&Value>> = first_outputs
+        .iter()
+        .zip(&second_outputs)
+        .map(|(a, b)| match (a, b) {
+            (Some(first), Some(second)) if first == second => Some(first),
+            _ => None,
+        })
+        .collect();
+
     let mut out = String::from("## Examples\n\n");
     if let Some(caption) = &example.caption {
         out.push_str(caption.trim());
@@ -594,6 +632,24 @@ pub(super) fn render_section(
         }
     }
     out.push_str("```\n\n");
+
+    // One response line per step, aligned with the Wire block above. Rendered
+    // only when every step produced a stable output, so the two blocks always
+    // line up.
+    let machine_dependent = example
+        .steps
+        .iter()
+        .any(|step| MACHINE_DEPENDENT_OUTPUT.contains(&step.call.as_str()));
+    if !machine_dependent
+        && outputs.len() == example.steps.len()
+        && outputs.iter().all(Option::is_some)
+    {
+        out.push_str("### Output\n\nOne response per step, in order:\n\n```json\n");
+        for output in outputs.into_iter().flatten() {
+            writeln!(out, "{}", compact(output)).expect(INFALLIBLE);
+        }
+        out.push_str("```\n\n");
+    }
     out
 }
 

@@ -25,11 +25,19 @@ $ strata config get-key missing
 {"key":"missing","type":"configure_get_key"}
 ```
 
+### Output
+
+One response per step, in order:
+
+```json
+{"data":null,"type":"config_value"}
+```
+
 ## Parameters
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `key` | `string` | yes | Config key. |
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `key` | `string` | yes | — | Config key. |
 
 ## Returns
 
@@ -37,10 +45,19 @@ $ strata config get-key missing
 
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
-- [`invalid_argument.engine.config_key`](https://stratadb.org/e/invalid_argument.engine.config_key)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
+| [`invalid_argument.engine.config_key`](https://stratadb.org/e/invalid_argument.engine.config_key) | The request contains invalid input. |
 
 ## Invocation
 
-- CLI: `strata config get-key`
+```text
+strata config get-key <key>
+```
+
 - Wire type: `configure_get_key`
+
+## Related
+
+- [All `admin` commands](/docs/admin/)
