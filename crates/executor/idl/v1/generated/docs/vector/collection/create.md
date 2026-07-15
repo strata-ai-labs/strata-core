@@ -27,13 +27,22 @@ $ strata vector collection stats docs
 {"collection":"docs","type":"vector_collection_stats"}
 ```
 
+### Output
+
+One response per step, in order:
+
+```json
+{"data":{"cursor":null,"has_more":false,"items":[{"count":0,"dimension":3,"metric":"cosine","name":"docs"}]},"type":"vector_collection_list"}
+{"data":{"cursor":null,"has_more":false,"items":[{"count":0,"dimension":3,"metric":"cosine","name":"docs"}]},"type":"vector_collection_list"}
+```
+
 ## Parameters
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `collection` | `string` | yes | Collection name. |
-| `dimension` | `integer` | yes | Embedding dimension. |
-| `metric` | `VectorDistanceMetric` | yes | Distance metric. |
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `collection` | `string` | yes | — | Collection name. |
+| `dimension` | `integer` | yes | — | Embedding dimension. |
+| `metric` | `VectorDistanceMetric` | yes | — | Distance metric. |
 
 Plus the optional scope: `branch` and `space` (default to the session branch and the `"default"` space).
 
@@ -41,18 +50,34 @@ Plus the optional scope: `branch` and `space` (default to the session branch and
 
 `MutationAck<VectorCollectionCreate>`.
 
+| Field | Type | Description |
+|---|---|---|
+| `has_more` | `boolean` |  |
+| `items` | `VectorCollectionInfo[]` | Collections in this page. |
+| `cursor` | `string` |  |
+
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
-- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
-- [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space)
-- [`invalid_argument.engine.vector_collection`](https://stratadb.org/e/invalid_argument.engine.vector_collection)
-- [`invalid_argument.engine.vector_key`](https://stratadb.org/e/invalid_argument.engine.vector_key)
-- [`not_found.engine.vector_collection`](https://stratadb.org/e/not_found.engine.vector_collection)
-- [`invalid_argument.engine.vector_dimension`](https://stratadb.org/e/invalid_argument.engine.vector_dimension)
-- [`invalid_argument.executor.vector_dimension`](https://stratadb.org/e/invalid_argument.executor.vector_dimension)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
+| [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch) | The requested branch was not found. |
+| [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space) | The requested space operation cannot be completed. |
+| [`invalid_argument.engine.vector_collection`](https://stratadb.org/e/invalid_argument.engine.vector_collection) | The vector request is invalid. |
+| [`invalid_argument.engine.vector_key`](https://stratadb.org/e/invalid_argument.engine.vector_key) | The vector request is invalid. |
+| [`not_found.engine.vector_collection`](https://stratadb.org/e/not_found.engine.vector_collection) | The requested vector collection was not found. |
+| [`invalid_argument.engine.vector_dimension`](https://stratadb.org/e/invalid_argument.engine.vector_dimension) | The vector request is invalid. |
+| [`invalid_argument.executor.vector_dimension`](https://stratadb.org/e/invalid_argument.executor.vector_dimension) | The vector dimension is invalid. |
 
 ## Invocation
 
-- CLI: `strata vector collection create`
+```text
+strata vector collection create <collection> <dimension> <metric> [--branch <branch>] [--space <space>]
+```
+
 - Wire type: `vector_create_collection`
+
+## Related
+
+- [Read vector collection stats](/docs/vector/collection/stats) — Read facts for one vector collection.
+- [All `vector` commands](/docs/vector/)

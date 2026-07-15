@@ -31,12 +31,27 @@ _No parameters._
 
 `Page<ModelInfo, String>`.
 
+| Field | Type | Description |
+|---|---|---|
+| `has_more` | `boolean` |  |
+| `items` | `ModelInfo[]` | Models in this page. |
+| `cursor` | `string` |  |
+
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
-- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
+| [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch) | The requested branch was not found. |
 
 ## Invocation
 
-- CLI: `strata inference models list`
+```text
+strata inference models list
+```
+
 - Wire type: `inference_models_list`
+
+## Related
+
+- [All `inference` commands](/docs/inference/)

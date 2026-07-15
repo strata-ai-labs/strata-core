@@ -31,12 +31,23 @@ $ strata vector sample docs
 {"collection":"docs","type":"vector_sample"}
 ```
 
+### Output
+
+One response per step, in order:
+
+```json
+{"data":{"cursor":null,"has_more":false,"items":[{"count":0,"dimension":3,"metric":"cosine","name":"docs"}]},"type":"vector_collection_list"}
+{"data":{"collection":"docs","commit":{"delete_count":0,"durable":false,"put_count":1,"timestamp":4,"version":4},"effect":{"affected_count":1,"applied":true,"kind":"created","matched":false},"key":"a","vector_revision":1},"type":"vector_write_result"}
+{"data":{"collection":"docs","commit":{"delete_count":0,"durable":false,"put_count":1,"timestamp":5,"version":5},"effect":{"affected_count":1,"applied":true,"kind":"created","matched":false},"key":"b","vector_revision":1},"type":"vector_write_result"}
+{"data":{"cursor":null,"has_more":false,"items":[{"data":{"embedding":[1.0,0.0,0.0]},"key":"a","timestamp":4,"vector_revision":1,"version":4},{"data":{"embedding":[0.0,1.0,0.0]},"key":"b","timestamp":5,"vector_revision":1,"version":5}],"total_count":2},"type":"vector_sample_result"}
+```
+
 ## Parameters
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `collection` | `string` | yes | Collection name. |
-| `count` | `integer` | no | Optional sample count. Defaults to 10. |
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `collection` | `string` | yes | — | Collection name. |
+| `count` | `integer` | no | 10 | Optional sample count. |
 
 Plus the optional scope: `branch` and `space` (default to the session branch and the `"default"` space).
 
@@ -44,16 +55,34 @@ Plus the optional scope: `branch` and `space` (default to the session branch and
 
 `SamplePage<VectorVersionedData>`.
 
+| Field | Type | Description |
+|---|---|---|
+| `has_more` | `boolean` |  |
+| `items` | `VectorVersionedData[]` | Sampled vectors. |
+| `total_count` | `integer` | Total live vectors in the collection. |
+| `cursor` | `string` |  |
+
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
-- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
-- [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space)
-- [`invalid_argument.engine.vector_collection`](https://stratadb.org/e/invalid_argument.engine.vector_collection)
-- [`invalid_argument.engine.vector_key`](https://stratadb.org/e/invalid_argument.engine.vector_key)
-- [`not_found.engine.vector_collection`](https://stratadb.org/e/not_found.engine.vector_collection)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
+| [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch) | The requested branch was not found. |
+| [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space) | The requested space operation cannot be completed. |
+| [`invalid_argument.engine.vector_collection`](https://stratadb.org/e/invalid_argument.engine.vector_collection) | The vector request is invalid. |
+| [`invalid_argument.engine.vector_key`](https://stratadb.org/e/invalid_argument.engine.vector_key) | The vector request is invalid. |
+| [`not_found.engine.vector_collection`](https://stratadb.org/e/not_found.engine.vector_collection) | The requested vector collection was not found. |
 
 ## Invocation
 
-- CLI: `strata vector sample`
+```text
+strata vector sample <collection> [--count <integer>] [--branch <branch>] [--space <space>]
+```
+
 - Wire type: `vector_sample`
+
+## Related
+
+- [Create vector collection](/docs/vector/collection/create) — Create a vector collection with a dimension and metric.
+- [Upsert vector](/docs/vector/upsert) — Insert or replace one vector.
+- [All `vector` commands](/docs/vector/)

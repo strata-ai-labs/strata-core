@@ -25,11 +25,19 @@ $ strata kv history absent
 {"key":"YWJzZW50","type":"kv_history"}
 ```
 
+### Output
+
+One response per step, in order:
+
+```json
+{"data":null,"type":"version_history"}
+```
+
 ## Parameters
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `key` | `Bytes` | yes | Key to read. |
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `key` | `Bytes` | yes | — | Key to read. |
 
 Plus the optional scope: `branch` and `space` (default to the session branch and the `"default"` space).
 
@@ -39,12 +47,21 @@ Plus the optional scope: `branch` and `space` (default to the session branch and
 
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
-- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
-- [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space)
-- [`invalid_argument.engine.kv_key`](https://stratadb.org/e/invalid_argument.engine.kv_key)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
+| [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch) | The requested branch was not found. |
+| [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space) | The requested space operation cannot be completed. |
+| [`invalid_argument.engine.kv_key`](https://stratadb.org/e/invalid_argument.engine.kv_key) | The KV request is invalid. |
 
 ## Invocation
 
-- CLI: `strata kv history`
+```text
+strata kv history <key> [--branch <branch>] [--space <space>]
+```
+
 - Wire type: `kv_history`
+
+## Related
+
+- [All `kv` commands](/docs/kv/)

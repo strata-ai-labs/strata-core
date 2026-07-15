@@ -29,14 +29,24 @@ $ strata vector exists docs a
 {"collection":"docs","key":"a","type":"vector_exists"}
 ```
 
+### Output
+
+One response per step, in order:
+
+```json
+{"data":{"cursor":null,"has_more":false,"items":[{"count":0,"dimension":3,"metric":"cosine","name":"docs"}]},"type":"vector_collection_list"}
+{"data":{"collection":"docs","commit":{"delete_count":0,"durable":false,"put_count":1,"timestamp":4,"version":4},"effect":{"affected_count":1,"applied":true,"kind":"created","matched":false},"key":"a","vector_revision":1},"type":"vector_write_result"}
+{"data":true,"type":"bool"}
+```
+
 ## Parameters
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `collection` | `string` | yes | Collection name. |
-| `key` | `string` | yes | Vector key. |
-| `metadata` | `any` | no | Optional metadata. |
-| `vector` | `number[]` | yes | Dense embedding. |
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `collection` | `string` | yes | — | Collection name. |
+| `key` | `string` | yes | — | Vector key. |
+| `vector` | `number[]` | yes | — | Dense embedding. |
+| `metadata` | `any` | no | — | Optional metadata. |
 
 Plus the optional scope: `branch` and `space` (default to the session branch and the `"default"` space).
 
@@ -44,20 +54,39 @@ Plus the optional scope: `branch` and `space` (default to the session branch and
 
 `MutationAck<VectorWrite>`.
 
+| Field | Type | Description |
+|---|---|---|
+| `collection` | `string` | Collection name. |
+| `commit` | `CommitReceipt` | Commit receipt. |
+| `effect` | `MutationEffect` | Mutation effect facts. |
+| `key` | `string` | Vector key. |
+| `vector_revision` | `integer` | Product vector revision. |
+
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
-- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
-- [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space)
-- [`invalid_argument.engine.vector_collection`](https://stratadb.org/e/invalid_argument.engine.vector_collection)
-- [`invalid_argument.engine.vector_key`](https://stratadb.org/e/invalid_argument.engine.vector_key)
-- [`not_found.engine.vector_collection`](https://stratadb.org/e/not_found.engine.vector_collection)
-- [`invalid_argument.engine.vector_dimension`](https://stratadb.org/e/invalid_argument.engine.vector_dimension)
-- [`invalid_argument.engine.vector_embedding`](https://stratadb.org/e/invalid_argument.engine.vector_embedding)
-- [`invalid_argument.engine.vector_metadata`](https://stratadb.org/e/invalid_argument.engine.vector_metadata)
-- [`invalid_argument.executor.vector_dimension`](https://stratadb.org/e/invalid_argument.executor.vector_dimension)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
+| [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch) | The requested branch was not found. |
+| [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space) | The requested space operation cannot be completed. |
+| [`invalid_argument.engine.vector_collection`](https://stratadb.org/e/invalid_argument.engine.vector_collection) | The vector request is invalid. |
+| [`invalid_argument.engine.vector_key`](https://stratadb.org/e/invalid_argument.engine.vector_key) | The vector request is invalid. |
+| [`not_found.engine.vector_collection`](https://stratadb.org/e/not_found.engine.vector_collection) | The requested vector collection was not found. |
+| [`invalid_argument.engine.vector_dimension`](https://stratadb.org/e/invalid_argument.engine.vector_dimension) | The vector request is invalid. |
+| [`invalid_argument.engine.vector_embedding`](https://stratadb.org/e/invalid_argument.engine.vector_embedding) | The vector request is invalid. |
+| [`invalid_argument.engine.vector_metadata`](https://stratadb.org/e/invalid_argument.engine.vector_metadata) | The vector request is invalid. |
+| [`invalid_argument.executor.vector_dimension`](https://stratadb.org/e/invalid_argument.executor.vector_dimension) | The vector dimension is invalid. |
 
 ## Invocation
 
-- CLI: `strata vector upsert`
+```text
+strata vector upsert <collection> <key> <vector> [--metadata <any>] [--branch <branch>] [--space <space>]
+```
+
 - Wire type: `vector_upsert`
+
+## Related
+
+- [Create vector collection](/docs/vector/collection/create) — Create a vector collection with a dimension and metric.
+- [Check vector existence](/docs/vector/exists) — Check whether one vector key exists.
+- [All `vector` commands](/docs/vector/)

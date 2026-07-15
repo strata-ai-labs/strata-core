@@ -27,6 +27,15 @@ $ strata branch get feature
 {"branch":"feature","type":"branch_get"}
 ```
 
+### Output
+
+One response per step, in order:
+
+```json
+{"data":{"branch_id":"dc42122c-83b7-5436-89bc-9ffa4299697c","created_at":3,"deleted_at":null,"generation":1,"name":"feature","parent":null,"state_revision":0,"status":"active"},"type":"branch"}
+{"data":{"branch_id":"dc42122c-83b7-5436-89bc-9ffa4299697c","created_at":3,"deleted_at":null,"generation":1,"name":"feature","parent":null,"state_revision":0,"status":"active"},"type":"branch"}
+```
+
 ## Parameters
 
 _No parameters._
@@ -37,14 +46,35 @@ Plus the optional scope: `branch` and `space` (default to the session branch and
 
 `StatusResponse<BranchItem>`.
 
+| Field | Type | Description |
+|---|---|---|
+| `branch_id` | `string` |  |
+| `generation` | `integer` |  |
+| `name` | `string` |  |
+| `state_revision` | `integer` |  |
+| `status` | `BranchStatus` |  |
+| `created_at` | `integer` |  |
+| `deleted_at` | `integer` |  |
+| `parent` | `BranchParentItem` |  |
+
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
-- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
-- [`invalid_argument.engine.branch_name`](https://stratadb.org/e/invalid_argument.engine.branch_name)
-- [`invalid_argument.engine.branch_name_reserved`](https://stratadb.org/e/invalid_argument.engine.branch_name_reserved)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
+| [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch) | The requested branch was not found. |
+| [`invalid_argument.engine.branch_name`](https://stratadb.org/e/invalid_argument.engine.branch_name) | The branch name is invalid. |
+| [`invalid_argument.engine.branch_name_reserved`](https://stratadb.org/e/invalid_argument.engine.branch_name_reserved) | The branch name is invalid. |
 
 ## Invocation
 
-- CLI: `strata branch get`
+```text
+strata branch get [--branch <branch>] [--space <space>]
+```
+
 - Wire type: `branch_get`
+
+## Related
+
+- [Create empty branch](/docs/branch/create) — Create a new empty root branch.
+- [All `branch` commands](/docs/branch/)

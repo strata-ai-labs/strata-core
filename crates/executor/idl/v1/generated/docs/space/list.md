@@ -27,6 +27,15 @@ $ strata space list
 {"type":"space_list"}
 ```
 
+### Output
+
+One response per step, in order:
+
+```json
+{"data":{"commit":{"delete_count":0,"durable":false,"put_count":1,"timestamp":3,"version":3},"effect":{"affected_count":1,"applied":true,"kind":"created","matched":false},"space":"app"},"type":"space_create_result"}
+{"data":{"cursor":null,"has_more":false,"items":["app","default"]},"type":"space_list"}
+```
+
 ## Parameters
 
 _No parameters._
@@ -37,12 +46,28 @@ Plus the optional scope: `branch` and `space` (default to the session branch and
 
 `Page<String, String>`.
 
+| Field | Type | Description |
+|---|---|---|
+| `has_more` | `boolean` |  |
+| `items` | `string[]` | Spaces in this page. |
+| `cursor` | `string` |  |
+
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
-- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
+| [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch) | The requested branch was not found. |
 
 ## Invocation
 
-- CLI: `strata space list`
+```text
+strata space list [--branch <branch>] [--space <space>]
+```
+
 - Wire type: `space_list`
+
+## Related
+
+- [Create product space](/docs/space/create) — Create a product space on a branch.
+- [All `space` commands](/docs/space/)

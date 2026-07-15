@@ -31,12 +31,23 @@ $ strata graph ontology delete-link-type g knows
 {"graph":"g","name":"knows","type":"graph_delete_link_type"}
 ```
 
+### Output
+
+One response per step, in order:
+
+```json
+{"data":{"commit":{"delete_count":0,"durable":false,"put_count":1,"timestamp":3,"version":3},"effect":{"affected_count":1,"applied":true,"kind":"created","matched":false},"info":{"created_timestamp":3,"created_version":3,"edge_count":0,"graph":"g","node_count":0,"updated_timestamp":3,"updated_version":3}},"type":"graph_create_result"}
+{"data":{"commit":{"delete_count":0,"durable":false,"put_count":1,"timestamp":4,"version":4},"effect":{"affected_count":1,"applied":true,"kind":"created","matched":false},"graph":"g","kind":"object","type_name":"person"},"type":"graph_ontology_write_result"}
+{"data":{"commit":{"delete_count":0,"durable":false,"put_count":1,"timestamp":5,"version":5},"effect":{"affected_count":1,"applied":true,"kind":"created","matched":false},"graph":"g","kind":"link","type_name":"knows"},"type":"graph_ontology_write_result"}
+{"data":{"commit":{"delete_count":0,"durable":false,"put_count":1,"timestamp":6,"version":6},"effect":{"affected_count":1,"applied":true,"kind":"deleted","matched":true},"graph":"g","kind":"link","type_name":"knows"},"type":"graph_ontology_delete_result"}
+```
+
 ## Parameters
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `graph` | `string` | yes | Graph name. |
-| `name` | `string` | yes | Link type name. |
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `graph` | `string` | yes | — | Graph name. |
+| `name` | `string` | yes | — | Link type name. |
 
 Plus the optional scope: `branch` and `space` (default to the session branch and the `"default"` space).
 
@@ -44,17 +55,37 @@ Plus the optional scope: `branch` and `space` (default to the session branch and
 
 `MutationAck<GraphOntologyDelete>`.
 
+| Field | Type | Description |
+|---|---|---|
+| `effect` | `MutationEffect` | Mutation effect facts. |
+| `graph` | `string` | Graph name. |
+| `kind` | `string` | Type kind: `object` or `link`. |
+| `type_name` | `string` | Deleted type name. |
+| `commit` | `CommitReceipt` | Commit receipt when a row changed. |
+
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
-- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
-- [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space)
-- [`invalid_argument.engine.graph_name`](https://stratadb.org/e/invalid_argument.engine.graph_name)
-- [`not_found.engine.graph`](https://stratadb.org/e/not_found.engine.graph)
-- [`invalid_argument.engine.graph_type_name`](https://stratadb.org/e/invalid_argument.engine.graph_type_name)
-- [`failed_precondition.engine.graph_ontology_frozen`](https://stratadb.org/e/failed_precondition.engine.graph_ontology_frozen)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
+| [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch) | The requested branch was not found. |
+| [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space) | The requested space operation cannot be completed. |
+| [`invalid_argument.engine.graph_name`](https://stratadb.org/e/invalid_argument.engine.graph_name) | The graph request is invalid. |
+| [`not_found.engine.graph`](https://stratadb.org/e/not_found.engine.graph) | The requested graph was not found. |
+| [`invalid_argument.engine.graph_type_name`](https://stratadb.org/e/invalid_argument.engine.graph_type_name) | The graph request is invalid. |
+| [`failed_precondition.engine.graph_ontology_frozen`](https://stratadb.org/e/failed_precondition.engine.graph_ontology_frozen) | The graph request is invalid. |
 
 ## Invocation
 
-- CLI: `strata graph ontology delete-link-type`
+```text
+strata graph ontology delete-link-type <graph> <name> [--branch <branch>] [--space <space>]
+```
+
 - Wire type: `graph_delete_link_type`
+
+## Related
+
+- [Create graph](/docs/graph/create) — Create a named graph.
+- [Define graph link type](/docs/graph/ontology/define_link_type) — Define a graph link type.
+- [Define graph object type](/docs/graph/ontology/define_object_type) — Define a graph object type.
+- [All `graph` commands](/docs/graph/)

@@ -27,11 +27,20 @@ $ strata graph list
 {"type":"graph_list"}
 ```
 
+### Output
+
+One response per step, in order:
+
+```json
+{"data":{"commit":{"delete_count":0,"durable":false,"put_count":1,"timestamp":3,"version":3},"effect":{"affected_count":1,"applied":true,"kind":"created","matched":false},"info":{"created_timestamp":3,"created_version":3,"edge_count":0,"graph":"social","node_count":0,"updated_timestamp":3,"updated_version":3}},"type":"graph_create_result"}
+{"data":{"cursor":null,"has_more":false,"items":["social"]},"type":"graph_name_page"}
+```
+
 ## Parameters
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `graph` | `string` | yes | Graph name. |
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `graph` | `string` | yes | — | Graph name. |
 
 Plus the optional scope: `branch` and `space` (default to the session branch and the `"default"` space).
 
@@ -39,16 +48,32 @@ Plus the optional scope: `branch` and `space` (default to the session branch and
 
 `MutationAck<GraphInfoData>`.
 
+| Field | Type | Description |
+|---|---|---|
+| `commit` | `CommitReceipt` | Commit receipt. |
+| `effect` | `MutationEffect` | Mutation effect facts. |
+| `info` | `GraphInfoData` | Created graph metadata. |
+
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
-- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
-- [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space)
-- [`invalid_argument.engine.graph_name`](https://stratadb.org/e/invalid_argument.engine.graph_name)
-- [`already_exists.engine.graph`](https://stratadb.org/e/already_exists.engine.graph)
-- [`invalid_argument.engine.graph_name_reserved`](https://stratadb.org/e/invalid_argument.engine.graph_name_reserved)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
+| [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch) | The requested branch was not found. |
+| [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space) | The requested space operation cannot be completed. |
+| [`invalid_argument.engine.graph_name`](https://stratadb.org/e/invalid_argument.engine.graph_name) | The graph request is invalid. |
+| [`already_exists.engine.graph`](https://stratadb.org/e/already_exists.engine.graph) | A graph with this name already exists. |
+| [`invalid_argument.engine.graph_name_reserved`](https://stratadb.org/e/invalid_argument.engine.graph_name_reserved) | The graph request is invalid. |
 
 ## Invocation
 
-- CLI: `strata graph create`
+```text
+strata graph create <graph> [--branch <branch>] [--space <space>]
+```
+
 - Wire type: `graph_create`
+
+## Related
+
+- [List graphs](/docs/graph/list) — List graph names.
+- [All `graph` commands](/docs/graph/)

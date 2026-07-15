@@ -25,6 +25,14 @@ $ strata ping
 {"type":"ping"}
 ```
 
+### Output
+
+One response per step, in order:
+
+```json
+{"data":{"version":"1.0.0"},"type":"pong"}
+```
+
 ## Parameters
 
 _No parameters._
@@ -33,11 +41,24 @@ _No parameters._
 
 `StatusResponse<PingInfo>`.
 
+| Field | Type | Description |
+|---|---|---|
+| `version` | `string` | Engine package version. |
+
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
 
 ## Invocation
 
-- CLI: `strata ping`
+```text
+strata ping
+```
+
 - Wire type: `ping`
+
+## Related
+
+- [All `admin` commands](/docs/admin/)

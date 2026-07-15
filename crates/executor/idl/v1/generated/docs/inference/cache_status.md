@@ -23,6 +23,14 @@ $ strata inference cache-status
 {"type":"inference_cache_status"}
 ```
 
+### Output
+
+One response per step, in order:
+
+```json
+{"data":{"embedding_models":[],"generation_models":[],"ranking_models":[]},"type":"inference_cache_status"}
+```
+
 ## Parameters
 
 _No parameters._
@@ -31,12 +39,27 @@ _No parameters._
 
 `ModelCacheStatus`.
 
+| Field | Type | Description |
+|---|---|---|
+| `embedding_models` | `string[]` | Cached embedding model specs. |
+| `generation_models` | `string[]` | Cached generation model specs. |
+| `ranking_models` | `string[]` | Cached ranking model specs. |
+
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
-- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
+| [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch) | The requested branch was not found. |
 
 ## Invocation
 
-- CLI: `strata inference cache-status`
+```text
+strata inference cache-status
+```
+
 - Wire type: `inference_cache_status`
+
+## Related
+
+- [All `inference` commands](/docs/inference/)

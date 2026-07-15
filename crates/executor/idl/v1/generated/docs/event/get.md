@@ -31,10 +31,10 @@ $ strata event get 999
 
 ## Parameters
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `as_of` | `integer` | no | Optional timestamp in microseconds. |
-| `sequence` | `integer` | yes | Event sequence. |
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `sequence` | `integer` | yes | — | Event sequence. |
+| `as_of` | `integer` | no | — | Optional timestamp in microseconds. |
 
 Plus the optional scope: `branch` and `space` (default to the session branch and the `"default"` space).
 
@@ -42,13 +42,28 @@ Plus the optional scope: `branch` and `space` (default to the session branch and
 
 `Maybe<EventVersionedData>` — a miss returns nothing rather than raising.
 
+| Field | Type | Description |
+|---|---|---|
+| `found` | `boolean` |  |
+| `value` | `EventVersionedData` |  |
+
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
-- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
-- [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
+| [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch) | The requested branch was not found. |
+| [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space) | The requested space operation cannot be completed. |
 
 ## Invocation
 
-- CLI: `strata event get`
+```text
+strata event get <sequence> [--as-of <integer>] [--branch <branch>] [--space <space>]
+```
+
 - Wire type: `event_get`
+
+## Related
+
+- [Append event](/docs/event/append) — Append one event to the branch event log.
+- [All `event` commands](/docs/event/)

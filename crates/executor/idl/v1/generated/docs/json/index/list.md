@@ -27,6 +27,15 @@ $ strata json index list
 {"type":"json_list_indexes"}
 ```
 
+### Output
+
+One response per step, in order:
+
+```json
+{"data":{"created_timestamp":3,"created_version":3,"field_path":"name","index_type":"tag","name":"by_name","space":"default"},"type":"json_index_definition"}
+{"data":{"cursor":null,"has_more":false,"items":[{"created_timestamp":3,"created_version":3,"field_path":"name","index_type":"tag","name":"by_name","space":"default"}]},"type":"json_index_list"}
+```
+
 ## Parameters
 
 _No parameters._
@@ -37,13 +46,29 @@ Plus the optional scope: `branch` and `space` (default to the session branch and
 
 `Page<JsonIndexDefinition, String>`.
 
+| Field | Type | Description |
+|---|---|---|
+| `has_more` | `boolean` |  |
+| `items` | `JsonIndexDefinition[]` | Indexes in this page. |
+| `cursor` | `string` |  |
+
 ## Errors
 
-- [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
-- [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
-- [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space)
+| Code | Meaning |
+|---|---|
+| [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed) | The runtime is closed. |
+| [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch) | The requested branch was not found. |
+| [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space) | The requested space operation cannot be completed. |
 
 ## Invocation
 
-- CLI: `strata json index list`
+```text
+strata json index list [--branch <branch>] [--space <space>]
+```
+
 - Wire type: `json_list_indexes`
+
+## Related
+
+- [Create JSON index](/docs/json/index/create) — Create a JSON secondary index on a field path.
+- [All `json` commands](/docs/json/)
