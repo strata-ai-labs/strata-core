@@ -204,16 +204,31 @@ pub(crate) enum AgentsCommand {
         #[arg(long)]
         apply: bool,
     },
-    /// Print the Claude Code skill (markdown, version-matched); --write
-    /// installs it at .claude/skills/strata/SKILL.md in the current repo.
+    /// Print the agent skill (markdown, version-matched); --write installs it
+    /// for one or more coding agents in the current repo.
     Skill {
-        /// Install to .claude/skills/strata/SKILL.md instead of printing.
+        /// Install into the repo instead of printing.
         #[arg(long)]
         write: bool,
-        /// With --write: replace an existing SKILL.md whose content differs.
+        /// With --write: replace an existing Claude/Cursor skill file whose
+        /// content differs.
         #[arg(long, requires = "write")]
         force: bool,
+        /// Which agents to install for (repeatable): claude
+        /// (.claude/skills/strata/SKILL.md), cursor (.cursor/rules/strata.mdc),
+        /// codex (a marker-delimited section in AGENTS.md), or all.
+        #[arg(long = "for", value_enum, requires = "write", default_values_t = [SkillTarget::Claude])]
+        targets: Vec<SkillTarget>,
     },
+}
+
+/// Coding agents the skill installs for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum SkillTarget {
+    Claude,
+    Codex,
+    Cursor,
+    All,
 }
 
 /// Config commands.

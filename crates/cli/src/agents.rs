@@ -35,8 +35,12 @@ pub(crate) fn run(command: &AgentsCommand, format: Format) -> Result<i32, CliErr
             // The skill is markdown; it is the format.
             println!("{}", skill_markdown());
         }
-        AgentsCommand::Skill { write: true, force } => {
-            render_value(&run_skill_write(*force)?, format)?;
+        AgentsCommand::Skill {
+            write: true,
+            force,
+            targets,
+        } => {
+            render_value(&run_skill_write(*force, targets)?, format)?;
         }
     }
     Ok(0)
@@ -152,9 +156,10 @@ commands --json`); every command documents itself via `--help`.\n",
     guide.push_str(
         "## Repo onboarding\n\n`strata agents init` writes `.strata/AGENTS.md` into the current \
 repo; `--apply` also appends a short pointer block to the repo's `AGENTS.md`/`CLAUDE.md` so every \
-future agent session here starts oriented. `strata agents skill --write` installs the Claude \
-Code skill at `.claude/skills/strata/SKILL.md` — the condensed Python + CLI playbook, loaded \
-automatically when a session touches Strata.\n",
+future agent session here starts oriented. `strata agents skill --write [--for all]` installs \
+the condensed Python + CLI playbook for coding agents — Claude Code \
+(`.claude/skills/strata/SKILL.md`), Cursor (`.cursor/rules/strata.mdc`), and Codex (a \
+marker-delimited section in `AGENTS.md`) — loaded automatically when a session touches Strata.\n",
     );
 
     Ok(guide)
@@ -212,40 +217,136 @@ pub(crate) fn skill_markdown() -> String {
     include_str!("agents_skill.md").replace("{version}", env!("CARGO_PKG_VERSION"))
 }
 
-/// Installs the skill at `.claude/skills/strata/SKILL.md`. Idempotent when
-/// the on-disk content already matches; refuses to replace foreign content
-/// unless `force` (state `pending`, mirroring `agents init`).
-fn run_skill_write(force: bool) -> Result<Value, CliError> {
+/// Cursor's rule file (MDC): frontmatter Cursor understands, same body.
+const CURSOR_RULE_PATH: &str = ".cursor/rules/strata.mdc";
+/// Codex reads the repo root `AGENTS.md`; the skill body lives there between
+/// these markers so re-runs can replace exactly the region we own.
+const CODEX_AGENTS_PATH: &str = "AGENTS.md";
+const CODEX_START: &str = "<!-- strata-skill:start -->";
+const CODEX_END: &str = "<!-- strata-skill:end -->";
+
+/// The skill body without the Claude skill frontmatter (the part between and
+/// after the `---` fence pair), plus the trigger description on its own.
+fn skill_parts() -> (String, String) {
     let skill = skill_markdown();
-    let path = Path::new(SKILL_PATH);
-    let mut state = "created";
+    let mut description = String::new();
+    let mut body = skill.as_str();
+    if let Some(rest) = skill.strip_prefix("---\n") {
+        if let Some(end) = rest.find("\n---\n") {
+            description = rest[..end]
+                .lines()
+                .find_map(|line| line.strip_prefix("description: "))
+                .unwrap_or_default()
+                .to_owned();
+            body = &rest[end + "\n---\n".len()..];
+        }
+    }
+    (description, body.trim_start().to_owned())
+}
+
+/// Cursor MDC rule: agent-attached (not always-on), same trigger text.
+fn cursor_rule() -> String {
+    let (description, body) = skill_parts();
+    format!("---\ndescription: {description}\nalwaysApply: false\n---\n\n{body}")
+}
+
+/// Writes a whole file we own: created/unchanged/replaced, refusing to
+/// replace differing content unless `force` (state `pending`).
+fn write_owned_file(
+    path: &Path,
+    content: &str,
+    force: bool,
+) -> Result<(&'static str, Option<String>), CliError> {
     if path.exists() {
         let existing = fs::read_to_string(path)?;
-        if existing == skill {
-            state = "unchanged";
-        } else if force {
-            state = "replaced";
-        } else {
-            return Ok(json!({
-                "type": "agents_skill",
-                "data": {
-                    "path": SKILL_PATH,
-                    "state": "pending",
-                    "next": "an existing SKILL.md differs; re-run with --force to replace it",
-                }
-            }));
+        if existing == content {
+            return Ok(("unchanged", None));
         }
-    }
-    if state != "unchanged" {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+        if !force {
+            return Ok((
+                "pending",
+                Some(format!(
+                    "an existing {} differs; re-run with --force to replace it",
+                    path.display()
+                )),
+            ));
         }
-        fs::write(path, &skill)?;
+        fs::write(path, content)?;
+        return Ok(("replaced", None));
     }
-    Ok(json!({
-        "type": "agents_skill",
-        "data": { "path": SKILL_PATH, "state": state, "next": Value::Null }
-    }))
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, content)?;
+    Ok(("created", None))
+}
+
+/// Installs the skill body into `AGENTS.md` between the strata markers.
+/// We own the marked region, not the file: the region is replaced in place
+/// on re-runs (no `--force` needed), and a missing file is created.
+fn write_codex_section() -> Result<(&'static str, Option<String>), CliError> {
+    let (_, body) = skill_parts();
+    let section = format!("{CODEX_START}\n{body}\n{CODEX_END}\n");
+    let path = Path::new(CODEX_AGENTS_PATH);
+    if !path.exists() {
+        fs::write(path, &section)?;
+        return Ok(("created", None));
+    }
+    let existing = fs::read_to_string(path)?;
+    if let (Some(start), Some(end)) = (existing.find(CODEX_START), existing.find(CODEX_END)) {
+        let current = &existing[start..end + CODEX_END.len()];
+        let replacement = section.trim_end();
+        if current == replacement {
+            return Ok(("unchanged", None));
+        }
+        let updated = format!(
+            "{}{}{}",
+            &existing[..start],
+            replacement,
+            &existing[end + CODEX_END.len()..]
+        );
+        fs::write(path, updated)?;
+        return Ok(("replaced", None));
+    }
+    let mut updated = existing;
+    if !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push('\n');
+    updated.push_str(&section);
+    fs::write(path, updated)?;
+    Ok(("appended", None))
+}
+
+/// Installs the skill for the requested agents, reporting one result per
+/// target file.
+fn run_skill_write(
+    force: bool,
+    targets: &[crate::options::SkillTarget],
+) -> Result<Value, CliError> {
+    use crate::options::SkillTarget;
+    let all = targets.contains(&SkillTarget::All);
+    let wants = |t: SkillTarget| all || targets.contains(&t);
+
+    let mut results = Vec::new();
+    if wants(SkillTarget::Claude) {
+        let (state, next) = write_owned_file(Path::new(SKILL_PATH), &skill_markdown(), force)?;
+        results
+            .push(json!({ "agent": "claude", "path": SKILL_PATH, "state": state, "next": next }));
+    }
+    if wants(SkillTarget::Cursor) {
+        let (state, next) = write_owned_file(Path::new(CURSOR_RULE_PATH), &cursor_rule(), force)?;
+        results.push(
+            json!({ "agent": "cursor", "path": CURSOR_RULE_PATH, "state": state, "next": next }),
+        );
+    }
+    if wants(SkillTarget::Codex) {
+        let (state, next) = write_codex_section()?;
+        results.push(
+            json!({ "agent": "codex", "path": CODEX_AGENTS_PATH, "state": state, "next": next }),
+        );
+    }
+    Ok(json!({ "type": "agents_skill", "data": { "written": results } }))
 }
 
 // ---- repo onboarding --------------------------------------------------------
@@ -259,7 +360,7 @@ fn pointer_block() -> String {
 This repo uses Strata (embedded database — SQLite-shaped, zero-config).
 
 - Full usage guide: run `strata agents guide` (offline, version-matched)
-- Claude Code skill: `strata agents skill --write` (installs .claude/skills/strata/SKILL.md)
+- Agent skill: `strata agents skill --write --for all` (Claude Code, Cursor, Codex)
 - Command catalog: `strata agents commands --json`; errors: `strata agents errors --json`
 - Database targeting: pass a path or set `STRATA_DB`; never rely on cwd
 - Structured output: add `--json` to any command; raw commands via `strata <db> command run --command-json`
@@ -347,5 +448,21 @@ mod tests {
         assert!(skill.contains("stratadb.open("));
         assert!(skill.contains("stratadb.agents_guide()"));
         assert!(!skill.contains("{version}"));
+    }
+
+    /// The Cursor rule carries MDC frontmatter (description + alwaysApply)
+    /// and the same body; the Codex parts split cleanly (description text,
+    /// body starting at the title, no leftover fence).
+    #[test]
+    fn cursor_and_codex_derivations_share_the_body() {
+        let (description, body) = skill_parts();
+        assert!(description.starts_with("Use when working with StrataDB"));
+        assert!(body.starts_with("# StrataDB"));
+        assert!(!body.contains("name: strata"));
+
+        let rule = cursor_rule();
+        assert!(rule.starts_with("---\ndescription: Use when working with StrataDB"));
+        assert!(rule.contains("alwaysApply: false"));
+        assert!(rule.contains("stratadb.open("));
     }
 }
