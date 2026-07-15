@@ -229,19 +229,18 @@ const CODEX_END: &str = "<!-- strata-skill:end -->";
 /// after the `---` fence pair), plus the trigger description on its own.
 fn skill_parts() -> (String, String) {
     let skill = skill_markdown();
-    let mut description = String::new();
-    let mut body = skill.as_str();
     if let Some(rest) = skill.strip_prefix("---\n") {
         if let Some(end) = rest.find("\n---\n") {
-            description = rest[..end]
+            let description = rest[..end]
                 .lines()
                 .find_map(|line| line.strip_prefix("description: "))
                 .unwrap_or_default()
                 .to_owned();
-            body = &rest[end + "\n---\n".len()..];
+            let body = rest[end + "\n---\n".len()..].trim_start().to_owned();
+            return (description, body);
         }
     }
-    (description, body.trim_start().to_owned())
+    (String::new(), skill)
 }
 
 /// Cursor MDC rule: agent-attached (not always-on), same trigger text.
