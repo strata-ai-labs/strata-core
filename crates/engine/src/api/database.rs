@@ -509,6 +509,13 @@ impl Database {
             persistence_summary.created(),
             default_branch,
         )?;
+        if persistence_summary.created() {
+            // A database must be born durable: without this barrier the
+            // control-plane seed can ride user-space WAL staging while the
+            // manifest is already fsync-durable, and a process kill during
+            // the first session bricks the store (#2618).
+            persistence.force_creation_durability()?;
+        }
         let summary = DatabaseOpenSummary::new(open_target, persistence_summary);
         Ok(DatabaseOpenOutcome::new(
             Self {

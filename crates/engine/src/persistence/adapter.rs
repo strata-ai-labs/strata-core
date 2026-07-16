@@ -15,8 +15,10 @@ use strata_storage::api::{
     StorageMemoryBudget, StorageOpenDisposition, StorageOpenOptions, StorageReadRow,
     StorageRuntime, StorageRuntimeState, StorageSpaceId, StorageValue,
 };
-#[cfg(any(test, feature = "testkit"))]
-use strata_storage::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
+use strata_storage::api::{
+    MaintenanceRequest, MaintenanceScope,
+    MaintenanceSummaryStatus as StorageMaintenanceSummaryStatus, MaintenanceTask,
+};
 
 use crate::branch::catalog::{DEFAULT_BRANCH_GENERATION, SYSTEM_BRANCH_ID};
 use crate::commit::CommitOutcome;
@@ -689,6 +691,40 @@ impl StoragePersistence {
 
     pub(crate) fn close(&mut self) -> EngineResult<StorageCloseSummary> {
         self.runtime.close().map_err(map_storage_error)
+    }
+
+    /// Creation durability barrier: force the just-seeded control plane
+    /// durable before the new database is handed to the caller. A checkpoint
+    /// syncs the active WAL segment before publishing its snapshot, so the
+    /// seed commits stop depending on the user-space WAL staging that a
+    /// process kill vaporizes — a store's durable manifest must never
+    /// outlive its control plane. Cache targets have nothing to force.
+    pub(crate) fn force_creation_durability(&mut self) -> EngineResult<()> {
+        if !self.durable() {
+            return Ok(());
+        }
+        let summary = self
+            .runtime
+            .maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Checkpoint,
+                MaintenanceScope::Global,
+            ))
+            .map_err(map_storage_error)?;
+        // A deferred or failed creation checkpoint means the seed is NOT
+        // durable — silently accepting it would quietly reopen the
+        // first-session-kill window. Fail creation loudly instead.
+        if summary.status() != StorageMaintenanceSummaryStatus::Completed {
+            return Err(EngineError::corruption(
+                "data_loss.engine.control_plane_missing",
+                "creation durability checkpoint did not complete; the new database's \
+                 control plane is not yet durable",
+            ));
+        }
+        // The completed checkpoint IS the barrier: its snapshot is durably
+        // published with the seed rows. Follow-up hygiene tasks it enqueued
+        // run under the normal scheduler; draining here would only add
+        // failure surface to creation.
+        Ok(())
     }
 
     #[cfg(any(test, feature = "testkit"))]
