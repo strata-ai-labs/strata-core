@@ -635,6 +635,86 @@ mod tests {
             .expect("admission must accept writes after the direct flush");
     }
 
+    /// A store wedged at the frozen-pool budget must still close
+    /// gracefully: close's flush drains the backlog it can (freeing the
+    /// pool), retries the rotation once, and leaves any still-unaffordable
+    /// active rows to WAL replay — it must not fail over a budget it cannot
+    /// change. Every acknowledged commit must survive the close/reopen.
+    #[test]
+    fn saturated_store_closes_gracefully_and_reopens_complete() {
+        use super::super::recovery_oracle::verify::{classify_recovered, CrashFamily};
+
+        let dir = tempfile::tempdir().expect("tmp");
+        let case = StorageConfigCase {
+            mode: ConfigMode::DurableStandard,
+            budget: ConfigBudget::LowMemory,
+        };
+        let branch = default_branch();
+        let case_root = dir.path().join(case.label());
+        std::fs::create_dir_all(&case_root).expect("case root");
+        let backend = StorageBackend::local_fs(case_root.clone());
+        let mut runtime = StorageRuntime::open_with_backend(open_options(case), &backend)
+            .expect("open")
+            .into_runtime();
+
+        // Drive the oracle stream with drain-on-pressure until wedged (the
+        // saturation stager from the pressure investigations) or complete.
+        let stream = generate_workload(3, 1200);
+        let mut model = ExpectedState::new(OracleDurability::Standard);
+        'load: for (index, mutations) in stream.iter().enumerate() {
+            let batch = CommitBatch::new(
+                branch,
+                mutations.iter().map(to_commit_mutation).collect(),
+                CommitOptions::default(),
+            )
+            .expect("batch");
+            for _ in 0..24 {
+                match runtime.commit(&batch) {
+                    Ok(summary) => {
+                        model.record_ack(branch, summary.commit_version(), mutations.clone());
+                        continue 'load;
+                    }
+                    Err(StorageApiError::StoragePressure { .. }) => {
+                        let _ = runtime.drain_maintenance();
+                    }
+                    Err(other) => panic!("op {index} failed unexpectedly: {other:?}"),
+                }
+            }
+            // Wedged: admission blocked with the frozen pool saturated.
+            break;
+        }
+
+        // Graceful close must succeed even at saturation.
+        runtime
+            .close()
+            .unwrap_or_else(|error| panic!("saturated close must drain, not fail: {error:?}"));
+
+        // Every acknowledged commit survives into a fresh open.
+        let reopen_backend = StorageBackend::local_fs(case_root);
+        let reopened = StorageRuntime::open_with_backend(
+            open_options(StorageConfigCase {
+                mode: ConfigMode::DurableStandard,
+                budget: ConfigBudget::Default,
+            }),
+            &reopen_backend,
+        )
+        .expect("reopen after saturated close")
+        .into_runtime();
+        let recovered = super::super::recovery_oracle::verify::scan_recovered(
+            &reopened,
+            branch,
+            &oracle_space(),
+            &oracle_prefix_key(),
+            SCAN_LIMIT,
+        )
+        .expect("scan");
+        assert_eq!(
+            classify_recovered(&model, branch, &recovered, CrashFamily::ZeroLoss),
+            Ok(()),
+            "acked commits must survive a saturated close"
+        );
+    }
+
     #[test]
     fn divergence_reporting_names_the_config_and_key() {
         // Sanity-check the diff reporter itself: two snapshots differing at
