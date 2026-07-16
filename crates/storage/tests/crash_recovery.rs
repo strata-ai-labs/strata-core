@@ -1,4 +1,8 @@
-//! Process-level crash recovery harness entry point.
+//! In-process crash recovery harness entry point: deterministic simulated
+//! interruptions with a same-process reopen (fast, exhaustive-friendly).
+//! Real process-level kill/reopen coverage lives in
+//! `src/testkit/process_crash.rs` (SIGKILL + reopen through the recovery
+//! oracle), which runs per-PR with a deep nightly soak.
 
 #![deny(unsafe_code)]
 

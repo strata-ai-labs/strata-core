@@ -45,6 +45,12 @@ mod fs_models;
 mod integration_harness;
 mod leak;
 mod lifecycle;
+#[cfg(all(
+    any(test, feature = "fault-injection"),
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
+mod process_crash;
 mod quarantine_fuzz;
 mod recovery_oracle;
 #[cfg(all(
@@ -159,6 +165,12 @@ pub use lifecycle::{
     LifecycleRowPruningContractOutcome, LifecycleScaffoldOutcome,
     LifecycleTableRewriteContractOutcome,
 };
+#[cfg(all(
+    any(test, feature = "fault-injection"),
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
+pub use process_crash::ProcessCrashOutcome;
 pub use quarantine_fuzz::{run_quarantine_service_script, QuarantineServiceFuzzOutcome};
 #[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
 pub use recovery_oracle::{run_recovery_oracle_harness, RecoveryOracleOutcome};
