@@ -22,6 +22,12 @@ mod commit_runtime_timeline;
     feature = "localfs",
     not(target_arch = "wasm32")
 ))]
+mod compound_faults;
+#[cfg(all(
+    any(test, feature = "fault-injection"),
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
 mod fault_sweep;
 mod format_fuzz;
 #[cfg(all(
@@ -74,6 +80,15 @@ pub use commit_runtime_runner::{
     check_commit_runtime_generated_input_contract, check_commit_runtime_script_contract,
     check_commit_runtime_timeline_contract, check_commit_runtime_timeline_script_contract,
     CommitRuntimeAssuranceOutcome,
+};
+#[cfg(all(
+    any(test, feature = "fault-injection"),
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
+pub use compound_faults::{
+    run_compound_fault_maintenance_cases, run_compound_fault_recovery_sweep,
+    CompoundFaultMaintenanceOutcome, CompoundFaultRecoveryOutcome,
 };
 #[cfg(all(
     any(test, feature = "fault-injection"),

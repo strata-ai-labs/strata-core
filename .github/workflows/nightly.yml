@@ -100,6 +100,27 @@ jobs:
           RUSTFLAGS: -Zsanitizer=thread
         run: cargo +nightly test --tests -Zbuild-std --target x86_64-unknown-linux-gnu -p strata-storage
 
+  failure-during-failure-soak:
+    # Compound-anomaly bug hunt: a second fault injected during crash
+    # recovery and inside maintenance publish transitions, every case
+    # verified against the recovery oracle. The bounded grid runs per-PR
+    # via the in-crate unit tests; this lane runs the full integration
+    # grid plus a deep multi-seed soak.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorize private git dependencies
+        run: git config --global url."https://x-access-token:${{ secrets.STRATAHUB_READ_TOKEN }}@github.com/stratalab/stratahub".insteadOf "https://github.com/stratalab/stratahub"
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Compound fault grid
+        run: cargo test --locked -p strata-storage --features fault-injection --test compound_faults
+      - name: Compound fault soak
+        env:
+          STRATA_STORAGE_COMPOUND_CASES: "20000"
+        run: cargo test --locked -p strata-storage --features fault-injection --test compound_faults -- --ignored
+
   coverage-baseline:
     # Publishes per-crate region/line coverage. Baseline only for now:
     # the merge-blocking threshold gate is a later slice, and per the

@@ -81,7 +81,7 @@ cost/unblock value:
 | # | Slice | Scope | Status |
 |---|---|---|---|
 | 1.1 | **STH-7a** (cheap half) | Miri + ASAN/LSAN jobs; `cargo-llvm-cov` baseline job publishing per-crate coverage; 3-way suite run (release / debug-asserts / coverage) | Implemented (2026-07-16) — `.github/workflows/nightly.yml`; baseline coverage recorded below |
-| 1.2 | **STH-5** | Failure-during-failure: inject faults *during* recovery, compaction, checkpoint, quarantine; assert through the STH-1 oracle. Plan doc exists (draft) | Not started |
+| 1.2 | **STH-5** | Failure-during-failure: inject faults *during* recovery, compaction, checkpoint, quarantine; assert through the STH-1 oracle. Plan doc exists (draft) | Implemented (2026-07-16) — `testkit/compound_faults`, nightly `failure-during-failure-soak`; charter class 6 ❌→✅; 2,000-case soak clean, no product defect |
 | 1.3 | **STH-3b** | Write-ordering watchdog: assert no dependent publish precedes its WAL sync (SQLite journal-synced-before-db check) | Not started (deferred in STH-3) |
 | 1.4 | **STH-6** | Config-sweep differential (cache vs durable vs budget configs, identical results) + metamorphic oracles; liveness deepening | Not started |
 | 1.5 | **STH-7** (full) | `cargo-mutants` gate on storage; coverage ratchet; `testcase!`/`always!`/`never!` macros; requirements-to-test traceability; anti-drift guard that fails when a plan doc claims ✅ for an unimplemented item | Not started |
