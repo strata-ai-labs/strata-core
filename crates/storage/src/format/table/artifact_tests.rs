@@ -338,6 +338,10 @@ fn streaming_encoder_cuts_blocks_on_the_byte_target() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "zstd C FFI is unsupported under Miri; ASAN lane covers compression paths"
+)]
 fn immutable_table_round_trips_zstd_and_mixed_data_compression() {
     let rows = sample_rows();
     let zstd = encode_immutable_table(&rows[..2], 4096, 8, TableCompression::Zstd)
@@ -1143,6 +1147,10 @@ fn trusted_decode_matches_checked_decode_uncompressed() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "zstd C FFI is unsupported under Miri; ASAN lane covers compression paths"
+)]
 fn trusted_decode_matches_checked_decode_zstd() {
     assert_trusted_checked_equivalent(TableCompression::Zstd);
 }
@@ -1309,6 +1317,10 @@ fn indexed_seek_matches_linear_seek_uncompressed() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "zstd C FFI is unsupported under Miri; ASAN lane covers compression paths"
+)]
 fn indexed_seek_matches_linear_seek_zstd() {
     assert_indexed_matches_linear(TableCompression::Zstd);
 }

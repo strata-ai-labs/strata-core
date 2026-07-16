@@ -430,6 +430,10 @@ fn table_footer_rejects_truncated_footer() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "zstd C FFI is unsupported under Miri; ASAN lane covers compression paths"
+)]
 fn table_block_frame_round_trips_uncompressed_and_zstd() {
     for compression in [TableCompression::Uncompressed, TableCompression::Zstd] {
         let frame = frame(TableBlockKind::Data, compression);
@@ -512,6 +516,10 @@ fn table_block_frame_rejects_unknown_compression_flags_and_length_mismatch() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "zstd C FFI is unsupported under Miri; ASAN lane covers compression paths"
+)]
 fn table_block_frame_rejects_invalid_zstd_payload_or_decoded_length() {
     let invalid = invalid_zstd_frame();
     assert_eq!(

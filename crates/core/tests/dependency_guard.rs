@@ -12,6 +12,7 @@ use std::{
 const PACKAGE_NAME: &str = "strata-core";
 
 #[test]
+#[cfg_attr(miri, ignore = "spawns cargo metadata; Miri cannot spawn processes")]
 fn core_next_has_no_strata_crate_dependencies() {
     let metadata = cargo_metadata();
     let packages = metadata
