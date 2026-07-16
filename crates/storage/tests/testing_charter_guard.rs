@@ -26,17 +26,10 @@ const CHARTER_DOCUMENTS: &[&str] = &[
 /// Anchors that legitimately reference artifacts that do not exist yet (or
 /// no longer exist) — each entry needs a reason. Keep this list short: every
 /// entry is a hole in the map.
-const ALLOWED_MISSING: &[(&str, &str)] = &[
-    (
-        "docs/product/strata-v1-non-functional-requirements.md",
-        "referenced by the taxonomy's related-documents list; product doc tree is being reorganized",
-    ),
-    (
-        "crates/cli/tests/",
-        "program charter Phase 2.3 deliverable: the CLI integration suite does not exist yet — \
-         building it is the phase; remove this entry when it lands",
-    ),
-];
+const ALLOWED_MISSING: &[(&str, &str)] = &[(
+    "docs/product/strata-v1-non-functional-requirements.md",
+    "referenced by the taxonomy's related-documents list; product doc tree is being reorganized",
+)];
 
 fn repo_root() -> PathBuf {
     // CARGO_MANIFEST_DIR = crates/storage.
