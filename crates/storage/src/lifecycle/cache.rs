@@ -745,6 +745,43 @@ impl<S> LifecycleCacheRuntime<S> {
         self.rotate_active_for_branch_for_maintenance(self.initial_branch_id)
     }
 
+    /// Flush-time rotation: seal the active table when the frozen pool
+    /// affords it; skip the rotation (the flush then drains the existing
+    /// frozen backlog, freeing the pool) when it does not. Errors only when
+    /// the pool is exhausted with nothing frozen to flush.
+    pub(crate) fn rotate_active_for_flush(
+        &mut self,
+        branch_id: strata_core::BranchId,
+    ) -> LifecycleResult<()> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        let decision = crate::lifecycle::decide_flush_rotation(
+            &self.budget,
+            self.branch_catalog
+                .branch_state(branch_id)
+                .expect("seeded branch present"),
+        );
+        match decision {
+            crate::lifecycle::FlushRotationDecision::Rotate => {
+                let branch = self
+                    .branch_catalog
+                    .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+                branch.rotate_active();
+                // BS2.3: rotation sealed active into a frozen table — republish
+                // so the snapshot reflects it.
+                self.publish_branch_snapshot(branch_id);
+                Ok(())
+            }
+            crate::lifecycle::FlushRotationDecision::FlushBacklogWithoutRotation => Ok(()),
+            crate::lifecycle::FlushRotationDecision::Defer(error) => Err(error),
+        }
+    }
+
     pub(crate) fn rotate_active_for_branch_for_maintenance(
         &mut self,
         branch_id: strata_core::BranchId,

@@ -460,6 +460,47 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     /// flows that operate on non-seeded branches; the seeded entry point
     /// `rotate_active_for_maintenance` is preserved for compatibility
     /// with existing test callers.
+    /// Flush-time rotation: seal the active table when the frozen pool
+    /// affords it; skip the rotation (the flush then drains the existing
+    /// frozen backlog, freeing the pool) when it does not. Errors only when
+    /// the pool is exhausted with nothing frozen to flush — the one state
+    /// where deferral cannot make progress.
+    pub(crate) fn rotate_active_for_flush(
+        &mut self,
+        branch_id: strata_core::BranchId,
+    ) -> LifecycleResult<()> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        let decision = crate::lifecycle::decide_flush_rotation(
+            &self.budget,
+            self.branch_catalog
+                .branch_state(branch_id)
+                .map_err(branch_error)?,
+        );
+        match decision {
+            crate::lifecycle::FlushRotationDecision::Rotate => {
+                {
+                    let branch = self.branch_catalog.branch_state_mut(
+                        branch_id,
+                        CommitBranchGenerationGuard::exact(generation),
+                    )?;
+                    branch.rotate_active();
+                }
+                // BS2.3: rotation sealed active into a frozen table; republish
+                // the branch snapshot.
+                self.publish_branch_snapshot(branch_id);
+                Ok(())
+            }
+            crate::lifecycle::FlushRotationDecision::FlushBacklogWithoutRotation => Ok(()),
+            crate::lifecycle::FlushRotationDecision::Defer(error) => Err(error),
+        }
+    }
+
     #[allow(
         dead_code,
         reason = "non-seeded rotation is exercised by multi-branch checkpoint tests"
@@ -1666,33 +1707,28 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         }
         let mut rotated = false;
         if branch.active_row_count() > 0 {
-            match require_rotate_budget(&self.budget, branch) {
-                Ok(()) => {
+            // Deferring the WHOLE flush on a rotate refusal livelocked under
+            // saturation: with several branches' frozen tables filling the
+            // shared pool, every branch's flush deferred on the rotate budget
+            // — while the existing frozen backlog those flushes would drain
+            // is precisely what frees that budget (measured: 4 writer
+            // branches at default budgets, 30s stall-wall timeouts, flush
+            // deferring ~13x/s per branch until the watchdog fired). The
+            // shared decision flushes the backlog WITHOUT rotating and defers
+            // only when there is nothing frozen to flush.
+            match crate::lifecycle::decide_flush_rotation(&self.budget, branch) {
+                crate::lifecycle::FlushRotationDecision::Rotate => {
                     branch.rotate_active();
                     rotated = true;
                 }
-                // Rotation would exceed the frozen-mutable pool. Deferring the
-                // WHOLE flush here livelocked under saturation: with several
-                // branches' frozen tables filling the shared pool, every
-                // branch's flush deferred on the rotate budget — while the
-                // existing frozen backlog those flushes would drain is
-                // precisely what frees that budget (measured: 4 writer
-                // branches at default budgets, 30s stall-wall timeouts, flush
-                // deferring ~13x/s per branch until the watchdog fired).
-                // Flush the existing frozen backlog WITHOUT rotating; the
-                // freed pool lets a later flush rotate. Defer only when there
-                // is nothing frozen to flush.
-                Err(error) => {
-                    if branch.frozen_table_count() == 0 {
-                        let outcome = MaintenanceOutcome::new(
-                            task.kind(),
-                            MaintenanceOutcomeStatus::Deferred,
-                        )
-                        .with_source_error(error);
-                        let outcome = self.maintenance.finish_started(task, outcome, false)?;
-                        self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
-                        return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
-                    }
+                crate::lifecycle::FlushRotationDecision::FlushBacklogWithoutRotation => {}
+                crate::lifecycle::FlushRotationDecision::Defer(error) => {
+                    let outcome =
+                        MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Deferred)
+                            .with_source_error(error);
+                    let outcome = self.maintenance.finish_started(task, outcome, false)?;
+                    self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+                    return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
                 }
             }
         }
@@ -4147,6 +4183,7 @@ struct DurableFlushMaintenanceRunner<'a, 'b> {
 impl MaintenanceTaskRunner for DurableFlushMaintenanceRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
         let mut outcomes = Vec::new();
+        let mut deferred_rotation: Option<LifecycleError> = None;
         for descriptor in flush_branch_descriptors(self.branch_catalog, task)? {
             let branch_id = descriptor.branch_id();
             let request = flush_drain_request_for_branch_from_maintenance_task(task, branch_id)?;
@@ -4155,8 +4192,24 @@ impl MaintenanceTaskRunner for DurableFlushMaintenanceRunner<'_, '_> {
                 CommitBranchGenerationGuard::exact(descriptor.generation()),
             )?;
             if branch.active_row_count() > 0 {
-                require_rotate_budget(self.budget, branch)?;
-                branch.rotate_active();
+                // Failing the whole task on a rotate refusal livelocked under
+                // saturation (the background step path carries the same fix):
+                // the frozen backlog this flush drains is what frees the pool.
+                match crate::lifecycle::decide_flush_rotation(self.budget, branch) {
+                    crate::lifecycle::FlushRotationDecision::Rotate => {
+                        branch.rotate_active();
+                    }
+                    crate::lifecycle::FlushRotationDecision::FlushBacklogWithoutRotation => {}
+                    crate::lifecycle::FlushRotationDecision::Defer(error) => {
+                        // Nothing frozen on this branch: skip it (another
+                        // branch's backlog may still flush) and report the
+                        // deferral only if no branch makes progress.
+                        if deferred_rotation.is_none() {
+                            deferred_rotation = Some(error);
+                        }
+                        continue;
+                    }
+                }
             }
             outcomes.push(flush_branch_drain_with(
                 branch,
@@ -4183,6 +4236,15 @@ impl MaintenanceTaskRunner for DurableFlushMaintenanceRunner<'_, '_> {
                     Ok(maintenance_outcome)
                 },
             )?);
+        }
+        if outcomes.is_empty() {
+            if let Some(error) = deferred_rotation {
+                return Ok(MaintenanceOutcome::new(
+                    task.kind(),
+                    MaintenanceOutcomeStatus::Deferred,
+                )
+                .with_source_error(error));
+            }
         }
         Ok(flush_drain_maintenance_outcome_for_scope(&outcomes))
     }

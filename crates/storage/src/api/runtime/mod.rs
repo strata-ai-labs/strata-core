@@ -1503,14 +1503,14 @@ impl<'a> StorageRuntime<'a> {
             StorageRuntimeInner::Cache(slot) => {
                 let mut runtime = slot.lock();
                 runtime
-                    .rotate_active_for_branch_for_maintenance(branch_id)
+                    .rotate_active_for_flush(branch_id)
                     .map_err(map_lifecycle_error)?;
                 runtime.flush_frozen(&flush_request)
             }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 runtime
-                    .rotate_active_for_branch_for_maintenance(branch_id)
+                    .rotate_active_for_flush(branch_id)
                     .map_err(map_lifecycle_error)?;
                 runtime.flush_frozen(&flush_request)
             }

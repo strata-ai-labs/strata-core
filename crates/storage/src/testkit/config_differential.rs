@@ -528,7 +528,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "blocked on #2609: EvaluateAndEnqueue livelocks under sustained low-memory pressure (frozen backlog wedges admission); un-ignore with the fix"]
     fn pressure_retries_are_invisible_to_readers() {
         let dir = tempfile::tempdir().expect("tmp");
         // Non-vacuity for the budget axis: a long stream against the
@@ -553,6 +552,87 @@ mod tests {
                 .unwrap_or_else(|err| panic!("differential soak seed {seed}: {err}"));
             assert_eq!(outcome.configs_run(), 6);
         }
+    }
+
+    /// The direct-flush surface over the wedged state: when sustained
+    /// pressure has saturated the frozen pool, a direct
+    /// `runtime.maintenance(Flush)` must drain the frozen backlog rather
+    /// than erroring on the rotation it cannot afford — that backlog is
+    /// precisely what frees the pool.
+    #[test]
+    fn direct_flush_drains_saturated_frozen_backlog_instead_of_wedging() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let case = StorageConfigCase {
+            mode: ConfigMode::DurableStandard,
+            budget: ConfigBudget::LowMemory,
+        };
+        let branch = default_branch();
+        let case_root = dir.path().join(case.label());
+        std::fs::create_dir_all(&case_root).expect("case root");
+        let backend = StorageBackend::local_fs(case_root);
+        let mut runtime = StorageRuntime::open_with_backend(open_options(case), &backend)
+            .expect("open")
+            .into_runtime();
+
+        // Drive the oracle stream with drain-on-pressure until either it
+        // completes (no livelock — the property holds trivially) or a commit
+        // stays blocked across repeated drains (the wedged state).
+        let stream = generate_workload(3, 1200);
+        let mut wedged_at = None;
+        'load: for (index, mutations) in stream.iter().enumerate() {
+            let batch = CommitBatch::new(
+                branch,
+                mutations.iter().map(to_commit_mutation).collect(),
+                CommitOptions::default(),
+            )
+            .expect("batch");
+            for _ in 0..24 {
+                match runtime.commit(&batch) {
+                    Ok(_) => continue 'load,
+                    Err(StorageApiError::StoragePressure { .. }) => {
+                        // The relieving drain may itself be refused while
+                        // saturated; the wedge detector is the assertion.
+                        let _ = runtime.drain_maintenance();
+                    }
+                    Err(other) => panic!("op {index} failed unexpectedly: {other:?}"),
+                }
+            }
+            wedged_at = Some(index);
+            break;
+        }
+        // The direct flush must succeed in both terminal states — over the
+        // wedged saturated pool (the regression) and over the merely loaded
+        // store (so the flush-time rotation surface stays exercised even
+        // once the wedge no longer forms).
+        let summary = runtime
+            .maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Flush,
+                MaintenanceScope::Branch(branch),
+            ))
+            .unwrap_or_else(|error| {
+                panic!("direct flush (wedged_at={wedged_at:?}) must drain, not wedge: {error:?}")
+            });
+        assert_ne!(
+            summary.status(),
+            crate::api::MaintenanceSummaryStatus::Failed,
+            "direct flush failed: {summary:?}"
+        );
+
+        // Relief must be real: the blocked (or next) op goes through.
+        runtime.drain_maintenance().expect("post-flush drain");
+        let resume_index = wedged_at.unwrap_or(0);
+        let resume = CommitBatch::new(
+            branch,
+            stream[resume_index]
+                .iter()
+                .map(to_commit_mutation)
+                .collect(),
+            CommitOptions::default(),
+        )
+        .expect("resume batch");
+        runtime
+            .commit(&resume)
+            .expect("admission must accept writes after the direct flush");
     }
 
     #[test]

@@ -984,6 +984,45 @@ pub(crate) fn require_rotate_budget(
     )
 }
 
+/// How a flush should handle rotating the active table under the
+/// frozen-mutable pool. Deferring (or failing) the whole flush on a rotate
+/// refusal livelocks under saturation: the frozen backlog the flush would
+/// drain is precisely what frees the pool, so the flush must run without
+/// rotating and let a later flush rotate into the freed pool. Rotation is
+/// either performed exactly as before or skipped entirely — never partially
+/// applied.
+#[derive(Debug)]
+pub(crate) enum FlushRotationDecision {
+    /// The pool affords the rotation: seal the active table, then flush.
+    Rotate,
+    /// The pool is exhausted but a frozen backlog exists: flush it without
+    /// rotating.
+    FlushBacklogWithoutRotation,
+    /// The pool is exhausted and nothing is frozen: defer with the typed
+    /// refusal — there is no backlog to convert into budget.
+    Defer(LifecycleError),
+}
+
+pub(crate) fn decide_flush_rotation(
+    ledger: &StorageBudgetLedger,
+    branch: &BranchLocalState,
+) -> FlushRotationDecision {
+    match require_rotate_budget(ledger, branch) {
+        Ok(()) => FlushRotationDecision::Rotate,
+        Err(error) => {
+            // Only a budget refusal may be converted into progress on the
+            // backlog; any other error class defers with its typed error so
+            // nothing is ever silently swallowed.
+            let budget_refusal = matches!(error, LifecycleError::StorageBudgetExceeded { .. });
+            if budget_refusal && branch.frozen_table_count() > 0 {
+                FlushRotationDecision::FlushBacklogWithoutRotation
+            } else {
+                FlushRotationDecision::Defer(error)
+            }
+        }
+    }
+}
+
 pub(crate) fn estimate_commit_batch_active_bytes(batch: &CommitBatch) -> LifecycleResult<u64> {
     if batch.mutations().is_empty() {
         return Ok(0);
