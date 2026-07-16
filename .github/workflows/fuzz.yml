@@ -1,0 +1,62 @@
+name: Scheduled fuzzing
+
+# Continuous fuzzing over every storage fuzz target with a persistent
+# corpus, so coverage compounds across nights instead of restarting from
+# the seed corpora. A crash artifact is a finding: minimize it, file it,
+# and land the regression seed with the fix.
+
+on:
+  schedule:
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  # Per-target libFuzzer budget. ~30 targets keeps the whole run under an
+  # hour including the build.
+  FUZZ_SECONDS_PER_TARGET: "60"
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorize private git dependencies
+        run: git config --global url."https://x-access-token:${{ secrets.STRATAHUB_READ_TOKEN }}@github.com/stratalab/stratahub".insteadOf "https://github.com/stratalab/stratahub"
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/storage/fuzz
+      - uses: taiki-e/install-action@cargo-fuzz
+      - name: Restore persistent corpus
+        uses: actions/cache@v4
+        with:
+          path: crates/storage/fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-
+      - name: Run every fuzz target
+        working-directory: crates/storage
+        run: |
+          set -eu
+          failed=0
+          for target in $(cargo +nightly fuzz list); do
+            echo "::group::fuzz $target"
+            if ! cargo +nightly fuzz run "$target" -- \
+                -max_total_time="$FUZZ_SECONDS_PER_TARGET" -timeout=30 \
+                -rss_limit_mb=4096; then
+              echo "::error::fuzz target $target found a crash"
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$failed"
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ github.run_id }}
+          path: crates/storage/fuzz/artifacts
+          retention-days: 90

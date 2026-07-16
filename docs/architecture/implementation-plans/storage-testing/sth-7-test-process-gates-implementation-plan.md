@@ -1,6 +1,6 @@
 # STH-7 Implementation Plan: Test-Process Gates + Anti-Drift
 
-Status: 7a implemented (2026-07-16, TCP1.1) — see "As built (7a)" below; 7b/7c/7d draft
+Status: implemented — 7a (2026-07-16, TCP1.1), 7b/7c/7d (2026-07-16, TCP1.5). See the as-built sections below.
 Charter classes: 11 — Coverage/mutation (❌ → ✅), 12 — Memory safety (🟡 → ✅), 7 — deepen (continuous + structure-aware fuzz), plus the anti-drift map guard
 Companion: `docs/architecture/v1-storage-testing-taxonomy-and-gaps.md`
 Depends on: the suites it measures (run coverage/mutation after STH-1..6 exist; Miri/sanitizer can land now).
@@ -38,6 +38,32 @@ Deviations from the sketch above: Miri covers core + storage format layer
 (not engine — interpreter cost; revisit when nightly budget allows); the
 per-test allocator-counter/dhat assertion is deferred to 7b in favor of
 LSAN whole-process leak checking.
+
+## As built (7b + 7c + 7d) — 2026-07-16, slice TCP1.5
+
+- **7b coverage + mutation.** The nightly coverage job gates the workspace
+  region floor (73.0%, ratchet-up-only; baseline 73.64%) after publishing the
+  per-crate table. Per-PR, the `mutation-on-diff` job in `ci.yml` runs
+  `cargo-mutants --in-diff` over exactly the lines the PR touches — an
+  un-killed mutant fails the job; doc/test-only diffs pass trivially.
+  Deviations from the sketch: the gate is the llvm region floor, not MC/DC
+  (tracked headroom), and mutation is diff-scoped rather than a full-tree
+  campaign (affordability, per the plan's own constraint).
+- **7c continuous fuzz.** `.github/workflows/fuzz.yml` (04:30 UTC + dispatch)
+  runs all 30 targets nightly with the corpus persisted via the actions
+  cache, so coverage compounds across nights; crash artifacts upload on
+  failure. The generated-script targets (commit runtime, lifecycle, services,
+  branch LSM) are the structure-aware layer — they interpret fuzz bytes as
+  operation scripts through model-checked harnesses. `arbitrary`-derived
+  whole-DB-file generators remain headroom.
+- **7d charter guard.** `crates/storage/tests/testing_charter_guard.rs`
+  parses the backticked evidence anchors out of the charter documents
+  (taxonomy, gold-standard delta, coverage program, STH README) and asserts
+  every cited artifact exists — deletion or rename now breaks CI, with an
+  explicit reasoned allowlist for future references. A second test pins the
+  primary artifact of every implemented STH slice. On its first run the
+  guard caught one drifted reference and its vacuity floor is itself
+  asserted.
 
 ## Objective
 

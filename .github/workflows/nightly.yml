@@ -154,6 +154,21 @@ jobs:
             cat coverage-summary.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Coverage floor gate
+        # Ratchet discipline: the floor only moves up, never down, and a
+        # raise is committed here alongside the coverage that earned it.
+        # Baseline 2026-07-16: workspace 73.6% region.
+        env:
+          WORKSPACE_REGION_FLOOR: "73.0"
+        run: |
+          total=$(awk '/^TOTAL/ {print $4}' coverage-summary.txt | tr -d '%')
+          echo "workspace region coverage: ${total}% (floor ${WORKSPACE_REGION_FLOOR}%)"
+          awk -v got="$total" -v floor="$WORKSPACE_REGION_FLOOR" 'BEGIN {
+            if (got + 0 < floor + 0) {
+              printf "::error::workspace region coverage %.2f%% fell below the committed floor %.2f%%\n", got, floor
+              exit 1
+            }
+          }'
       - name: Upload coverage artifacts
         uses: actions/upload-artifact@v4
         with:
