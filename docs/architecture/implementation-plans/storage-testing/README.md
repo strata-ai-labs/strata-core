@@ -1,6 +1,6 @@
 # Storage Testing Hardening (STH): closing the charter gaps
 
-Status: draft program index
+Status: program complete (2026-07-16) — this index and the per-slice as-builts are the record
 Charter: `docs/architecture/v1-storage-testing-taxonomy-and-gaps.md`
 Code: **STH** — a storage-testing program, distinct from the ST2–ST7 architecture-cleanup slices.
 
@@ -22,19 +22,25 @@ a plan that adds 300 lines and moves a class from ❌ to ✅ has succeeded.
 
 ## The series
 
+**Program complete (2026-07-16):** all seven slices landed (STH-1..4 in June;
+STH-5, STH-3b, STH-6, STH-7 under the test coverage program, slices TCP1.1-1.5)
+and every charter bug class sits at its exit bar. The per-slice as-built
+sections are authoritative; the `testing_charter_guard` test enforces that the
+artifacts cited across these documents keep existing.
+
 Ordered by dependency and leverage. Each plan is self-contained and can be run
 via `/epic-implement`; each converges its own test work (these *are* test plans —
 the harness is the implementation).
 
 | Plan | Closes (charter class) | Status → exit | Depends on | The story it tells |
 |---|---|---|---|---|
-| [STH-1](sth-1-recovery-oracle-implementation-plan.md) | 4 Recovery oracle | ❌ → ✅ | — | "We don't check that it reopened; we check we got the *right data* back." |
-| [STH-2](sth-2-fault-injection-sweeps-implementation-plan.md) | 5 Error-path sweeps | 🟡 → ✅ | STH-1 | "We fail *every* I/O operation, not a few we guessed." |
-| [STH-3](sth-3-durability-realism-implementation-plan.md) | 3 Crash, 10 FS-assumptions | 🟡/❌ → ✅ | STH-1 | "We model the disk that lies — torn writes, reordering, non-atomic rename." |
-| [STH-4](sth-4-deterministic-simulation-implementation-plan.md) | 9 Deterministic simulation | 🟡 → ✅ | STH-1, STH-2 | "Every failure replays from a seed; we sweep the interleavings nothing else reaches." |
-| [STH-5](sth-5-failure-during-failure-implementation-plan.md) | 6 Failure-during-failure | ❌ → ✅ | STH-1/2/3 | "We break recovery *while it is recovering* and it still holds." |
-| [STH-6](sth-6-differential-and-liveness-implementation-plan.md) | 2 Differential, 8 Liveness | 🟡/✅ → ✅ | — | "Same workload, every config, identical results — and it never falls behind." |
-| [STH-7](sth-7-test-process-gates-implementation-plan.md) | 11 Coverage/mutation, 12 Memory safety, 7 (deepen), anti-drift | ❌/🟡 → ✅ | suites exist | "The discipline is enforced by CI, and the map can't lie." |
+| [STH-1](sth-1-recovery-oracle-implementation-plan.md) | 4 Recovery oracle | ✅ done 2026-06-18 | — | "We don't check that it reopened; we check we got the *right data* back." |
+| [STH-2](sth-2-fault-injection-sweeps-implementation-plan.md) | 5 Error-path sweeps | ✅ done 2026-06-18 | STH-1 | "We fail *every* I/O operation, not a few we guessed." |
+| [STH-3](sth-3-durability-realism-implementation-plan.md) | 3 Crash, 10 FS-assumptions | ✅ done (3a+3c 2026-06-18; 3b watchdog 2026-07-16) | STH-1 | "We model the disk that lies — torn writes, reordering, non-atomic rename." |
+| [STH-4](sth-4-deterministic-simulation-implementation-plan.md) | 9 Deterministic simulation | ✅ done 2026-06-19 (found + fixed 2 durability bugs) | STH-1, STH-2 | "Every failure replays from a seed; we sweep the interleavings nothing else reaches." |
+| [STH-5](sth-5-failure-during-failure-implementation-plan.md) | 6 Failure-during-failure | ✅ done 2026-07-16 | STH-1/2/3 | "We break recovery *while it is recovering* and it still holds." |
+| [STH-6](sth-6-differential-and-liveness-implementation-plan.md) | 2 Differential, 8 Liveness | ✅ done 2026-07-16 (found + fixed #2609) | — | "Same workload, every config, identical results — and it never falls behind." |
+| [STH-7](sth-7-test-process-gates-implementation-plan.md) | 11 Coverage/mutation, 12 Memory safety, 7 (deepen), anti-drift | ✅ done 2026-07-16 (7a memory-safety; 7b/7c/7d gates) | done | "The discipline is enforced by CI, and the map can't lie." |
 
 Classes 1 (contract) and 7 (hostile input) are already at exit bar; STH-7 only
 *deepens* 7 (continuous + structure-aware fuzz) and adds the anti-drift guard.
