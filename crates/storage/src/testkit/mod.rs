@@ -28,6 +28,12 @@ mod compound_faults;
     feature = "localfs",
     not(target_arch = "wasm32")
 ))]
+mod config_differential;
+#[cfg(all(
+    any(test, feature = "fault-injection"),
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
 mod fault_sweep;
 mod format_fuzz;
 #[cfg(all(
@@ -95,6 +101,15 @@ pub use commit_runtime_runner::{
 pub use compound_faults::{
     run_compound_fault_maintenance_cases, run_compound_fault_recovery_sweep,
     CompoundFaultMaintenanceOutcome, CompoundFaultRecoveryOutcome,
+};
+#[cfg(all(
+    any(test, feature = "fault-injection"),
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
+pub use config_differential::{
+    run_config_differential, run_low_memory_pressure_equivalence, storage_config_matrix,
+    ConfigDifferentialOutcome, StorageConfigCase,
 };
 #[cfg(all(
     any(test, feature = "fault-injection"),

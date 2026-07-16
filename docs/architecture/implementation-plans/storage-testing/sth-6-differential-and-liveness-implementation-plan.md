@@ -1,6 +1,42 @@
 # STH-6 Implementation Plan: Differential + Liveness Deepening
 
-Status: draft
+Status: implemented (2026-07-16, TCP1.4) — see "As built" below
+
+## As built (2026-07-16, slice TCP1.4)
+
+**6a + 6b** — `crates/storage/src/testkit/config_differential.rs`. The shared
+seeded workload (reusing the recovery-oracle generator) drives commits on two
+branches (one forked mid-stream) with interleaved maintenance under the full
+config matrix {cache, durable-Standard, durable-Always} × {default,
+low-memory budget}, all under `EvaluateAndEnqueue` for determinism. Three
+oracles per run: cross-config equality of full logical snapshots (keys,
+values, *and* commit versions, per branch, at three checkpoints — divergence
+names the config, checkpoint, branch, and key), a metamorphic point-read
+check inside every config (every scanned row must be reproducible by a point
+read — the NoREC-style oracle), and expected-state-model equality on the
+default branch. Green across the matrix and a 16-seed soak (nightly lane).
+
+**Finding — issue #2609 (the program's first product bug).** The
+pressure-equivalence cell (a long stream against the low-memory budget)
+exposed a livelock: under `EvaluateAndEnqueue`, sustained pressure wedges
+admission permanently — `BlockMutatingAdmission`/`FrozenBacklog` with an
+empty queue, every drain refused by the frozen-rotation `ResourceExhausted`
+it is supposed to relieve, and explicit enqueue of every maintenance kind
+does not help. The production-default background scheduler survives the
+identical budget and load (verified). The regression test
+(`pressure_retries_are_invisible_to_readers`) is `#[ignore]`d referencing
+#2609 and must be un-ignored by the fix (the 3d failing-then-fixed
+discipline).
+
+**6c** — `crates/storage/src/api/tests/liveness_matrix.rs`. Deterministic
+liveness matrix: {cache, durable-Standard, durable-Always} × all 11
+maintenance kinds, each kind cycled against live write traffic; per cell:
+commits never fail permanently, drains succeed with no failed task, queue
+ends empty, storage never ends blocked on pressure, and every written row
+reads back. Runs in the default per-PR suite. The perf-trace-gated
+background-scheduler endurance suite (`background_scale.rs`) — previously
+invisible to every CI lane because `perf-trace` is not a default feature —
+now runs in the nightly durable-invariants job.
 Charter classes: 2 — Silent wrong results (🟡 → ✅) and 8 — Trajectory/liveness (✅, deepen)
 Companion: `docs/architecture/v1-storage-testing-taxonomy-and-gaps.md`
 Depends on: none (independent; can run in parallel with STH-1..5).

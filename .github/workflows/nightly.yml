@@ -122,6 +122,12 @@ jobs:
         env:
           STRATA_STORAGE_COMPOUND_CASES: "20000"
         run: cargo test --locked -p strata-storage --features fault-injection --test compound_faults -- --ignored
+      - name: Config differential soak
+        run: cargo test --locked -p strata-storage --lib config_differential -- --ignored --skip pressure_retries_are_invisible_to_readers
+      - name: Background scheduler liveness (perf-trace)
+        # The closed-loop endurance suite is perf-trace gated and therefore
+        # invisible to per-PR CI (default features); this is its only lane.
+        run: cargo test --locked -p strata-storage --features perf-trace --lib background_scale
 
   coverage-baseline:
     # Publishes per-crate region/line coverage. Baseline only for now:
