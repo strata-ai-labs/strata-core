@@ -416,11 +416,10 @@ fn writer_lock_is_exclusive_across_processes_and_releases_on_kill() {
     assert_eq!(stdout(&read).trim(), "1", "pre-kill durable data survives");
 }
 
-/// Parked on #2618: killing the FIRST session on a fresh store must leave a
-/// usable database (recovered-empty or cleanly recreatable), not a permanent
-/// `data_loss.engine.control_plane_missing` brick. Un-ignore with the fix.
+/// Regression for #2618 (fixed by the creation durability barrier): killing
+/// the FIRST session on a fresh store leaves a usable database, not a
+/// permanent `data_loss.engine.control_plane_missing` brick.
 #[test]
-#[ignore = "blocked on #2618: SIGKILL during a store's first session bricks the database; un-ignore with the fix"]
 fn sigkill_during_first_session_leaves_a_usable_database() {
     let dir = tempfile::tempdir().expect("tmp");
     let db = db_arg(dir.path());
