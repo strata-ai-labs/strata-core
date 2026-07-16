@@ -48,7 +48,8 @@ fn check_durable_standard_create(
     script: &[u8],
     outcome: &mut LifecycleScaffoldOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static DurableScriptBackend = Box::leak(Box::new(DurableScriptBackend::new()));
+    let backend: &'static DurableScriptBackend =
+        crate::testkit::leak_static(DurableScriptBackend::new());
     let shell = assemble(
         StorageMode::DurableLocalStandard,
         script_byte(script, 40),
@@ -100,7 +101,8 @@ fn check_durable_always_existing(
     script: &[u8],
     outcome: &mut LifecycleScaffoldOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static DurableScriptBackend = Box::leak(Box::new(DurableScriptBackend::new()));
+    let backend: &'static DurableScriptBackend =
+        crate::testkit::leak_static(DurableScriptBackend::new());
     let active_segment = u64::from(script_byte(script, 41) % 8) + 2;
     let manifest = DatabaseManifest::new(DATABASE_ID, "identity")
         .map_err(testkit_error)?
@@ -156,9 +158,9 @@ fn check_durable_rejections(
         "durable request accepted cache mode",
     )?;
 
-    let backend: &'static DurableScriptBackend = Box::leak(Box::new(
+    let backend: &'static DurableScriptBackend = crate::testkit::leak_static(
         DurableScriptBackend::with_capabilities(BackendCapabilities::empty()),
-    ));
+    );
     let capability_rejected = LifecycleDurableLocalShell::assemble(
         request(StorageMode::DurableLocalStandard, script_byte(script, 44))?,
         backend,
@@ -184,7 +186,7 @@ fn check_durable_lock_failure(
     outcome: &mut LifecycleScaffoldOutcome,
 ) -> Result<(), TestkitError> {
     let backend: &'static DurableScriptBackend =
-        Box::leak(Box::new(DurableScriptBackend::with_lock_failure()));
+        crate::testkit::leak_static(DurableScriptBackend::with_lock_failure());
     let rejected = LifecycleDurableLocalShell::assemble(
         request(StorageMode::DurableLocalStandard, script_byte(script, 45))?,
         backend,
@@ -206,7 +208,8 @@ fn check_durable_identity_mismatch(
     script: &[u8],
     outcome: &mut LifecycleScaffoldOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static DurableScriptBackend = Box::leak(Box::new(DurableScriptBackend::new()));
+    let backend: &'static DurableScriptBackend =
+        crate::testkit::leak_static(DurableScriptBackend::new());
     let manifest = DatabaseManifest::new(OTHER_DATABASE_ID, "identity").map_err(testkit_error)?;
     backend.write_raw(
         ObjectLayout::database_manifest().map_err(testkit_error)?,
@@ -238,9 +241,8 @@ fn check_durable_create_race(
         .map_err(testkit_error)?
         .with_recovery_facts(active_segment, None, None, None)
         .map_err(testkit_error)?;
-    let backend: &'static DurableScriptBackend = Box::leak(Box::new(
-        DurableScriptBackend::with_create_race(race_manifest),
-    ));
+    let backend: &'static DurableScriptBackend =
+        crate::testkit::leak_static(DurableScriptBackend::with_create_race(race_manifest));
     let shell = assemble(
         StorageMode::DurableLocalStandard,
         script_byte(script, 48),
@@ -262,9 +264,9 @@ fn check_durable_publish_fault(
     script: &[u8],
     outcome: &mut LifecycleScaffoldOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static DurableScriptBackend = Box::leak(Box::new(
+    let backend: &'static DurableScriptBackend = crate::testkit::leak_static(
         DurableScriptBackend::with_publish_failure(PublishFailureKind::VisibilityUnknown),
-    ));
+    );
     let rejected = LifecycleDurableLocalShell::assemble(
         request(StorageMode::DurableLocalStandard, script_byte(script, 49))?,
         backend,
@@ -283,7 +285,7 @@ fn check_durable_wal_failure(
     outcome: &mut LifecycleScaffoldOutcome,
 ) -> Result<(), TestkitError> {
     let backend: &'static DurableScriptBackend =
-        Box::leak(Box::new(DurableScriptBackend::with_metadata_failure()));
+        crate::testkit::leak_static(DurableScriptBackend::with_metadata_failure());
     let manifest = DatabaseManifest::new(DATABASE_ID, "identity")
         .map_err(testkit_error)?
         .with_recovery_facts(u64::from(script_byte(script, 50) % 8) + 2, None, None, None)
@@ -318,7 +320,8 @@ fn check_input_derived_durable(
     } else {
         StorageMode::DurableLocalAlways
     };
-    let backend: &'static DurableScriptBackend = Box::leak(Box::new(DurableScriptBackend::new()));
+    let backend: &'static DurableScriptBackend =
+        crate::testkit::leak_static(DurableScriptBackend::new());
     let shell = assemble(mode, script_byte(script, 53), backend)?;
     ensure(
         shell.assembly_facts().mode() == mode,

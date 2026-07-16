@@ -135,7 +135,7 @@ fn lifecycle_background_closed_loop_scaled_durable_bounds_wal_without_public_dra
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let value = vec![0x6B; SCALED_CLOSED_LOOP_DURABLE_VALUE_BYTES];
     let root = temp_dir_for_api_test("scaled-durable-liveness");
-    let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+    let backend = crate::testkit::leak_static(StorageBackend::local_fs(root.clone()));
     let runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
             .with_storage_budget_for_test(
@@ -311,7 +311,7 @@ fn lifecycle_background_closed_loop_scaled_durable_bounds_wal_without_public_dra
 fn wal_retention_deletes_segments_without_public_drain() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let root = temp_dir_for_api_test("wal-retention-deletes-segments");
-    let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+    let backend = crate::testkit::leak_static(StorageBackend::local_fs(root.clone()));
     let runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
             .with_wal_growth_policy(StorageWalGrowthPolicy::thresholds(2 * 1024, 2, 3))

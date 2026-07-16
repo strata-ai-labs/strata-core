@@ -22,7 +22,7 @@ fn open_durable_runtime_with_options(
     options: StorageOpenOptions,
 ) -> StorageRuntime<'static> {
     let backend = StorageBackend::local_fs(temp_dir_for_api_test(name));
-    StorageRuntime::open_with_backend(options, Box::leak(Box::new(backend)))
+    StorageRuntime::open_with_backend(options, crate::testkit::leak_static(backend))
         .expect("open durable runtime")
         .into_runtime()
 }
@@ -32,9 +32,8 @@ fn open_durable_runtime_with_backend(
     name: &str,
     options: StorageOpenOptions,
 ) -> (&'static StorageBackend, StorageRuntime<'static>) {
-    let backend = Box::leak(Box::new(StorageBackend::local_fs(temp_dir_for_api_test(
-        name,
-    ))));
+    let backend =
+        crate::testkit::leak_static(StorageBackend::local_fs(temp_dir_for_api_test(name)));
     let runtime = StorageRuntime::open_with_backend(options, backend)
         .expect("open durable runtime")
         .into_runtime();
@@ -1199,7 +1198,7 @@ fn drain_maintenance_to_idle(runtime: &mut StorageRuntime<'static>) {
 #[test]
 fn api_compaction_gc_reclaims_superseded_table_objects() {
     let root = temp_dir_for_api_test("maintenance-gc-end-to-end");
-    let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+    let backend = crate::testkit::leak_static(StorageBackend::local_fs(root.clone()));
     let mut runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
         backend,
@@ -1264,7 +1263,7 @@ fn api_compaction_gc_reclaims_superseded_table_objects() {
 #[test]
 fn api_cow_fork_child_pins_shared_objects_against_gc() {
     let root = temp_dir_for_api_test("maintenance-gc-cow-pin");
-    let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+    let backend = crate::testkit::leak_static(StorageBackend::local_fs(root.clone()));
     let mut runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
         backend,
@@ -1336,7 +1335,7 @@ fn api_cow_fork_child_pins_shared_objects_against_gc() {
 #[test]
 fn api_background_gc_reclaims_superseded_table_objects_off_lock() {
     let root = temp_dir_for_api_test("maintenance-gc-background-off-lock");
-    let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+    let backend = crate::testkit::leak_static(StorageBackend::local_fs(root.clone()));
     let mut runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
         backend,
@@ -1415,7 +1414,7 @@ fn api_background_gc_reclaims_superseded_table_objects_off_lock() {
 #[test]
 fn api_gc_sweep_defers_while_retired_read_view_is_held() {
     let root = temp_dir_for_api_test("maintenance-gc-reader-interlock");
-    let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+    let backend = crate::testkit::leak_static(StorageBackend::local_fs(root.clone()));
     let mut runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
         backend,
@@ -1478,7 +1477,7 @@ fn api_reopen_reconciles_stale_table_objects() {
     let root = temp_dir_for_api_test("maintenance-gc-reopen-reconcile");
     let orphan_path;
     {
-        let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+        let backend = crate::testkit::leak_static(StorageBackend::local_fs(root.clone()));
         let mut runtime = StorageRuntime::open_with_backend(
             StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
             backend,
@@ -1505,7 +1504,7 @@ fn api_reopen_reconciles_stale_table_objects() {
         std::fs::copy(&source_path, &orphan_path).expect("plant orphan object");
     }
 
-    let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+    let backend = crate::testkit::leak_static(StorageBackend::local_fs(root.clone()));
     let mut runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
         backend,

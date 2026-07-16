@@ -47,6 +47,9 @@ jobs:
           PROPTEST_CASES: "8"
         run: 'cargo +nightly miri test -p strata-storage --lib format::'
 
+  # Sanitizer jobs run --tests (lib + integration binaries) only:
+  # rustdoc links doctests against sanitized rlibs without the ASAN
+  # runtime and the link fails. Doctests run unsanitized in per-PR CI.
   memory-safety-address-sanitizer:
     # ASAN + LSAN (leak checking is on by default on Linux) across the
     # full storage suite — the crate that owns real syscalls and byte
@@ -62,23 +65,21 @@ jobs:
         with:
           components: rust-src
       - uses: Swatinem/rust-cache@v2
-      - name: ASAN storage tests (leak detection deferred)
-        # detect_leaks=0 because storage test fixtures intentionally
-        # Box::leak backends for &'static lifetimes (~600 sites), which
-        # drowns LSAN in known-benign reports. Flipping this on is
-        # blocked on the leak-registry migration tracked in the test
-        # coverage program (Phase 1 ledger). ASAN itself (UAF, OOB,
-        # double-free) is fully active.
+      - name: ASAN + LSAN storage tests
+        # Intentional fixture leaks go through testkit::leak_static /
+        # forget_registered, which keep them reachable from a process
+        # global — so every leak LSAN reports here is a real one. Bare
+        # Box::leak/mem::forget in storage test code will show up as a
+        # red run; route new fixtures through the registry instead.
         env:
           RUSTFLAGS: -Zsanitizer=address
-          ASAN_OPTIONS: detect_leaks=0
-        run: cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu -p strata-storage
+        run: cargo +nightly test --tests -Zbuild-std --target x86_64-unknown-linux-gnu -p strata-storage
       - name: ASAN + LSAN engine tests
         # Engine has no intentional fixture leaks, so LSAN (on by
         # default with ASAN on Linux) is a real leak gate here.
         env:
           RUSTFLAGS: -Zsanitizer=address
-        run: cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu -p strata-engine
+        run: cargo +nightly test --tests -Zbuild-std --target x86_64-unknown-linux-gnu -p strata-engine
 
   memory-safety-thread-sanitizer:
     # TSAN over storage: commit guards, maintenance scheduling, and
@@ -97,7 +98,7 @@ jobs:
       - name: TSAN storage tests
         env:
           RUSTFLAGS: -Zsanitizer=thread
-        run: cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu -p strata-storage
+        run: cargo +nightly test --tests -Zbuild-std --target x86_64-unknown-linux-gnu -p strata-storage
 
   coverage-baseline:
     # Publishes per-crate region/line coverage. Baseline only for now:

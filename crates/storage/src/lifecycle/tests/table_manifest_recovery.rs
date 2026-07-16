@@ -39,7 +39,7 @@ const DATABASE_ID: [u8; 16] = [0x72; 16];
 #[test]
 fn recovery_loads_table_manifest_for_branch_and_reports_facts() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x21);
     let row = put_row(branch, 3, b"manifest-load", b"value");
     let table = publish_manifest_table(backend, branch, BranchLevel::ZERO, "load-table", &[row]);
@@ -97,7 +97,7 @@ fn recovery_loads_table_manifest_for_branch_and_reports_facts() {
 #[test]
 fn recovery_opens_manifest_table_with_bounded_range_reads() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x71);
     let rows = [
         put_row(branch, 3, b"range-open-a", b"a"),
@@ -137,7 +137,7 @@ fn recovery_opens_manifest_table_with_bounded_range_reads() {
 #[test]
 fn recovery_with_large_manifest_table_does_not_read_full_object() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x72);
     let rows = [
         StorageRow::put(
@@ -189,7 +189,7 @@ fn recovery_with_large_manifest_table_does_not_read_full_object() {
 #[test]
 fn recovery_range_backed_reader_preserves_branch_read_parity() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x73);
     let rows = [
         put_row(branch, 7, b"range-parity-a", b"first"),
@@ -247,7 +247,7 @@ fn recovery_range_backed_reader_preserves_branch_read_parity() {
 #[test]
 fn recovery_installs_manifest_owned_front_and_sorted_tables() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x22);
     let front_row = put_row(branch, 7, b"front-level", b"front");
     let sorted_row = put_row(branch, 4, b"sorted-level", b"sorted");
@@ -319,7 +319,7 @@ fn recovery_installs_manifest_owned_front_and_sorted_tables() {
 #[test]
 fn recovery_installs_inherited_layers_from_manifest() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let child = branch_id(0x23);
     let source = branch_id(0x24);
     let inherited_row = put_row(source, 9, b"inherited", b"ancestor");
@@ -384,7 +384,7 @@ fn recovery_installs_inherited_layers_from_manifest() {
 #[test]
 fn recovery_preserves_materializing_layer_status() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let child = branch_id(0x25);
     let source = branch_id(0x26);
     let inherited_row = put_row(source, 11, b"materializing", b"value");
@@ -431,7 +431,7 @@ fn recovery_preserves_materializing_layer_status() {
 #[test]
 fn recovery_ignores_orphan_table_objects_not_in_manifest() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x27);
     let live = publish_manifest_table(
         backend,
@@ -486,7 +486,7 @@ fn recovery_ignores_orphan_table_objects_not_in_manifest() {
 #[test]
 fn recovery_rejects_row_split_counts_that_disagree_with_the_object() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x2b);
     let table = publish_manifest_table(
         backend,
@@ -532,7 +532,7 @@ fn recovery_rejects_row_split_counts_that_disagree_with_the_object() {
 #[test]
 fn strict_recovery_rejects_corrupt_table_manifest_without_loading_orphans() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x28);
     let orphan = publish_manifest_table(
         backend,
@@ -562,7 +562,7 @@ fn strict_recovery_rejects_corrupt_table_manifest_without_loading_orphans() {
 #[test]
 fn lossy_recovery_reports_corrupt_table_manifest_data_loss() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x31);
     let orphan = publish_manifest_table(
         backend,
@@ -591,7 +591,7 @@ fn lossy_recovery_reports_corrupt_table_manifest_data_loss() {
 #[test]
 fn missing_table_manifest_for_empty_branch_is_healthy() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x29);
 
     let (shell, outcome) = recover_shell(backend, branch, RecoveryStrictness::Strict);
@@ -605,7 +605,7 @@ fn missing_table_manifest_for_empty_branch_is_healthy() {
 #[test]
 fn recovery_ignores_orphan_table_object_when_manifest_is_absent() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x74);
     let orphan = publish_manifest_table(
         backend,
@@ -632,7 +632,7 @@ fn recovery_ignores_orphan_table_object_when_manifest_is_absent() {
 #[test]
 fn strict_recovery_rejects_missing_manifest_listed_table_object() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x2a);
     let table = publish_manifest_table(
         backend,
@@ -672,7 +672,7 @@ fn strict_recovery_rejects_missing_manifest_listed_table_object() {
 #[test]
 fn lossy_recovery_reports_missing_manifest_listed_table_object() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x32);
     let table = publish_manifest_table(
         backend,
@@ -711,7 +711,7 @@ fn lossy_recovery_reports_missing_manifest_listed_table_object() {
 #[test]
 fn strict_recovery_rejects_corrupt_manifest_listed_table_object() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x2b);
     let table = publish_manifest_table(
         backend,
@@ -764,7 +764,7 @@ fn recovery_rejects_table_object_fact_and_bounds_mismatches() {
 
     for mismatch in cases {
         let backend: &'static ManifestRecoveryBackend =
-            Box::leak(Box::new(ManifestRecoveryBackend::new()));
+            crate::testkit::leak_static(ManifestRecoveryBackend::new());
         let table = publish_manifest_table(
             backend,
             branch,
@@ -801,7 +801,7 @@ fn recovery_rejects_table_object_fact_and_bounds_mismatches() {
 #[test]
 fn reader_budget_recovery_decode_rejects_materialized_table_over_budget() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x6a);
     let row = put_row(branch, 31, b"recovery-reader", b"large-value");
     let table = publish_manifest_table(backend, branch, BranchLevel::ZERO, "reader-budget", &[row]);
@@ -855,7 +855,7 @@ fn reader_budget_below_whole_object_admits_metadata_resident_reader() {
     // bounded by the memory budget. Before the disk-resident flip this rejected, because the reader
     // materialized the whole object in RAM. (The recovery-side shape of exit gate #1.)
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x6b);
     let row = put_row(branch, 32, b"whole-object-defer", b"value");
     let table = publish_manifest_table(
@@ -913,7 +913,7 @@ fn low_memory_profile_admits_table_larger_than_reader_budget() {
     // disk, not by the reader pool. This is the unified-scale edge case (C3): a large dataset served
     // on a tiny RAM budget. Before the disk-resident flip this rejected.
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x6c);
     let large_value = vec![0xab_u8; 64 * 1024];
     let row = StorageRow::put(
@@ -972,7 +972,7 @@ fn low_memory_profile_admits_table_larger_than_reader_budget() {
 #[test]
 fn table_manifest_recovery_does_not_change_wal_replay_start() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x2d);
     let table = publish_manifest_table(
         backend,
@@ -1018,7 +1018,7 @@ fn table_manifest_recovery_does_not_change_wal_replay_start() {
 #[test]
 fn table_manifest_recovery_then_wal_tail_preserves_latest_reads() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x2e);
     let old_row = put_row(branch, 20, b"same-key", b"old");
     let table = publish_manifest_table(
@@ -1070,7 +1070,7 @@ fn table_manifest_recovery_then_wal_tail_preserves_latest_reads() {
 #[test]
 fn durable_table_catalog_accepts_exact_duplicate_and_rejects_conflicts() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x2f);
     let table = publish_manifest_table(
         backend,
@@ -1118,7 +1118,7 @@ fn durable_table_catalog_accepts_exact_duplicate_and_rejects_conflicts() {
 #[test]
 fn durable_table_catalog_rebuilds_from_recovered_manifest_sequence() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x30);
     let table = publish_manifest_table(
         backend,
@@ -1148,7 +1148,7 @@ fn durable_table_catalog_rebuilds_from_recovered_manifest_sequence() {
 #[test]
 fn durable_table_catalog_rejects_manifest_sequence_regress() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x33);
     let table = publish_manifest_table(
         backend,
@@ -1226,7 +1226,7 @@ fn durable_table_catalog_reserves_monotonic_sequences_without_double_advance() {
 #[test]
 fn durable_table_catalog_rejects_identity_with_different_facts() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x34);
     let table = publish_manifest_table(
         backend,
@@ -1256,7 +1256,7 @@ fn durable_table_catalog_rejects_identity_with_different_facts() {
 #[test]
 fn recovery_preflights_checkpoint_and_table_manifest_disjoint_succeeds() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x35);
     let manifest_row = put_row(branch, 5, b"manifest-only", b"manifest");
     let manifest_table = publish_manifest_table(
@@ -1321,7 +1321,7 @@ fn recovery_preflights_checkpoint_and_table_manifest_disjoint_succeeds() {
 #[test]
 fn recovery_rejects_checkpoint_table_manifest_duplicate_internal_key_conflict() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x36);
     let manifest_row = put_row(branch, 5, b"shared-key", b"manifest-bytes");
     let manifest_table = publish_manifest_table(
@@ -1369,7 +1369,7 @@ fn recovery_rejects_checkpoint_table_manifest_duplicate_internal_key_conflict() 
 #[test]
 fn recovery_accepts_exact_duplicate_checkpoint_table_manifest_rows() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x37);
     let shared_row = put_row(branch, 5, b"shared-key", b"shared-value");
     let manifest_table = publish_manifest_table(
@@ -1425,7 +1425,7 @@ fn build_manifest_reports_volatile_rewrite_output_with_clear_error() {
     // later slice that publishes rewrite outputs). The manifest builder must
     // report this with a clear, actionable reason.
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x3a);
     let durable = publish_manifest_table(
         backend,
@@ -1474,7 +1474,7 @@ fn build_manifest_reports_volatile_rewrite_output_with_clear_error() {
 #[test]
 fn recovery_rejects_table_object_from_wrong_branch_namespace() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x38);
     let other_branch = branch_id(0x39);
     let row = put_row(other_branch, 6, b"wrong-namespace", b"value");
@@ -2172,7 +2172,7 @@ impl Drop for HeldWriterLock {
 #[test]
 fn durable_table_catalog_tracks_manifest_frontiers_per_branch() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch_a = branch_id(0x51);
     let branch_b = branch_id(0x52);
     let table_a1 = publish_manifest_table(
@@ -2267,7 +2267,7 @@ fn durable_table_catalog_tracks_manifest_frontiers_per_branch() {
 #[test]
 fn recovered_manifest_seeds_the_confirmed_frontier() {
     let backend: &'static ManifestRecoveryBackend =
-        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+        crate::testkit::leak_static(ManifestRecoveryBackend::new());
     let branch = branch_id(0x53);
     let table = publish_manifest_table(
         backend,

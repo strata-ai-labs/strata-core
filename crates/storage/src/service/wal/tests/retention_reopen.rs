@@ -950,7 +950,9 @@ fn buffered_abrupt_termination_recovers_only_flushed_records() {
     service.append(&staged).expect("append staged");
     // Abrupt termination: no drop runs, the staged buffer vanishes with the
     // process. (An orderly drop would flush — covered by the test below.)
-    std::mem::forget(service);
+    // forget_registered instead of mem::forget so the leak checker sees
+    // the never-dropped service as an intentional, registered leak.
+    crate::testkit::forget_registered(service);
 
     let reopened = WalService::open(
         &backend,

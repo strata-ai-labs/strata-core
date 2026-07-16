@@ -1235,9 +1235,9 @@ fn background_close_drains_required_lifecycle_tasks_and_records_counter() {
 #[test]
 fn background_wal_growth_checkpoint_wakes_and_drains() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let backend = Box::leak(Box::new(StorageBackend::local_fs(temp_dir_for_api_test(
+    let backend = crate::testkit::leak_static(StorageBackend::local_fs(temp_dir_for_api_test(
         "background-wal-growth",
-    ))));
+    )));
     let runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
             .with_wal_growth_policy(StorageWalGrowthPolicy::thresholds(u64::MAX, usize::MAX, 1)),

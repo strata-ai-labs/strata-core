@@ -16,7 +16,8 @@ use strata_core::{CommitVersion, Timestamp};
 
 #[test]
 fn durable_pruned_compaction_publishes_pruned_manifest_facts() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0xe1);
     let mut runtime = pruning_runtime(branch, backend);
 
@@ -51,7 +52,8 @@ fn manifest_records_retained_version_floor() {
     // retained-history extension recording the retained version
     // floor used by the proof. Reopening the database recreates that
     // floor from the manifest bytes.
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0xee);
     let mut runtime = pruning_runtime(branch, backend);
 
@@ -86,7 +88,8 @@ fn manifest_records_retained_version_floor() {
 
 #[test]
 fn manifest_records_retained_timestamp_floor() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0xe2);
     let mut runtime = pruning_runtime(branch, backend);
 
@@ -104,7 +107,8 @@ fn manifest_records_retained_timestamp_floor() {
 
 #[test]
 fn durable_pruned_compaction_recovery_restores_retained_reads() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0xe3);
     {
         let mut runtime = pruning_runtime(branch, backend);
@@ -129,7 +133,8 @@ fn durable_pruned_compaction_recovery_restores_retained_reads() {
 
 #[test]
 fn durable_pruned_compaction_recovery_rejects_pruned_history() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0xe4);
     {
         let mut runtime = pruning_runtime(branch, backend);
@@ -153,7 +158,8 @@ fn durable_pruned_compaction_recovery_rejects_pruned_history() {
 
 #[test]
 fn durable_pruned_materialization_recovery_preserves_retained_reads() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let parent = branch_id(0xe5);
     let child = branch_id(0xe6);
     {
@@ -198,7 +204,8 @@ fn manifest_missing_pruning_facts_rejects_recovery() {
     // default `BranchTimestampCoverage::Unknown`, so `as_of` reads below
     // any prior pruning floor surface insufficient-history errors rather
     // than silently widening history.
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0xef);
     {
         let mut runtime = pruning_runtime(branch, backend);
@@ -230,7 +237,8 @@ fn manifest_missing_pruning_facts_rejects_recovery() {
 
 #[test]
 fn wal_tail_replay_after_pruned_manifest_preserves_newer_rows() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0xe7);
     {
         let mut runtime = pruning_runtime(branch, backend);

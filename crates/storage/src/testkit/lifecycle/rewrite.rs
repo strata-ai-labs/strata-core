@@ -285,7 +285,7 @@ fn check_manifest_backed_durable_compaction(
     outcome: &mut LifecycleTableRewriteContractOutcome,
 ) -> Result<(), TestkitError> {
     let branch = branch_id(script_byte(script, 8).max(6));
-    let backend: &'static RewriteBackend = Box::leak(Box::new(RewriteBackend::new()));
+    let backend: &'static RewriteBackend = crate::testkit::leak_static(RewriteBackend::new());
     let mut runtime = open_runtime(branch, backend)?;
     install_l0_table(
         runtime.branch_state_mut(),
@@ -368,7 +368,7 @@ fn check_manifest_backed_durable_materialization(
     }
     let parent = branch_id(parent_seed);
     let child = branch_id(child_seed);
-    let backend: &'static RewriteBackend = Box::leak(Box::new(RewriteBackend::new()));
+    let backend: &'static RewriteBackend = crate::testkit::leak_static(RewriteBackend::new());
     let mut runtime = open_runtime(child, backend)?;
     let mut parent_state = BranchLocalState::empty(parent);
     install_l0_table(
@@ -424,7 +424,7 @@ fn check_publish_failure_before_install(
 ) -> Result<(), TestkitError> {
     let branch = branch_id(script_byte(script, 13).max(9));
     let backend: &'static RewriteBackend =
-        Box::leak(Box::new(RewriteBackend::fail_table_object_create()));
+        crate::testkit::leak_static(RewriteBackend::fail_table_object_create());
     let mut runtime = open_runtime(branch, backend)?;
     install_l0_table(
         runtime.branch_state_mut(),
@@ -468,7 +468,7 @@ fn check_install_failure_after_publish(
     outcome: &mut LifecycleTableRewriteContractOutcome,
 ) -> Result<(), TestkitError> {
     let branch = branch_id(script_byte(script, 17).max(11));
-    let backend: &'static RewriteBackend = Box::leak(Box::new(RewriteBackend::new()));
+    let backend: &'static RewriteBackend = crate::testkit::leak_static(RewriteBackend::new());
     let mut runtime = open_runtime(branch, backend)?;
     install_l0_table(
         runtime.branch_state_mut(),
@@ -534,7 +534,7 @@ fn check_manifest_failure_after_install(
 ) -> Result<(), TestkitError> {
     let branch = branch_id(script_byte(script, 15).max(10));
     let backend: &'static RewriteBackend =
-        Box::leak(Box::new(RewriteBackend::fail_table_manifest_replace()));
+        crate::testkit::leak_static(RewriteBackend::fail_table_manifest_replace());
     let mut runtime = open_runtime(branch, backend)?;
     install_l0_table(
         runtime.branch_state_mut(),

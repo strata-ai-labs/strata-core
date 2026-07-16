@@ -47,7 +47,8 @@ fn checkpoint_request_rejects_zero_snapshot_id() {
 
 #[test]
 fn checkpoint_task_rejects_wrong_maintenance_scope() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x0f);
     let shell = assemble_shell(branch, backend).expect("shell");
     // Assembly itself performs the WAL resume-segment listing (#2555); the
@@ -199,7 +200,8 @@ fn checkpoint_rows_include_tombstones_and_timeline_rows() {
 
 #[test]
 fn checkpoint_watermark_uses_visible_version_not_allocated_version() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x1c);
     let shell = assemble_shell(branch, backend).expect("shell");
     let mut state = BranchLocalState::empty(branch);
@@ -229,7 +231,8 @@ fn checkpoint_watermark_uses_visible_version_not_allocated_version() {
 
 #[test]
 fn checkpoint_reads_visible_version_after_commit_quiesce() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x12);
     let shell = assemble_shell(branch, backend).expect("shell");
     let mut state = BranchLocalState::empty(branch);
@@ -260,7 +263,8 @@ fn checkpoint_reads_visible_version_after_commit_quiesce() {
 
 #[test]
 fn checkpoint_snapshot_publish_failure_releases_quiesce_and_keeps_recovery_facts() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x1d);
     let shell = assemble_shell(branch, backend).expect("shell");
     let mut state = BranchLocalState::empty(branch);
@@ -299,7 +303,8 @@ fn checkpoint_publishes_empty_delta_and_advances_watermark_when_all_rows_flushed
     // `checkpoint_defers_when_branch_has_no_rows_under_visible_watermark` below, where a
     // genuinely empty branch still defers. Recovery restores the flushed row from the
     // table manifest.
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x41);
     let mut runtime = open_runtime(branch, backend);
     let key = physical_key(branch, b"flushed-then-checkpointed");
@@ -346,7 +351,8 @@ fn checkpoint_publishes_empty_delta_and_advances_watermark_when_all_rows_flushed
 
 #[test]
 fn checkpoint_defers_when_branch_has_no_rows_under_visible_watermark() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x13);
     let shell = assemble_shell(branch, backend).expect("shell");
     let request =
@@ -371,7 +377,8 @@ fn checkpoint_defers_when_branch_has_no_rows_under_visible_watermark() {
 
 #[test]
 fn checkpoint_publishes_snapshot_between_database_record_updates() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x1e);
     let mut runtime = open_runtime(branch, backend);
     runtime
@@ -399,7 +406,8 @@ fn checkpoint_publishes_snapshot_between_database_record_updates() {
 
 #[test]
 fn checkpoint_publishes_snapshot_and_flush_watermark_after_commit() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x14);
     let mut runtime = open_runtime(branch, backend);
     runtime
@@ -436,7 +444,8 @@ fn checkpoint_publishes_snapshot_and_flush_watermark_after_commit() {
 
 #[test]
 fn checkpoint_manifest_publish_failure_reports_partial_snapshot() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x1f);
     let mut runtime = open_runtime(branch, backend);
     runtime
@@ -479,7 +488,8 @@ fn checkpoint_manifest_publish_failure_reports_partial_snapshot() {
 
 #[test]
 fn recovery_ignores_unreferenced_snapshot_after_manifest_failure() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x3d);
     let key = physical_key(branch, b"orphan-key");
     let mut runtime = open_runtime(branch, backend);
@@ -521,7 +531,8 @@ fn recovery_ignores_unreferenced_snapshot_after_manifest_failure() {
 
 #[test]
 fn checkpoint_manifest_uncertainty_reports_uncertain_status() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x20);
     let mut runtime = open_runtime(branch, backend);
     runtime
@@ -548,7 +559,8 @@ fn checkpoint_manifest_uncertainty_reports_uncertain_status() {
 
 #[test]
 fn checkpoint_existing_snapshot_id_collision_fails_closed() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x21);
     let mut runtime = open_runtime(branch, backend);
     runtime
@@ -573,7 +585,8 @@ fn checkpoint_existing_snapshot_id_collision_fails_closed() {
 
 #[test]
 fn checkpoint_reports_flush_watermark_failure_without_losing_snapshot_facts() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x15);
     let mut runtime = open_runtime(branch, backend);
     runtime
@@ -606,7 +619,8 @@ fn checkpoint_reports_flush_watermark_failure_without_losing_snapshot_facts() {
 
 #[test]
 fn checkpoint_with_truncation_skips_delete_when_deferred() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x22);
     let shell = assemble_shell(branch, backend).expect("shell");
     // Assembly performs the WAL resume-segment listing (#2555); the deferred
@@ -635,7 +649,8 @@ fn checkpoint_with_truncation_skips_delete_when_deferred() {
 
 #[test]
 fn checkpoint_reports_wal_truncation_failure_without_losing_snapshot_facts() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x16);
     let mut runtime = open_runtime(branch, backend);
     runtime
@@ -665,7 +680,8 @@ fn checkpoint_reports_wal_truncation_failure_without_losing_snapshot_facts() {
 
 #[test]
 fn checkpoint_recovery_restores_rows_without_covered_log_records() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x23);
     let mut runtime = open_runtime(branch, backend);
     let key = physical_key(branch, b"recover-from-checkpoint");
@@ -695,7 +711,8 @@ fn checkpoint_recovery_restores_rows_without_covered_log_records() {
 
 #[test]
 fn checkpoint_recovery_restores_tombstone_and_timeline_rows() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x24);
     let mut runtime = open_runtime(branch, backend);
     let key = physical_key(branch, b"recover-deleted");
@@ -732,7 +749,8 @@ fn checkpoint_recovery_restores_tombstone_and_timeline_rows() {
 
 #[test]
 fn flush_watermark_proofs_are_conservative_and_monotonic() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x17);
     let shell = assemble_shell(branch, backend).expect("shell");
     shell
@@ -779,7 +797,8 @@ fn flush_watermark_proofs_are_conservative_and_monotonic() {
 
 #[test]
 fn flush_watermark_rejects_bounds_and_preserves_branch_state() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x25);
     let shell = assemble_shell(branch, backend).expect("shell");
     shell
@@ -832,7 +851,8 @@ fn flush_watermark_rejects_bounds_and_preserves_branch_state() {
 
 #[test]
 fn flush_watermark_persist_failure_preserves_source_chain() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x26);
     let shell = assemble_shell(branch, backend).expect("shell");
     shell
@@ -862,7 +882,8 @@ fn flush_watermark_persist_failure_preserves_source_chain() {
 
 #[test]
 fn wal_truncation_task_uses_strongest_manifest_retention_proof() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x18);
     let shell = assemble_shell(branch, backend).expect("shell");
     shell
@@ -901,7 +922,8 @@ fn wal_truncation_from_checkpoint_and_flush_proofs_are_typed() {
 
 #[test]
 fn queued_checkpoint_task_runs_through_maintenance_executor() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x19);
     let mut runtime = open_runtime(branch, backend);
     runtime
@@ -938,7 +960,8 @@ fn queued_checkpoint_task_runs_through_maintenance_executor() {
 
 #[test]
 fn duplicate_checkpoint_tasks_coalesce_by_checkpoint_scope() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x27);
     let mut runtime = open_runtime(branch, backend);
 
@@ -956,7 +979,8 @@ fn duplicate_checkpoint_tasks_coalesce_by_checkpoint_scope() {
 
 #[test]
 fn queued_checkpoint_task_failure_adds_health_debt() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x28);
     let mut runtime = open_runtime(branch, backend);
     runtime
@@ -983,7 +1007,8 @@ fn queued_checkpoint_task_failure_adds_health_debt() {
 
 #[test]
 fn queued_checkpoint_retry_advances_after_orphaned_snapshot() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x29);
     let mut runtime = open_runtime(branch, backend);
     runtime
@@ -1023,7 +1048,8 @@ fn queued_checkpoint_retry_advances_after_orphaned_snapshot() {
 
 #[test]
 fn queued_wal_truncation_task_defers_without_retention_proof() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x1a);
     let mut runtime = open_runtime(branch, backend);
     let enqueue = runtime
@@ -1043,7 +1069,8 @@ fn queued_wal_truncation_task_defers_without_retention_proof() {
 
 #[test]
 fn wal_truncation_no_longer_waits_for_queued_flush_watermark_work() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x2a);
     let mut runtime = open_runtime(branch, backend);
     runtime
@@ -1071,7 +1098,8 @@ fn wal_truncation_no_longer_waits_for_queued_flush_watermark_work() {
 
 #[test]
 fn duplicate_wal_truncation_tasks_coalesce_by_retention_scope() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x29);
     let mut runtime = open_runtime(branch, backend);
 
@@ -1089,7 +1117,8 @@ fn duplicate_wal_truncation_tasks_coalesce_by_retention_scope() {
 
 #[test]
 fn wal_truncation_request_rejects_zero_proof() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let shell = assemble_shell(branch_id(0x29), backend).expect("shell");
     assert_eq!(
         truncate_wal(

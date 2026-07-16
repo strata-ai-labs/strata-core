@@ -86,7 +86,7 @@ cost/unblock value:
 | 1.4 | **STH-6** | Config-sweep differential (cache vs durable vs budget configs, identical results) + metamorphic oracles; liveness deepening | Not started |
 | 1.5 | **STH-7** (full) | `cargo-mutants` gate on storage; coverage ratchet; `testcase!`/`always!`/`never!` macros; requirements-to-test traceability; anti-drift guard that fails when a plan doc claims ✅ for an unimplemented item | Not started |
 | 1.6 | **Doc repair** | Fix STH-1 header (says draft, is implemented); split gold-standard delta table into "mapped" vs "built" columns; update STH README status column | Not started |
-| 1.7 | **Storage leak-registry migration** | Replace ~609 `Box::leak` test-fixture sites in `crates/storage` with a testkit `leak_static` helper that keeps leaked fixtures reachable from a global registry, then flip `detect_leaks=1` on the nightly storage ASAN lane. Found under TCP1.1: LSAN reported ~190 KB / 5,518 allocations, all traced to intentional fixture leaks that would drown any real leak | Not started |
+| 1.7 | **Storage leak-registry migration** | Replace ~609 `Box::leak` test-fixture sites in `crates/storage` with a testkit `leak_static` helper that keeps leaked fixtures reachable from a global registry, then flip `detect_leaks=1` on the nightly storage ASAN lane. Found under TCP1.1: LSAN reported ~190 KB / 5,518 allocations, all traced to intentional fixture leaks that would drown any real leak | Implemented (2026-07-16) — `testkit::leak_static` + `forget_registered`, 609 sites + 1 `mem::forget` migrated; storage LSAN lane live |
 
 Phase 1 exit gate: all 12 bug classes in the taxonomy doc at their stated
 exit bar, coverage baseline published, no stale status headers under

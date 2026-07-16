@@ -109,7 +109,7 @@ fn open_durable_lossy(
     durability: OracleDurability,
 ) -> Result<StorageRuntime<'static>, TestkitError> {
     let backend: &'static StorageBackend =
-        Box::leak(Box::new(StorageBackend::local_fs(root.to_path_buf())));
+        crate::testkit::leak_static(StorageBackend::local_fs(root.to_path_buf()));
     let options = StorageOpenOptions::durable_local(durability_policy(durability))
         .with_strict_recovery(false);
     let outcome = StorageRuntime::open_with_backend(options, backend)
@@ -229,7 +229,7 @@ fn verify_corruption(
     durability: OracleDurability,
 ) -> Result<Option<RecoveryOracleViolation>, TestkitError> {
     let backend: &'static StorageBackend =
-        Box::leak(Box::new(StorageBackend::local_fs(root.to_path_buf())));
+        crate::testkit::leak_static(StorageBackend::local_fs(root.to_path_buf()));
     let options = StorageOpenOptions::durable_local(durability_policy(durability))
         .with_strict_recovery(false);
     match StorageRuntime::open_with_backend(options, backend) {
@@ -654,7 +654,7 @@ mod tests {
     /// `StorageApiError` so the test can assert its class at the public boundary.
     fn reopen_lossy_raw(dir: &std::path::Path) -> StorageApiResult<StorageRuntime<'static>> {
         let backend: &'static StorageBackend =
-            Box::leak(Box::new(StorageBackend::local_fs(dir.to_path_buf())));
+            crate::testkit::leak_static(StorageBackend::local_fs(dir.to_path_buf()));
         let options = StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
             .with_strict_recovery(false);
         StorageRuntime::open_with_backend(options, backend).map(StorageOpenOutcome::into_runtime)

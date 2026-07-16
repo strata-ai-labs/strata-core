@@ -63,7 +63,7 @@ fn open_group_runtime(
 }
 
 fn leak_backend() -> &'static CheckpointTestBackend {
-    Box::leak(Box::new(CheckpointTestBackend::new()))
+    crate::testkit::leak_static(CheckpointTestBackend::new())
 }
 
 fn group_batch(

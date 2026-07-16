@@ -21,7 +21,7 @@ fn open_durable_runtime(name: &str) -> StorageRuntime<'static> {
     let backend = StorageBackend::local_fs(temp_dir_for_api_test(name));
     StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
-        Box::leak(Box::new(backend)),
+        crate::testkit::leak_static(backend),
     )
     .expect("open durable runtime")
     .into_runtime()
@@ -313,7 +313,7 @@ fn durable_open_with_explicit_memory_budget_reflects_it() {
     let runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
             .with_memory_budget(budget),
-        Box::leak(Box::new(backend)),
+        crate::testkit::leak_static(backend),
     )
     .expect("open durable with explicit budget")
     .into_runtime();
