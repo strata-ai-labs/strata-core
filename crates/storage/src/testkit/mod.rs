@@ -31,6 +31,7 @@ mod format_fuzz;
 ))]
 mod fs_models;
 mod integration_harness;
+mod leak;
 mod lifecycle;
 mod quarantine_fuzz;
 mod recovery_oracle;
@@ -101,6 +102,7 @@ pub use integration_harness::{
     run_storage_stress_harness, CrashRecoveryHarnessOutcome, ServiceFaultWindowHarnessOutcome,
     StorageStressHarnessOutcome,
 };
+pub use leak::{forget_registered, leak_static};
 pub use lifecycle::{
     check_lifecycle_bootstrap_contract, check_lifecycle_branch_lifecycle_contract,
     check_lifecycle_branch_lifecycle_recovery_contract, check_lifecycle_budget_contract,

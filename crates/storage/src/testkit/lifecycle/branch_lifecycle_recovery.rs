@@ -62,7 +62,8 @@ fn check_durable_branch_recovery_round_trip(
     script: &[u8],
     outcome: &mut LifecycleBranchLifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let initial = branch_id(script_byte(script, 0).wrapping_add(1));
     let extra = branch_id(script_byte(script, 1).wrapping_add(2));
     let child = branch_id(script_byte(script, 2).wrapping_add(3));

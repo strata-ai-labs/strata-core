@@ -13,9 +13,8 @@ use super::*;
 
 #[cfg(all(feature = "localfs", feature = "perf-trace"))]
 fn open_durable_inline_for_admission_test(name: &str) -> StorageRuntime<'static> {
-    let backend = Box::leak(Box::new(StorageBackend::local_fs(temp_dir_for_api_test(
-        name,
-    ))));
+    let backend =
+        crate::testkit::leak_static(StorageBackend::local_fs(temp_dir_for_api_test(name)));
     StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
             .with_maintenance_scheduling_policy(
@@ -131,7 +130,7 @@ fn assert_off_lock_manifest_fsync_fault_recovers(before_visibility: bool, name: 
     // Phase 1: commit a baseline set and flush it durably so a real table manifest is published.
     {
         let backend: &'static StorageBackend =
-            Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+            crate::testkit::leak_static(StorageBackend::local_fs(root.clone()));
         let mut runtime = StorageRuntime::open_with_backend(
             StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
                 .with_maintenance_scheduling_policy(
@@ -166,7 +165,7 @@ fn assert_off_lock_manifest_fsync_fault_recovers(before_visibility: bool, name: 
     let durable_sequence_before;
     {
         let backend: &'static StorageBackend =
-            Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+            crate::testkit::leak_static(StorageBackend::local_fs(root.clone()));
         let mut runtime = StorageRuntime::open_with_backend(
             StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
                 .with_maintenance_scheduling_policy(
@@ -251,7 +250,7 @@ fn concurrent_same_branch_flush_and_compaction_preserve_manifest_monotonicity() 
     let durable_sequence_before;
     {
         let backend: &'static StorageBackend =
-            Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+            crate::testkit::leak_static(StorageBackend::local_fs(root.clone()));
         let mut runtime = StorageRuntime::open_with_backend(
             StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
                 .with_background_worker_count(2),

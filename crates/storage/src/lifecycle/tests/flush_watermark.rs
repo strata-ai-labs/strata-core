@@ -81,7 +81,8 @@ fn persist_table_manifest_watermark_with_branch_epochs(
 
 #[test]
 fn table_manifest_flush_proof_accepts_exact_coverage() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x90);
     let manifest = durable_manifest(
         backend,
@@ -111,7 +112,8 @@ fn table_manifest_flush_proof_accepts_exact_coverage() {
 
 #[test]
 fn table_manifest_flush_proof_rejects_missing_branch_coverage() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x91);
     let missing = branch_id(0x92);
     let manifest = durable_manifest(
@@ -136,7 +138,8 @@ fn table_manifest_flush_proof_rejects_missing_branch_coverage() {
 
 #[test]
 fn table_manifest_flush_proof_rejects_stale_manifest_epoch() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0xa0);
     let manifest = durable_manifest(
         backend,
@@ -160,7 +163,8 @@ fn table_manifest_flush_proof_rejects_stale_manifest_epoch() {
 
 #[test]
 fn table_manifest_flush_proof_rejects_stale_recovery_health_epoch() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0xa1);
     let manifest = durable_manifest(
         backend,
@@ -184,7 +188,8 @@ fn table_manifest_flush_proof_rejects_stale_recovery_health_epoch() {
 
 #[test]
 fn table_manifest_flush_proof_rejects_stale_branch_epoch() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let first_branch = branch_id(0xa7);
     let second_branch = branch_id(0xa8);
     let first = durable_manifest(
@@ -218,7 +223,8 @@ fn table_manifest_flush_proof_rejects_stale_branch_epoch() {
 
 #[test]
 fn table_manifest_flush_proof_is_deterministic_for_shuffled_inputs() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let first_branch = branch_id(0xa2);
     let second_branch = branch_id(0xa3);
     let first = durable_manifest(
@@ -252,7 +258,8 @@ fn table_manifest_flush_proof_is_deterministic_for_shuffled_inputs() {
 
 #[test]
 fn table_manifest_flush_proof_rejects_active_rows_below_candidate() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x93);
     let manifest = durable_manifest(
         backend,
@@ -278,7 +285,8 @@ fn table_manifest_flush_proof_rejects_active_rows_below_candidate() {
 
 #[test]
 fn table_manifest_flush_proof_rejects_frozen_rows_below_candidate() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x94);
     let manifest = durable_manifest(
         backend,
@@ -305,7 +313,8 @@ fn table_manifest_flush_proof_rejects_frozen_rows_below_candidate() {
 
 #[test]
 fn table_manifest_flush_proof_allows_mutable_rows_above_candidate() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0xa6);
     let covered = put_row(branch, 4, b"covered", b"value");
     let manifest = durable_manifest(
@@ -372,7 +381,8 @@ fn table_manifest_coverage_rejects_tombstone_gap() {
 
 #[test]
 fn unsafe_recovery_health_blocks_table_manifest_flush_proof() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0xa4);
     let manifest = durable_manifest(
         backend,
@@ -401,7 +411,8 @@ fn unsafe_recovery_health_blocks_table_manifest_flush_proof() {
 
 #[test]
 fn flush_watermark_persists_from_table_manifest_coverage() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x97);
     let shell = assemble_shell(branch, backend).expect("shell");
     shell
@@ -448,7 +459,8 @@ fn flush_watermark_persists_from_table_manifest_coverage() {
 
 #[test]
 fn flush_watermark_persists_from_table_manifest_coverage_without_checkpoint() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0xb0);
     let shell = assemble_shell(branch, backend).expect("shell");
     let table_rows = rows_for_versions(branch, 1..=5, b"genesis-proof");
@@ -485,7 +497,8 @@ fn flush_watermark_persists_from_table_manifest_coverage_without_checkpoint() {
 
 #[test]
 fn flush_watermark_persists_from_combined_checkpoint_and_table_manifest_coverage() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x98);
     let shell = assemble_shell(branch, backend).expect("shell");
     shell
@@ -522,7 +535,8 @@ fn flush_watermark_persists_from_combined_checkpoint_and_table_manifest_coverage
 
 #[test]
 fn flush_watermark_rejects_table_manifest_candidate_above_coverage() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x99);
     let manifest = durable_manifest(
         backend,
@@ -543,7 +557,8 @@ fn flush_watermark_rejects_table_manifest_candidate_above_coverage() {
 
 #[test]
 fn flush_watermark_success_does_not_publish_table_manifest() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x9a);
     let shell = assemble_shell(branch, backend).expect("shell");
     shell
@@ -590,7 +605,8 @@ fn flush_watermark_success_does_not_publish_table_manifest() {
 
 #[test]
 fn durable_runtime_persists_table_manifest_flush_watermark_after_flush() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0xa5);
     let mut runtime = open_runtime(branch, backend);
     runtime
@@ -627,7 +643,8 @@ fn durable_runtime_persists_table_manifest_flush_watermark_after_flush() {
 
 #[test]
 fn recovery_accepts_flush_watermark_above_checkpoint_when_table_manifest_covers() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x9b);
     let checkpoint_rows = rows_for_versions(branch, 1..=4, b"checkpoint-covered");
     seed_checkpoint_snapshot(backend, 1, CommitVersion::new(4), &checkpoint_rows);
@@ -678,7 +695,8 @@ fn recovery_accepts_flush_watermark_above_checkpoint_when_table_manifest_covers(
 
 #[test]
 fn recovery_accepts_flush_watermark_without_checkpoint_when_table_manifest_covers() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0xb1);
     let mut manifest_rows = rows_for_versions(branch, 1..=4, b"genesis-covered");
     let table_row = put_row(branch, 5, b"genesis", b"table");
@@ -722,7 +740,8 @@ fn recovery_accepts_flush_watermark_without_checkpoint_when_table_manifest_cover
 
 #[test]
 fn recovery_rejects_flush_watermark_above_table_manifest_coverage() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x9c);
     let checkpoint_rows = rows_for_versions(branch, 1..=3, b"checkpoint-gap");
     seed_checkpoint_snapshot(backend, 1, CommitVersion::new(3), &checkpoint_rows);
@@ -751,7 +770,8 @@ fn recovery_rejects_flush_watermark_above_table_manifest_coverage() {
 
 #[test]
 fn recovery_after_truncation_restores_latest_reads() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x9d);
     let checkpoint_rows = rows_for_versions(branch, 1..=4, b"checkpoint-latest");
     seed_checkpoint_snapshot(backend, 1, CommitVersion::new(4), &checkpoint_rows);

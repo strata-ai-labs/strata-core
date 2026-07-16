@@ -119,7 +119,8 @@ fn check_durable_success_and_retry(
         20_000,
         b"value",
     );
-    let backend: &'static FlushContractBackend = Box::leak(Box::new(FlushContractBackend::new()));
+    let backend: &'static FlushContractBackend =
+        crate::testkit::leak_static(FlushContractBackend::new());
     let flush_request = request(branch, script, 5);
     let mut first = frozen_branch(branch, row.clone());
     let first_outcome = flush_durable_branch(
@@ -194,7 +195,7 @@ fn check_publish_failure(
     let mut state = frozen_branch(branch, row);
     let before = state.clone();
     let backend: &'static FlushContractBackend =
-        Box::leak(Box::new(FlushContractBackend::with_publish_failure()));
+        crate::testkit::leak_static(FlushContractBackend::with_publish_failure());
     let error = flush_durable_branch(
         &mut state,
         &TableObjectService::new(backend),
@@ -227,7 +228,7 @@ fn check_reopen_failure(
     let mut state = frozen_branch(branch, row);
     let before = state.clone();
     let backend: &'static FlushContractBackend =
-        Box::leak(Box::new(FlushContractBackend::with_range_failure()));
+        crate::testkit::leak_static(FlushContractBackend::with_range_failure());
     let flush = flush_durable_branch(
         &mut state,
         &TableObjectService::new(backend),

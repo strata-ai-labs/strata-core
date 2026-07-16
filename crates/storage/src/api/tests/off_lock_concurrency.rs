@@ -43,7 +43,7 @@ fn open_cache() -> StorageRuntime<'static> {
 
 fn open_durable_background(name: &str) -> StorageRuntime<'static> {
     let root = temp_dir_for_api_test(name);
-    let backend = Box::leak(Box::new(StorageBackend::local_fs(root)));
+    let backend = crate::testkit::leak_static(StorageBackend::local_fs(root));
     StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
             // Default (large) budget so commits are not throttled by budget backpressure; the small

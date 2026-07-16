@@ -104,7 +104,8 @@ fn check_empty_bootstrap(
     script: &[u8],
     outcome: &mut LifecycleBootstrapContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 13));
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
@@ -141,7 +142,8 @@ fn check_checkpoint_bootstrap(
     script: &[u8],
     outcome: &mut LifecycleBootstrapContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 14));
     let checkpoint_version = CommitVersion::new(2);
     let checkpoint_row = put_row(
@@ -206,7 +208,8 @@ fn check_wal_replay_bootstrap(
     script: &[u8],
     outcome: &mut LifecycleBootstrapContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 15));
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let record = replayable_wal_record(branch, CommitVersion::new(3), b"bootstrap-tail", b"value")?;
@@ -256,7 +259,8 @@ fn check_degraded_bootstrap(
     script: &[u8],
     outcome: &mut LifecycleBootstrapContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 16));
     write_database_root(
         backend,
@@ -316,7 +320,8 @@ fn check_replay_rejection_bootstrap(
     script: &[u8],
     outcome: &mut LifecycleBootstrapContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 17));
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let record = timeline_only_replay_record(branch, CommitVersion::new(5))?;
@@ -367,7 +372,8 @@ fn check_input_derived_checkpoint_bootstrap(
     script: &[u8],
     outcome: &mut LifecycleBootstrapContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 18));
     let version = CommitVersion::new(1 + u64::from(script_byte(script, 19) % 8));
     let snapshot_id = 100 + u64::from(script_byte(script, 20));
@@ -401,7 +407,8 @@ fn check_input_derived_wal_replay_bootstrap(
     script: &[u8],
     outcome: &mut LifecycleBootstrapContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 21));
     let version = CommitVersion::new(1 + u64::from(script_byte(script, 22) % 8));
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
@@ -431,7 +438,8 @@ fn check_input_derived_degraded_bootstrap(
     script: &[u8],
     outcome: &mut LifecycleBootstrapContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 23));
     write_database_root(
         backend,
@@ -468,7 +476,8 @@ fn check_input_derived_replay_rejection_bootstrap(
     script: &[u8],
     outcome: &mut LifecycleBootstrapContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 25));
     let version = CommitVersion::new(1 + u64::from(script_byte(script, 26) % 8));
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;

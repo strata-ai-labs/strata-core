@@ -33,7 +33,8 @@ const DATABASE_ID: [u8; 16] = [0x9a; 16];
 
 #[test]
 fn recovery_empty_database_returns_healthy_package_without_replay() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x31);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
@@ -68,7 +69,8 @@ fn recovery_empty_database_returns_healthy_package_without_replay() {
 
 #[test]
 fn bootstrap_empty_recovery_opens_durable_runtime_with_zero_visibility() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x44);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
@@ -124,7 +126,8 @@ fn bootstrap_empty_recovery_opens_durable_runtime_with_zero_visibility() {
 
 #[test]
 fn bootstrap_runtime_can_enqueue_and_run_health_collection_maintenance() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x5f);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
@@ -161,7 +164,8 @@ fn bootstrap_runtime_can_enqueue_and_run_health_collection_maintenance() {
 
 #[test]
 fn bootstrap_checkpoint_only_recovery_publishes_visible_and_catches_allocator() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x45);
     let checkpoint_row = put_row(branch, 2, b"checkpoint-bootstrap", b"checkpoint-value");
     publish_snapshot(
@@ -227,7 +231,8 @@ fn bootstrap_checkpoint_only_recovery_publishes_visible_and_catches_allocator() 
 
 #[test]
 fn recovery_ignores_orphan_snapshot_when_manifest_has_no_checkpoint_fact() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x63);
     let orphan_row = put_row(branch, 4, b"orphan-snapshot", b"ignored");
     publish_snapshot(
@@ -264,7 +269,8 @@ fn recovery_ignores_orphan_snapshot_when_manifest_has_no_checkpoint_fact() {
 
 #[test]
 fn bootstrap_replays_wal_tail_through_commit_runtime() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x46);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
@@ -307,7 +313,8 @@ fn bootstrap_replays_wal_tail_through_commit_runtime() {
 
 #[test]
 fn bootstrap_rejects_timeline_only_wal_payload_before_open() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x47);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
@@ -340,7 +347,8 @@ fn bootstrap_accepts_log_record_without_timeline_rows_before_open() {
     // W3.1c: commits no longer materialize timeline rows — a user-only WAL
     // record is the normal shape and replays cleanly at open (the record's
     // stamp is the timeline fact, observed into the retained index).
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x48);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
@@ -405,7 +413,8 @@ fn timeline_bridge_rejects_corrupt_legacy_timeline_rows() {
 
 #[test]
 fn bootstrap_rejects_recovered_log_record_for_unopened_branch() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x49);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
@@ -434,7 +443,8 @@ fn bootstrap_rejects_recovered_log_record_for_unopened_branch() {
 
 #[test]
 fn bootstrap_rejects_recovered_log_records_not_strictly_ordered() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x4b);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
@@ -469,7 +479,8 @@ fn bootstrap_rejects_recovered_log_records_not_strictly_ordered() {
 
 #[test]
 fn bootstrap_rejects_recovered_log_records_with_duplicate_commit_versions() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x60);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
@@ -504,7 +515,8 @@ fn bootstrap_rejects_recovered_log_records_with_duplicate_commit_versions() {
 
 #[test]
 fn bootstrap_preserves_degraded_recovery_health_while_replaying_tail() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x4c);
     write_manifest(
         backend,
@@ -556,7 +568,8 @@ fn bootstrap_preserves_degraded_recovery_health_while_replaying_tail() {
 
 #[test]
 fn bootstrap_replay_is_idempotent_for_exactly_installed_rows() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x4d);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
@@ -590,7 +603,8 @@ fn bootstrap_replay_is_idempotent_for_exactly_installed_rows() {
 
 #[test]
 fn bootstrap_replay_clears_matching_unresolved_durable_gate() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x4e);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
@@ -629,7 +643,8 @@ fn bootstrap_replay_clears_matching_unresolved_durable_gate() {
 
 #[test]
 fn bootstrap_replay_uses_always_durability_for_always_mode() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x50);
     let mut shell = assemble_shell(
         open_plan_for_mode(StorageMode::DurableLocalAlways, RecoveryStrictness::Strict),
@@ -676,7 +691,8 @@ fn bootstrap_replay_uses_always_durability_for_always_mode() {
 
 #[test]
 fn bootstrap_replay_rejects_mismatched_unresolved_durable_gate() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x4f);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
@@ -730,7 +746,8 @@ fn bootstrap_replay_rejects_mismatched_unresolved_durable_gate() {
 
 #[test]
 fn recovery_loads_checkpoint_installs_rows_and_packages_only_wal_tail() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x32);
     let checkpoint_row = put_row(branch, 3, b"checkpoint", b"checkpoint-value");
     publish_snapshot(
@@ -798,7 +815,8 @@ fn recovery_loads_checkpoint_installs_rows_and_packages_only_wal_tail() {
 
 #[test]
 fn recovery_keeps_checkpoint_covered_wal_segment_without_replay_or_cleanup() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x61);
     let checkpoint_row = put_row(branch, 3, b"checkpointed", b"checkpoint-value");
     publish_snapshot(
@@ -845,7 +863,8 @@ fn recovery_keeps_checkpoint_covered_wal_segment_without_replay_or_cleanup() {
 
 #[test]
 fn recovery_does_not_install_checkpoint_when_later_wal_read_fails() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x37);
     let checkpoint_row = put_row(branch, 3, b"checkpoint", b"checkpoint-value");
     publish_snapshot(
@@ -885,7 +904,8 @@ fn recovery_does_not_install_checkpoint_when_later_wal_read_fails() {
 
 #[test]
 fn recovery_repairs_latest_partial_log_tail_only_when_explicitly_lossy() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x40);
     let mut shell = assemble_shell(lossy_open_plan(), branch, backend).expect("durable shell");
     let record = wal_record(branch, 2, b"valid", b"value");
@@ -936,7 +956,8 @@ fn recovery_repairs_latest_partial_log_tail_only_when_explicitly_lossy() {
 
 #[test]
 fn recovery_rejects_latest_partial_log_tail_in_strict_mode() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x41);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
@@ -970,7 +991,8 @@ fn recovery_rejects_latest_partial_log_tail_in_strict_mode() {
 
 #[test]
 fn recovery_rejects_non_latest_partial_wal_tail_as_corruption() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x62);
     write_manifest(
         backend,
@@ -1015,7 +1037,8 @@ fn recovery_rejects_non_latest_partial_wal_tail_as_corruption() {
 
 #[test]
 fn recovery_rejects_checkpoint_row_newer_than_snapshot_watermark() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x38);
     let checkpoint_row = put_row(branch, 4, b"too-new", b"value");
     publish_snapshot(
@@ -1058,7 +1081,8 @@ fn database_manifest_rejects_zero_snapshot_id_before_recovery() {
 
 #[test]
 fn recovery_rejects_snapshot_section_count_above_request_limit() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x4a);
     let first = put_row(branch, 2, b"first-section", b"value");
     let second = put_row(branch, 3, b"second-section", b"value");
@@ -1106,7 +1130,8 @@ fn recovery_rejects_snapshot_section_count_above_request_limit() {
 
 #[test]
 fn manifest_decode_rejects_large_section_count_before_allocation() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x4b);
     let alpha = put_row(branch, 4, b"section-alpha", b"value");
     let beta = put_row(branch, 5, b"section-beta", b"value");
@@ -1164,7 +1189,8 @@ fn recovery_rejects_checkpoint_rows_for_unknown_branch() {
     // the rebuilt catalog. Decode partitions the row out as a non-seeded
     // row; `complete_recovery` rejects it post-catalog-build because no
     // catalog entry exists for the referenced branch.
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x39);
     let other_branch_row = put_row(branch_id(0x3a), 3, b"other", b"value");
     publish_snapshot(
@@ -1201,7 +1227,8 @@ fn recovery_rejects_checkpoint_rows_for_unknown_branch() {
 
 #[test]
 fn recovery_rejects_flush_watermark_without_recovered_table_state() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x3b);
     write_manifest(
         backend,
@@ -1226,7 +1253,8 @@ fn recovery_rejects_flush_watermark_without_recovered_table_state() {
 
 #[test]
 fn recovery_rejects_ad_hoc_table_object_references() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x42);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
@@ -1245,7 +1273,8 @@ fn recovery_rejects_ad_hoc_table_object_references() {
 
 #[test]
 fn recovery_rejects_table_object_references_without_manifest() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x3d);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
@@ -1268,7 +1297,8 @@ fn recovery_rejects_table_object_references_without_manifest() {
 
 #[test]
 fn recovery_rejects_table_references_before_wal_tail_repair() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x43);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
@@ -1304,7 +1334,8 @@ fn recovery_rejects_table_references_before_wal_tail_repair() {
 
 #[test]
 fn recovery_validates_quarantine_before_wal_tail_repair() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x49);
     let mut shell = assemble_shell(lossy_open_plan(), branch, backend).expect("durable shell");
     let record = wal_record(branch, 3, b"valid-before-quarantine", b"value");
@@ -1343,7 +1374,8 @@ fn recovery_validates_quarantine_before_wal_tail_repair() {
 
 #[test]
 fn recovery_degrades_quarantine_inventory_mismatch_only_when_explicitly_lossy() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x3e);
     backend.write_raw(
         ObjectLayout::quarantine_manifest(&branch.to_string()).expect("inventory object"),
@@ -1393,7 +1425,8 @@ fn recovery_degrades_quarantine_inventory_mismatch_only_when_explicitly_lossy() 
 
 #[test]
 fn recovery_rejects_missing_snapshot_in_strict_mode() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x33);
     write_manifest(
         backend,
@@ -1425,7 +1458,8 @@ fn recovery_rejects_missing_snapshot_in_strict_mode() {
 
 #[test]
 fn recovery_rejects_corrupt_manifest_listed_snapshot_without_installing_rows() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x64);
     let snapshot_object = ObjectLayout::snapshot(14).expect("snapshot object");
     backend.write_raw(snapshot_object.clone(), b"not a snapshot".to_vec());
@@ -1466,7 +1500,8 @@ fn recovery_rejects_corrupt_manifest_listed_snapshot_without_installing_rows() {
 
 #[test]
 fn recovery_allows_explicit_lossy_missing_snapshot_without_trusting_watermark() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x34);
     write_manifest(
         backend,
@@ -1510,7 +1545,8 @@ fn recovery_allows_explicit_lossy_missing_snapshot_without_trusting_watermark() 
 
 #[test]
 fn lossy_missing_snapshot_allows_uncertain_flush_watermark_as_degraded_data_loss() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x36);
     write_manifest(
         backend,
@@ -1548,7 +1584,8 @@ fn lossy_missing_snapshot_allows_uncertain_flush_watermark_as_degraded_data_loss
 
 #[test]
 fn recovery_request_rejects_lossy_when_open_plan_is_strict() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x35);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
@@ -1617,7 +1654,8 @@ fn checkpoint_row_section_round_trips_and_rejects_trailing_bytes() {
     trailing.push(0);
     let invalid = crate::format::SnapshotSection::new(SNAPSHOT_ROW_SECTION_KIND, trailing)
         .expect("invalid row section shape");
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x36);
     let snapshot = crate::format::SnapshotContainer::new(
         crate::format::SnapshotHeader::new(
@@ -1665,7 +1703,8 @@ fn checkpoint_row_section_rejects_declared_rows_without_length_prefixes() {
     payload.extend_from_slice(&u32::MAX.to_le_bytes());
     let invalid = crate::format::SnapshotSection::new(SNAPSHOT_ROW_SECTION_KIND, payload)
         .expect("invalid row section shape");
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x3c);
     let snapshot = crate::format::SnapshotContainer::new(
         crate::format::SnapshotHeader::new(
@@ -1713,7 +1752,8 @@ fn checkpoint_row_section_rejects_declared_rows_without_length_prefixes() {
 
 #[test]
 fn recovery_decode_over_budget_fails_closed() {
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x8d);
     let checkpoint_row = put_row(branch, 3, b"budgeted-checkpoint", b"checkpoint-value");
     publish_snapshot(
@@ -1781,7 +1821,8 @@ fn recovery_rebuilds_multiple_branch_descriptors() {
     // Open a durable runtime, create two additional branches, drop the
     // runtime, reopen on the same backend and verify all three branches
     // (initial + two created) survive in the catalog after recovery.
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let initial = branch_id(0x31);
     let new_a = branch_id(0x41);
     let new_b = branch_id(0x42);
@@ -1837,7 +1878,8 @@ fn recovery_rebuilds_multiple_branch_descriptors() {
 fn recovery_deleted_marker_outranks_older_table_manifest() {
     // Open, create a branch, delete it, drop runtime. Reopen and verify
     // the branch is in Deleted status (not resurrected as Active).
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let initial = branch_id(0x32);
     let deleted = branch_id(0x53);
 
@@ -1897,7 +1939,8 @@ fn recovery_deleted_marker_outranks_older_table_manifest() {
 fn recovery_newer_generation_outranks_older_deleted_marker() {
     // Open, create-then-delete a branch at gen 1, recreate at gen 2,
     // drop runtime. Reopen and verify the branch is Active at gen 2.
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let initial = branch_id(0x33);
     let target = branch_id(0x60);
 
@@ -1965,7 +2008,8 @@ fn recovery_rebuilds_active_branch_states() {
     // Open a durable runtime, create a non-seeded branch, commit a row to
     // it (durable WAL append), drop the runtime, reopen on the same
     // backend, and verify the row survives via per-branch WAL replay.
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let initial = branch_id(0x34);
     let new_branch = branch_id(0x44);
 
@@ -2025,7 +2069,8 @@ fn recovery_rejects_wal_row_for_deleted_generation() {
     // Open, create a branch, delete it (durable tombstone), drop. Inject a
     // WAL record stamped for the deleted branch_id into the backend and
     // reopen — recovery must refuse to resurrect the deleted branch.
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let initial = branch_id(0x35);
     let deleted = branch_id(0x45);
 
@@ -2086,7 +2131,8 @@ fn recovery_rebuilds_fork_at_history_version() {
     // Open, commit a row to the seeded branch, fork a child at the visible
     // history version, drop. Reopen and verify the child descriptor's
     // parent metadata (source branch + fork version) survives recovery.
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let initial = branch_id(0x36);
     let child = branch_id(0x46);
 
@@ -2158,7 +2204,8 @@ fn recovery_table_manifest_multi_branch_rows_round_trip() {
     };
     use crate::layout::ObjectLayout;
 
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let initial = branch_id(0x37);
     let extra = branch_id(0x47);
 
@@ -2279,7 +2326,8 @@ fn recovery_checkpoint_multi_branch_rows_round_trip() {
     // each branch, trigger a checkpoint, drop the runtime, reopen, and
     // verify both rows survive via per-branch checkpoint row dispatch.
     use crate::lifecycle::LifecycleCheckpointRequest;
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let initial = branch_id(0x38);
     let extra = branch_id(0x48);
 
@@ -2389,7 +2437,8 @@ fn multi_branch_checkpoint_defers_so_lost_non_seeded_manifest_recovers_cleanly()
     use crate::lifecycle::{
         FlushTableIdentitySeed, FlushTableObjectId, LifecycleCheckpointRequest,
     };
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let initial = branch_id(0x39);
     let extra = branch_id(0x49);
     let guard =
@@ -2523,7 +2572,8 @@ fn recovery_rebuilds_inherited_layers() {
     // the parent. Drop, reopen, and verify the child's inherited layer
     // facts survive.
     use crate::lifecycle::{FlushTableIdentitySeed, FlushTableObjectId};
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let parent = branch_id(0x3a);
     let child = branch_id(0x4a);
 
@@ -2639,7 +2689,8 @@ fn recovery_rebuilds_cow_historical_fork() {
     // references the parent's straddle owned table via one inherited layer and materializes nothing.
     // Drop, reopen, and verify the straddle inherited layer survives recovery with no child-owned tables.
     use crate::lifecycle::{FlushTableIdentitySeed, FlushTableObjectId};
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let parent = branch_id(0x3b);
     let child = branch_id(0x4b);
 
@@ -2760,7 +2811,8 @@ fn recovery_preserves_branch_release_facts() {
     // in-memory buffer and publishes the pending-releases manifest),
     // drop the runtime *without* running retention. Reopen and verify
     // the buffer comes back with the same released branch_id.
-    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
     let initial = branch_id(0x3b);
     let released = branch_id(0x4b);
 

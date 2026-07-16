@@ -347,9 +347,9 @@ fn open_durable_local_with_backend_returns_open_runtime() {
 #[test]
 #[cfg(feature = "localfs")]
 fn open_durable_with_backend_deterministic_inline_uses_inline_background_driver() {
-    let backend = Box::leak(Box::new(StorageBackend::local_fs(temp_dir_for_api_test(
+    let backend = crate::testkit::leak_static(StorageBackend::local_fs(temp_dir_for_api_test(
         "durable-inline-background",
-    ))));
+    )));
     let outcome = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
             .with_maintenance_scheduling_policy(
@@ -722,7 +722,7 @@ fn reopen_after_wal_rolls_past_last_checkpoint_accepts_writes_and_recovers() {
     // fresh store) without crossing any checkpoint threshold, then close.
     let mut first = StorageRuntime::open_with_backend(
         options(),
-        Box::leak(Box::new(StorageBackend::local_fs(root.clone()))),
+        crate::testkit::leak_static(StorageBackend::local_fs(root.clone())),
     )
     .expect("first open")
     .into_runtime();
@@ -744,7 +744,7 @@ fn reopen_after_wal_rolls_past_last_checkpoint_accepts_writes_and_recovers() {
     // AlreadyExists publish error surfaced as an unavailable commit.
     let mut second = StorageRuntime::open_with_backend(
         options(),
-        Box::leak(Box::new(StorageBackend::local_fs(root.clone()))),
+        crate::testkit::leak_static(StorageBackend::local_fs(root.clone())),
     )
     .expect("reopen after clean close")
     .into_runtime();
@@ -761,7 +761,7 @@ fn reopen_after_wal_rolls_past_last_checkpoint_accepts_writes_and_recovers() {
     // failed closed here) and reads must see both sessions' rows.
     let third = StorageRuntime::open_with_backend(
         options(),
-        Box::leak(Box::new(StorageBackend::local_fs(root.clone()))),
+        crate::testkit::leak_static(StorageBackend::local_fs(root.clone())),
     )
     .expect("recovery after post-reopen writes must stay ordered")
     .into_runtime();

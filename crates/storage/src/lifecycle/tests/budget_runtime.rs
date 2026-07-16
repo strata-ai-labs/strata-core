@@ -331,9 +331,8 @@ fn reader_budget_below_metadata_rejects_in_both_cache_and_durable_mode() {
         )
         .expect("cache commit");
     cache.rotate_active_for_maintenance().expect("cache rotate");
-    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
-        super::checkpoint::shared::CheckpointTestBackend::new(),
-    ));
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend =
+        crate::testkit::leak_static(super::checkpoint::shared::CheckpointTestBackend::new());
     let mut durable = open_durable_runtime(durable_branch, backend, budget);
     durable
         .execute_durable_commit(
@@ -392,9 +391,8 @@ fn durable_flush_admits_table_larger_than_reader_budget_while_cache_rejects() {
         .expect("cache commit");
     cache.rotate_active_for_maintenance().expect("cache rotate");
 
-    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
-        super::checkpoint::shared::CheckpointTestBackend::new(),
-    ));
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend =
+        crate::testkit::leak_static(super::checkpoint::shared::CheckpointTestBackend::new());
     let mut durable = open_durable_runtime(durable_branch, backend, budget);
     durable
         .execute_durable_commit(
@@ -882,9 +880,8 @@ fn low_memory_profile_opens_cache_runtime() {
 #[test]
 fn low_memory_profile_opens_durable_runtime_on_test_backend() {
     let branch = branch_id(0x4e);
-    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
-        super::checkpoint::shared::CheckpointTestBackend::new(),
-    ));
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend =
+        crate::testkit::leak_static(super::checkpoint::shared::CheckpointTestBackend::new());
     let runtime = open_durable_runtime(
         branch,
         backend,
@@ -907,9 +904,8 @@ fn low_memory_profile_opens_durable_runtime_on_test_backend() {
 #[test]
 fn low_memory_profile_opens_durable_runtime_on_memory_backend() {
     let branch = branch_id(0x5a);
-    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
-        super::checkpoint::shared::CheckpointTestBackend::new(),
-    ));
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend =
+        crate::testkit::leak_static(super::checkpoint::shared::CheckpointTestBackend::new());
     let runtime = open_durable_runtime(
         branch,
         backend,
@@ -1015,9 +1011,8 @@ fn low_memory_profile_reports_pressure_without_product_policy() {
 #[test]
 fn checkpoint_encode_over_budget_rejects_before_snapshot_publish() {
     let branch = branch_id(0x4c);
-    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
-        super::checkpoint::shared::CheckpointTestBackend::new(),
-    ));
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend =
+        crate::testkit::leak_static(super::checkpoint::shared::CheckpointTestBackend::new());
     let mut parts = budget_parts(32 * 1024);
     parts.generated_artifact_bytes = 1;
     parts.total_bytes = pool_sum(parts);
@@ -1071,9 +1066,8 @@ fn flush_artifact_exact_budget_succeeds() {
 #[test]
 fn compaction_artifact_over_budget_defers_before_publish() {
     let branch = branch_id(0x52);
-    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
-        super::checkpoint::shared::CheckpointTestBackend::new(),
-    ));
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend =
+        crate::testkit::leak_static(super::checkpoint::shared::CheckpointTestBackend::new());
     let mut parts = budget_parts(64 * 1024);
     parts.generated_artifact_bytes = 1;
     parts.total_bytes = pool_sum(parts);
@@ -1115,9 +1109,8 @@ fn compaction_artifact_over_budget_defers_before_publish() {
 fn materialization_artifact_over_budget_defers_before_publish() {
     let parent = branch_id(0x53);
     let child = branch_id(0x54);
-    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
-        super::checkpoint::shared::CheckpointTestBackend::new(),
-    ));
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend =
+        crate::testkit::leak_static(super::checkpoint::shared::CheckpointTestBackend::new());
     let mut parts = budget_parts(64 * 1024);
     parts.generated_artifact_bytes = 1;
     parts.total_bytes = pool_sum(parts);
@@ -1222,9 +1215,8 @@ fn artifact_budget_reports_output_bytes() {
 #[test]
 fn artifact_budget_does_not_truncate_wal_or_delete_objects() {
     let branch = branch_id(0x55);
-    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
-        super::checkpoint::shared::CheckpointTestBackend::new(),
-    ));
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend =
+        crate::testkit::leak_static(super::checkpoint::shared::CheckpointTestBackend::new());
     let mut parts = budget_parts(32 * 1024);
     parts.generated_artifact_bytes = 1;
     parts.total_bytes = pool_sum(parts);
@@ -1260,9 +1252,8 @@ fn artifact_budget_does_not_truncate_wal_or_delete_objects() {
 #[test]
 fn low_memory_profile_defers_large_compaction_artifact() {
     let branch = branch_id(0x56);
-    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
-        super::checkpoint::shared::CheckpointTestBackend::new(),
-    ));
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend =
+        crate::testkit::leak_static(super::checkpoint::shared::CheckpointTestBackend::new());
     let mut runtime = open_durable_runtime(
         branch,
         backend,
@@ -1309,9 +1300,8 @@ fn cache_and_durable_rotation_budget_behavior_diverges() {
     let durable_budget = storage_budget_with_frozen(128, 64);
     let cache_budget = storage_budget_with_frozen(16 * 1024, 16 * 1024);
     let mut cache = open_cache_runtime(cache_branch, cache_budget);
-    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
-        super::checkpoint::shared::CheckpointTestBackend::new(),
-    ));
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend =
+        crate::testkit::leak_static(super::checkpoint::shared::CheckpointTestBackend::new());
     let mut durable = open_durable_runtime(durable_branch, backend, durable_budget);
 
     // Cache is volatile in-memory storage: it no longer projects incoming
@@ -1377,9 +1367,8 @@ fn frozen_cache_runtime(
 
 #[test]
 fn durable_global_total_reflects_committed_resident_bytes() {
-    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
-        super::checkpoint::shared::CheckpointTestBackend::new(),
-    ));
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend =
+        crate::testkit::leak_static(super::checkpoint::shared::CheckpointTestBackend::new());
     let branch = branch_id(0x71);
     let mut runtime = open_durable_runtime(branch, backend, StorageRuntimeBudget::default());
     assert_eq!(
@@ -1435,9 +1424,8 @@ fn durable_runtime_total_matches_independent_full_fold() {
     // fold over the tables after a real flush + compaction sequence. This catches drift in the
     // O(branches) memory-total composition (the fold + publish in `refresh_runtime_memory_total`),
     // which the per-branch BS1.1 oracle does not cover, and holds in release.
-    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
-        super::checkpoint::shared::CheckpointTestBackend::new(),
-    ));
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend =
+        crate::testkit::leak_static(super::checkpoint::shared::CheckpointTestBackend::new());
     let branch = branch_id(0x74);
     let mut parts = budget_parts(256 * 1024);
     parts.table_reader_bytes = 1024 * 1024;
@@ -1568,9 +1556,8 @@ fn durable_runtime_total_sums_resident_bytes_across_all_branches() {
     // or double-counts one would be caught (the combined-over-budget rejection test only proves the
     // sum is large enough to trip the budget, not that it is exact). Block cache disabled -> total
     // is exactly the branch sum.
-    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
-        super::checkpoint::shared::CheckpointTestBackend::new(),
-    ));
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend =
+        crate::testkit::leak_static(super::checkpoint::shared::CheckpointTestBackend::new());
     let branch_a = branch_id(0x77);
     let branch_b = branch_id(0x78);
     let mut parts = budget_parts(1024 * 1024);
@@ -1697,9 +1684,8 @@ fn multi_branch_combined_resident_over_budget_is_admitted_as_gauge() {
     parts.total_bytes = pool_sum(parts);
     let budget = StorageRuntimeBudget::from_parts(parts).expect("budget");
 
-    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
-        super::checkpoint::shared::CheckpointTestBackend::new(),
-    ));
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend =
+        crate::testkit::leak_static(super::checkpoint::shared::CheckpointTestBackend::new());
     let branch_a = branch_id(0x72);
     let branch_b = branch_id(0x73);
     let mut runtime = open_durable_runtime(branch_a, backend, budget);

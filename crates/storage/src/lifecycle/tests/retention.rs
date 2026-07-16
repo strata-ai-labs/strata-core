@@ -199,7 +199,7 @@ fn retention_outcome_converts_incomplete_proof_to_deferred_maintenance() {
 #[test]
 fn snapshot_pruning_outcome_converts_delete_failure_to_health_debt() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2, 3]));
     backend.fail_delete_on_call(1);
     let outcome = snapshot_pruning(backend, 3, 1).maintenance_outcome();
 
@@ -359,7 +359,7 @@ fn retention_proof_does_not_upgrade_runtime_reachability_to_durable_truth() {
 #[test]
 fn retention_proof_is_deterministic_for_shuffled_input_facts() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([3, 1, 2])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([3, 1, 2]));
     let snapshots = SnapshotService::new(backend)
         .list_snapshots()
         .expect("snapshots");
@@ -399,7 +399,7 @@ fn snapshot_pruning_request_rejects_complete_proof_without_live_snapshot() {
 #[test]
 fn incomplete_snapshot_pruning_proof_defers_before_backend_access() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1]));
     let request = LifecycleRetentionRequest::snapshot_pruning(2);
     let proof = build_retention_proof(&request, None, &RecoveryHealth::Healthy, 1);
     let pruning = LifecycleSnapshotPruningRequest::new(proof, request.retain_newest_snapshots())
@@ -417,7 +417,7 @@ fn incomplete_snapshot_pruning_proof_defers_before_backend_access() {
 #[test]
 fn retention_proof_blocks_data_loss_before_backend_access() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2]));
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
     let health = RecoveryHealth::degraded(
         RecoveryDegradationClass::DataLoss,
@@ -441,7 +441,7 @@ fn retention_proof_blocks_data_loss_before_backend_access() {
 #[test]
 fn snapshot_pruning_retains_live_snapshot_outside_newest_window() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3, 4])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2, 3, 4]));
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
     let proof = build_retention_proof(&request, Some(&manifest(1, 7)), &RecoveryHealth::Healthy, 4);
     let pruning = LifecycleSnapshotPruningRequest::new(proof, request.retain_newest_snapshots())
@@ -459,7 +459,7 @@ fn snapshot_pruning_retains_live_snapshot_outside_newest_window() {
 #[test]
 fn snapshot_pruning_retains_live_manifest_snapshot() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2, 3]));
     let outcome = snapshot_pruning(backend, 2, 1);
 
     assert_eq!(snapshot_ids(outcome.deleted()), [1]);
@@ -470,7 +470,7 @@ fn snapshot_pruning_retains_live_manifest_snapshot() {
 #[test]
 fn snapshot_pruning_retains_configured_newest_snapshots() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3, 4])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2, 3, 4]));
     let outcome = snapshot_pruning(backend, 4, 2);
 
     assert_eq!(snapshot_ids(outcome.deleted()), [1, 2]);
@@ -480,7 +480,7 @@ fn snapshot_pruning_retains_configured_newest_snapshots() {
 #[test]
 fn snapshot_pruning_deletes_old_non_live_snapshots() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2, 3]));
     let outcome = snapshot_pruning(backend, 3, 1);
 
     assert!(outcome.completed());
@@ -493,7 +493,7 @@ fn snapshot_pruning_deletes_old_non_live_snapshots() {
 fn snapshot_pruning_with_proof_records_counters_without_floor_advancement() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2, 3]));
 
     let outcome = snapshot_pruning(backend, 3, 1);
     let perf = crate::observability::perf_trace::snapshot();
@@ -514,7 +514,7 @@ fn snapshot_pruning_with_proof_records_counters_without_floor_advancement() {
 fn snapshot_pruning_with_proof_records_failed_delete_counter() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2, 3]));
     backend.fail_delete_on_call(1);
 
     let outcome = snapshot_pruning(backend, 3, 1);
@@ -544,7 +544,7 @@ fn generated_snapshot_pruning_proof_sweep_preserves_retained_snapshots() {
     ] {
         crate::observability::perf_trace::reset();
         let backend: &'static RetentionBackend =
-            Box::leak(Box::new(RetentionBackend::with_snapshots(snapshots)));
+            crate::testkit::leak_static(RetentionBackend::with_snapshots(snapshots));
         let request = LifecycleRetentionRequest::snapshot_pruning(retain_newest);
         let proof = build_retention_proof_from_facts(
             &request,
@@ -601,7 +601,7 @@ fn generated_snapshot_pruning_proof_sweep_preserves_retained_snapshots() {
 #[test]
 fn snapshot_pruning_noops_when_under_retain_count() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2]));
     let outcome = snapshot_pruning(backend, 2, 3);
 
     assert!(outcome.completed_noop());
@@ -613,7 +613,7 @@ fn snapshot_pruning_noops_when_under_retain_count() {
 #[test]
 fn snapshot_pruning_is_idempotent_after_success() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2, 3]));
     let first = snapshot_pruning(backend, 3, 1);
     let second = snapshot_pruning(backend, 3, 1);
 
@@ -626,7 +626,7 @@ fn snapshot_pruning_is_idempotent_after_success() {
 #[test]
 fn snapshot_pruning_clamps_zero_retain_count_to_one() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2, 3]));
     let request = LifecycleRetentionRequest::snapshot_pruning(0);
     let proof = build_retention_proof(&request, Some(&manifest(3, 7)), &RecoveryHealth::Healthy, 3);
     let pruning = LifecycleSnapshotPruningRequest::new(proof, request.retain_newest_snapshots())
@@ -643,7 +643,7 @@ fn snapshot_pruning_clamps_zero_retain_count_to_one() {
 #[test]
 fn snapshot_pruning_malformed_listed_snapshot_fails_closed() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2]));
     backend.insert_object(
         ObjectName::new("snapshots/not-a-valid-id").expect("malformed snapshot family object"),
         b"ambiguous".to_vec(),
@@ -663,7 +663,7 @@ fn snapshot_pruning_malformed_listed_snapshot_fails_closed() {
 #[test]
 fn snapshot_pruning_does_not_mutate_manifest_snapshot_facts() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2, 3]));
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
     let proof = build_retention_proof(&request, Some(&manifest(3, 7)), &RecoveryHealth::Healthy, 3);
     let pruning =
@@ -681,7 +681,7 @@ fn snapshot_pruning_does_not_mutate_manifest_snapshot_facts() {
 #[test]
 fn snapshot_pruning_does_not_create_wal_retention_proof() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2, 3]));
     let outcome = snapshot_pruning(backend, 3, 1).maintenance_outcome();
 
     assert_eq!(outcome.task_kind(), MaintenanceTaskKind::SnapshotPruning);
@@ -694,7 +694,7 @@ fn snapshot_pruning_does_not_create_wal_retention_proof() {
 #[test]
 fn snapshot_pruning_object_candidate_mode_requires_declared_delete_capability() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2]));
     backend.omit_delete_capability();
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
     let proof = build_retention_proof(&request, Some(&manifest(2, 7)), &RecoveryHealth::Healthy, 2);
@@ -712,7 +712,7 @@ fn snapshot_pruning_object_candidate_mode_requires_declared_delete_capability() 
 #[test]
 fn snapshot_pruning_delete_failure_records_health_debt_and_continues() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2, 3]));
     backend.fail_delete_on_call(1);
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
     let proof = build_retention_proof(&request, Some(&manifest(3, 7)), &RecoveryHealth::Healthy, 3);
@@ -739,7 +739,7 @@ fn snapshot_pruning_emits_one_fault_per_failed_deletion() {
     // one per failed deletion — so `fault_count` reflects the real
     // backlog rather than collapsing to a single aggregated fault.
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3, 5])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2, 3, 5]));
     backend.fail_delete_calls([1, 2]);
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
     let proof = build_retention_proof(&request, Some(&manifest(5, 7)), &RecoveryHealth::Healthy, 4);
@@ -764,7 +764,7 @@ fn snapshot_pruning_emits_one_fault_per_failed_deletion() {
 #[test]
 fn snapshot_pruning_list_failure_preserves_service_source_chain() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2]));
     backend.fail_listing();
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
     let proof = build_retention_proof(&request, Some(&manifest(2, 7)), &RecoveryHealth::Healthy, 2);
@@ -983,7 +983,8 @@ fn table_object_decision_lists_branch_and_table_identity() {
 
 #[test]
 fn table_object_retention_never_calls_backend_delete() {
-    let backend: &'static RetentionBackend = Box::leak(Box::new(RetentionBackend::default()));
+    let backend: &'static RetentionBackend =
+        crate::testkit::leak_static(RetentionBackend::default());
     let _decision =
         table_quarantine_candidate(ObjectName::new("tables/branch/table").expect("object"));
 
@@ -1055,7 +1056,7 @@ fn table_object_retention_ignores_product_branch_attribution() {
 #[test]
 fn retention_scope_snapshot_decisions_respect_live_and_newest_windows() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2, 3]));
     let snapshots = SnapshotService::new(backend)
         .list_snapshots()
         .expect("snapshots");
@@ -1087,7 +1088,7 @@ fn retention_scope_snapshot_decisions_respect_live_and_newest_windows() {
 #[test]
 fn global_retention_scope_includes_snapshot_and_delegated_decisions() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2, 3]));
     let snapshots = SnapshotService::new(backend)
         .list_snapshots()
         .expect("snapshots");
@@ -1175,7 +1176,7 @@ fn wal_retention_without_checkpoint_or_flush_proof_is_incomplete() {
 #[test]
 fn wal_delegation_does_not_list_segments() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1]));
     let _outcome =
         retention_outcome_for_delegated_families(complete_retention_proof(1, 7)).expect("outcome");
 
@@ -1185,7 +1186,7 @@ fn wal_delegation_does_not_list_segments() {
 #[test]
 fn wal_delegation_does_not_delete_segments() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1]));
     let _outcome =
         retention_outcome_for_delegated_families(complete_retention_proof(1, 7)).expect("outcome");
 
@@ -1221,7 +1222,8 @@ fn purge_request_is_deferred_without_fresh_safe_proof() {
 
 #[test]
 fn purge_request_does_not_delete_inventory_objects() {
-    let backend: &'static RetentionBackend = Box::leak(Box::new(RetentionBackend::default()));
+    let backend: &'static RetentionBackend =
+        crate::testkit::leak_static(RetentionBackend::default());
     let _outcome =
         retention_outcome_for_delegated_families(complete_retention_proof(1, 7)).expect("outcome");
 
@@ -1243,7 +1245,8 @@ fn retention_delegation_does_not_create_phantom_health_debt() {
 
 #[test]
 fn global_retention_task_prunes_snapshots_through_durable_maintenance() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = durable_branch_id(0x9b);
     let mut runtime = open_runtime(branch, backend);
 
@@ -1285,7 +1288,8 @@ fn global_retention_task_prunes_snapshots_through_durable_maintenance() {
 
 #[test]
 fn branch_retention_task_classifies_table_objects_through_durable_maintenance() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = durable_branch_id(0x9d);
     let mut runtime = open_runtime(branch, backend);
 
@@ -1342,7 +1346,8 @@ fn retention_flush_request(branch: BranchId) -> FlushFrozenRequest {
 
 #[test]
 fn prove_retention_respects_snapshot_scope_without_deleting() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = durable_branch_id(0x9c);
     let mut runtime = open_runtime(branch, backend);
 
@@ -1465,7 +1470,7 @@ fn retention_task_coalesces_by_scope() {
 #[test]
 fn snapshot_pruning_task_failure_adds_health_debt() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2, 3]));
     backend.fail_delete_on_call(1);
     let outcome = snapshot_pruning(backend, 3, 1).maintenance_outcome();
 
@@ -1525,7 +1530,7 @@ fn retention_task_skips_unrelated_pending_tasks() {
 
 #[test]
 fn cache_runtime_rejects_durable_retention_tasks_before_backend_access() {
-    let backend: &'static MemoryBackend = Box::leak(Box::new(MemoryBackend::new()));
+    let backend: &'static MemoryBackend = crate::testkit::leak_static(MemoryBackend::new());
     let mut runtime = LifecycleCacheRuntime::open(
         LifecycleCacheOpenRequest::new(
             StorageOpenPlan::new(
@@ -1577,7 +1582,7 @@ fn retention_blocked_error_has_stable_code() {
 #[test]
 fn snapshot_pruning_service_error_preserves_source() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2]));
     backend.fail_listing();
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
     let proof = build_retention_proof(&request, Some(&manifest(2, 7)), &RecoveryHealth::Healthy, 2);
@@ -1594,7 +1599,7 @@ fn snapshot_pruning_service_error_preserves_source() {
 #[test]
 fn snapshot_pruning_delete_failure_preserves_backend_error() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2, 3]));
     backend.fail_delete_on_call(1);
     let outcome = snapshot_pruning(backend, 3, 1);
 
@@ -1607,7 +1612,7 @@ fn snapshot_pruning_delete_failure_preserves_backend_error() {
 
 #[test]
 fn cache_retention_unsupported_uses_storage_error_code() {
-    let backend: &'static MemoryBackend = Box::leak(Box::new(MemoryBackend::new()));
+    let backend: &'static MemoryBackend = crate::testkit::leak_static(MemoryBackend::new());
     let mut runtime = LifecycleCacheRuntime::open(
         LifecycleCacheOpenRequest::new(
             StorageOpenPlan::new(
@@ -1641,7 +1646,7 @@ fn cache_retention_unsupported_uses_storage_error_code() {
 #[test]
 fn retention_error_display_does_not_include_object_payload_bytes() {
     let backend: &'static RetentionBackend =
-        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2])));
+        crate::testkit::leak_static(RetentionBackend::with_snapshots([1, 2]));
     backend.fail_listing();
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
     let proof = build_retention_proof(&request, Some(&manifest(2, 7)), &RecoveryHealth::Healthy, 2);

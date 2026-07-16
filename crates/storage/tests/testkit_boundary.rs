@@ -196,7 +196,13 @@ fn run_cargo_check(package_dir: &Path, shared_target_dir: &Path) -> Output {
         .arg(package_dir.join("Cargo.toml"))
         .env("CARGO_TARGET_DIR", shared_target_dir)
         .env("CARGO_TERM_COLOR", "never")
-        .env("CARGO_INCREMENTAL", "0");
+        .env("CARGO_INCREMENTAL", "0")
+        // The probe proves feature-gate diagnostics; ambient build
+        // instrumentation (e.g. the nightly sanitizer lane's RUSTFLAGS)
+        // must not leak into it or the probe fails for unrelated reasons.
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("CARGO_BUILD_TARGET");
 
     command.output().expect("run cargo check probe")
 }

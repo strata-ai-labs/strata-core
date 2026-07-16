@@ -89,7 +89,7 @@ fn assert_faulted_checkpoint_recovers(
 
     {
         let backend: &'static StorageBackend =
-            Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+            crate::testkit::leak_static(StorageBackend::local_fs(root.clone()));
         let mut runtime = StorageRuntime::open_with_backend(
             StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
                 .with_maintenance_scheduling_policy(
@@ -175,7 +175,7 @@ fn clean_checkpoint_then_crash_recovers_delta_and_wal_tail() {
 
     {
         let backend: &'static StorageBackend =
-            Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+            crate::testkit::leak_static(StorageBackend::local_fs(root.clone()));
         let mut runtime = StorageRuntime::open_with_backend(
             StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
                 .with_maintenance_scheduling_policy(
@@ -233,7 +233,7 @@ fn committed_rows_are_durable_via_wal_before_any_checkpoint() {
 
     {
         let backend: &'static StorageBackend =
-            Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+            crate::testkit::leak_static(StorageBackend::local_fs(root.clone()));
         let runtime = StorageRuntime::open_with_backend(
             StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
                 .with_maintenance_scheduling_policy(
@@ -282,7 +282,7 @@ fn durable_state_over_encode_ceiling_checkpoints_via_bounded_delta() {
 
     {
         let backend: &'static StorageBackend =
-            Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+            crate::testkit::leak_static(StorageBackend::local_fs(root.clone()));
         let mut runtime = StorageRuntime::open_with_backend(
             StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
                 .with_maintenance_scheduling_policy(
@@ -355,7 +355,7 @@ fn forced_checkpoint_at_scale_load_and_recovery() {
 
     {
         let backend: &'static StorageBackend =
-            Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+            crate::testkit::leak_static(StorageBackend::local_fs(root.clone()));
         // Background workers (the realistic regime, as in the L9 load benchmark): maintenance drains
         // concurrently, so the writer is paced under sustained pressure rather than rejected. A
         // commits-based WAL-growth threshold forces checkpoints against the large backlog throughout

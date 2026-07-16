@@ -34,7 +34,8 @@ const OTHER_DATABASE_ID: [u8; 16] = [0x8f; 16];
 
 #[test]
 fn durable_assembly_creates_manifest_opens_wal_and_remains_recovering() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x10);
     let shell =
         assemble_shell(StorageMode::DurableLocalStandard, branch, backend).expect("durable shell");
@@ -126,7 +127,8 @@ fn durable_assembly_creates_manifest_opens_wal_and_remains_recovering() {
 
 #[test]
 fn durable_assembly_loads_existing_manifest_and_preserves_recovery_facts() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let manifest = DatabaseManifest::new(DATABASE_ID, "identity")
         .expect("database object")
         .with_recovery_facts(7, Some(44), Some(3), Some(CommitVersion::new(43)))
@@ -171,7 +173,8 @@ fn durable_assembly_loads_existing_manifest_and_preserves_recovery_facts() {
 
 #[test]
 fn durable_request_rejects_non_durable_modes_without_backend_calls() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     assert_eq!(
         request(StorageMode::Cache, branch_id(0x12)),
         Err(LifecycleError::InvalidOpenPlan {
@@ -183,7 +186,8 @@ fn durable_request_rejects_non_durable_modes_without_backend_calls() {
 
 #[test]
 fn durable_request_rejects_object_durable_candidate_until_fencing_exists() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     assert_eq!(
         request(StorageMode::ObjectDurableCandidate, branch_id(0x12)),
         Err(LifecycleError::InvalidOpenPlan {
@@ -196,7 +200,8 @@ fn durable_request_rejects_object_durable_candidate_until_fencing_exists() {
 
 #[test]
 fn durable_request_rejects_codec_mismatch_before_backend_calls() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let plan = StorageOpenPlan::new(
         StorageMode::DurableLocalStandard,
         LifecycleCodecId::new("zstd").expect("codec"),
@@ -226,7 +231,8 @@ fn durable_request_rejects_codec_mismatch_before_backend_calls() {
 
 #[test]
 fn durable_request_rejects_invalid_wal_config_before_backend_calls() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let error = LifecycleDurableLocalOpenRequest::new(
         open_plan(StorageMode::DurableLocalStandard),
         DATABASE_ID,
@@ -252,9 +258,9 @@ fn durable_request_rejects_invalid_wal_config_before_backend_calls() {
 
 #[test]
 fn durable_capability_rejection_happens_before_writer_lock() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(
+    let backend: &'static DurableTestBackend = crate::testkit::leak_static(
         DurableTestBackend::with_capabilities(BackendCapabilities::empty()),
-    ));
+    );
     let error = LifecycleDurableLocalShell::assemble(
         request(StorageMode::DurableLocalStandard, branch_id(0x14)).expect("request"),
         backend,
@@ -269,7 +275,7 @@ fn durable_capability_rejection_happens_before_writer_lock() {
 #[test]
 fn durable_writer_lock_failure_happens_before_manifest_access() {
     let backend: &'static DurableTestBackend =
-        Box::leak(Box::new(DurableTestBackend::with_lock_failure()));
+        crate::testkit::leak_static(DurableTestBackend::with_lock_failure());
     let error = LifecycleDurableLocalShell::assemble(
         request(StorageMode::DurableLocalStandard, branch_id(0x15)).expect("request"),
         backend,
@@ -295,7 +301,8 @@ fn durable_writer_lock_failure_happens_before_manifest_access() {
 
 #[test]
 fn durable_manifest_identity_mismatch_rejects_before_wal_open() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let manifest = DatabaseManifest::new(OTHER_DATABASE_ID, "identity").expect("database object");
     backend.write_raw(
         ObjectLayout::database_manifest().expect("manifest object"),
@@ -324,7 +331,8 @@ fn durable_manifest_identity_mismatch_rejects_before_wal_open() {
 
 #[test]
 fn durable_manifest_codec_mismatch_rejects_before_wal_open() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let manifest = DatabaseManifest::new(DATABASE_ID, "zstd").expect("database object");
     backend.write_raw(
         ObjectLayout::database_manifest().expect("database object"),
@@ -372,7 +380,7 @@ fn durable_manifest_publish_uncertainty_preserves_source_chain() {
         ),
     ] {
         let backend: &'static DurableTestBackend =
-            Box::leak(Box::new(DurableTestBackend::with_publish_failure(kind)));
+            crate::testkit::leak_static(DurableTestBackend::with_publish_failure(kind));
         let error = LifecycleDurableLocalShell::assemble(
             request(StorageMode::DurableLocalStandard, branch_id(0x17)).expect("request"),
             backend,
@@ -402,9 +410,8 @@ fn durable_manifest_create_precondition_race_reloads_existing_manifest() {
         .expect("database object")
         .with_recovery_facts(9, Some(88), Some(5), Some(CommitVersion::new(87)))
         .expect("recovery facts");
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(
-        DurableTestBackend::with_create_race(race_manifest),
-    ));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::with_create_race(race_manifest));
 
     let shell = assemble_shell(StorageMode::DurableLocalStandard, branch_id(0x18), backend)
         .expect("durable shell");
@@ -436,9 +443,8 @@ fn durable_manifest_create_precondition_race_reloads_existing_manifest() {
 fn durable_manifest_create_precondition_race_reloads_and_revalidates_identity() {
     let race_manifest =
         DatabaseManifest::new(OTHER_DATABASE_ID, "identity").expect("database object");
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(
-        DurableTestBackend::with_create_race(race_manifest),
-    ));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::with_create_race(race_manifest));
 
     let error = LifecycleDurableLocalShell::assemble(
         request(StorageMode::DurableLocalStandard, branch_id(0x19)).expect("request"),
@@ -486,7 +492,8 @@ fn durable_existing_manifest_decode_failures_reject_before_wal_open() {
         pre_v1_version,
         zero_active_segment,
     ] {
-        let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+        let backend: &'static DurableTestBackend =
+            crate::testkit::leak_static(DurableTestBackend::new());
         backend.write_raw(
             ObjectLayout::database_manifest().expect("database object"),
             bytes,
@@ -518,7 +525,7 @@ fn durable_existing_manifest_decode_failures_reject_before_wal_open() {
 #[test]
 fn durable_wal_open_failures_are_typed_and_do_not_mark_open() {
     let metadata_failure: &'static DurableTestBackend =
-        Box::leak(Box::new(DurableTestBackend::with_metadata_failure()));
+        crate::testkit::leak_static(DurableTestBackend::with_metadata_failure());
     write_existing_manifest(metadata_failure, &manifest_with_active_segment(4));
     let metadata_error = LifecycleDurableLocalShell::assemble(
         request(StorageMode::DurableLocalStandard, branch_id(0x1b)).expect("request"),
@@ -537,9 +544,9 @@ fn durable_wal_open_failures_are_typed_and_do_not_mark_open() {
     assert!(metadata_error.source().is_some());
     assert!(!metadata_failure.lock_is_held());
 
-    let publish_failure: &'static DurableTestBackend = Box::leak(Box::new(
+    let publish_failure: &'static DurableTestBackend = crate::testkit::leak_static(
         DurableTestBackend::with_publish_failure(PublishFailureKind::FailedBeforeVisibility),
-    ));
+    );
     write_existing_manifest(publish_failure, &manifest_with_active_segment(5));
     let publish_error = LifecycleDurableLocalShell::assemble(
         request(StorageMode::DurableLocalStandard, branch_id(0x1c)).expect("request"),
@@ -561,7 +568,8 @@ fn durable_wal_open_failures_are_typed_and_do_not_mark_open() {
 
 #[test]
 fn durable_wal_header_database_mismatch_rejects_existing_segment() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     write_existing_manifest(backend, &manifest_with_active_segment(6));
     let wrong_header = WalSegmentHeader::new(6, OTHER_DATABASE_ID);
     backend.write_raw(
@@ -601,9 +609,9 @@ fn durable_localfs_writer_lock_excludes_second_shell_until_drop() {
 
     let dir = tempfile::tempdir().expect("temp dir");
     let first_backend: &'static LocalFsBackend =
-        Box::leak(Box::new(LocalFsBackend::new(dir.path())));
+        crate::testkit::leak_static(LocalFsBackend::new(dir.path()));
     let second_backend: &'static LocalFsBackend =
-        Box::leak(Box::new(LocalFsBackend::new(dir.path())));
+        crate::testkit::leak_static(LocalFsBackend::new(dir.path()));
     let first = LifecycleDurableLocalShell::assemble(
         request(StorageMode::DurableLocalStandard, branch_id(0x1e)).expect("request"),
         first_backend,
@@ -641,7 +649,8 @@ fn durable_localfs_writer_lock_excludes_second_shell_until_drop() {
 
 #[test]
 fn durable_close_syncs_log_releases_writer_guard_and_is_idempotent() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x20);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime
@@ -686,7 +695,8 @@ fn durable_close_syncs_log_releases_writer_guard_and_is_idempotent() {
 
 #[test]
 fn durable_close_calls_wal_close_in_always_mode() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x24);
     let mut runtime = open_runtime(StorageMode::DurableLocalAlways, branch, backend);
     runtime
@@ -709,7 +719,8 @@ fn durable_close_calls_wal_close_in_always_mode() {
 
 #[test]
 fn durable_close_does_not_report_complete_with_unresolved_durable_gate() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x25);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     let unresolved = CommitUnresolvedDurable::durable_not_applied_with_facts(
@@ -743,7 +754,8 @@ fn durable_close_does_not_report_complete_with_unresolved_durable_gate() {
 /// runtime Latest read while the gate blocks follow-on commits.
 #[test]
 fn durable_bounded_latest_read_hides_applied_not_visible_row_while_gate_blocks_commits() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x27);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
 
@@ -833,7 +845,8 @@ fn durable_bounded_latest_read_hides_applied_not_visible_row_while_gate_blocks_c
 
 #[test]
 fn durable_close_does_not_truncate_wal_prune_snapshots_or_purge_quarantine_implicitly() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x26);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime
@@ -863,7 +876,8 @@ fn durable_close_does_not_truncate_wal_prune_snapshots_or_purge_quarantine_impli
 
 #[test]
 fn durable_reopen_can_acquire_writer_guard_after_close() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x27);
     let mut first = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     assert!(backend.lock_is_held());
@@ -883,7 +897,8 @@ fn second_durable_runtime_can_open_after_first_clean_close() {
 
 #[test]
 fn durable_close_calls_wal_close_in_standard_mode() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x29);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime
@@ -903,7 +918,7 @@ fn durable_close_calls_wal_close_in_standard_mode() {
 #[test]
 fn durable_close_wal_close_failure_returns_typed_source_chain() {
     let backend: &'static DurableTestBackend =
-        Box::leak(Box::new(DurableTestBackend::with_sync_failure()));
+        crate::testkit::leak_static(DurableTestBackend::with_sync_failure());
     let branch = branch_id(0x2a);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime
@@ -923,7 +938,7 @@ fn durable_close_wal_close_failure_returns_typed_source_chain() {
 #[test]
 fn durable_close_wal_sync_uncertain_returns_retry_pending() {
     let backend: &'static DurableTestBackend =
-        Box::leak(Box::new(DurableTestBackend::with_sync_failure()));
+        crate::testkit::leak_static(DurableTestBackend::with_sync_failure());
     let branch = branch_id(0x2b);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime
@@ -942,7 +957,7 @@ fn durable_close_wal_sync_uncertain_returns_retry_pending() {
 #[test]
 fn durable_close_does_not_release_writer_guard_before_sync_failure() {
     let backend: &'static DurableTestBackend =
-        Box::leak(Box::new(DurableTestBackend::with_sync_failure()));
+        crate::testkit::leak_static(DurableTestBackend::with_sync_failure());
     let branch = branch_id(0x2c);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime
@@ -961,7 +976,8 @@ fn durable_close_does_not_release_writer_guard_before_sync_failure() {
 
 #[test]
 fn durable_close_releases_writer_guard_after_sync() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x2d);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime
@@ -981,7 +997,8 @@ fn durable_close_releases_writer_guard_after_sync() {
 
 #[test]
 fn durable_double_close_does_not_double_release_writer_guard() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x2e);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime.close().expect("first close");
@@ -995,7 +1012,8 @@ fn durable_double_close_does_not_double_release_writer_guard() {
 
 #[test]
 fn durable_close_reports_typed_error_when_writer_guard_is_missing_at_release() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x52);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     assert!(runtime.release_writer_guard_for_test());
@@ -1012,7 +1030,7 @@ fn durable_close_reports_typed_error_when_writer_guard_is_missing_at_release() {
 #[test]
 fn durable_failed_close_keeps_guard_when_retry_requires_it() {
     let backend: &'static DurableTestBackend =
-        Box::leak(Box::new(DurableTestBackend::with_sync_failure()));
+        crate::testkit::leak_static(DurableTestBackend::with_sync_failure());
     let branch = branch_id(0x2f);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime
@@ -1031,7 +1049,8 @@ fn durable_failed_close_keeps_guard_when_retry_requires_it() {
 
 #[test]
 fn durable_retry_after_release_does_not_use_released_guard() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x30);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime.close().expect("first close");
@@ -1052,7 +1071,8 @@ fn double_close_after_success_does_not_touch_backend() {
 
 #[test]
 fn durable_close_skips_manifest_write_when_no_final_fact_dirty() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x32);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     let operations_before_close = backend.operations().len();
@@ -1075,7 +1095,8 @@ fn durable_close_force_syncs_manifest_when_health_changed() {
     // backend fsync before the writer guard releases. The republished
     // bytes are byte-identical to the bytes that were loaded — the value
     // of the operation is the durable barrier, not a new payload.
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x33);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     let health = close_health_debt();
@@ -1109,7 +1130,8 @@ fn durable_close_force_syncs_manifest_when_health_changed() {
 
 #[test]
 fn durable_close_manifest_publish_failure_returns_typed_source_chain() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x34);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     let health = close_health_debt();
@@ -1126,7 +1148,8 @@ fn durable_close_manifest_publish_failure_returns_typed_source_chain() {
 
 #[test]
 fn durable_close_after_checkpoint_does_not_rewrite_checkpoint_without_dirty_fact() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x35);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime
@@ -1151,7 +1174,8 @@ fn durable_close_after_checkpoint_does_not_rewrite_checkpoint_without_dirty_fact
 
 #[test]
 fn durable_close_after_flush_does_not_advance_flush_watermark_unless_checkpointed() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x36);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime
@@ -1179,7 +1203,8 @@ fn durable_close_after_flush_does_not_advance_flush_watermark_unless_checkpointe
 
 #[test]
 fn durable_commit_schedules_flush_when_post_commit_pressure_suggests_it() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x6c);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
 
@@ -1210,7 +1235,8 @@ fn durable_commit_schedules_flush_when_post_commit_pressure_suggests_it() {
 
 #[test]
 fn durable_post_commit_schedules_compaction_even_while_a_flush_is_suggested() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x6d);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
 
@@ -1249,7 +1275,8 @@ fn durable_post_commit_schedules_compaction_even_while_a_flush_is_suggested() {
 
 #[test]
 fn durable_compaction_runs_with_a_frozen_table_below_the_blocking_threshold() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x6e);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
 
@@ -1286,7 +1313,8 @@ fn durable_compaction_runs_with_a_frozen_table_below_the_blocking_threshold() {
 
 #[test]
 fn durable_post_commit_coverage_discovers_quiet_branch_flush_backlog() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let active = branch_id(0x8a);
     let quiet = branch_id(0x8b);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, active, backend);
@@ -1339,7 +1367,8 @@ fn durable_post_commit_coverage_discovers_quiet_branch_flush_backlog() {
 
 #[test]
 fn durable_post_commit_coverage_runs_quiet_branch_flushes_in_deterministic_order() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let active = branch_id(0x92);
     let quiet_high = branch_id(0x94);
     let quiet_low = branch_id(0x93);
@@ -1400,7 +1429,8 @@ fn durable_post_commit_coverage_runs_quiet_branch_flushes_in_deterministic_order
 #[test]
 fn durable_maintenance_coverage_perf_trace_records_scan_enqueue_and_idle_stops() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let active = branch_id(0x8c);
     let quiet = branch_id(0x8d);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, active, backend);
@@ -1475,7 +1505,8 @@ fn durable_maintenance_coverage_perf_trace_records_scan_enqueue_and_idle_stops()
 #[test]
 fn durable_maintenance_coverage_queue_full_records_stop_without_failing_commit() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let active = branch_id(0x8e);
     let quiet = branch_id(0x8f);
     let config = LifecycleConfig::new(
@@ -1544,7 +1575,8 @@ fn durable_maintenance_coverage_queue_full_records_stop_without_failing_commit()
 #[test]
 fn durable_maintenance_coverage_closing_state_records_failure_without_enqueue() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let active = branch_id(0x90);
     let quiet = branch_id(0x91);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, active, backend);
@@ -1583,7 +1615,8 @@ fn durable_maintenance_coverage_closing_state_records_failure_without_enqueue() 
 
 #[test]
 fn durable_coalesced_flush_task_drains_all_currently_frozen_tables() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x6f);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
 
@@ -1652,7 +1685,8 @@ fn durable_coalesced_flush_task_drains_all_currently_frozen_tables() {
 
 #[test]
 fn durable_close_drain_flush_publishes_table_manifest() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x70);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
 
@@ -1688,7 +1722,8 @@ fn durable_close_drain_flush_publishes_table_manifest() {
 
 #[test]
 fn durable_commit_respects_disabled_post_commit_maintenance_scheduling() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x6d);
     let config = LifecycleConfig::default()
         .with_maintenance_scheduling_policy(LifecycleMaintenanceSchedulingPolicy::Disabled)
@@ -1720,7 +1755,8 @@ fn durable_commit_respects_disabled_post_commit_maintenance_scheduling() {
 
 #[test]
 fn durable_commit_blocks_when_recovery_health_is_unsafe() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x7e);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime.record_recovery_health_for_test(&data_loss_health_debt());
@@ -1758,7 +1794,8 @@ fn durable_commit_blocks_when_recovery_health_is_unsafe() {
 
 #[test]
 fn durable_commit_allows_telemetry_degraded_recovery_health() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x7f);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime.record_recovery_health_for_test(&close_health_debt());
@@ -1783,7 +1820,8 @@ fn durable_commit_allows_telemetry_degraded_recovery_health() {
 
 #[test]
 fn durable_unresolved_gate_rejection_takes_precedence_over_blocking_pressure() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x82);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 36);
@@ -1836,7 +1874,8 @@ fn durable_unresolved_gate_rejection_takes_precedence_over_blocking_pressure() {
 #[test]
 fn durable_unresolved_rejection_under_pressure_keeps_pressure_counters_separate() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x86);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 36);
@@ -1871,7 +1910,8 @@ fn durable_unresolved_rejection_under_pressure_keeps_pressure_counters_separate(
 
 #[test]
 fn durable_branch_guard_rejection_takes_precedence_over_blocking_pressure() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x87);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 36);
@@ -1906,7 +1946,8 @@ fn durable_branch_guard_rejection_takes_precedence_over_blocking_pressure() {
 #[test]
 fn durable_branch_guard_rejection_under_pressure_keeps_pressure_counters_separate() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x88);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 36);
@@ -1945,12 +1986,13 @@ fn cache_and_durable_l0_pressure_facts_diverge_for_equivalent_source_shapes() {
         ),
     ] {
         let branch = branch_id(0x83 + index);
-        let cache_backend: &'static MemoryBackend = Box::leak(Box::new(MemoryBackend::new()));
+        let cache_backend: &'static MemoryBackend =
+            crate::testkit::leak_static(MemoryBackend::new());
         let mut cache = open_cache_runtime(branch, cache_backend);
         build_cache_l0_tables_with_scheduled_flushes(&mut cache, branch, table_count);
 
         let durable_backend: &'static DurableTestBackend =
-            Box::leak(Box::new(DurableTestBackend::new()));
+            crate::testkit::leak_static(DurableTestBackend::new());
         let mut durable = open_runtime(StorageMode::DurableLocalStandard, branch, durable_backend);
         build_durable_l0_tables_with_scheduled_flushes(&mut durable, branch, table_count);
 
@@ -1983,7 +2025,8 @@ fn cache_and_durable_l0_pressure_facts_diverge_for_equivalent_source_shapes() {
 
 #[test]
 fn durable_commit_deterministic_inline_runs_suggested_flush() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x6e);
     let config = LifecycleConfig::default()
         .with_maintenance_scheduling_policy(
@@ -2019,7 +2062,8 @@ fn durable_commit_deterministic_inline_runs_suggested_flush() {
 
 #[test]
 fn durable_commit_urgent_active_bytes_records_accept_without_inline_attempt() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x89);
     let storage_budget = storage_budget_with_active_limit(1024 * 1024, 4);
     let config = LifecycleConfig::default()
@@ -2080,7 +2124,8 @@ fn durable_commit_urgent_active_bytes_records_accept_without_inline_attempt() {
 
 #[test]
 fn durable_commit_rejects_blocking_active_bytes_before_allocating_version() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x8a);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     *runtime
@@ -2143,7 +2188,8 @@ fn durable_commit_rejects_blocking_active_bytes_before_allocating_version() {
 
 #[test]
 fn durable_close_does_not_truncate_wal_unless_drain_task_did_so() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x37);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime
@@ -2169,7 +2215,8 @@ fn durable_close_does_not_prune_snapshots_or_purge_quarantine_implicitly() {
 
 #[test]
 fn durable_close_with_pending_retention_drain_runs_required_task() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x38);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime
@@ -2188,7 +2235,8 @@ fn durable_close_with_pending_retention_drain_runs_required_task() {
 
 #[test]
 fn durable_close_with_pending_quarantine_drain_preserves_reclaim_facts() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x39);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime
@@ -2207,7 +2255,8 @@ fn durable_close_with_pending_quarantine_drain_preserves_reclaim_facts() {
 
 #[test]
 fn durable_close_with_ordinary_compaction_task_does_not_start_compaction() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x3a);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime
@@ -2223,7 +2272,8 @@ fn durable_close_with_ordinary_compaction_task_does_not_start_compaction() {
 
 #[test]
 fn durable_close_after_failed_maintenance_reports_health_debt() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x3b);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime
@@ -2246,7 +2296,8 @@ fn durable_close_after_failed_maintenance_reports_health_debt() {
 
 #[test]
 fn durable_open_commit_close_reopen_recovers_committed_rows() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x3c);
     let key = physical_key(branch, b"reopen-row");
     let mut first = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
@@ -2287,7 +2338,8 @@ fn close_retry_after_wal_failure_retries_sync_phase() {
 
 #[test]
 fn close_retry_after_manifest_failure_retries_final_fact_phase() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x3d);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     let health = close_health_debt();
@@ -2337,7 +2389,8 @@ fn close_acquires_commit_quiesce_after_maintenance_drain() {
     // that close itself issues at the end of the sequence. If a refactor
     // ever inverts these phases (quiesce/sync before drain), the
     // assertion below catches it.
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x3e);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime
@@ -2390,7 +2443,7 @@ fn quiesce_blocks_new_branch_guards_until_close_completes() {
 #[test]
 fn quiesce_guard_released_on_retryable_failure_when_contract_allows_retry() {
     let backend: &'static DurableTestBackend =
-        Box::leak(Box::new(DurableTestBackend::with_sync_failure()));
+        crate::testkit::leak_static(DurableTestBackend::with_sync_failure());
     let branch = branch_id(0x40);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime
@@ -2407,7 +2460,8 @@ fn quiesce_guard_released_on_retryable_failure_when_contract_allows_retry() {
 
 #[test]
 fn quiesce_guard_not_reacquired_on_idempotent_second_close() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x41);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime.close().expect("first close");
@@ -2436,7 +2490,8 @@ fn cross_branch_commit_after_quiesce_rejects() {
 
 #[test]
 fn durable_clear_branch_requires_quiesce_and_rejects_when_branch_guard_active() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x50);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     let pre_branches = runtime.list_branches(false).len();
@@ -2456,7 +2511,8 @@ fn durable_clear_branch_requires_quiesce_and_rejects_when_branch_guard_active() 
 
 #[test]
 fn durable_delete_branch_requires_quiesce_and_rejects_when_branch_guard_active() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x51);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     let pre_branches = runtime.list_branches(false).len();
@@ -2476,7 +2532,8 @@ fn durable_delete_branch_requires_quiesce_and_rejects_when_branch_guard_active()
 
 #[test]
 fn durable_fork_current_requires_quiesce_and_rejects_when_branch_guard_active() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x52);
     let other = branch_id(0x53);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
@@ -2501,7 +2558,8 @@ fn durable_fork_current_requires_quiesce_and_rejects_when_branch_guard_active() 
 
 #[test]
 fn durable_fork_at_retained_version_requires_quiesce_and_rejects_when_branch_guard_active() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x54);
     let other = branch_id(0x55);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
@@ -2534,7 +2592,8 @@ fn durable_fork_at_retained_version_requires_quiesce_and_rejects_when_branch_gua
 
 #[test]
 fn durable_fork_at_retained_timestamp_requires_quiesce_and_rejects_when_branch_guard_active() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x56);
     let other = branch_id(0x57);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
@@ -2567,7 +2626,8 @@ fn durable_fork_at_retained_timestamp_requires_quiesce_and_rejects_when_branch_g
 
 #[test]
 fn branch_lifecycle_quiesce_guard_releases_on_failure_so_followup_acquire_succeeds() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x58);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
 
@@ -2624,7 +2684,8 @@ fn assert_quiesce_unavailable(error: &LifecycleError) {
 
 #[test]
 fn commit_after_close_requested_rejects_before_version_allocation() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x28);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     let guard = runtime
@@ -2657,7 +2718,8 @@ fn commit_after_close_requested_rejects_before_version_allocation() {
 
 #[test]
 fn durable_close_timeout_while_commit_guard_active_is_retryable() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x21);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     let guard = runtime
@@ -2686,7 +2748,8 @@ fn durable_close_timeout_while_commit_guard_active_is_retryable() {
 
 #[test]
 fn durable_close_drains_stale_active_maintenance_before_closing() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x24);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     let active = MaintenanceTask::new_for_test(
@@ -2714,7 +2777,8 @@ fn durable_close_drains_stale_active_maintenance_before_closing() {
 
 #[test]
 fn durable_close_preserves_drain_required_checkpoint_when_quiesce_is_unavailable() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x23);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime
@@ -2754,7 +2818,7 @@ fn durable_close_preserves_drain_required_checkpoint_when_quiesce_is_unavailable
 #[test]
 fn durable_close_log_sync_failure_preserves_writer_guard_for_retry() {
     let backend: &'static DurableTestBackend =
-        Box::leak(Box::new(DurableTestBackend::with_sync_failure()));
+        crate::testkit::leak_static(DurableTestBackend::with_sync_failure());
     let branch = branch_id(0x22);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime
@@ -2802,7 +2866,8 @@ fn assemble_shell(
 /// reachability at install.
 #[test]
 fn table_object_mark_and_sweep_run_during_active_build() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x77);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
 
@@ -2905,7 +2970,8 @@ fn table_object_mark_and_sweep_run_during_active_build() {
 /// them (the crash-window analog: the registry is in-memory by design).
 #[test]
 fn abandoned_build_outputs_release_their_pins_and_get_reclaimed() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x78);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
 
@@ -3301,7 +3367,8 @@ fn build_cache_l0_tables_with_scheduled_flushes(
 #[test]
 fn graded_admission_rate_stays_at_max_below_the_l0_delay_band() {
     let branch = branch_id(0x91);
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime.with_admission_mode_for_test(LifecycleAdmissionMode::Graded);
     runtime.with_admission_clock_for_test(Arc::new(ManualMaintenanceClock::default()));
@@ -3319,7 +3386,8 @@ fn graded_admission_rate_stays_at_max_below_the_l0_delay_band() {
 #[test]
 fn graded_admission_rate_drops_inside_the_l0_delay_band() {
     let branch = branch_id(0x92);
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime.with_admission_mode_for_test(LifecycleAdmissionMode::Graded);
     runtime.with_admission_clock_for_test(Arc::new(ManualMaintenanceClock::default()));
@@ -3341,7 +3409,8 @@ fn legacy_admission_leaves_the_graded_rate_untouched() {
     // graded rate — the ramp is inert. Explicitly selected since BS3.4c made
     // graded the default.
     let branch = branch_id(0x93);
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime.with_admission_mode_for_test(LifecycleAdmissionMode::Legacy);
     let max_rate = runtime.admission_current_rate_for_test();
@@ -3356,7 +3425,8 @@ fn legacy_admission_leaves_the_graded_rate_untouched() {
 #[test]
 fn graded_admission_paces_a_commit_only_when_the_rate_is_throttled() {
     let branch = branch_id(0x94);
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime.with_admission_mode_for_test(LifecycleAdmissionMode::Graded);
     runtime.with_admission_clock_for_test(Arc::new(ManualMaintenanceClock::default()));
@@ -3380,7 +3450,8 @@ fn graded_admission_paces_a_commit_only_when_the_rate_is_throttled() {
 #[test]
 fn graded_admission_caps_the_per_commit_delay() {
     let branch = branch_id(0x95);
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     runtime.with_admission_mode_for_test(LifecycleAdmissionMode::Graded);
     runtime.with_admission_clock_for_test(Arc::new(ManualMaintenanceClock::default()));
@@ -3944,7 +4015,8 @@ impl Drop for HeldWriterLock {
 /// eager path reported 0/0 and materialized the whole store).
 #[test]
 fn fork_with_unsealed_rows_builds_a_cow_child() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x91);
     let child = branch_id(0x92);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
@@ -3991,7 +4063,8 @@ fn fork_with_unsealed_rows_builds_a_cow_child() {
 /// reference) keeps the eager path — there is nothing to COW.
 #[test]
 fn fork_of_an_all_unsealed_source_stays_eager() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x93);
     let child = branch_id(0x94);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
@@ -4080,7 +4153,8 @@ fn publish_to_confirmation(
 /// keeps every M_A-listed object protected until the persist resolves.
 #[test]
 fn sweep_spares_objects_listed_by_a_mid_persist_manifest() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x79);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
 
@@ -4174,7 +4248,8 @@ fn sweep_spares_objects_listed_by_a_mid_persist_manifest() {
 /// publishes) keeps them pinned.
 #[test]
 fn sweep_spares_objects_listed_by_the_last_confirmed_manifest() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x7a);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
     let manifest_object =
@@ -4257,7 +4332,8 @@ fn sweep_spares_objects_listed_by_the_last_confirmed_manifest() {
 /// (the #2524 reclaim-liveness regression this fix must not reintroduce).
 #[test]
 fn frontier_protection_releases_after_the_next_confirmed_publish() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x7b);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
 
@@ -4341,7 +4417,8 @@ fn build_compaction_for_adoption_test(
 /// object the stage is deleting off-lock. The install must defer instead.
 #[test]
 fn adopted_rewrite_output_defers_while_its_object_is_sweep_staged() {
-    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
     let branch = branch_id(0x7c);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
 

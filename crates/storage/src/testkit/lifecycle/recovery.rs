@@ -201,7 +201,8 @@ fn check_empty_recovery(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 0));
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
@@ -234,7 +235,8 @@ fn check_checkpoint_and_tail(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 1));
     let checkpoint_version = CommitVersion::new(3);
     let tail_version = CommitVersion::new(4);
@@ -286,7 +288,8 @@ fn check_strict_missing_snapshot(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 2));
     write_database_root(
         backend,
@@ -313,7 +316,8 @@ fn check_lossy_missing_snapshot(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 3));
     write_database_root(
         backend,
@@ -352,7 +356,8 @@ fn check_input_derived_empty_recovery(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 4));
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
@@ -377,7 +382,8 @@ fn check_input_derived_checkpoint_and_tail(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 5));
     let checkpoint_version = CommitVersion::new(1 + u64::from(script_byte(script, 6) % 4));
     let tail_count = usize::from(script_byte(script, 7) % 3) + 1;
@@ -452,7 +458,8 @@ fn check_input_derived_strict_failure(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 10));
     let manifest = if script_byte(script, 11).is_multiple_of(2) {
         DatabaseManifest::new(DATABASE_ID, "identity")
@@ -481,7 +488,8 @@ fn check_input_derived_lossy_degradation(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 12));
     write_database_root(
         backend,
@@ -533,7 +541,8 @@ fn check_table_manifest_missing(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 18));
 
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
@@ -559,7 +568,8 @@ fn check_table_manifest_corrupt_object(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 19));
     let row = put_row(
         branch,
@@ -597,7 +607,8 @@ fn check_checkpoint_manifest_conflict(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 20));
     let key = b"checkpoint-manifest-conflict";
     let manifest_row = put_row(branch, CommitVersion::new(9), key, b"manifest-bytes");
@@ -647,7 +658,8 @@ fn check_table_manifest_success(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 13));
     let user_key = b"manifest-success";
     let row = put_row(branch, CommitVersion::new(3), user_key, b"value");
@@ -691,7 +703,8 @@ fn check_table_manifest_corruption(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 14));
     let object = ObjectLayout::branch_table_manifest(&branch.to_string()).map_err(testkit_error)?;
     backend.write_raw(object, b"corrupt manifest".to_vec());
@@ -715,7 +728,8 @@ fn check_table_manifest_missing_object(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 15));
     let row = put_row(
         branch,
@@ -755,7 +769,8 @@ fn check_table_manifest_object_mismatch(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 16));
     let row = put_row(
         branch,
@@ -811,7 +826,8 @@ fn check_table_manifest_orphan_ignored(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
+    let backend: &'static RecoveryScriptBackend =
+        crate::testkit::leak_static(RecoveryScriptBackend::new());
     let branch = branch_id(script_byte(script, 17));
     let listed_key = b"manifest-listed";
     let orphan_key = b"manifest-orphan";

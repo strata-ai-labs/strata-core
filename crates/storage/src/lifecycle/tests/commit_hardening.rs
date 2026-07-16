@@ -83,7 +83,8 @@ fn wal_growth_hard_cap_is_byte_based_and_off_when_policy_disabled() {
 
 #[test]
 fn automatic_checkpoint_does_not_trigger_below_threshold() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x91);
     let policy = LifecycleWalGrowthPolicy::new(u64::MAX, usize::MAX, None);
     let mut runtime = open_durable_runtime(branch, backend, policy);
@@ -105,7 +106,8 @@ fn automatic_checkpoint_does_not_trigger_below_threshold() {
 
 #[test]
 fn automatic_checkpoint_triggers_when_wal_bytes_exceed_threshold() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x92);
     let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, None);
     let mut runtime = open_durable_runtime(branch, backend, policy);
@@ -149,7 +151,8 @@ fn automatic_checkpoint_triggers_when_wal_bytes_exceed_threshold() {
 
 #[test]
 fn automatic_checkpoint_triggers_when_retained_segments_exceed_threshold() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x97);
     let policy = LifecycleWalGrowthPolicy::new(u64::MAX, 1, None);
     let mut runtime = open_durable_runtime_with_wal_segment_size(branch, backend, policy, 4096);
@@ -187,7 +190,8 @@ fn automatic_checkpoint_triggers_when_retained_segments_exceed_threshold() {
 
 #[test]
 fn automatic_checkpoint_coalesces_existing_checkpoint_task() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x93);
     let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, None);
     let mut runtime = open_durable_runtime(branch, backend, policy);
@@ -221,7 +225,8 @@ fn automatic_checkpoint_coalesces_existing_checkpoint_task() {
 
 #[test]
 fn automatic_checkpoint_uses_existing_maintenance_executor() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x8d);
     let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, None);
     let mut runtime = open_durable_runtime(branch, backend, policy);
@@ -257,7 +262,8 @@ fn automatic_checkpoint_uses_existing_maintenance_executor() {
 
 #[test]
 fn automatic_checkpoint_failure_records_health_debt() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x98);
     let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, None);
     let mut runtime = open_durable_runtime(branch, backend, policy);
@@ -281,7 +287,8 @@ fn automatic_checkpoint_failure_records_health_debt() {
 
 #[test]
 fn automatic_checkpoint_disable_requires_explicit_config() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x99);
     let mut runtime = open_durable_runtime(branch, backend, LifecycleWalGrowthPolicy::disabled());
 
@@ -301,7 +308,8 @@ fn automatic_checkpoint_disable_requires_explicit_config() {
 
 #[test]
 fn automatic_checkpoint_deferred_while_quiesce_active() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x94);
     let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, None);
     let mut runtime = open_durable_runtime(branch, backend, policy);
@@ -336,7 +344,8 @@ fn automatic_checkpoint_deferred_while_quiesce_active() {
 
 #[test]
 fn automatic_checkpoint_deferred_while_close_in_progress() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x8e);
     let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, None);
     let mut runtime = open_durable_runtime(branch, backend, policy);
@@ -383,7 +392,7 @@ fn automatic_checkpoint_deferred_while_recovery_in_progress() {
 #[test]
 fn automatic_checkpoint_cache_mode_reports_no_durable_action() {
     let branch = branch_id(0x95);
-    let backend: &'static MemoryBackend = Box::leak(Box::new(MemoryBackend::new()));
+    let backend: &'static MemoryBackend = crate::testkit::leak_static(MemoryBackend::new());
     let runtime = LifecycleCacheRuntime::open(
         LifecycleCacheOpenRequest::new(
             StorageOpenPlan::new(
@@ -411,7 +420,8 @@ fn automatic_checkpoint_cache_mode_reports_no_durable_action() {
 
 #[test]
 fn wal_growth_pressure_facts_are_visible_to_public_boundary() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x8f);
     let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, None);
     let mut runtime = open_durable_runtime(branch, backend, policy);
@@ -446,9 +456,9 @@ fn wal_growth_pressure_facts_are_visible_to_public_boundary() {
 #[test]
 fn automatic_checkpoint_policy_is_deterministic_without_background_thread() {
     let first_backend: &'static CheckpointTestBackend =
-        Box::leak(Box::new(CheckpointTestBackend::new()));
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let second_backend: &'static CheckpointTestBackend =
-        Box::leak(Box::new(CheckpointTestBackend::new()));
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x8a);
     let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, None);
     let mut first = open_durable_runtime(branch, first_backend, policy);
@@ -489,7 +499,8 @@ fn automatic_checkpoint_policy_is_deterministic_without_background_thread() {
 // would catch it.
 #[test]
 fn checkpoint_invalidates_cached_retention_watermark() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0xb1);
     // Only the commit-count trigger is active (bytes/segments effectively off).
     let policy = LifecycleWalGrowthPolicy::new(u64::MAX, usize::MAX, Some(3));
@@ -534,7 +545,8 @@ fn checkpoint_invalidates_cached_retention_watermark() {
 // checkpoint advances it — locks the cache to ground truth.
 #[test]
 fn cached_retention_watermark_matches_manifest_after_checkpoint() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0xb2);
     let policy = LifecycleWalGrowthPolicy::new(u64::MAX, usize::MAX, Some(2));
     let mut runtime = open_durable_runtime(branch, backend, policy);
@@ -700,7 +712,8 @@ fn drain_wal_growth_maintenance(
 
 #[test]
 fn automatic_checkpoint_does_not_truncate_wal_without_retention_proof() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x96);
     let policy = LifecycleWalGrowthPolicy::disabled();
     let mut runtime = open_durable_runtime(branch, backend, policy);
@@ -729,7 +742,8 @@ fn automatic_checkpoint_does_not_truncate_wal_without_retention_proof() {
 
 #[test]
 fn automatic_checkpoint_truncates_wal_only_after_checkpoint_or_table_manifest_proof() {
-    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
     let branch = branch_id(0x8b);
     let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, None);
     let mut runtime = open_durable_runtime_with_wal_segment_size(branch, backend, policy, 4096);

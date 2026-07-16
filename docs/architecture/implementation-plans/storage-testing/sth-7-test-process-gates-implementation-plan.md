@@ -14,15 +14,17 @@ memory-safety lanes and the remaining legs of the 3-way suite run:
    -Zmiri-disable-isolation` over all of `strata-core` and the
    `strata-storage` format layer (`--lib format::`), `PROPTEST_CASES=8`.
    Both lanes verified green locally before landing.
-2. `memory-safety-address-sanitizer` — ASAN over the full `strata-storage`
-   and `strata-engine` suites via `-Zbuild-std` (instrumented std, no
-   holes). LSAN leak checking is ON for engine (verified: zero intentional
-   fixture leaks) and OFF for storage: the first LSAN run failed on ~190 KB
-   across 5,518 allocations, all traced to the ~609 intentional
-   `Box::leak(Box::new(...))` fixture sites in storage test code. The
-   "leak check wired into integration runs" exit item is therefore only
-   half-met; full satisfaction is tracked as program slice 1.7
-   (leak-registry migration, then `detect_leaks=1`).
+2. `memory-safety-address-sanitizer` — ASAN + LSAN over the full
+   `strata-storage` and `strata-engine` suites via `-Zbuild-std`
+   (instrumented std, no holes). Engine was leak-clean from the start.
+   Storage required program slice 1.7 (TCP1.7, same day): the first LSAN
+   run failed on ~190 KB across 5,518 allocations, all traced to the ~609
+   intentional `Box::leak(Box::new(...))` fixture sites in storage test
+   code. Those now route through `testkit::leak_static` (and
+   `testkit::forget_registered` for the `mem::forget` crash simulation),
+   which keep intentional leaks reachable from a process-global registry —
+   so LSAN runs with leak detection on and only real leaks fail the lane.
+   The "leak check wired into integration runs" exit item is met.
 3. `memory-safety-thread-sanitizer` — TSAN over `strata-storage`
    (commit guards, maintenance scheduler, close ordering).
 4. `coverage-baseline` — `cargo llvm-cov` workspace run publishing the
