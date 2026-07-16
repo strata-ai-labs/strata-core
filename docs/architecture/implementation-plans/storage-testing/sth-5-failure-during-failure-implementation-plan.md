@@ -1,6 +1,40 @@
 # STH-5 Implementation Plan: Failure-During-Failure (compound anomalies)
 
-Status: draft
+Status: implemented (2026-07-16, TCP1.2) — see "As built" below
+
+## As built (2026-07-16, slice TCP1.2)
+
+`crates/storage/src/testkit/compound_faults.rs` + `tests/compound_faults.rs`.
+Slices 5a and 5c merged into one sweep (a single-position 5a case is just an
+early position of the 5c grid):
+
+1. **Fault-during-recovery sweep** (`run_compound_fault_recovery_sweep`) —
+   stages the first failure as a faulted checkpoint publish (position computed
+   from a baseline publish trace, so the store-creation manifest publish is
+   not the one faulted) followed by a crash without close; traces every
+   backend op the reopen performs; then sweeps the second fault across every
+   traced position, once and continuously. Each case reopens a byte-copy of
+   the crashed store (a successful reopen heals the directory, so cases never
+   share one), asserts the faulted open either fails typed or succeeds
+   oracle-valid, then proves a clean reopen is oracle-valid and accepts a
+   resume commit.
+2. **Fault-during-maintenance cases** (`run_compound_fault_maintenance_cases`)
+   — measures per-op call-number windows for each maintenance transition
+   (flush, checkpoint, compact, snapshot-pruning) on a clean baseline, then
+   faults every write-side position inside each window. The typed-trace
+   contract learned here: a maintenance fault surfaces through one of three
+   channels — a drain error, a `Failed` summary with a source error code, or
+   a **completed pass that records the sub-failure as a source error code**
+   (the manifest-publish-debt path: the failed table-manifest publish becomes
+   reserved debt, dependent checkpoints defer with "outstanding table-manifest
+   publish debt", and a later flush republishes). A `Failed` summary without
+   a source code, or a fired fault with no trace on any channel, fails the
+   harness.
+3. **CI tiers** — bounded grid runs per-PR via the in-crate unit tests; the
+   full integration grid plus a 20,000-case seed-scaled soak runs in the
+   nightly `failure-during-failure-soak` job (`STRATA_STORAGE_COMPOUND_CASES`
+   sets depth). A 2,000-case local soak ran clean before landing; no product
+   defect found — the publish-debt design held under compound attack.
 Charter class: 6 — Failure-during-failure (❌ Missing → ✅)
 Companion: `docs/architecture/v1-storage-testing-taxonomy-and-gaps.md`
 Depends on: **STH-1** (oracle), **STH-2** (fault seams), **STH-3** (crash). Optionally composes **STH-4**.
