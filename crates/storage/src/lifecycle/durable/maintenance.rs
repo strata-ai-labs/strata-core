@@ -1705,33 +1705,31 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
             return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
         }
-        let mut rotated = false;
-        if branch.active_row_count() > 0 {
-            // Deferring the WHOLE flush on a rotate refusal livelocked under
-            // saturation: with several branches' frozen tables filling the
-            // shared pool, every branch's flush deferred on the rotate budget
-            // — while the existing frozen backlog those flushes would drain
-            // is precisely what frees that budget (measured: 4 writer
-            // branches at default budgets, 30s stall-wall timeouts, flush
-            // deferring ~13x/s per branch until the watchdog fired). The
-            // shared decision flushes the backlog WITHOUT rotating and defers
-            // only when there is nothing frozen to flush.
-            match crate::lifecycle::decide_flush_rotation(&self.budget, branch) {
-                crate::lifecycle::FlushRotationDecision::Rotate => {
-                    branch.rotate_active();
-                    rotated = true;
-                }
-                crate::lifecycle::FlushRotationDecision::FlushBacklogWithoutRotation => {}
-                crate::lifecycle::FlushRotationDecision::Defer(error) => {
-                    let outcome =
-                        MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Deferred)
-                            .with_source_error(error);
-                    let outcome = self.maintenance.finish_started(task, outcome, false)?;
-                    self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
-                    return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
-                }
+        // Deferring the WHOLE flush on a rotate refusal livelocked under
+        // saturation: with several branches' frozen tables filling the
+        // shared pool, every branch's flush deferred on the rotate budget
+        // — while the existing frozen backlog those flushes would drain
+        // is precisely what frees that budget (measured: 4 writer
+        // branches at default budgets, 30s stall-wall timeouts, flush
+        // deferring ~13x/s per branch until the watchdog fired). The
+        // shared decision flushes the backlog WITHOUT rotating and defers
+        // only when there is nothing frozen to flush. An empty active table
+        // decides Rotate and the rotation itself reports Skipped.
+        let rotated = match crate::lifecycle::decide_flush_rotation(&self.budget, branch) {
+            crate::lifecycle::FlushRotationDecision::Rotate => matches!(
+                branch.rotate_active(),
+                crate::branch::state::BranchRotationOutcome::Rotated { .. }
+            ),
+            crate::lifecycle::FlushRotationDecision::FlushBacklogWithoutRotation => false,
+            crate::lifecycle::FlushRotationDecision::Defer(error) => {
+                let outcome =
+                    MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Deferred)
+                        .with_source_error(error);
+                let outcome = self.maintenance.finish_started(task, outcome, false)?;
+                self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+                return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
             }
-        }
+        };
         let branch_snapshot = branch.clone();
         // Model-2 V-before-S coverage: the rotation swapped in a fresh live active, but the
         // published snapshot still holds (only) the pre-rotation one. Republish in the SAME lock
@@ -4191,24 +4189,23 @@ impl MaintenanceTaskRunner for DurableFlushMaintenanceRunner<'_, '_> {
                 branch_id,
                 CommitBranchGenerationGuard::exact(descriptor.generation()),
             )?;
-            if branch.active_row_count() > 0 {
-                // Failing the whole task on a rotate refusal livelocked under
-                // saturation (the background step path carries the same fix):
-                // the frozen backlog this flush drains is what frees the pool.
-                match crate::lifecycle::decide_flush_rotation(self.budget, branch) {
-                    crate::lifecycle::FlushRotationDecision::Rotate => {
-                        branch.rotate_active();
+            // Failing the whole task on a rotate refusal livelocked under
+            // saturation (the background step path carries the same fix):
+            // the frozen backlog this flush drains is what frees the pool.
+            // An empty active table decides Rotate and rotation self-skips.
+            match crate::lifecycle::decide_flush_rotation(self.budget, branch) {
+                crate::lifecycle::FlushRotationDecision::Rotate => {
+                    branch.rotate_active();
+                }
+                crate::lifecycle::FlushRotationDecision::FlushBacklogWithoutRotation => {}
+                crate::lifecycle::FlushRotationDecision::Defer(error) => {
+                    // Nothing frozen on this branch: skip it (another
+                    // branch's backlog may still flush) and report the
+                    // deferral only if no branch makes progress.
+                    if deferred_rotation.is_none() {
+                        deferred_rotation = Some(error);
                     }
-                    crate::lifecycle::FlushRotationDecision::FlushBacklogWithoutRotation => {}
-                    crate::lifecycle::FlushRotationDecision::Defer(error) => {
-                        // Nothing frozen on this branch: skip it (another
-                        // branch's backlog may still flush) and report the
-                        // deferral only if no branch makes progress.
-                        if deferred_rotation.is_none() {
-                            deferred_rotation = Some(error);
-                        }
-                        continue;
-                    }
+                    continue;
                 }
             }
             outcomes.push(flush_branch_drain_with(
