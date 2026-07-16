@@ -11,6 +11,7 @@ use crate::layout::ObjectLayout;
 #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
 use crate::testkit::{
     BackendCall, FaultScript, FaultingBackend, FsModel, ReorderingBackend, TestkitError,
+    WriteOrderingReport, WriteOrderingWatchdog,
 };
 #[cfg(feature = "localfs")]
 use std::path::{Path, PathBuf};
@@ -29,6 +30,8 @@ enum StorageBackendInner {
     Fault(FaultingBackend<LocalFsBackend>),
     #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
     Reordering(ReorderingBackend),
+    #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+    WriteOrdering(WriteOrderingWatchdog<LocalFsBackend>),
 }
 
 impl StorageBackend {
@@ -57,6 +60,8 @@ impl StorageBackend {
             StorageBackendInner::Fault(backend) => Some(backend.inner().root()),
             #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
             StorageBackendInner::Reordering(backend) => Some(backend.inner().root()),
+            #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+            StorageBackendInner::WriteOrdering(backend) => Some(backend.inner().root()),
         }
     }
 
@@ -111,6 +116,31 @@ impl StorageBackend {
         }
     }
 
+    /// Open a local-filesystem backend under the write-ordering watchdog: a
+    /// pure observer that records append/sync/publish order and files a typed
+    /// violation whenever a manifest, snapshot, or table publish happens while
+    /// a WAL segment holds unsynced bytes. Test / `fault-injection`-only.
+    #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+    #[must_use]
+    pub fn write_ordering_local_fs(root: impl Into<PathBuf>) -> Self {
+        Self {
+            inner: StorageBackendInner::WriteOrdering(WriteOrderingWatchdog::new(
+                LocalFsBackend::new(root),
+            )),
+        }
+    }
+
+    /// The write-ordering watchdog's report (aggregate facts + violations);
+    /// `None` for backends without the watchdog.
+    #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+    #[must_use]
+    pub fn write_ordering_report(&self) -> Option<WriteOrderingReport> {
+        match &self.inner {
+            StorageBackendInner::WriteOrdering(backend) => Some(backend.report()),
+            _ => None,
+        }
+    }
+
     /// Backend operations observed by a faulting backend (empty for non-faulting
     /// backends), so a sweep can see which operations fired and stop once a target
     /// operation no longer occurs in the workload.
@@ -132,6 +162,8 @@ impl StorageBackend {
             StorageBackendInner::Fault(backend) => backend,
             #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
             StorageBackendInner::Reordering(backend) => backend,
+            #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+            StorageBackendInner::WriteOrdering(backend) => backend,
         }
     }
 
@@ -148,6 +180,10 @@ impl StorageBackend {
             StorageBackendInner::Fault(backend) => Some(BackendHandle::owned(backend.clone())),
             #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
             StorageBackendInner::Reordering(backend) => Some(BackendHandle::owned(backend.clone())),
+            #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+            StorageBackendInner::WriteOrdering(backend) => {
+                Some(BackendHandle::owned(backend.clone()))
+            }
         }
     }
 
@@ -161,6 +197,8 @@ impl StorageBackend {
             StorageBackendInner::Fault(backend) => BackendHandle::owned(backend),
             #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
             StorageBackendInner::Reordering(backend) => BackendHandle::owned(backend),
+            #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+            StorageBackendInner::WriteOrdering(backend) => BackendHandle::owned(backend),
         }
     }
 

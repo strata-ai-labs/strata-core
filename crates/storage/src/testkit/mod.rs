@@ -56,6 +56,12 @@ mod service_fuzz;
 ))]
 mod simulation;
 mod table_runtime;
+#[cfg(all(
+    any(test, feature = "fault-injection"),
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
+mod write_ordering_watchdog;
 
 pub use api::{
     check_storage_api_branch_model_contract, check_storage_api_commit_fault_contract,
@@ -158,6 +164,15 @@ pub use service_fuzz::{
 pub use simulation::{
     run_fault_simulation_harness, run_simulation_harness, SimulationFaultOutcome, SimulationOutcome,
 };
+#[cfg(all(
+    any(test, feature = "fault-injection"),
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
+pub use write_ordering_watchdog::{
+    CheckedPublishFamily, WriteOrderingReport, WriteOrderingViolation, WriteOrderingWatchdog,
+};
+
 pub use table_runtime::{
     check_table_runtime_compaction_contract, check_table_runtime_cursor_contract,
     check_table_runtime_reader_contract, check_table_runtime_scaffold_contract,
