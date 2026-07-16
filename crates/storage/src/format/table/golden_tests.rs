@@ -123,6 +123,10 @@ fn table_data_block_put_tombstone_frame_matches_golden_vector() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "zstd C FFI is unsupported under Miri; ASAN lane covers compression paths"
+)]
 fn table_data_block_zstd_frame_matches_golden_vector() {
     let block = TableDataBlock::from_rows(&[put(b"alpha".to_vec(), 9), tombstone(b"alpha", 7)])
         .expect("data block");

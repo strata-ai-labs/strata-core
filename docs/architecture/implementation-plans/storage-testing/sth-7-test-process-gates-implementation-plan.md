@@ -1,9 +1,41 @@
 # STH-7 Implementation Plan: Test-Process Gates + Anti-Drift
 
-Status: draft
+Status: 7a implemented (2026-07-16, TCP1.1) — see "As built (7a)" below; 7b/7c/7d draft
 Charter classes: 11 — Coverage/mutation (❌ → ✅), 12 — Memory safety (🟡 → ✅), 7 — deepen (continuous + structure-aware fuzz), plus the anti-drift map guard
 Companion: `docs/architecture/v1-storage-testing-taxonomy-and-gaps.md`
 Depends on: the suites it measures (run coverage/mutation after STH-1..6 exist; Miri/sanitizer can land now).
+
+## As built (7a) — 2026-07-16, slice TCP1.1
+
+`.github/workflows/nightly.yml` (schedule 03:00 UTC + dispatch) carries the
+memory-safety lanes and the remaining legs of the 3-way suite run:
+
+1. `memory-safety-miri` — Miri with `-Zmiri-strict-provenance
+   -Zmiri-disable-isolation` over all of `strata-core` and the
+   `strata-storage` format layer (`--lib format::`), `PROPTEST_CASES=8`.
+   Both lanes verified green locally before landing.
+2. `memory-safety-address-sanitizer` — ASAN over the full `strata-storage`
+   and `strata-engine` suites via `-Zbuild-std` (instrumented std, no
+   holes). LSAN leak checking is ON for engine (verified: zero intentional
+   fixture leaks) and OFF for storage: the first LSAN run failed on ~190 KB
+   across 5,518 allocations, all traced to the ~609 intentional
+   `Box::leak(Box::new(...))` fixture sites in storage test code. The
+   "leak check wired into integration runs" exit item is therefore only
+   half-met; full satisfaction is tracked as program slice 1.7
+   (leak-registry migration, then `detect_leaks=1`).
+3. `memory-safety-thread-sanitizer` — TSAN over `strata-storage`
+   (commit guards, maintenance scheduler, close ordering).
+4. `coverage-baseline` — `cargo llvm-cov` workspace run publishing the
+   per-crate table to the job summary + lcov artifact (90-day retention).
+   Baseline only; the merge-blocking threshold gate is 7b, thresholds
+   ratchet up only.
+5. `release-mode-tests` — workspace tests with `debug_assertions` off.
+   Per-PR CI remains the debug-assertions leg; coverage is the third way.
+
+Deviations from the sketch above: Miri covers core + storage format layer
+(not engine — interpreter cost; revisit when nightly budget allows); the
+per-test allocator-counter/dhat assertion is deferred to 7b in favor of
+LSAN whole-process leak checking.
 
 ## Objective
 

@@ -9,6 +9,10 @@ use proptest::test_runner::{Config, FileFailurePersistence, TestRunner};
 use strata_core::{BranchId, CommitVersion, Timestamp};
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "generated rows may select zstd compression, whose C FFI Miri cannot run"
+)]
 fn table_format_model_round_trips_generated_rows() {
     let strategy = vec(row_input_strategy(), 1..=128);
     let mut runner = TestRunner::new(Config {
