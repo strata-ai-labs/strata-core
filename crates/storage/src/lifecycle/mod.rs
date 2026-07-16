@@ -75,13 +75,13 @@ pub(crate) use branch_lifecycle::{
 )]
 pub(crate) use budget::{
     branch_config_with_storage_budget, branch_config_with_storage_budget_for_cache,
-    branch_resident_bytes, estimate_commit_batch_active_bytes,
+    branch_resident_bytes, decide_flush_rotation, estimate_commit_batch_active_bytes,
     projected_commit_rotation_would_exceed_frozen_budget, require_generated_artifact_budget,
     require_maintenance_enqueue_budget, require_manifest_catalog_budget, require_rotate_budget,
     require_table_reader_budget, snapshot_with_runtime_usage,
-    table_block_cache_from_storage_budget, BudgetedCommitBranch, StorageBudgetLedger,
-    StorageBudgetPool, StorageBudgetPressureSeverity, StorageBudgetSnapshot, StorageBudgetUsage,
-    StorageRuntimeBudget, StorageRuntimeBudgetParts,
+    table_block_cache_from_storage_budget, BudgetedCommitBranch, FlushRotationDecision,
+    StorageBudgetLedger, StorageBudgetPool, StorageBudgetPressureSeverity, StorageBudgetSnapshot,
+    StorageBudgetUsage, StorageRuntimeBudget, StorageRuntimeBudgetParts,
 };
 #[allow(
     unused_imports,

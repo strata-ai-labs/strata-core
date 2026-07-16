@@ -984,6 +984,45 @@ pub(crate) fn require_rotate_budget(
     )
 }
 
+/// How a flush should handle rotating the active table under the
+/// frozen-mutable pool. Deferring (or failing) the whole flush on a rotate
+/// refusal livelocks under saturation: the frozen backlog the flush would
+/// drain is precisely what frees the pool, so the flush must run without
+/// rotating and let a later flush rotate into the freed pool. Rotation is
+/// either performed exactly as before or skipped entirely — never partially
+/// applied.
+#[derive(Debug)]
+pub(crate) enum FlushRotationDecision {
+    /// The pool affords the rotation: seal the active table, then flush.
+    Rotate,
+    /// The pool is exhausted but a frozen backlog exists: flush it without
+    /// rotating.
+    FlushBacklogWithoutRotation,
+    /// The pool is exhausted and nothing is frozen: defer with the typed
+    /// refusal — there is no backlog to convert into budget.
+    Defer(LifecycleError),
+}
+
+pub(crate) fn decide_flush_rotation(
+    ledger: &StorageBudgetLedger,
+    branch: &BranchLocalState,
+) -> FlushRotationDecision {
+    match require_rotate_budget(ledger, branch) {
+        Ok(()) => FlushRotationDecision::Rotate,
+        Err(error) => {
+            // Only a budget refusal may be converted into progress on the
+            // backlog; any other error class defers with its typed error so
+            // nothing is ever silently swallowed.
+            let budget_refusal = matches!(error, LifecycleError::StorageBudgetExceeded { .. });
+            if budget_refusal && branch.frozen_table_count() > 0 {
+                FlushRotationDecision::FlushBacklogWithoutRotation
+            } else {
+                FlushRotationDecision::Defer(error)
+            }
+        }
+    }
+}
+
 pub(crate) fn estimate_commit_batch_active_bytes(batch: &CommitBatch) -> LifecycleResult<u64> {
     if batch.mutations().is_empty() {
         return Ok(0);
@@ -1364,4 +1403,123 @@ const fn require_nonzero(field: &'static str, value: u64) -> LifecycleResult<()>
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod flush_rotation_tests {
+    use super::*;
+    use crate::row::{PhysicalKey, StorageSpaceId};
+    use strata_core::{BranchId, CommitVersion, Timestamp};
+
+    fn branch_id() -> BranchId {
+        BranchId::from_bytes([0x11; BranchId::BYTE_LEN])
+    }
+
+    fn branch_with_rows(row_count: u64, rotate_into_frozen: bool) -> BranchLocalState {
+        let mut branch = BranchLocalState::empty(branch_id());
+        for index in 0..row_count {
+            let key = PhysicalKey::new(
+                branch_id(),
+                "default",
+                StorageSpaceId::engine(0x20).expect("engine space"),
+                format!("rotation-decision-{index:04}").into_bytes(),
+            )
+            .expect("physical key");
+            branch
+                .append_committed_row(StorageRow::put(
+                    key,
+                    CommitVersion::new(index + 1),
+                    Timestamp::from_micros(index + 1),
+                    Timestamp::EPOCH,
+                    vec![0x5E; 64],
+                ))
+                .expect("append row");
+        }
+        if rotate_into_frozen {
+            branch.rotate_active();
+        }
+        branch
+    }
+
+    fn ledger_with_frozen_pool(frozen_mutable_bytes: u64) -> StorageBudgetLedger {
+        StorageBudgetLedger::new(
+            StorageRuntimeBudget::from_parts(StorageRuntimeBudgetParts {
+                total_bytes: 4 * 1024 * 1024,
+                block_cache_bytes: 0,
+                table_reader_bytes: 512 * 1024,
+                active_mutable_bytes: 256 * 1024,
+                frozen_mutable_bytes,
+                maintenance_queue_bytes: 64 * 1024,
+                generated_artifact_bytes: 1024 * 1024,
+                manifest_catalog_bytes: 256 * 1024,
+                max_open_readers: 32,
+                max_frozen_tables: 8,
+                max_pending_maintenance_tasks: 64,
+            })
+            .expect("test budget is valid"),
+        )
+        .expect("test ledger")
+    }
+
+    #[test]
+    fn affordable_rotation_decides_rotate() {
+        let branch = branch_with_rows(4, false);
+        let ledger = ledger_with_frozen_pool(1024 * 1024);
+        assert!(matches!(
+            decide_flush_rotation(&ledger, &branch),
+            FlushRotationDecision::Rotate
+        ));
+    }
+
+    #[test]
+    fn refused_rotation_with_a_frozen_backlog_flushes_without_rotating() {
+        // Frozen already holds a sealed table and the pool cannot take the
+        // active bytes too: the flush must proceed on the backlog.
+        let mut branch = branch_with_rows(8, true);
+        for index in 100..104u64 {
+            let key = PhysicalKey::new(
+                branch_id(),
+                "default",
+                StorageSpaceId::engine(0x20).expect("engine space"),
+                format!("rotation-decision-{index:04}").into_bytes(),
+            )
+            .expect("physical key");
+            branch
+                .append_committed_row(StorageRow::put(
+                    key,
+                    CommitVersion::new(index),
+                    Timestamp::from_micros(index),
+                    Timestamp::EPOCH,
+                    vec![0x5E; 64],
+                ))
+                .expect("append row");
+        }
+        assert!(
+            branch.frozen_table_count() > 0,
+            "staging must freeze a table"
+        );
+        let ledger = ledger_with_frozen_pool(1);
+        assert!(matches!(
+            decide_flush_rotation(&ledger, &branch),
+            FlushRotationDecision::FlushBacklogWithoutRotation
+        ));
+    }
+
+    #[test]
+    fn refused_rotation_with_nothing_frozen_defers_with_the_typed_refusal() {
+        // Nothing frozen to convert into budget: the only sound outcome is a
+        // typed deferral carrying the budget refusal.
+        let branch = branch_with_rows(4, false);
+        assert_eq!(branch.frozen_table_count(), 0);
+        let ledger = ledger_with_frozen_pool(1);
+        match decide_flush_rotation(&ledger, &branch) {
+            FlushRotationDecision::Defer(error) => {
+                assert!(
+                    matches!(error, LifecycleError::StorageBudgetExceeded { .. }),
+                    "deferral must carry the budget refusal: {error:?}"
+                );
+            }
+            other => panic!("expected a deferral, got {other:?}"),
+        }
+    }
 }
