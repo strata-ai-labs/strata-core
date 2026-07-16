@@ -130,36 +130,41 @@ Verdicts: ✅ matched in the STH plan · 🟢 our design choice validated by the
 research · ➕ net-new, not yet in charter/STH · ⚪ not applicable to a storage
 substrate (SQL-engine-specific).
 
-| Gold-standard technique (who) | StrataDB status | Verdict |
-|---|---|---|
-| Fail-Nth-op fault sweep, fail-once/continuously (SQLite) | STH-2 (class 5) | ✅ |
-| Write-reordering / tearing crash VFS (SQLite) | STH-3 ReorderingBackend (class 3) | ✅ |
-| Journal-synced-before-db write-ordering watchdog (SQLite) | STH-3 watchdog | ✅ exact |
-| External-model post-fault oracle (RocksDB) | STH-1 prefix-of-history oracle | ✅ |
-| Disk-full / ENOSPC injection (SQLite/FDB) | STH-2c | ✅ |
-| Deterministic simulation, seed-replayable (FDB/TigerBeetle/etcd) | STH-4 (class 9) | ✅ + 🟢 |
-| FS-persistence-model enumeration (ALICE/CrashMonkey) | STH-3 (class 10) | ✅ |
-| Mutation testing (SQLite ~20k branches) | STH-7b `cargo-mutants` | ✅ |
-| Structure-aware DB-file fuzzing (dbsqlfuzz) | STH-7c + class 7 | ✅ |
-| Curated-corpus replay every run (fuzzcheck) | STH-7 corpus | ✅ |
-| Sanitizers / leak-tracking every run (RocksDB/SQLite) | STH-7a (class 12) | ✅ |
-| Config/optimization-toggle differential (SQLite) | STH-6 (class 2) | ✅ |
-| Compound failure-during-failure (SQLite) | STH-5 (class 6) | ✅ |
-| Regression test + corpus seed per bug (all) | charter discipline | ✅ |
-| WAL/MVCC durability design | the substrate | 🟢 ALICE: WAL = 0 vulns |
-| Bug-class-not-coverage framing | the charter | 🟢 QPG: coverage saturates |
-| **100% MC/DC as the standard** (SQLite/TH3) | STH-7 sets "a threshold" | ➕ |
-| **`testcase()`/`ALWAYS()`/`NEVER()` + run suite 3 ways** (SQLite) | none | ➕ |
-| **Requirements-to-test traceability matrix** (SQLite) | source-guards only | ➕ |
-| **Self-contained structural integrity check** (SQLite `integrity_check`) | none (oracle is model-based) | ➕ |
-| **Bounded-exhaustive crash enumeration / small-scope** (CrashMonkey B3) | STH-3 is random kills | ➕ |
-| **Metamorphic oracles, single-engine** (NoREC/TLP) | STH-6 is config-diff | ➕ |
-| **Final-state concurrency oracle (WSS)** (WriteCheck) | none | ➕ |
-| **Stochastic one-in-N fault rates** (RocksDB) | STH-2 is deterministic sweep | ➕ |
-| **Human release checklist** (SQLite ~200 items) | STH-7 is automated gates | ➕ |
-| **Test object code / multi-arch+endian** (SQLite/TH3) | golden vectors (format only) | ➕ |
-| Cross-engine differential vs other DBs (SQLite SLT) | — | ⚪ no peer engine |
-| Query-plan-diversity guidance (QPG) | — | ⚪ no query planner |
+**Mapped is not built.** A ✅ verdict says the technique had a home in the STH
+plan — this table drifted exactly there once, showing checkmarks for unbuilt
+slices. The **Built** column is the ground truth, and the
+`testing_charter_guard` test pins the cited artifacts.
+
+| Gold-standard technique (who) | StrataDB status | Verdict | Built |
+|---|---|---|---|
+| Fail-Nth-op fault sweep, fail-once/continuously (SQLite) | STH-2 (class 5) | ✅ | ✅ 2026-06-18 |
+| Write-reordering / tearing crash VFS (SQLite) | STH-3 ReorderingBackend (class 3) | ✅ | ✅ 2026-06-18 |
+| Journal-synced-before-db write-ordering watchdog (SQLite) | STH-3 watchdog | ✅ exact | ✅ 2026-07-16 (TCP1.3) |
+| External-model post-fault oracle (RocksDB) | STH-1 prefix-of-history oracle | ✅ | ✅ 2026-06-18 |
+| Disk-full / ENOSPC injection (SQLite/FDB) | STH-2c | ✅ | ✅ 2026-06-18 |
+| Deterministic simulation, seed-replayable (FDB/TigerBeetle/etcd) | STH-4 (class 9) | ✅ + 🟢 | ✅ 2026-06-19 |
+| FS-persistence-model enumeration (ALICE/CrashMonkey) | STH-3 (class 10) | ✅ | ✅ 2026-06-18 |
+| Mutation testing (SQLite ~20k branches) | STH-7b `cargo-mutants` | ✅ | ✅ 2026-07-16, diff-scoped per PR (full-tree campaign = headroom) |
+| Structure-aware DB-file fuzzing (dbsqlfuzz) | STH-7c + class 7 | ✅ | 🟡 script-through-harness targets built; `arbitrary`-derived file generators = headroom |
+| Curated-corpus replay every run (fuzzcheck) | STH-7 corpus | ✅ | ✅ 2026-07-16, nightly persistent corpus |
+| Sanitizers / leak-tracking every run (RocksDB/SQLite) | STH-7a (class 12) | ✅ | ✅ 2026-07-16, nightly lanes (Miri/ASAN/LSAN/TSAN + leak registry) |
+| Config/optimization-toggle differential (SQLite) | STH-6 (class 2) | ✅ | ✅ 2026-07-16 (found + fixed #2609) |
+| Compound failure-during-failure (SQLite) | STH-5 (class 6) | ✅ | ✅ 2026-07-16 |
+| Regression test + corpus seed per bug (all) | charter discipline | ✅ | ✅ practiced (#2609 → live regressions + decision unit tests) |
+| WAL/MVCC durability design | the substrate | 🟢 ALICE: WAL = 0 vulns | — |
+| Bug-class-not-coverage framing | the charter | 🟢 QPG: coverage saturates | — |
+| **100% MC/DC as the standard** (SQLite/TH3) | STH-7 sets "a threshold" | ➕ | ❌ open |
+| **`testcase()`/`ALWAYS()`/`NEVER()` + run suite 3 ways** (SQLite) | none | ➕ | ❌ open |
+| **Requirements-to-test traceability matrix** (SQLite) | source-guards only | ➕ | ❌ open |
+| **Self-contained structural integrity check** (SQLite `integrity_check`) | none (oracle is model-based) | ➕ | ❌ open |
+| **Bounded-exhaustive crash enumeration / small-scope** (CrashMonkey B3) | adopted in the STH-1/STH-3 as-builts (bounded-exhaustive for short durable sequences, random tail) | ✅ *(was ➕)* | ✅ 2026-06-18 |
+| **Metamorphic oracles, single-engine** (NoREC/TLP) | STH-6 config-diff + the prefix-scan==point-read oracle | ➕ | 🟡 point-read oracle built (TCP1.4); read@V==replay-to-V open |
+| **Final-state concurrency oracle (WSS)** (WriteCheck) | none | ➕ | ❌ open |
+| **Stochastic one-in-N fault rates** (RocksDB) | STH-2 is deterministic sweep | ➕ | ❌ open |
+| **Human release checklist** (SQLite ~200 items) | STH-7 is automated gates | ➕ | ❌ open |
+| **Test object code / multi-arch+endian** (SQLite/TH3) | golden vectors (format only) | ➕ | ❌ open |
+| Cross-engine differential vs other DBs (SQLite SLT) | — | ⚪ no peer engine | — |
+| Query-plan-diversity guidance (QPG) | — | ⚪ no query planner | — |
 
 ## Net-new adoptions, prioritized
 

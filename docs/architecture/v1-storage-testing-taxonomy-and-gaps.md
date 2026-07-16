@@ -109,14 +109,17 @@ since **crossed into time and become simulation-capable**: the closed-loop
 endurance suite (class 8) and the deterministic-simulation substrate (class 9)
 both landed. Since then the **recovery oracle (4), systematic fault sweeps (5),
 and FS-assumption enumeration (10)** have all landed (STH-1 / STH-2 / STH-3). The
-frontier is now narrower and sharper: **failure-during-failure (6), the
-write-ordering watchdog (the residual of class 3), the deterministic-simulation
-sweep driver (9), and the discipline / process layer (11 / 12).**
+former frontier — failure-during-failure (6), the write-ordering watchdog
+(class 3 residual), the DST sweep driver (9), and the discipline / process
+layer (11 / 12) — **closed 2026-07-16** (STH-5, STH-3b, STH-4, STH-7 under the
+test coverage program). **All twelve bug classes now sit at their exit bar**;
+what remains is tracked headroom inside individual rows, never an uncovered
+class.
 
 | Class | Status | Evidence (verified 2026-06-17) |
 |---|---|---|
 | 1. Contract | ✅ Strong | 8 property suites (~93 cases) with model-parity oracles (`src/testkit/api/{model,commit,branch,maintenance,diagnostics}.rs`, branch-LSM reference); ~348 source-guard/closeout checks; 2 conformance suites |
-| 2. Differential | ✅ Strong *(was 🟡)* | Model-parity differential vs. a reference model, plus STH-6's config-sweep differential (`testkit/config_differential`): one seeded two-branch workload under {cache, durable-Standard, durable-Always} × {default, low-memory} asserting identical logical snapshots (keys, values, versions) at every checkpoint, a NoREC-style metamorphic point-read oracle inside each config, and model equality — green across the matrix + 16-seed nightly soak. **Its pressure cell found issue #2609** (EvaluateAndEnqueue livelock under sustained low-memory pressure; regression parked `#[ignore]` on the issue). Cross-engine differential remains out of scope (no shared dialect) |
+| 2. Differential | ✅ Strong *(was 🟡)* | Model-parity differential vs. a reference model, plus STH-6's config-sweep differential (`testkit/config_differential`): one seeded two-branch workload under {cache, durable-Standard, durable-Always} × {default, low-memory} asserting identical logical snapshots (keys, values, versions) at every checkpoint, a NoREC-style metamorphic point-read oracle inside each config, and model equality — green across the matrix + 16-seed nightly soak. **Its pressure cell found issue #2609** (EvaluateAndEnqueue livelock under sustained low-memory pressure), **fixed by #2613** via the shared `decide_flush_rotation` policy; the regression tests are live (un-ignored) and the mutation-on-diff gate vetted the fix. Cross-engine differential remains out of scope (no shared dialect) |
 | 3. Crash/durability | ✅ Strong *(was 🟡)* | 8 crash windows + 19 service-fault routes cover *chosen* transitions; STH-3 wired the reordering/tearing backend into the durable path (the torn-write/truncate primitives are now **activated**, not dormant) and added the FS-model enumeration (see class 10), and STH-2 *swept* (not just enumerated) the backend-op crash points. The remaining bar — the write-ordering watchdog (STH-3 slice 3b) — landed 2026-07-16: `testkit/write_ordering_watchdog` observes the real operation stream and files a typed `WriteOrderingViolation` on any manifest/snapshot/table publish over unsynced WAL-segment bytes; violation detection is non-vacuously proven, and Always/Standard/rotation/recovery streams run clean (`tests/write_ordering.rs`, nightly) |
 | 4. Recovery oracle | ✅ Strong *(was ❌)* | STH-1 landed the shadow expected-state model (`testkit/recovery_oracle::{model, verify, workload}`): a durable workload records every acknowledged + in-doubt commit, and `classify_recovered` proves the reopened database is a *prefix of acknowledged history* — typed `LostAck`/`Phantom`/`TornBatch`/`Gap` violations, with `CrashFamily::{ZeroLoss, OnDiskDamage}` separating zero-loss from on-disk-damage kills. Crash mechanisms: clean `Drop`, `WalTruncate`, `WalCorruptByte` (`tests/crash_recovery_oracle.rs`). It is the reusable recovery post-condition for STH-2 (fault sweeps) and STH-3 (FS models). Per-transition recovery (~70 cases in `lifecycle/tests/recovery.rs`) remains the fine-step regression subset |
 | 5. Error-path sweeps | ✅ Strong *(was 🟡)* | STH-2 systematic sweep (`testkit/fault_sweep`): a baseline trace drives "fail the Nth backend op, verify via the STH-1 recovery oracle, increment N" over the V1-reachable ops `{append, sync, publish, delete}`, fail-once *and* fail-continuously; plus disk-full (NoSpace position sweep + byte-quota, WAL uncertain-commit recovery) and budget/memory exhaustion (`LowMemory` → retryable `StoragePressure` → drain → resume), each oracle-verified. Seeds scale with the case budget for a deep `#[ignore]` soak; the 19 enumerated windows remain as the fine-step regression subset. Post-V1 (unreachable in V1, durable path publishes via `publish_object`): `ConditionalCreate/Update`, `WriteObject`; deferred compaction-input deletion → STH-5 |
@@ -299,7 +302,7 @@ from the live map.
 | Class | Status | Exit bar (definition of world-class) |
 |---|---|---|
 | 1 Contract | ✅ | Every public operation has a model-parity oracle; source guards lock the D4 surface. *(held)* |
-| 2 Differential | ✅ | Config-sweep differential: cache vs. durable (and budget variants) produce identical logical results on the same workload, plus the prefix-scan == point-read metamorphic oracle — landed (STH-6); found #2609 on its first sustained-pressure run. Remaining headroom (tracked, not blocking): read@V == replay-to-V metamorphic pair, scheduling-policy axis beyond EvaluateAndEnqueue |
+| 2 Differential | ✅ | Config-sweep differential: cache vs. durable (and budget variants) produce identical logical results on the same workload, plus the prefix-scan == point-read metamorphic oracle — landed (STH-6); found #2609 on its first sustained-pressure run (fixed, #2613; regressions live). Remaining headroom (tracked, not blocking): read@V == replay-to-V metamorphic pair, scheduling-policy axis beyond EvaluateAndEnqueue |
 | 3 Crash | ✅ | Reordering/tearing `Backend` wrapper wired in (STH-3, done); crash states *bounded-exhaustively* enumerated for short durable sequences (≤3 ops post-`fsync`), randomly swept for the tail; and the write-ordering watchdog asserting WAL sync (or authorized segment publish) precedes dependent publishes — landed (STH-3b) |
 | 4 Recovery oracle | ✅ | Shadow expected-state model landed (STH-1): after a kill at a *random* / bounded-exhaustive point, recovered state is a verified prefix of acknowledged history across every durable operation. *(Follow-on: a self-contained structural integrity-check analog validating on-disk invariants without the workload model.)* |
 | 5 Error sweep | ✅ | "Fail backend op N, sweep N, verify via the recovery oracle each" over the V1-reachable steps, fail-once + continuously, plus ENOSPC and budget-exhaustion modes — landed (STH-2) |
@@ -321,8 +324,11 @@ its exit bar: `docs/architecture/implementation-plans/storage-testing/README.md`
 class 9) are **done** — the DST also found and drove fixes for two durability bugs and
 now passes a clean 3000-seed soak — and priority 4 is **partial** (reordering backend +
 FS-model enumeration done, class 10 → ✅; the write-ordering watchdog is the residual).
-The live frontier is now **the priority-4 residual (write-ordering watchdog), priority 5
-(failure-during-failure, class 6), and priority 6 (discipline gates, classes 11 / 12).**
+**Progress (2026-07-16):** the remaining priorities are done — the priority-4
+residual (write-ordering watchdog, TCP1.3), priority 5 (failure-during-failure,
+TCP1.2), and priority 6 (discipline gates, TCP1.1/1.5: Miri/ASAN/LSAN/TSAN
+lanes, coverage floor, mutation-on-diff, scheduled fuzz, charter guard). The
+priority list below is retained as the program's historical rationale.
 
 1. **Recovery oracle (class 4). ✅ Done — STH-1.** The deepest remaining correctness hole now that
    liveness has landed. Build a shadow expected-state model on top of the existing

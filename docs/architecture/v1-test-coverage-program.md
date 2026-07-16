@@ -83,14 +83,22 @@ cost/unblock value:
 | 1.1 | **STH-7a** (cheap half) | Miri + ASAN/LSAN jobs; `cargo-llvm-cov` baseline job publishing per-crate coverage; 3-way suite run (release / debug-asserts / coverage) | Implemented (2026-07-16) — `.github/workflows/nightly.yml`; baseline coverage recorded below |
 | 1.2 | **STH-5** | Failure-during-failure: inject faults *during* recovery, compaction, checkpoint, quarantine; assert through the STH-1 oracle. Plan doc exists (draft) | Implemented (2026-07-16) — `testkit/compound_faults`, nightly `failure-during-failure-soak`; charter class 6 ❌→✅; 2,000-case soak clean, no product defect |
 | 1.3 | **STH-3b** | Write-ordering watchdog: assert no dependent publish precedes its WAL sync (SQLite journal-synced-before-db check) | Implemented (2026-07-16) — `testkit/write_ordering_watchdog`, nightly entry; charter class 3 🟡→✅; Always/Standard/rotation/recovery streams clean |
-| 1.4 | **STH-6** | Config-sweep differential (cache vs durable vs budget configs, identical results) + metamorphic oracles; liveness deepening | Implemented (2026-07-16) — `testkit/config_differential` + `api/tests/liveness_matrix`; charter class 2 🟡→✅, class 8 broadened; **found issue #2609** (EvaluateAndEnqueue pressure livelock; regression parked on the issue); perf-trace endurance suite now runs nightly |
+| 1.4 | **STH-6** | Config-sweep differential (cache vs durable vs budget configs, identical results) + metamorphic oracles; liveness deepening | Implemented (2026-07-16) — `testkit/config_differential` + `api/tests/liveness_matrix`; charter class 2 🟡→✅, class 8 broadened; **found issue #2609** (EvaluateAndEnqueue pressure livelock), fixed by #2613 with the invariant-checked audit protocol — regressions live, mutation gate vetted the fix; perf-trace endurance suite now runs nightly |
 | 1.5 | **STH-7** (full) | `cargo-mutants` gate on storage; coverage ratchet; `testcase!`/`always!`/`never!` macros; requirements-to-test traceability; anti-drift guard that fails when a plan doc claims ✅ for an unimplemented item | Implemented (2026-07-16) — diff-scoped mutants per PR (`ci.yml`), coverage floor gate (73.0% ratchet-up), nightly persistent-corpus fuzz (`fuzz.yml`), charter guard (`testing_charter_guard.rs`). Deferred with reasons in the STH-7 as-built: MC/DC, `testcase!` macros, full-tree mutation |
-| 1.6 | **Doc repair** | Fix STH-1 header (says draft, is implemented); split gold-standard delta table into "mapped" vs "built" columns; update STH README status column | Not started |
+| 1.6 | **Doc repair** | Fix STH-1 header (says draft, is implemented); split gold-standard delta table into "mapped" vs "built" columns; update STH README status column | Implemented (2026-07-16) — plus taxonomy frontier prose refreshed and #2609 wording moved from parked to fixed |
 | 1.7 | **Storage leak-registry migration** | Replace ~609 `Box::leak` test-fixture sites in `crates/storage` with a testkit `leak_static` helper that keeps leaked fixtures reachable from a global registry, then flip `detect_leaks=1` on the nightly storage ASAN lane. Found under TCP1.1: LSAN reported ~190 KB / 5,518 allocations, all traced to intentional fixture leaks that would drown any real leak | Implemented (2026-07-16) — `testkit::leak_static` + `forget_registered`, 609 sites + 1 `mem::forget` migrated; storage LSAN lane live |
 
 Phase 1 exit gate: all 12 bug classes in the taxonomy doc at their stated
 exit bar, coverage baseline published, no stale status headers under
 `storage-testing/`.
+
+**Phase 1 closed 2026-07-16.** All twelve classes at their exit bar, coverage
+baseline published and gated (73.0% floor), every `storage-testing/` status
+header current, and the charter guard enforces the map from here on. Program
+results so far: one product bug found and fixed (#2609 → #2613), one latent
+close-surface defect filed (#2612), two durability-lane defects in the nightly
+workflows caught before their first scheduled run, and the mutation gate's
+first production catch (6 missed mutants) killed.
 
 ## Phase 2 — Close the 2026-07-16 audit gaps
 
@@ -106,6 +114,7 @@ before starting):
 | 2.5 | **Inference testkit (M7F)** | Fake `Generator`/`Embedder`/`Reranker` providers behind the (currently empty) `testkit` feature; the 18-case deterministic harness; unblocks the executor deterministic inference lane. Also: download failure-path unit tests (~13 missing cases), runtime cache lifecycle unit tests (~21 missing) |
 | 2.6 | **Small zero-coverage surfaces** | `crates/wasm` (wasm-bindgen-test smoke over the serialized-command adapter), `stratadb` facade (public-surface conformance beyond the single round-trip test), hub per-endpoint suite |
 | 2.7 | **Multi-branch orphaned-delta recovery** | Currently guarded (checkpoint defers), latent high-severity. Decide: fix per-branch recovery in-program or keep guard + add adversarial regression coverage |
+| 2.8 | **Close-time flush surfaces (#2612)** | Adopt `decide_flush_rotation` (or a close-specific flush-backlog-then-rotate variant) at the durable/cache close runners and the cache background step; tests stage a saturated store and assert graceful close drains fully |
 
 Phase 2 exit gate: no known gap without either a merged test lane or an
 entry in the deferred register.
