@@ -114,7 +114,7 @@ before starting):
 | 2.5 | **Inference testkit (M7F)** | Fake `Generator`/`Embedder`/`Reranker` providers behind the (currently empty) `testkit` feature; the 18-case deterministic harness; unblocks the executor deterministic inference lane. Also: download failure-path unit tests (~13 missing cases), runtime cache lifecycle unit tests (~21 missing) |
 | 2.6 | **Small zero-coverage surfaces** | `crates/wasm` (wasm-bindgen-test smoke over the serialized-command adapter), `stratadb` facade (public-surface conformance beyond the single round-trip test), hub per-endpoint suite |
 | 2.7 | **Multi-branch orphaned-delta recovery** | Currently guarded (checkpoint defers), latent high-severity. Decide: fix per-branch recovery in-program or keep guard + add adversarial regression coverage |
-| 2.8 | **Close-time flush surfaces (#2612)** | Adopt `decide_flush_rotation` (or a close-specific flush-backlog-then-rotate variant) at the durable/cache close runners and the cache background step; tests stage a saturated store and assert graceful close drains fully |
+| 2.8 | **Close-time flush surfaces (#2612)** | Adopt `decide_flush_rotation` (or a close-specific flush-backlog-then-rotate variant) at the durable/cache close runners and the cache background step; tests stage a saturated store and assert graceful close drains fully. **Resolved as not-a-bug (2026-07-16)**: audit-fix verification showed the close runners' refusal lines are production-unreachable (every `DrainBeforeClose` producer is test code) and close-at-saturation is empirically sound — acked commits ride the WAL and reopen recovers them (pinned by `saturated_store_closes_gracefully_and_reopens_complete`). The cache step's refusal is typed and retried. Residual code-shape harmonization moved to the deferred register |
 
 Phase 2 exit gate: no known gap without either a merged test lane or an
 entry in the deferred register.
@@ -139,6 +139,7 @@ Recorded so absence is a decision, not an accident:
 | `strata-intelligence` crate + `fake_provider_paths` gate | Crate does not exist yet (M8 scope) | M8 starts; CLAUDE.md reference stays marked M8+ |
 | Hub telemetry tests (M9TD) | No telemetry implementation exists | Telemetry feature decision |
 | loom/shuttle for L7 | Hand-rolled deterministic guard interleavings accepted by plan | Revisit at 2.4 |
+| Close-runner rotate-refusal harmonization onto `decide_flush_rotation` (#2612 residual) | Production-unreachable (no production `DrainBeforeClose` flush producer); close-at-saturation verified sound | A production `DrainBeforeClose` flush producer appears |
 | OpenDAL/object backend conformance | Backend is post-V1 | Backend work starts |
 | CLI `--memory-budget` / `--profile` flags and `commands` / `explain` subcommands (cli-next plan items) | The shipped CLI never grew these surfaces; testing them would test nothing | If/when the CLI adds resource-profile flags or the IDL-generated command explorer |
 
