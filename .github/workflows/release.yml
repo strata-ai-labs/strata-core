@@ -13,10 +13,27 @@ env:
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
+  format-gate:
+    # Release gate: the frozen durable format and the capability contract
+    # must hold on the exact tagged commit — releases must not rely on
+    # main having been green at some earlier point.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorize private git dependencies
+        run: git config --global url."https://x-access-token:${{ secrets.STRATAHUB_READ_TOKEN }}@github.com/stratalab/stratahub".insteadOf "https://github.com/stratalab/stratahub"
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Frozen-format golden vectors
+        run: cargo test --locked -p strata-storage --test format_golden
+      - name: Capability contract
+        run: cargo test --locked -p strata-engine --test capability_conformance
+
   # ---------------------------------------------------------------------------
   # 1. Build the strata binary per target (all native runners, no cross)
   # ---------------------------------------------------------------------------
   build:
+    needs: format-gate
     name: Build strata (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     strategy:
