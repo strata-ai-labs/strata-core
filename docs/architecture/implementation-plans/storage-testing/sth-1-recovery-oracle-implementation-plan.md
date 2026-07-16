@@ -1,6 +1,12 @@
 # STH-1 Implementation Plan: Recovery Oracle (prefix-of-acknowledged-history)
 
-Status: draft
+Status: implemented (2026-06-18; header repaired 2026-07-16, TCP1.6 — the code
+landed with STH-2 but this status line was never updated: the exact drift the
+charter guard now catches). As built: `src/testkit/recovery_oracle/{model,
+verify,workload,driver}.rs` + `tests/crash_recovery_oracle.rs` — shadow
+expected-state model, prefix-of-acknowledged-history verifier with typed
+`LostAck`/`Phantom`/`TornBatch`/`Gap` violations, bounded-exhaustive kill
+points for short durable sequences, seed-scaled soak.
 Charter class: 4 — Silent data loss / recovery holes (❌ Missing → ✅)
 Companion: `docs/architecture/v1-storage-testing-taxonomy-and-gaps.md`
 Depends on: none. **Reused by STH-2, STH-3, STH-4, STH-5.**
