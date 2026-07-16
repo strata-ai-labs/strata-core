@@ -1,7 +1,29 @@
 # STH-3 Implementation Plan: Durability Realism (torn writes, reordering, FS assumptions)
 
-Status: **3a + 3c implemented (2026-06-18)**; 3b deferred; 3d reframed as standing regression discipline. See "As-built" below.
-Charter classes: 3 — Crash/durability (🟡 → advanced; full ✅ awaits 3b watchdog) and 10 — Unstated FS-assumptions (❌ → ✅)
+Status: **3a + 3c implemented (2026-06-18); 3b implemented (2026-07-16, TCP1.3)**; 3d reframed as standing regression discipline. See "As-built" below.
+Charter classes: 3 — Crash/durability (✅, closed by 3b) and 10 — Unstated FS-assumptions (❌ → ✅)
+
+## As built (3b) — 2026-07-16, slice TCP1.3
+
+`crates/storage/src/testkit/write_ordering_watchdog.rs` +
+`tests/write_ordering.rs` + `StorageBackend::write_ordering_local_fs` /
+`write_ordering_report`. A pure-observer `Backend` decorator: logical order
+for every append/sync/publish/delete, per-WAL-segment unsynced boundary, and
+a typed `WriteOrderingViolation` filed at every manifest/snapshot/table
+publish that occurs over unsynced WAL-segment bytes. Detection non-vacuity is
+proven by recorder-driven unit tests (a staged publish-before-sync produces
+the typed violation); the live invariant is proven over real operation
+streams: Always, Standard, WAL rotation (small segments), and recovery
+reopen — all clean. Two engine facts the watchdog documented on the way:
+Standard-mode WAL durability flows through authorized whole-segment
+publishes rather than `sync_object` (the buffered WAL's rewrite path — the
+watchdog credits a segment publish as its durable boundary), and WAL sidecar
+metadata lives under `wal/` but is excluded as an optional fallback artifact.
+Nightly runs the integration entry in the durable-invariants job. Known
+limitation: steady-state appends through a persistent `BackendAppendHandle`
+bypass any decorator (the watchdog, like the fault/reordering backends, does
+not override `open_append_handle`, so watched runs use the per-call fallback
+path — same fidelity trade the other STH harnesses accept).
 Companion: `docs/architecture/v1-storage-testing-taxonomy-and-gaps.md`
 Depends on: **STH-1** (oracle is the recovery post-condition).
 

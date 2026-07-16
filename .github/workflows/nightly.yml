@@ -114,6 +114,8 @@ jobs:
         run: git config --global url."https://x-access-token:${{ secrets.STRATAHUB_READ_TOKEN }}@github.com/stratalab/stratahub".insteadOf "https://github.com/stratalab/stratahub"
       - uses: dtolnay/rust-toolchain@1.94.1
       - uses: Swatinem/rust-cache@v2
+      - name: Write-ordering watchdog
+        run: cargo test --locked -p strata-storage --features fault-injection --test write_ordering
       - name: Compound fault grid
         run: cargo test --locked -p strata-storage --features fault-injection --test compound_faults
       - name: Compound fault soak
