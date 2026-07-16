@@ -133,6 +133,44 @@ jobs:
         # invisible to per-PR CI (default features); this is its only lane.
         run: cargo test --locked -p strata-storage --features perf-trace --lib background_scale
 
+  storage-soak-lanes:
+    # The deep #[ignore] bug-hunt lanes that predate the program (fault
+    # sweeps, FS-persistence models, deterministic simulation) plus the
+    # env-scaled crash and stress grids. These existed as code with no
+    # automated tier — the audit's "a suite CI never runs does not exist"
+    # finding; this job is their tier. Soaks use their own in-file nightly
+    # defaults unless the env below overrides them.
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorize private git dependencies
+        run: git config --global url."https://x-access-token:${{ secrets.STRATAHUB_READ_TOKEN }}@github.com/stratalab/stratahub".insteadOf "https://github.com/stratalab/stratahub"
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Fault sweep and FS-model soaks
+        env:
+          STRATA_STORAGE_FAULT_CASES: "10000"
+        run: |
+          cargo test --locked -p strata-storage --features fault-injection --test fault_sweep -- --ignored
+          cargo test --locked -p strata-storage --features fault-injection --test fs_persistence_models -- --ignored
+      - name: Deterministic-simulation soaks
+        # No env override: simulation cases are ~10x costlier per case, and
+        # the in-file soak default (2,000) is the calibrated nightly budget.
+        run: |
+          cargo test --locked -p strata-storage --features fault-injection --test simulation_smoke -- --ignored
+          cargo test --locked -p strata-storage --features fault-injection --test simulation_faults -- --ignored
+      - name: Crash-recovery deep grids
+        env:
+          STRATA_STORAGE_CRASH_CASES: "5000"
+        run: |
+          cargo test --locked -p strata-storage --features testkit --test crash_recovery
+          cargo test --locked -p strata-storage --features testkit --test crash_recovery_oracle
+      - name: Extended stress
+        env:
+          STRATA_STORAGE_STRESS_SECONDS: "120"
+        run: cargo test --locked -p strata-storage --features testkit --test stress
+
   coverage-baseline:
     # Publishes per-crate region/line coverage. Baseline only for now:
     # the merge-blocking threshold gate is a later slice, and per the
