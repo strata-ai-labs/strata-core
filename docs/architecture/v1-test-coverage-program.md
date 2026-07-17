@@ -125,12 +125,35 @@ opens with the layer-by-layer coverage plans.
 
 ## Phase 3 — Layer-by-layer coverage plans
 
-After Phases 1-2, build one coverage plan per layer, in dependency order:
-core → storage (L1-L9 sweep against the conformance plan's matrices) →
-engine (per capability) → executor/IDL → CLI/SDK → hub/wasm. Each plan is
-co-authored, uses the coverage numbers from 1.1 to target the weakest
-modules first, and sets a per-crate coverage ratchet. Not specified further
-here — plans are written when their phase starts.
+Plan ACCEPTED 2026-07-17: `v1-test-coverage-phase3-plan.md` — gap analysis
+(five per-layer deep-dives + product-only coverage measurement + error-code
+assertion cross-cut), the three-tier tracking methodology (surface guards /
+product-only per-crate ratchets / this ledger), 16 slices TCP3.0-TCP3.15 in
+dependency order (tracking machinery → core → storage → engine → executor →
+CLI → edge crates), and six resolved design decisions. Headline findings:
+202 error codes in product sources with 68 never asserted; storage inner
+error enums (~85 variants) unassertable through the boundary; executor
+error envelopes never replay-tested; CLI weakest at 47.3% product-line
+coverage. Slice status tracks in the table below as slices merge.
+
+| # | Slice | Status |
+|---|---|---|
+| 3.0 | Tracking machinery (product-only ratchets, workspace error-code guard) | Planned |
+| 3.1 | Core (goldens, adversarial deserialize, doc-parity guard) | Planned |
+| 3.2 | Storage inner-error assertability | Planned |
+| 3.3 | Storage decode + fault edges (L2 fuzz, L1 recovery faults, L9 negatives) | Planned |
+| 3.4 | Storage concurrency (lock-order guard, threaded COW races) | Planned |
+| 3.5 | Engine error registry (guard + doc reconciliation + refusal batches) | Planned |
+| 3.6 | Engine conformance depth (fault dimension, temporal oracle generalization) | Planned |
+| 3.7 | Engine contract truth-ups (rule 20 absence guard, dead-code deletion) | Planned |
+| 3.8 | Executor error-envelope replay + per-command guards | Planned |
+| 3.9 | Executor hermetic inference lane + branch/session behavior | Planned |
+| 3.10 | CLI renderers + verb-enumeration guard + config write path | Planned |
+| 3.11 | CLI family coverage (corpus port) | Planned |
+| 3.12 | Inference deterministic residuals (request goldens, wire mapping) | Planned |
+| 3.13 | Hub transport fault injection | Planned |
+| 3.14 | wasm + stratadb residuals | Planned |
+| 3.15 | Engine corruption injection (data_loss assertion) | Planned |
 
 ## Deferred register
 
