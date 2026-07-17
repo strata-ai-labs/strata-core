@@ -1,0 +1,546 @@
+//! Deterministic fake inference engine — the harness the test plan calls
+//! for: command contracts, error branches, redaction, and partial-failure
+//! handling become cheap and repeatable, with zero network, zero model
+//! files, and zero sleeps.
+//!
+//! This is NOT behavioral proof of provider quality, tokenization, local
+//! runtime lifecycle, embedding semantics, or model output. Any claim that
+//! real inference works must come from the gated GGUF/provider integration
+//! lanes.
+
+#![doc(hidden)]
+
+use std::collections::BTreeSet;
+use std::time::Duration;
+
+use crate::{GenerateRequest, GenerateResponse, InferenceEngine, InferenceError, StopReason};
+
+/// A scripted failure the fake engine raises on every call, phrased in the
+/// same `InferenceError` vocabulary the real providers use.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScriptedFailure {
+    MissingModel,
+    InvalidRequest,
+    UnsupportedParameter,
+    UnsupportedOperation,
+    MissingApiKey,
+    AuthFailure,
+    RateLimit,
+    Timeout,
+    ProviderUnavailable,
+    MalformedResponse,
+}
+
+impl ScriptedFailure {
+    fn to_error(self) -> InferenceError {
+        match self {
+            Self::MissingModel => {
+                InferenceError::Registry("fake: unknown model: fake:missing".to_string())
+            }
+            Self::InvalidRequest => {
+                InferenceError::InvalidSpec("fake: request is invalid".to_string())
+            }
+            Self::UnsupportedParameter => InferenceError::NotSupported(
+                "fake: parameter is not supported by this engine".to_string(),
+            ),
+            Self::UnsupportedOperation => InferenceError::NotSupported(
+                "fake: operation is not supported by this engine".to_string(),
+            ),
+            Self::MissingApiKey => InferenceError::Provider(
+                "fake: FAKE_API_KEY is not set for this provider".to_string(),
+            ),
+            Self::AuthFailure => InferenceError::Provider(
+                "fake: invalid API key sk-fake-1234567890 (401)".to_string(),
+            ),
+            Self::RateLimit => {
+                InferenceError::Provider("fake: rate limited (too many requests)".to_string())
+            }
+            Self::Timeout => InferenceError::Provider("fake: request timed out".to_string()),
+            Self::ProviderUnavailable => {
+                InferenceError::Provider("fake: provider unavailable".to_string())
+            }
+            Self::MalformedResponse => {
+                InferenceError::Provider("fake: malformed provider response".to_string())
+            }
+        }
+    }
+}
+
+/// Deterministic fake engine: same inputs, same outputs, forever.
+#[derive(Debug)]
+pub struct FakeInferenceEngine {
+    embedding_dim: usize,
+    latency: Duration,
+    failure: Option<ScriptedFailure>,
+    failing_embed_items: BTreeSet<usize>,
+    failing_rank_items: BTreeSet<usize>,
+    healthy: bool,
+    calls: usize,
+}
+
+impl Default for FakeInferenceEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FakeInferenceEngine {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            embedding_dim: 8,
+            latency: Duration::from_millis(0),
+            failure: None,
+            failing_embed_items: BTreeSet::new(),
+            failing_rank_items: BTreeSet::new(),
+            healthy: true,
+            calls: 0,
+        }
+    }
+
+    /// Configure the latency the engine *reports*. Nothing sleeps: tests
+    /// assert the configured value through [`Self::latency`].
+    #[must_use]
+    pub fn with_latency(mut self, latency: Duration) -> Self {
+        self.latency = latency;
+        self
+    }
+
+    #[must_use]
+    pub fn with_embedding_dim(mut self, dim: usize) -> Self {
+        self.embedding_dim = dim;
+        self
+    }
+
+    /// Script every subsequent call to fail with the given class.
+    #[must_use]
+    pub fn with_failure(mut self, failure: ScriptedFailure) -> Self {
+        self.failure = Some(failure);
+        self
+    }
+
+    /// Script specific batch-embedding items to fail (partial failure).
+    #[must_use]
+    pub fn with_failing_embed_items(mut self, items: impl IntoIterator<Item = usize>) -> Self {
+        self.failing_embed_items = items.into_iter().collect();
+        self
+    }
+
+    /// Script specific ranking passages to fail (partial failure).
+    #[must_use]
+    pub fn with_failing_rank_items(mut self, items: impl IntoIterator<Item = usize>) -> Self {
+        self.failing_rank_items = items.into_iter().collect();
+        self
+    }
+
+    #[must_use]
+    pub fn with_health(mut self, healthy: bool) -> Self {
+        self.healthy = healthy;
+        self
+    }
+
+    /// The configured (reported, never slept) latency.
+    #[must_use]
+    pub const fn latency(&self) -> Duration {
+        self.latency
+    }
+
+    /// Calls observed across all operations, for interaction assertions.
+    #[must_use]
+    pub const fn calls(&self) -> usize {
+        self.calls
+    }
+
+    fn scripted(&self) -> Result<(), InferenceError> {
+        match self.failure {
+            Some(failure) => Err(failure.to_error()),
+            None => Ok(()),
+        }
+    }
+
+    fn deterministic_vector(&self, text: &str) -> Vec<f32> {
+        // A tiny splitmix-style fold: pure function of (text, position),
+        // spread over [-1, 1], identical across runs and platforms.
+        let seed = text.bytes().fold(0xdead_beef_u64, |acc, byte| {
+            acc.wrapping_mul(31).wrapping_add(u64::from(byte))
+        });
+        (0..self.embedding_dim)
+            .map(|position| {
+                let mut z =
+                    seed.wrapping_add(0x9e37_79b9_7f4a_7c15_u64.wrapping_mul(position as u64 + 1));
+                z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                z ^= z >> 31;
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "deterministic pseudo-embedding; exact float value is the contract"
+                )]
+                let unit = (z % 2_000_003) as f32 / 1_000_001.5 - 1.0;
+                unit
+            })
+            .collect()
+    }
+}
+
+impl InferenceEngine for FakeInferenceEngine {
+    fn generate(&mut self, request: &GenerateRequest) -> Result<GenerateResponse, InferenceError> {
+        self.calls += 1;
+        self.scripted()?;
+        let prompt_tokens = request.prompt.split_whitespace().count();
+        // Deterministic text: a pure function of prompt, seed, and grammar.
+        let seed = request.seed.unwrap_or(0);
+        let mut text = format!("fake(seed={seed}):{}", request.prompt);
+        if request.grammar.is_some() {
+            text = format!("{{\"fake\":\"{seed}\"}}");
+        }
+        for stop in &request.stop_sequences {
+            if let Some(index) = text.find(stop.as_str()) {
+                text.truncate(index);
+            }
+        }
+        let natural_tokens = text.split_whitespace().count().max(1);
+        let completion_tokens = natural_tokens.min(request.max_tokens);
+        let stop_reason = if completion_tokens == request.max_tokens {
+            StopReason::MaxTokens
+        } else {
+            StopReason::StopToken
+        };
+        Ok(GenerateResponse {
+            text,
+            stop_reason,
+            prompt_tokens,
+            completion_tokens,
+        })
+    }
+
+    fn embed(&self, text: &str) -> Result<Vec<f32>, InferenceError> {
+        self.scripted()?;
+        Ok(self.deterministic_vector(text))
+    }
+
+    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, InferenceError> {
+        self.scripted()?;
+        if let Some(failed) = texts
+            .iter()
+            .enumerate()
+            .find_map(|(index, _)| self.failing_embed_items.contains(&index).then_some(index))
+        {
+            return Err(InferenceError::Provider(format!(
+                "fake: embedding item {failed} of {} failed",
+                texts.len()
+            )));
+        }
+        Ok(texts
+            .iter()
+            .map(|text| self.deterministic_vector(text))
+            .collect())
+    }
+
+    fn rank(&self, query: &str, passages: &[&str]) -> Result<Vec<f32>, InferenceError> {
+        self.scripted()?;
+        if let Some(failed) = passages
+            .iter()
+            .enumerate()
+            .find_map(|(index, _)| self.failing_rank_items.contains(&index).then_some(index))
+        {
+            return Err(InferenceError::Provider(format!(
+                "fake: ranking item {failed} of {} failed",
+                passages.len()
+            )));
+        }
+        // Deterministic score: shared-whitespace-token overlap, scaled by
+        // passage position so ties break stably.
+        let query_tokens: BTreeSet<&str> = query.split_whitespace().collect();
+        Ok(passages
+            .iter()
+            .enumerate()
+            .map(|(position, passage)| {
+                let overlap = passage
+                    .split_whitespace()
+                    .filter(|token| query_tokens.contains(token))
+                    .count();
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "deterministic fake score; small values"
+                )]
+                let score = overlap as f32 - position as f32 / 1_000.0;
+                score
+            })
+            .collect())
+    }
+
+    fn supports_generate(&self) -> bool {
+        true
+    }
+
+    fn supports_embed(&self) -> bool {
+        true
+    }
+
+    fn supports_rank(&self) -> bool {
+        true
+    }
+
+    fn embedding_dim(&self) -> usize {
+        self.embedding_dim
+    }
+
+    fn is_healthy(&self) -> bool {
+        self.healthy
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- deterministic outputs (cases 1-5) ---
+
+    #[test]
+    fn generation_text_and_token_counts_are_deterministic() {
+        let mut first = FakeInferenceEngine::new();
+        let mut second = FakeInferenceEngine::new();
+        let request = GenerateRequest {
+            prompt: "the quick brown fox".to_string(),
+            seed: Some(7),
+            max_tokens: 64,
+            ..GenerateRequest::default()
+        };
+        let a = first.generate(&request).expect("generate");
+        let b = second.generate(&request).expect("generate");
+        assert_eq!(a, b, "same request must yield identical responses");
+        assert_eq!(a.prompt_tokens, 4);
+        assert!(a.text.contains("seed=7") && a.text.contains("the quick brown fox"));
+        assert_eq!(a.stop_reason, StopReason::StopToken);
+
+        // Token budget engages deterministically.
+        let clipped = first
+            .generate(&GenerateRequest {
+                prompt: "one two three four five six".to_string(),
+                max_tokens: 2,
+                ..GenerateRequest::default()
+            })
+            .expect("generate");
+        assert_eq!(clipped.completion_tokens, 2);
+        assert_eq!(clipped.stop_reason, StopReason::MaxTokens);
+    }
+
+    #[test]
+    fn embedding_vectors_are_deterministic_and_input_sensitive() {
+        let engine = FakeInferenceEngine::new().with_embedding_dim(16);
+        let a = engine.embed("alpha").expect("embed");
+        let b = engine.embed("alpha").expect("embed");
+        let c = engine.embed("beta").expect("embed");
+        assert_eq!(a.len(), 16);
+        assert_eq!(a, b, "same text, same vector");
+        assert_ne!(a, c, "different text, different vector");
+        assert_eq!(
+            engine.embed_batch(&["alpha", "beta"]).expect("batch"),
+            vec![a, c],
+            "batch agrees with single-item embedding"
+        );
+    }
+
+    #[test]
+    fn ranking_scores_are_deterministic_and_relevance_ordered() {
+        let engine = FakeInferenceEngine::new();
+        let scores = engine
+            .rank(
+                "storage engine durability",
+                &[
+                    "a storage engine with durability guarantees",
+                    "cooking with induction stoves",
+                ],
+            )
+            .expect("rank");
+        assert_eq!(scores.len(), 2);
+        assert!(
+            scores[0] > scores[1],
+            "the on-topic passage must outrank the off-topic one: {scores:?}"
+        );
+        let again = engine
+            .rank(
+                "storage engine durability",
+                &[
+                    "a storage engine with durability guarantees",
+                    "cooking with induction stoves",
+                ],
+            )
+            .expect("rank");
+        assert_eq!(scores, again);
+    }
+
+    #[test]
+    fn stop_sequences_truncate_deterministically() {
+        let mut engine = FakeInferenceEngine::new();
+        let response = engine
+            .generate(&GenerateRequest {
+                prompt: "hello STOP world".to_string(),
+                stop_sequences: vec!["STOP".to_string()],
+                ..GenerateRequest::default()
+            })
+            .expect("generate");
+        assert!(
+            !response.text.contains("STOP") && !response.text.contains("world"),
+            "stop sequence must truncate: {:?}",
+            response.text
+        );
+    }
+
+    #[test]
+    fn configured_latency_is_reported_without_sleeping() {
+        let engine =
+            FakeInferenceEngine::new().with_latency(std::time::Duration::from_millis(1_500));
+        let started = std::time::Instant::now();
+        let _ = engine.embed("no sleeping").expect("embed");
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(200),
+            "the fake must never sleep its configured latency"
+        );
+        assert_eq!(engine.latency(), std::time::Duration::from_millis(1_500));
+    }
+
+    // --- scripted failures (cases 6-15) ---
+
+    fn failing(failure: ScriptedFailure) -> FakeInferenceEngine {
+        FakeInferenceEngine::new().with_failure(failure)
+    }
+
+    #[test]
+    fn scripted_failures_classify_to_the_stable_error_codes() {
+        use crate::error::InferenceErrorClass;
+        let cases: [(ScriptedFailure, &str, InferenceErrorClass, bool); 10] = [
+            (
+                ScriptedFailure::MissingModel,
+                "inference.missing_model",
+                InferenceErrorClass::NotFound,
+                false,
+            ),
+            (
+                ScriptedFailure::InvalidRequest,
+                "inference.invalid_request",
+                InferenceErrorClass::InvalidInput,
+                false,
+            ),
+            (
+                ScriptedFailure::UnsupportedParameter,
+                "inference.unsupported_parameter",
+                InferenceErrorClass::InvalidInput,
+                false,
+            ),
+            (
+                ScriptedFailure::UnsupportedOperation,
+                "inference.unsupported_operation",
+                InferenceErrorClass::Unavailable,
+                false,
+            ),
+            (
+                ScriptedFailure::MissingApiKey,
+                "inference.missing_api_key",
+                InferenceErrorClass::Unavailable,
+                false,
+            ),
+            (
+                ScriptedFailure::AuthFailure,
+                "inference.provider_auth_failed",
+                InferenceErrorClass::Unavailable,
+                false,
+            ),
+            (
+                ScriptedFailure::RateLimit,
+                "inference.provider_rate_limited",
+                InferenceErrorClass::Retryable,
+                true,
+            ),
+            (
+                ScriptedFailure::Timeout,
+                "inference.provider_timeout",
+                InferenceErrorClass::Retryable,
+                true,
+            ),
+            (
+                ScriptedFailure::ProviderUnavailable,
+                "inference.provider_unavailable",
+                InferenceErrorClass::Unavailable,
+                true,
+            ),
+            (
+                ScriptedFailure::MalformedResponse,
+                "inference.provider_malformed_response",
+                InferenceErrorClass::Corruption,
+                false,
+            ),
+        ];
+        for (failure, code, class, retryable) in cases {
+            let mut engine = failing(failure);
+            let error = engine
+                .generate(&GenerateRequest::default())
+                .expect_err("scripted failure must fail generation");
+            assert_eq!(error.code(), code, "{failure:?}: {error:?}");
+            assert_eq!(error.class(), class, "{failure:?}: {error:?}");
+            assert_eq!(error.retryable(), retryable, "{failure:?}: {error:?}");
+            // The same script gates every capability, not just generation.
+            failing(failure)
+                .embed("x")
+                .expect_err("scripted failure must fail embedding");
+            failing(failure)
+                .rank("q", &["p"])
+                .expect_err("scripted failure must fail ranking");
+        }
+    }
+
+    // --- partial failures (cases 16-17) ---
+
+    #[test]
+    fn partial_embedding_failure_names_the_failed_item() {
+        let engine = FakeInferenceEngine::new().with_failing_embed_items([1]);
+        assert!(engine.embed("solo").is_ok(), "single-item path unaffected");
+        let error = engine
+            .embed_batch(&["ok", "bad", "ok"])
+            .expect_err("scripted item failure");
+        assert!(
+            error.to_string().contains("item 1 of 3"),
+            "the failed item must be identifiable: {error}"
+        );
+    }
+
+    #[test]
+    fn partial_ranking_failure_names_the_failed_item() {
+        let engine = FakeInferenceEngine::new().with_failing_rank_items([0]);
+        let error = engine
+            .rank("q", &["bad", "ok"])
+            .expect_err("scripted item failure");
+        assert!(
+            error.to_string().contains("item 0 of 2"),
+            "the failed item must be identifiable: {error}"
+        );
+    }
+
+    // --- redaction (case 18) ---
+
+    #[test]
+    fn scripted_auth_failure_redacts_the_secret() {
+        let mut engine = failing(ScriptedFailure::AuthFailure);
+        let error = engine
+            .generate(&GenerateRequest::default())
+            .expect_err("auth failure");
+        let display = error.to_string();
+        let debug = format!("{error:?}");
+        for rendered in [&display, &debug] {
+            assert!(
+                !rendered.contains("sk-fake-1234567890"),
+                "the raw secret must never render: {rendered}"
+            );
+        }
+    }
+
+    // --- capability and health surface ---
+
+    #[test]
+    fn capability_flags_and_health_are_reported() {
+        let engine = FakeInferenceEngine::new().with_health(false);
+        assert!(engine.supports_generate() && engine.supports_embed() && engine.supports_rank());
+        assert_eq!(engine.embedding_dim(), 8);
+        assert!(!engine.is_healthy());
+    }
+}
