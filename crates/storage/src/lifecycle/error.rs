@@ -426,20 +426,26 @@ impl LifecycleError {
             Self::FlushPublicationFailed { .. } => {
                 "failed_precondition.lifecycle.flush_publication"
             }
-            Self::FlushPublicationUncertain { .. } => "unknown.lifecycle.flush_publication",
-            Self::FlushPublicationOrphaned { .. } => "unknown.lifecycle.flush_publication_orphan",
+            Self::FlushPublicationUncertain { .. } => {
+                "ambiguous_commit.lifecycle.flush_publication"
+            }
+            Self::FlushPublicationOrphaned { .. } => {
+                "ambiguous_commit.lifecycle.flush_publication_orphan"
+            }
             Self::RewritePublicationFailed { .. } => {
                 "failed_precondition.lifecycle.rewrite_publication"
             }
-            Self::RewritePublicationUncertain { .. } => "unknown.lifecycle.rewrite_publication",
+            Self::RewritePublicationUncertain { .. } => {
+                "ambiguous_commit.lifecycle.rewrite_publication"
+            }
             Self::RewritePublicationOrphaned { .. } => {
-                "unknown.lifecycle.rewrite_publication_orphan"
+                "ambiguous_commit.lifecycle.rewrite_publication_orphan"
             }
             Self::TableManifestPublicationFailed { .. } => {
                 "failed_precondition.lifecycle.table_manifest_publication"
             }
             Self::TableManifestPublicationUncertain { .. } => {
-                "unknown.lifecycle.table_manifest_publication"
+                "ambiguous_commit.lifecycle.table_manifest_publication"
             }
             Self::TableManifestRecoveryMismatch { .. } => "corruption.lifecycle.table_manifest",
             Self::TableManifestBranchInstallFailed { .. } => {
@@ -454,7 +460,9 @@ impl LifecycleError {
             Self::CheckpointPublicationFailed { .. } => {
                 "failed_precondition.lifecycle.checkpoint_publication"
             }
-            Self::CheckpointSnapshotOrphaned { .. } => "unknown.lifecycle.checkpoint_snapshot",
+            Self::CheckpointSnapshotOrphaned { .. } => {
+                "ambiguous_commit.lifecycle.checkpoint_snapshot"
+            }
             Self::RetentionBlocked { .. } => "failed_precondition.lifecycle.retention",
             Self::QuarantineProofBlocked { .. } => "failed_precondition.lifecycle.quarantine",
             Self::QuarantineInventoryMismatch { .. } => "corruption.lifecycle.quarantine",
@@ -462,7 +470,7 @@ impl LifecycleError {
                 "failed_precondition.lifecycle.quarantine_publication"
             }
             Self::QuarantinePublicationUncertain { .. } => {
-                "unknown.lifecycle.quarantine_publication"
+                "ambiguous_commit.lifecycle.quarantine_publication"
             }
             Self::PurgeProofBlocked { .. } => "failed_precondition.lifecycle.purge",
             Self::QuarantineRepairInconclusive { .. } => {
@@ -472,7 +480,7 @@ impl LifecycleError {
                 "failed_precondition.lifecycle.wal_retention"
             }
             Self::CloseFailed { .. } => "failed_precondition.lifecycle.close",
-            Self::CloseTimeout { .. } => "deadline_exceeded.lifecycle.close",
+            Self::CloseTimeout { .. } => "failed_precondition.lifecycle.close_timeout",
             Self::TimelineRecoveryMismatch { .. } => "corruption.lifecycle.timeline",
             Self::WalTailRepairRejected { .. } => "failed_precondition.lifecycle.wal_tail_repair",
             Self::RecoveryVisibilityFailed { .. } => {
@@ -1462,7 +1470,7 @@ mod tests {
                     reason: "r",
                     source: None,
                 },
-                "unknown.lifecycle.flush_publication",
+                "ambiguous_commit.lifecycle.flush_publication",
             ),
             (
                 LifecycleError::FlushPublicationOrphaned {
@@ -1470,7 +1478,7 @@ mod tests {
                     reason: "r",
                     source: None,
                 },
-                "unknown.lifecycle.flush_publication_orphan",
+                "ambiguous_commit.lifecycle.flush_publication_orphan",
             ),
             (
                 LifecycleError::RewritePublicationFailed {
@@ -1485,7 +1493,7 @@ mod tests {
                     reason: "r",
                     source: None,
                 },
-                "unknown.lifecycle.rewrite_publication",
+                "ambiguous_commit.lifecycle.rewrite_publication",
             ),
             (
                 LifecycleError::RewritePublicationOrphaned {
@@ -1493,7 +1501,7 @@ mod tests {
                     reason: "r",
                     source: None,
                 },
-                "unknown.lifecycle.rewrite_publication_orphan",
+                "ambiguous_commit.lifecycle.rewrite_publication_orphan",
             ),
             (
                 LifecycleError::TableManifestPublicationFailed {
@@ -1507,7 +1515,7 @@ mod tests {
                     reason: "r",
                     source: None,
                 },
-                "unknown.lifecycle.table_manifest_publication",
+                "ambiguous_commit.lifecycle.table_manifest_publication",
             ),
             (
                 LifecycleError::TableManifestRecoveryMismatch {
@@ -1542,7 +1550,7 @@ mod tests {
                     object: None,
                     reason: "r",
                 },
-                "unknown.lifecycle.checkpoint_snapshot",
+                "ambiguous_commit.lifecycle.checkpoint_snapshot",
             ),
             (
                 LifecycleError::RetentionBlocked { reason: "r" },
@@ -1571,7 +1579,7 @@ mod tests {
                     reason: "r",
                     source: None,
                 },
-                "unknown.lifecycle.quarantine_publication",
+                "ambiguous_commit.lifecycle.quarantine_publication",
             ),
             (
                 LifecycleError::PurgeProofBlocked { reason: "r" },
@@ -1597,7 +1605,7 @@ mod tests {
                     phase: ClosePhase::DrainMaintenance,
                     reason: "r",
                 },
-                "deadline_exceeded.lifecycle.close",
+                "failed_precondition.lifecycle.close_timeout",
             ),
             (
                 LifecycleError::TimelineRecoveryMismatch { reason: "r" },

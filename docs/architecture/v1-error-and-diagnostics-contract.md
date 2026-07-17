@@ -245,6 +245,7 @@ Initial V1 classes:
 | `unavailable` | A required local service, backend, provider, lock, IPC endpoint, or model is temporarily unavailable. |
 | `io` | A storage or filesystem IO operation failed without stronger semantic classification. |
 | `corruption` | Durable state, metadata, WAL, table, snapshot, or provider output violates integrity expectations. |
+| `data_loss` | Durable engine state that should exist cannot be reconstructed — a stored record failed to decode or a required artifact is gone. Distinct from `corruption` (integrity violation detected) in that the data is unrecoverable, not merely inconsistent. |
 | `serialization` | Encoding, decoding, schema, format, or protocol conversion failed. |
 | `internal` | A Strata invariant failed or unreachable state was reached. |
 
@@ -276,21 +277,20 @@ Code format:
 Examples:
 
 ```text
-not_found.key
-not_found.branch
-already_exists.branch
-invalid_argument.key
-failed_precondition.read_only
-conflict.branch_merge
-ambiguous_commit.wal_publish
-history_unavailable.version
-unsupported.backend_capability
-resource_exhausted.cache_capacity
-unavailable.ipc_socket
-io.backend_read
-corruption.wal_record
-serialization.command_payload
-internal.engine_invariant
+not_found.engine.branch
+not_found.engine.vector_collection
+already_exists.engine.branch
+invalid_argument.engine.kv_key
+failed_precondition.engine.runtime_closed
+ambiguous_commit.lifecycle.flush_publication
+history_unavailable.storage_api.retained
+unsupported.storage_api.capability
+resource_exhausted.storage_api.memory_budget
+unavailable.engine.persistence
+io.lifecycle.backend
+corruption.lifecycle.recovery
+serialization.lifecycle.format
+internal.storage_api.commit
 ```
 
 Rules:
@@ -441,103 +441,30 @@ not how internal machinery is built.
 
 ## Code Families
 
-The first V1 code registry should include these families.
+The concrete, authoritative registry of public error codes is
+**`crates/executor/idl/v1/errors.yaml`** — the generated/authored list of every
+`<class>.<area>.<detail>` code surfaced to SDK docs, enforced by the IDL drift
+guard (`uncovered-error-codes.yaml`: every registered code is declared in
+`errors.yaml` or explicitly listed). This document owns the error *classes*
+(above) and the *format*; it does not maintain a second, hand-written code list.
 
-### Product And Data Access
+> Historical note: earlier drafts of this document carried a hand-authored
+> "starter set" of two-part codes (`not_found.key`, `conflict.branch_merge`, …).
+> That set never matched emitted code — the real codes are three-part
+> (`not_found.engine.branch`) and live in `errors.yaml`. It has been removed
+> (TCP3.5a, issues #2633/#2634) rather than rewritten, because a parallel
+> hand-maintained registry re-drifts the moment code changes. Codes that the
+> starter set listed but nothing emits (`conflict.branch_merge`,
+> `conflict.branch_revert`, `conflict.branch_cherry_pick`,
+> `failed_precondition.retention_window`) are not part of V1 — branch merge is
+> absent in V1 (CLAUDE.md rule 20), and event retention windows are
+> unimplemented.
 
-| Code family | Class |
-| --- | --- |
-| `not_found.key` | `not_found` |
-| `not_found.branch` | `not_found` |
-| `not_found.document` | `not_found` |
-| `not_found.collection` | `not_found` |
-| `not_found.stream` | `not_found` |
-| `not_found.graph` | `not_found` |
-| `not_found.vector_index` | `not_found` |
-| `already_exists.branch` | `already_exists` |
-| `already_exists.collection` | `already_exists` |
-| `invalid_argument.key` | `invalid_argument` |
-| `invalid_argument.path` | `invalid_argument` |
-| `invalid_argument.branch_name` | `invalid_argument` |
-| `failed_precondition.read_only` | `failed_precondition` |
-| `failed_precondition.branch_closed` | `failed_precondition` |
-| `history_unavailable.version` | `history_unavailable` |
-| `history_unavailable.timestamp` | `history_unavailable` |
-
-### Branching And Time Travel
-
-| Code family | Class |
-| --- | --- |
-| `conflict.version` | `conflict` |
-| `conflict.branch_merge` | `conflict` |
-| `conflict.branch_revert` | `conflict` |
-| `conflict.branch_cherry_pick` | `conflict` |
-| `failed_precondition.branch_deleted` | `failed_precondition` |
-| `failed_precondition.branch_archived` | `failed_precondition` |
-| `failed_precondition.retention_window` | `failed_precondition` |
-
-### Storage And Durability
-
-| Code family | Class |
-| --- | --- |
-| `unsupported.storage_mode` | `unsupported` |
-| `unsupported.backend_capability` | `unsupported` |
-| `unsupported.format_version` | `unsupported` |
-| `unavailable.writer_lock` | `unavailable` |
-| `unavailable.backend` | `unavailable` |
-| `access_denied.backend` | `access_denied` |
-| `io.backend_read` | `io` |
-| `io.backend_write` | `io` |
-| `io.backend_sync` | `io` |
-| `io.backend_delete` | `io` |
-| `resource_exhausted.disk` | `resource_exhausted` |
-| `resource_exhausted.memory` | `resource_exhausted` |
-| `resource_exhausted.object_size` | `resource_exhausted` |
-| `ambiguous_commit.wal_publish` | `ambiguous_commit` |
-| `ambiguous_commit.manifest_publish` | `ambiguous_commit` |
-| `ambiguous_commit.ipc_disconnect` | `ambiguous_commit` |
-| `corruption.manifest` | `corruption` |
-| `corruption.wal_record` | `corruption` |
-| `corruption.table_block` | `corruption` |
-| `corruption.snapshot` | `corruption` |
-| `corruption.timeline` | `corruption` |
-
-### Search, Graph, Vector, And Intelligence
-
-| Code family | Class |
-| --- | --- |
-| `invalid_argument.vector_dimension` | `invalid_argument` |
-| `failed_precondition.index_not_ready` | `failed_precondition` |
-| `failed_precondition.embedding_not_available` | `failed_precondition` |
-| `failed_precondition.embedding_model_mismatch` | `failed_precondition` |
-| `failed_precondition.network_disabled` | `failed_precondition` |
-| `unsupported.search_stage` | `unsupported` |
-| `unsupported.graph_algorithm` | `unsupported` |
-| `unavailable.model_provider` | `unavailable` |
-| `unavailable.model` | `unavailable` |
-| `serialization.provider_response` | `serialization` |
-
-### IPC, Command, And Protocol
-
-| Code family | Class |
-| --- | --- |
-| `invalid_argument.command` | `invalid_argument` |
-| `serialization.command_payload` | `serialization` |
-| `serialization.ipc_protocol` | `serialization` |
-| `unavailable.ipc_socket` | `unavailable` |
-| `failed_precondition.ipc_not_running` | `failed_precondition` |
-| `unsupported.command_version` | `unsupported` |
-
-### Internal
-
-| Code family | Class |
-| --- | --- |
-| `internal.engine_invariant` | `internal` |
-| `internal.storage_invariant` | `internal` |
-| `internal.command_invariant` | `internal` |
-
-`internal.*` codes are not a convenience category. They mean Strata found a bug
-or impossible state.
+Every emitted code's `<class>` segment is one of the error classes declared
+above. This is mechanically enforced by the engine class-parity guard
+(`crates/storage/tests/error_contract_class_parity_guard.rs`), which fails if a
+code uses a class this document does not declare, or if this document declares a
+class no code uses.
 
 ## Mapping Rules
 

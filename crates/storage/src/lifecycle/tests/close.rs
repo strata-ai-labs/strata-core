@@ -152,7 +152,7 @@ fn close_error_codes_are_stable() {
             reason: "timeout",
         }
         .code(),
-        "deadline_exceeded.lifecycle.close"
+        "failed_precondition.lifecycle.close_timeout"
     );
 }
 

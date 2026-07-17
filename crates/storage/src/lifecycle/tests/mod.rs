@@ -795,7 +795,7 @@ fn lifecycle_error_maintenance_codes_are_typed() {
                 reason: "table object published but not installed",
                 source: None,
             },
-            "unknown.lifecycle.flush_publication_orphan",
+            "ambiguous_commit.lifecycle.flush_publication_orphan",
         ),
         (
             LifecycleError::CheckpointPublicationFailed {

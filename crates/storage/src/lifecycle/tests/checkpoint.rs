@@ -468,7 +468,7 @@ fn checkpoint_manifest_publish_failure_reports_partial_snapshot() {
     assert!(outcome.snapshot_object().is_some());
     assert_eq!(
         outcome.failure().expect("orphan fact").code(),
-        "unknown.lifecycle.checkpoint_snapshot"
+        "ambiguous_commit.lifecycle.checkpoint_snapshot"
     );
     assert_eq!(
         outcome
@@ -476,7 +476,7 @@ fn checkpoint_manifest_publish_failure_reports_partial_snapshot() {
             .source_error()
             .expect("source error")
             .code(),
-        "unknown.lifecycle.checkpoint_snapshot"
+        "ambiguous_commit.lifecycle.checkpoint_snapshot"
     );
     assert!(outcome.recovery_health().is_some());
     let manifest = DatabaseManifestService::new(backend)
