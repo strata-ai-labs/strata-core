@@ -339,3 +339,107 @@ fn info_and_health_emit_valid_json_for_a_durable_database() {
         });
     }
 }
+
+// --- cross-process writer lock ----------------------------------------------
+
+/// The durable writer lock is exclusive across processes, refusals are typed
+/// and retryable, and an OS-level kill of the holder releases the lock.
+#[test]
+fn writer_lock_is_exclusive_across_processes_and_releases_on_kill() {
+    use std::io::{BufRead, Write};
+
+    let dir = tempfile::tempdir().expect("tmp");
+    let db = db_arg(dir.path());
+    // Clean first session so the store exists durably (see #2618 for the
+    // killed-first-session case, parked below).
+    assert_ok(&strata(&["--db", &db, "kv", "put", "seeded", "1"]), "seed");
+
+    // Hold the database from a REPL child whose stdin never closes, and
+    // prove it owns the lock before contending: command a write through its
+    // stdin and wait for the echoed response on its stdout. (A silent child
+    // may not have opened the database yet, and its single open attempt can
+    // lose to the contender's rapid open/close cycles — the first version
+    // of this test flaked exactly that way.)
+    let mut holder = Command::new(env!("CARGO_BIN_EXE_strata"))
+        .args(["--db", &db])
+        .env_remove("STRATA_DB")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn holder");
+    holder
+        .stdin
+        .as_mut()
+        .expect("holder stdin")
+        .write_all(b"kv put holder 1\n")
+        .expect("command the holder");
+    let mut holder_stdout = std::io::BufReader::new(holder.stdout.take().expect("holder stdout"));
+    let mut line = String::new();
+    holder_stdout
+        .read_line(&mut line)
+        .expect("holder responds once it holds the database");
+    assert!(
+        line.contains("holder"),
+        "holder's first response should echo its write: {line:?}"
+    );
+
+    let refused = strata(&["--db", &db, "kv", "put", "contender", "1"]);
+    assert!(
+        !refused.status.success(),
+        "contender must be refused while the holder owns the lock"
+    );
+    assert!(
+        stderr(&refused).contains("unavailable.engine.persistence"),
+        "cross-process contention must surface the typed persistence refusal: {}",
+        stderr(&refused)
+    );
+
+    // SIGKILL the holder: the OS releases the lock; a fresh process wins.
+    holder.kill().expect("kill holder");
+    let _ = holder.wait();
+    let mut recovered = None;
+    for _ in 0..200 {
+        let retry = strata(&["--db", &db, "kv", "put", "after-kill", "2"]);
+        if retry.status.success() {
+            recovered = Some(retry);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        recovered.is_some(),
+        "the writer lock must release when the holding process dies"
+    );
+    let read = strata(&["--db", &db, "kv", "get", "seeded"]);
+    assert_ok(&read, "post-kill read");
+    assert_eq!(stdout(&read).trim(), "1", "pre-kill durable data survives");
+}
+
+/// Regression for #2618 (fixed by the creation durability barrier): killing
+/// the FIRST session on a fresh store leaves a usable database, not a
+/// permanent `data_loss.engine.control_plane_missing` brick.
+#[test]
+fn sigkill_during_first_session_leaves_a_usable_database() {
+    let dir = tempfile::tempdir().expect("tmp");
+    let db = db_arg(dir.path());
+    let mut first_session = Command::new(env!("CARGO_BIN_EXE_strata"))
+        .args(["--db", &db])
+        .env_remove("STRATA_DB")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn first session");
+    // Give creation time to begin, then kill without any clean close.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    first_session.kill().expect("kill first session");
+    let _ = first_session.wait();
+
+    let put = strata(&["--db", &db, "kv", "put", "probe", "1"]);
+    assert!(
+        put.status.success(),
+        "a store whose first session was killed must remain usable, got:\n{}",
+        stderr(&put)
+    );
+}
