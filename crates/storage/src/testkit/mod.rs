@@ -59,6 +59,12 @@ mod recovery_oracle;
     feature = "localfs",
     not(target_arch = "wasm32")
 ))]
+mod recovery_read_faults;
+#[cfg(all(
+    any(test, feature = "fault-injection"),
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
 mod reordering_backend;
 mod rng;
 mod service_fuzz;
@@ -176,6 +182,14 @@ pub use process_crash::ProcessCrashOutcome;
 pub use quarantine_fuzz::{run_quarantine_service_script, QuarantineServiceFuzzOutcome};
 #[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
 pub use recovery_oracle::{run_recovery_oracle_harness, RecoveryOracleOutcome};
+#[cfg(all(
+    any(test, feature = "fault-injection"),
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
+pub use recovery_read_faults::{
+    run_recovery_read_fault_harness, run_recovery_read_fault_soak, RecoveryReadFaultOutcome,
+};
 #[cfg(all(
     any(test, feature = "fault-injection"),
     feature = "localfs",

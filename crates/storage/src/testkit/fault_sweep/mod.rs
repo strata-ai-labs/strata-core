@@ -45,8 +45,9 @@ const SWEEP_OP_COUNT: usize = 4;
 /// `write_object`; only WAL sidecars use it) and `ConditionalCreate/Update`
 /// (reserved for post-V1 object-durable/distributed backends — V1 publishes via
 /// `publish_object` and these return `UnsupportedOperation`). Read / list /
-/// metadata faults are query-time, not data-loss, and are exercised incidentally
-/// by the open-recovery path.
+/// metadata faults are query-time, not data-loss on the *write* path; where
+/// they DO matter — the open-recovery scan — they have their own dedicated
+/// sweep in `recovery_read_faults` (TCP3.3b).
 const SWEEP_OPS: [BackendOperation; 4] = [
     BackendOperation::AppendObject,
     BackendOperation::SyncObject,

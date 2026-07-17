@@ -153,6 +153,7 @@ jobs:
           STRATA_STORAGE_FAULT_CASES: "10000"
         run: |
           cargo test --locked -p strata-storage --features fault-injection --test fault_sweep -- --ignored
+          cargo test --locked -p strata-storage --features fault-injection --test recovery_read_faults -- --ignored
           cargo test --locked -p strata-storage --features fault-injection --test fs_persistence_models -- --ignored
       - name: Deterministic-simulation soaks
         # No env override: simulation cases are ~10x costlier per case, and
