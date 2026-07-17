@@ -114,28 +114,33 @@ branch + truncation direction; doc-table↔`public_api.txt` parity guard;
 `trybuild` compile-fail locking "no `BranchId::default()`". Size: M total.
 
 ### TCP3.2-3.4 — Storage
-- **TCP3.2 (L): inner-error assertability.** Expose a stable `kind()`/code
-  discriminant for `CommitError`/`BranchError`/`TableError` through the L9
-  boundary; per-variant boundary-mapping conformance tests; variant-
-  reachability guard (constructed in src + referenced in test, allowlisted
-  otherwise); delete-or-cover the ~13 never-referenced `LifecycleError`
-  variants. This is the storage half of the systemic error hole.
+- **TCP3.2 (L): inner-error assertability** (#2632). Expose a stable
+  `kind()`/code discriminant for `CommitError`/`BranchError`/`TableError`
+  through the L9 boundary; per-variant boundary-mapping conformance tests;
+  variant-reachability guard (constructed in src + referenced in test,
+  allowlisted otherwise). This is the storage half of the systemic error
+  hole. **Correction (2026-07-17):** the deep-dive's "~13 never-referenced
+  `LifecycleError` variants" did NOT survive verification — most have real
+  construct/match sites, and the two that looked dead (`ClosePhase`,
+  `StorageBudgetPool`) are *field types*, not variant names. No dead-variant
+  cleanup is in scope; the original grep conflated types with variants.
 - **TCP3.3 (M): decode + fault edges.** L2 object-name/ID codec fuzz targets
   (the one decoder layer with no fuzzer — the layer-fuzz presence guard
   ships here and fails until it's fixed); L1 read/list/metadata fault
   positions in the recovery-scoped fault sweep; L9 negative paths
   (timeline lookups, immutable-source scan, maintenance-drain error arms);
   L9 public-method test-presence guard.
-- **TCP3.4 (M-L): concurrency.** Lock-acquisition-order debug assertion +
-  driving test (the L7 mandate); threaded L6 families #23/#24 (fork/
+- **TCP3.4 (M-L): concurrency** (#2636). Lock-acquisition-order debug
+  assertion + driving test (the L7 mandate; the contract also cites a
+  `src/txn/lock_ordering.rs` that no longer exists); threaded L6 families #23/#24 (fork/
   materialize/clear vs writes; pinned views under flush/compaction/clear).
   Per D3: the deterministic multi-actor DST extension is deferred with a
   register entry (re-entry: a concurrency bug these lanes fail to
   reproduce); loom was already rejected for V1 in Phase 2.
 
 ### TCP3.5-3.7 — Engine
-- **TCP3.5 (M): error registry.** Engine error-code coverage guard (ratchet
-  55/160); per D2, rewrite the contract doc's `<class>.<area>` registry to
+- **TCP3.5 (M): error registry** (#2633). Engine error-code coverage guard
+  (ratchet 55/160); per D2, rewrite the contract doc's `<class>.<area>` registry to
   the emitted 3-part `<class>.engine.<detail>` reality and add the
   doc↔code parity guard; then the testable-now
   refusal batches: graph (~22 codes), vector (~15), json (~10), event (~4).
@@ -144,13 +149,13 @@ branch + truncation direction; doc-table↔`public_api.txt` parity guard;
   today no test injects a fault mid-capability-operation); generalize the
   temporal timeline property oracle beyond KV (json/graph/event);
   cross-branch rejection extended to vector/json references.
-- **TCP3.7 (S): contract truth-ups.** Per D1: amend rule 20 to "merge
+- **TCP3.7 (S): contract truth-ups** (#2635, #2634, #2638). Per D1: amend rule 20 to "merge
   absent in V1" and add the absence guard (no merge/cherry-pick/revert
   entrypoint exists; the guard fails when one appears without its
   strict-refusal tests). Per D6: delete the dead `retention_window`
   contract code (event retention is unimplemented) and the never-emitted
   `conflict.branch_merge/_cherry_pick/_revert` registry rows.
-- **TCP3.15 (L, scheduled after TCP3.8): corruption injection.** Per D5:
+- **TCP3.15 (L, scheduled after TCP3.8): corruption injection** (#2637). Per D5:
   add a corruption fault kind to the persistence testkit (StorageFaultKind
   has none today), then assert the engine `data_loss.*` corruption codes
   (37) class-by-class. Runs last so the cheap wins land first, but it is
@@ -194,7 +199,7 @@ branch + truncation direction; doc-table↔`public_api.txt` parity guard;
   `wire.rs` status→error mapping via fake responder; `runtime.rs`
   dispatch/cache/unload via `FakeInferenceEngine`; offline download
   resume/partial-file; BYOK precedence end-to-end.
-- **TCP3.13 (M) hub:** fault-injecting `HubTransport` fake —
+- **TCP3.13 (M) hub** (#2631, #2630): fault-injecting `HubTransport` fake —
   401/403 auth, truncated/interrupted object with resume, corrupt manifest
   hash mid-clone, retry exhaustion (`clone_faults.rs`); negative cases for
   `default_branch`/`resolve_ref`. (Watch: `CloneError::Transport` is a
@@ -214,6 +219,26 @@ branch + truncation direction; doc-table↔`public_api.txt` parity guard;
 | D4 | CLI family coverage vehicle | **(a)** port shell corpus scenarios to Rust tests in the `cli_execution.rs` style (TCP3.11); scripts stay as authoring reference |
 | D5 | Engine `data_loss.*` corruption injection (37 codes) | **(a)** build the corruption fault kind, scheduled as the final engine slice **TCP3.15** — corruption detectors must not exit V1 unasserted |
 | D6 | Dead code found by the dive (13 `LifecycleError` variants, `retention_window`, stale `cli-command-coverage.md`) | **delete** in the owning slice (charter Prefer: deletion over documentation) |
+
+## 5b. Production issues opened by the gap analysis (2026-07-17)
+
+The dive found production changes, not only test gaps. Each was verified
+before filing (two candidate findings were falsified and are NOT filed —
+see the TCP3.2 correction above, and note that CLI read verbs creating a
+database at a *named* path is intended behaviour per
+`docs/design/first-run-experience.md`, not a bug).
+
+| Issue | What | Lands with |
+|---|---|---|
+| #2630 | Hub fabricates `not_found.engine.database` (a code the engine never emits) and creates the DB before reporting it missing | TCP3.13 |
+| #2631 | `CloneError::Transport` stringly catch-all — auth/not-found/network indistinguishable, blocks rule-29 assertions + retry decisions | TCP3.13 |
+| #2632 | Storage inner error enums have no assertable discriminant at the L9 boundary (~85 variants) | TCP3.2 |
+| #2633 | Error contract registry uses 2-part codes; all code emits 3-part | TCP3.5 |
+| #2634 | Contract declares four codes nothing emits (retention_window, branch_merge/_revert/_cherry_pick) | TCP3.7 |
+| #2635 | Rule 20 promises a merge strict-refusal surface that does not exist (no entrypoint, no test, no absence guard) | TCP3.7 |
+| #2636 | L7 contract cites a non-existent file; commit lock order is comment-only, unenforced | TCP3.4 |
+| #2637 | 37 engine `data_loss.*` corruption detectors unreachable — no malformed-record injection | TCP3.15 |
+| #2638 | Scope decision: event retention windows have no surface but the contract declares a refusal | TCP3.7 |
 
 ## 6. Exit criteria for Phase 3
 
