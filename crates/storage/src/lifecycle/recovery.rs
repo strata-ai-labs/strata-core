@@ -138,9 +138,12 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
         //
         // MULTI-BRANCH GAP (guarded upstream): `table_manifest_stage` is the SEEDED branch's only
         // and `flushed_through` is global, so a non-seeded branch whose table manifest is lost is
-        // not checked here. The checkpoint is prevented from recording such a snapshot: it defers
-        // while any non-seeded branch holds a durable base (`non_seeded_branch_has_durable_base`),
-        // so those rows stay in the WAL and a full replay recovers them. The per-branch detection
+        // not checked here. The checkpoint is prevented from recording such a snapshot: the
+        // synchronous and background paths defer while any non-seeded branch holds a durable base
+        // (`non_seeded_branch_has_durable_base`), and the close-drain path defers whenever any
+        // non-seeded branch exists at all (its collector is seeded-only, so a published snapshot
+        // would also drop non-seeded WAL rows outright — see #2624), so those rows stay in the
+        // WAL and a full replay recovers them. The per-branch detection
         // that would let the checkpoint run (lifting the guard) is the deferred fix. Guard test:
         // `multi_branch_checkpoint_defers_so_lost_non_seeded_manifest_recovers_cleanly`; fix plan:
         // multi-branch-orphaned-delta-recovery-gap.md.

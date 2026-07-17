@@ -107,11 +107,27 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             .lookup(branch_id)
             .map_err(commit_error)?
             .generation();
+        // A close-drained checkpoint publishes through the single-branch
+        // collector below, so it must defer whenever any branch besides the
+        // seeded one exists: a seeded-only snapshot advances the WAL-replay
+        // floor (its watermark is the global visible version) past non-seeded
+        // rows it does not carry — silent loss on the next open, and the exact
+        // snapshot the multi-branch guard (`non_seeded_branch_has_durable_base`)
+        // exists to prevent. Deferring is always safe at close: the rows stay
+        // in the WAL and the next open replays them. Lifted together with the
+        // guard by the per-branch fix tracked in
+        // multi-branch-orphaned-delta-recovery-gap.md.
+        let non_seeded_branches_present = self
+            .branch_catalog
+            .list_branches(false)
+            .iter()
+            .any(|descriptor| descriptor.branch_id() != branch_id);
         let mut runner = DurableCloseMaintenanceRunner {
             branch: self.branch_catalog.branch_state_mut(
                 branch_id,
                 crate::commit::CommitBranchGenerationGuard::exact(generation),
             )?,
+            non_seeded_branches_present,
             services: &self.services,
             guard_set: &self.guard_set,
             visible: &self.visible,
@@ -283,6 +299,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
 
 struct DurableCloseMaintenanceRunner<'a, 'b> {
     branch: &'a mut BranchLocalState,
+    /// Branches other than the seeded one exist: the close-drained checkpoint
+    /// must defer (see the construction site in `finish_close`).
+    non_seeded_branches_present: bool,
     services: &'a LifecycleDurableLocalServices<'b>,
     guard_set: &'a CommitBranchGuardSet,
     visible: &'a VisibleVersionTracker,
@@ -373,6 +392,16 @@ impl MaintenanceTaskRunner for DurableCloseMaintenanceRunner<'_, '_> {
 
 impl DurableCloseMaintenanceRunner<'_, '_> {
     fn run_checkpoint(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        if self.non_seeded_branches_present {
+            return Ok(MaintenanceOutcome::new(
+                MaintenanceTaskKind::Checkpoint,
+                MaintenanceOutcomeStatus::Deferred,
+            )
+            .with_reason(
+                "checkpoint deferred during close: non-seeded branches present, and a \
+                 seeded-only snapshot would advance the replay floor past their rows",
+            ));
+        }
         let request = checkpoint_request_from_maintenance_task_with_snapshot_id(
             task,
             self.branch.branch_id(),
