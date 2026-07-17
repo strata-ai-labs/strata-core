@@ -131,7 +131,6 @@ const ALLOWED_UNASSERTED: &[(&str, &str)] = &[
     ("failed_precondition.lifecycle.timestamp_history", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
     ("internal.lifecycle.layout", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
     ("internal.storage_api.backend", "L9 boundary code; asserted by TCP3.3 L9 negative paths"),
-    ("internal.storage_api.commit", "L9 boundary code; asserted by TCP3.3 L9 negative paths"),
     ("internal.storage_api.format", "L9 boundary code; asserted by TCP3.3 L9 negative paths"),
     ("internal.storage_api.layout", "L9 boundary code; asserted by TCP3.3 L9 negative paths"),
     ("internal.storage_api.table", "L9 boundary code; asserted by TCP3.3 L9 negative paths"),

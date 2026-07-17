@@ -129,6 +129,66 @@ pub(crate) enum CommitLowerLayer {
     WalService,
 }
 
+impl CommitLowerLayer {
+    /// The failing sub-layer's code, used when a commit wraps an error from
+    /// below without a discriminant of its own.
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::BranchRuntime => "internal.commit.branch_runtime",
+            Self::StorageBudget => "internal.commit.storage_budget",
+            Self::WalFormat => "internal.commit.wal_format",
+            Self::WalService => "internal.commit.wal_service",
+        }
+    }
+}
+
+impl CommitRuntimeError {
+    /// Stable code for this failure (TCP3.2b, #2632).
+    ///
+    /// Carried across the storage API boundary as its `inner_code()` so a
+    /// test can tell two commit failures apart without reading display text
+    /// (Hard Rule 29). Classes agree with how the API maps each variant, so
+    /// the code never contradicts the class the caller eventually sees.
+    ///
+    /// The match is exhaustive with no catch-all: a new variant is a compile
+    /// error until it is given a code — the same lever
+    /// `StorageApiError::remediation()` uses.
+    pub(crate) const fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidConfig { .. } => "invalid_argument.commit.config",
+            Self::InvalidCommitState { .. } => "failed_precondition.commit.state",
+            Self::InvalidCommitPhase { .. } => "failed_precondition.commit.phase",
+            Self::InvalidVisibilityFacts { .. } => "failed_precondition.commit.visibility_facts",
+            Self::InvalidBatch { .. } => "invalid_argument.commit.batch",
+            Self::InvalidMutation { .. } => "invalid_argument.commit.mutation",
+            Self::InvalidValidationFacts { .. } => "invalid_argument.commit.validation_facts",
+            Self::InvalidTimelineFact { .. } => "failed_precondition.commit.timeline_fact",
+            Self::TimelineConflict { .. } => "conflict.commit.timeline",
+            Self::DuplicateMutationKey { .. } => "invalid_argument.commit.duplicate_mutation_key",
+            Self::BranchMismatch { .. } => "invalid_argument.commit.branch_mismatch",
+            Self::BranchAlreadyExists { .. } => "already_exists.commit.branch",
+            Self::BranchNotFound { .. } => "not_found.commit.branch",
+            Self::BranchNotWritable { .. } => "failed_precondition.commit.branch_not_writable",
+            Self::BranchGenerationMismatch { .. } => "failed_precondition.commit.branch_generation",
+            Self::BranchGenerationExhausted { .. } => "resource_exhausted.commit.branch_generation",
+            Self::BranchGuardUnavailable { .. } => "failed_precondition.commit.branch_guard",
+            Self::CommitQuiesceUnavailable { .. } => "failed_precondition.commit.quiesce",
+            Self::CommitConflict { .. } => "conflict.commit.condition",
+            Self::DurabilityUncertain { .. } => "ambiguous_commit.commit.durability_uncertain",
+            Self::DurableButNotVisible { .. } => "ambiguous_commit.commit.durable_not_visible",
+            Self::UnresolvedDurableCommit { .. } => "ambiguous_commit.commit.unresolved_durable",
+            Self::AppliedButNotVisible { .. } => "ambiguous_commit.commit.applied_not_visible",
+            Self::StorageOwnedMutationSpace { .. } => "invalid_argument.commit.storage_owned_space",
+            Self::BranchUnavailable { .. } => "failed_precondition.commit.branch_unavailable",
+            Self::DurabilityUnavailable { .. } => "unsupported.commit.durability",
+            Self::VersionAllocatorOverflow { .. } => "resource_exhausted.commit.version_allocator",
+            Self::TimestampUnavailable { .. } => "unavailable.commit.timestamp",
+            Self::InvalidTimestampPolicy { .. } => "invalid_argument.commit.timestamp_policy",
+            Self::LowerLayer { layer, .. } => layer.code(),
+        }
+    }
+}
+
 impl CommitRuntimeError {
     pub(crate) const fn lower_layer(layer: CommitLowerLayer, reason: &'static str) -> Self {
         Self::LowerLayer {

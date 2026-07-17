@@ -138,8 +138,10 @@ pub(super) fn commit_error(error: crate::commit::CommitRuntimeError) -> StorageA
         }
         crate::commit::CommitRuntimeError::InvalidTimelineFact { .. }
         | crate::commit::CommitRuntimeError::TimelineConflict { .. } => {
-            StorageApiError::lower_layer_with(
+            let code = error.code();
+            StorageApiError::lower_layer_coded(
                 StorageApiLowerLayer::Commit,
+                code,
                 "commit timeline facts are invalid",
                 error,
             )
@@ -155,17 +157,20 @@ pub(super) fn commit_error(error: crate::commit::CommitRuntimeError) -> StorageA
                 .and_then(budget_exceeded_to_api);
             mapped.unwrap_or(StorageApiError::LowerLayer {
                 layer: StorageApiLowerLayer::Commit,
-                // TCP3.2b wires `CommitRuntimeError::code()` here.
-                inner_code: None,
+                inner_code: Some(crate::commit::CommitLowerLayer::StorageBudget.code()),
                 reason,
                 source,
             })
         }
-        other => StorageApiError::lower_layer_with(
-            StorageApiLowerLayer::Commit,
-            "commit runtime failed",
-            other,
-        ),
+        other => {
+            let code = other.code();
+            StorageApiError::lower_layer_coded(
+                StorageApiLowerLayer::Commit,
+                code,
+                "commit runtime failed",
+                other,
+            )
+        }
     }
 }
 
@@ -346,7 +351,7 @@ pub(crate) fn map_maintenance_outcome_for_test(
 
 #[cfg(test)]
 mod tests {
-    use super::branch_error;
+    use super::{branch_error, commit_error};
     use crate::api::{StorageApiErrorClass, StorageApiLowerLayer};
     use crate::branch::error::BranchRuntimeError;
 
@@ -401,5 +406,310 @@ mod tests {
         assert_eq!(mapped.class(), StorageApiErrorClass::HistoryUnavailable);
         assert_eq!(mapped.code(), "history_unavailable.storage_api.timestamp");
         assert_eq!(mapped.inner_code(), None, "not a LowerLayer error");
+    }
+
+    /// TCP3.2b: commit failures that the API does not model reach the engine
+    /// through the `other` catch-all. Before this slice they all arrived as
+    /// one code; each now carries its own.
+    #[test]
+    fn unmapped_commit_errors_carry_their_code_across_the_boundary() {
+        use crate::commit::CommitRuntimeError;
+
+        let cases = [
+            (
+                CommitRuntimeError::InvalidCommitState {
+                    reason: "bad state",
+                },
+                "failed_precondition.commit.state",
+            ),
+            (
+                CommitRuntimeError::InvalidVisibilityFacts {
+                    reason: "bad facts",
+                },
+                "failed_precondition.commit.visibility_facts",
+            ),
+            (
+                CommitRuntimeError::VersionAllocatorOverflow {
+                    last_allocated: strata_core::CommitVersion::MAX,
+                },
+                "resource_exhausted.commit.version_allocator",
+            ),
+            (
+                CommitRuntimeError::BranchMismatch {
+                    expected: strata_core::BranchId::from_bytes([1; 16]),
+                    actual: strata_core::BranchId::from_bytes([2; 16]),
+                },
+                "invalid_argument.commit.branch_mismatch",
+            ),
+        ];
+        for (error, expected) in cases {
+            let mapped = commit_error(error);
+            assert_eq!(mapped.inner_code(), Some(expected));
+            assert_eq!(mapped.code(), "internal.storage_api.commit");
+        }
+    }
+
+    /// The timeline arm has its own reason string but must still carry the
+    /// variant's code — two failures sharing a reason stay distinguishable.
+    #[test]
+    fn timeline_commit_errors_are_distinguishable_despite_a_shared_reason() {
+        use crate::commit::CommitRuntimeError;
+
+        let fact = commit_error(CommitRuntimeError::InvalidTimelineFact { reason: "bad" });
+        let conflict = commit_error(CommitRuntimeError::TimelineConflict { reason: "bad" });
+        assert_eq!(
+            fact.inner_code(),
+            Some("failed_precondition.commit.timeline_fact")
+        );
+        assert_eq!(conflict.inner_code(), Some("conflict.commit.timeline"));
+        assert_ne!(fact.inner_code(), conflict.inner_code());
+    }
+
+    /// A commit error wrapping a lower sub-layer reports that sub-layer.
+    #[test]
+    fn commit_lower_layer_errors_report_their_sub_layer() {
+        use crate::commit::{CommitLowerLayer, CommitRuntimeError};
+
+        let mapped = commit_error(CommitRuntimeError::lower_layer(
+            CommitLowerLayer::WalService,
+            "wal service failed",
+        ));
+        assert_eq!(mapped.inner_code(), Some("internal.commit.wal_service"));
+    }
+
+    /// Every commit code must be a well-formed 3-part code (rule 27) whose
+    /// class is one the contract defines, and no two variants may share a
+    /// code — a copy-paste duplicate would silently collapse two failures
+    /// back into one, which is the defect this slice removes.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the exhaustive variant/code table is the point: every commit variant is pinned in one place"
+    )]
+    #[test]
+    fn commit_codes_are_well_formed_and_unique() {
+        use crate::commit::{CommitConflict, CommitLowerLayer, CommitRuntimeError};
+        const CLASSES: &[&str] = &[
+            "not_found",
+            "already_exists",
+            "invalid_argument",
+            "failed_precondition",
+            "conflict",
+            "ambiguous_commit",
+            "unsupported",
+            "resource_exhausted",
+            "unavailable",
+            "internal",
+        ];
+        let branch = strata_core::BranchId::from_bytes([1; 16]);
+        let version = strata_core::CommitVersion::new(1);
+        let space = crate::row::StorageSpaceId::engine(0x20).expect("engine-owned space");
+        let every_variant: [(CommitRuntimeError, &str); 30] = [
+            (
+                CommitRuntimeError::InvalidConfig {
+                    field: "f",
+                    reason: "r",
+                },
+                "invalid_argument.commit.config",
+            ),
+            (
+                CommitRuntimeError::InvalidCommitState { reason: "r" },
+                "failed_precondition.commit.state",
+            ),
+            (
+                CommitRuntimeError::InvalidCommitPhase { reason: "r" },
+                "failed_precondition.commit.phase",
+            ),
+            (
+                CommitRuntimeError::InvalidVisibilityFacts { reason: "r" },
+                "failed_precondition.commit.visibility_facts",
+            ),
+            (
+                CommitRuntimeError::InvalidBatch { reason: "r" },
+                "invalid_argument.commit.batch",
+            ),
+            (
+                CommitRuntimeError::InvalidMutation { reason: "r" },
+                "invalid_argument.commit.mutation",
+            ),
+            (
+                CommitRuntimeError::InvalidValidationFacts { reason: "r" },
+                "invalid_argument.commit.validation_facts",
+            ),
+            (
+                CommitRuntimeError::InvalidTimelineFact { reason: "r" },
+                "failed_precondition.commit.timeline_fact",
+            ),
+            (
+                CommitRuntimeError::TimelineConflict { reason: "r" },
+                "conflict.commit.timeline",
+            ),
+            (
+                CommitRuntimeError::DuplicateMutationKey { space_id: space },
+                "invalid_argument.commit.duplicate_mutation_key",
+            ),
+            (
+                CommitRuntimeError::BranchMismatch {
+                    expected: branch,
+                    actual: branch,
+                },
+                "invalid_argument.commit.branch_mismatch",
+            ),
+            (
+                CommitRuntimeError::BranchAlreadyExists { branch_id: branch },
+                "already_exists.commit.branch",
+            ),
+            (
+                CommitRuntimeError::BranchNotFound { branch_id: branch },
+                "not_found.commit.branch",
+            ),
+            (
+                CommitRuntimeError::BranchNotWritable {
+                    branch_id: branch,
+                    reason: "r",
+                },
+                "failed_precondition.commit.branch_not_writable",
+            ),
+            (
+                CommitRuntimeError::BranchGenerationMismatch {
+                    branch_id: branch,
+                    expected: 1,
+                    actual: 2,
+                },
+                "failed_precondition.commit.branch_generation",
+            ),
+            (
+                CommitRuntimeError::BranchGenerationExhausted {
+                    branch_id: branch,
+                    generation: 1,
+                },
+                "resource_exhausted.commit.branch_generation",
+            ),
+            (
+                CommitRuntimeError::BranchGuardUnavailable {
+                    branch_id: branch,
+                    reason: "r",
+                },
+                "failed_precondition.commit.branch_guard",
+            ),
+            (
+                CommitRuntimeError::CommitQuiesceUnavailable { reason: "r" },
+                "failed_precondition.commit.quiesce",
+            ),
+            (
+                CommitRuntimeError::CommitConflict {
+                    conflict: CommitConflict::new(
+                        crate::commit::CommitConflictKind::ReadSet,
+                        &crate::row::PhysicalKey::new(branch, "default", space, b"k".to_vec())
+                            .expect("physical key"),
+                        crate::commit::CommitObservedVersion::Present(version),
+                        crate::commit::CommitObservedVersion::Missing,
+                    ),
+                },
+                "conflict.commit.condition",
+            ),
+            (
+                CommitRuntimeError::DurabilityUncertain {
+                    branch_id: branch,
+                    commit_version: version,
+                    reason: "r",
+                    source: None,
+                },
+                "ambiguous_commit.commit.durability_uncertain",
+            ),
+            (
+                CommitRuntimeError::DurableButNotVisible {
+                    branch_id: branch,
+                    commit_version: version,
+                    reason: "r",
+                    source: None,
+                },
+                "ambiguous_commit.commit.durable_not_visible",
+            ),
+            (
+                CommitRuntimeError::UnresolvedDurableCommit {
+                    branch_id: branch,
+                    commit_version: version,
+                    reason: "r",
+                },
+                "ambiguous_commit.commit.unresolved_durable",
+            ),
+            (
+                CommitRuntimeError::AppliedButNotVisible {
+                    branch_id: branch,
+                    commit_version: version,
+                    reason: "r",
+                },
+                "ambiguous_commit.commit.applied_not_visible",
+            ),
+            (
+                CommitRuntimeError::StorageOwnedMutationSpace { space_id: space },
+                "invalid_argument.commit.storage_owned_space",
+            ),
+            (
+                CommitRuntimeError::BranchUnavailable { reason: "r" },
+                "failed_precondition.commit.branch_unavailable",
+            ),
+            (
+                CommitRuntimeError::DurabilityUnavailable { reason: "r" },
+                "unsupported.commit.durability",
+            ),
+            (
+                CommitRuntimeError::VersionAllocatorOverflow {
+                    last_allocated: version,
+                },
+                "resource_exhausted.commit.version_allocator",
+            ),
+            (
+                CommitRuntimeError::TimestampUnavailable {
+                    reason: "r",
+                    source: None,
+                },
+                "unavailable.commit.timestamp",
+            ),
+            (
+                CommitRuntimeError::InvalidTimestampPolicy { reason: "r" },
+                "invalid_argument.commit.timestamp_policy",
+            ),
+            (
+                CommitRuntimeError::lower_layer(CommitLowerLayer::BranchRuntime, "r"),
+                "internal.commit.branch_runtime",
+            ),
+        ];
+
+        let mut seen = std::collections::BTreeMap::new();
+        for (error, expected) in &every_variant {
+            let code = error.code();
+            assert_eq!(&code, expected, "code drifted for {error:?}");
+            let parts: Vec<&str> = code.split('.').collect();
+            assert_eq!(
+                parts.len(),
+                3,
+                "code must be <class>.<area>.<detail>: {code}"
+            );
+            assert!(CLASSES.contains(&parts[0]), "unknown class in {code}");
+            assert_eq!(parts[1], "commit", "area must be `commit`: {code}");
+            if let Some(previous) = seen.insert(code, format!("{error:?}")) {
+                panic!("two commit variants share the code {code}: {previous} and {error:?}");
+            }
+        }
+        // Every CommitLowerLayer sub-layer is pinned and distinct too.
+        let sub_layers = [
+            (
+                CommitLowerLayer::BranchRuntime,
+                "internal.commit.branch_runtime",
+            ),
+            (
+                CommitLowerLayer::StorageBudget,
+                "internal.commit.storage_budget",
+            ),
+            (CommitLowerLayer::WalFormat, "internal.commit.wal_format"),
+            (CommitLowerLayer::WalService, "internal.commit.wal_service"),
+        ];
+        let mut distinct = std::collections::BTreeSet::new();
+        for (layer, expected) in sub_layers {
+            assert_eq!(layer.code(), expected, "sub-layer code drifted");
+            assert!(distinct.insert(layer.code()), "sub-layers share a code");
+        }
+        assert_eq!(distinct.len(), sub_layers.len());
     }
 }
