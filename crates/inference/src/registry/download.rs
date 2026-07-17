@@ -305,7 +305,104 @@ impl Drop for LockGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::hf_download_url;
+    use super::{hf_download_url, stream_to_file, verify_sha256, LockGuard};
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn sha256_verification_accepts_a_matching_file() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("model.tmp");
+        std::fs::write(&path, b"model bytes").expect("write");
+        let expected = format!("{:x}", Sha256::digest(b"model bytes"));
+        verify_sha256(&path, &expected, "model.gguf").expect("matching hash verifies");
+        assert!(path.exists(), "a verified file must be kept");
+    }
+
+    #[test]
+    fn sha256_mismatch_is_typed_corruption_and_removes_the_temp_file() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("model.tmp");
+        std::fs::write(&path, b"tampered bytes").expect("write");
+        let expected = format!("{:x}", Sha256::digest(b"model bytes"));
+        let error = verify_sha256(&path, &expected, "model.gguf")
+            .expect_err("mismatch must fail verification");
+        assert_eq!(error.code(), "inference.download_verification_failed");
+        assert_eq!(error.class(), crate::error::InferenceErrorClass::Corruption);
+        assert!(
+            !path.exists(),
+            "a failed verification must remove the temp file"
+        );
+    }
+
+    #[test]
+    fn missing_temp_file_fails_verification_typed() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("never-written.tmp");
+        let error =
+            verify_sha256(&path, "00", "model.gguf").expect_err("missing temp file must fail");
+        assert!(!error.code().is_empty());
+    }
+
+    #[test]
+    fn streaming_writes_every_byte_and_reports_monotonic_progress() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("streamed.tmp");
+        let payload = vec![0xA7u8; 200_000];
+        let mut reader = std::io::Cursor::new(payload.clone());
+        let mut file = std::fs::File::create(&path).expect("create");
+        let observed = std::cell::RefCell::new(Vec::new());
+        let written = stream_to_file(
+            &mut reader,
+            &mut file,
+            &|done, total| observed.borrow_mut().push((done, total)),
+            payload.len() as u64,
+        )
+        .expect("stream");
+        assert_eq!(written, payload.len() as u64);
+        assert_eq!(std::fs::read(&path).expect("read back"), payload);
+        let observed = observed.into_inner();
+        assert!(!observed.is_empty(), "progress must be reported");
+        assert!(
+            observed.windows(2).all(|pair| pair[0].0 <= pair[1].0),
+            "progress must be monotonic: {observed:?}"
+        );
+        assert_eq!(
+            observed.last().expect("final progress").0,
+            payload.len() as u64
+        );
+    }
+
+    #[test]
+    fn stream_read_errors_are_typed_and_retryable() {
+        struct FailingReader;
+        impl std::io::Read for FailingReader {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("connection reset by peer"))
+            }
+        }
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut file = std::fs::File::create(dir.path().join("partial.tmp")).expect("create");
+        let error = stream_to_file(&mut FailingReader, &mut file, &|_, _| {}, 100)
+            .expect_err("read failure must propagate");
+        assert_eq!(error.code(), "inference.download_failed");
+        assert!(error.retryable(), "a network read failure is retryable");
+    }
+
+    #[test]
+    fn lock_guard_writes_the_pid_and_removes_itself_on_drop() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("download.lock");
+        {
+            let _guard = LockGuard::new(&path).expect("acquire lock");
+            let contents = std::fs::read_to_string(&path).expect("lock exists while held");
+            assert_eq!(
+                contents,
+                std::process::id().to_string(),
+                "the lock names its owner"
+            );
+        }
+        assert!(!path.exists(), "the lock must vanish when the guard drops");
+    }
 
     #[test]
     fn download_url_uses_default_hub_shape() {
