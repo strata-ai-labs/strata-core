@@ -355,3 +355,103 @@ fn source_constructors_thread_the_source() {
     let cloned = lower.clone();
     let _ = Arc::new(cloned);
 }
+
+// --- TCP3.2a: lower-layer discriminants -----------------------------------
+
+/// The defect this slice exists to fix (#2632): every unmapped lower-layer
+/// failure reached the engine as the single code
+/// `internal.storage_api.lower_layer`, so no rule-29-compliant test could
+/// tell a branch failure from a commit failure. Each layer now carries its
+/// own code, and they are distinct.
+#[test]
+fn each_lower_layer_has_a_distinct_boundary_code() {
+    let layers = [
+        StorageApiLowerLayer::Backend,
+        StorageApiLowerLayer::Layout,
+        StorageApiLowerLayer::Format,
+        StorageApiLowerLayer::Service,
+        StorageApiLowerLayer::Table,
+        StorageApiLowerLayer::Branch,
+        StorageApiLowerLayer::Commit,
+        StorageApiLowerLayer::Lifecycle,
+    ];
+    let mut seen = std::collections::BTreeSet::new();
+    for layer in layers {
+        let error = StorageApiError::lower_layer_with(layer, "failed", io_source());
+        let code = error.code();
+        assert!(
+            seen.insert(code),
+            "two layers share the boundary code {code} — the collapse this slice removes"
+        );
+        assert_eq!(
+            code,
+            layer.code(),
+            "the boundary code must be the layer's own code"
+        );
+        // Hard Rule 29's precondition: code and class must keep agreeing.
+        assert!(
+            code.starts_with("internal."),
+            "an unmapped lower-layer failure is Internal at the API: {code}"
+        );
+        assert_eq!(error.class(), StorageApiErrorClass::Internal);
+    }
+    assert_eq!(seen.len(), layers.len());
+}
+
+/// `inner_code` carries the specific inner failure across the boundary
+/// WITHOUT reclassifying the error: `code()` stays class-consistent while
+/// `inner_code()` names what actually went wrong.
+#[test]
+fn inner_code_carries_the_specific_failure_without_reclassifying() {
+    let coded = StorageApiError::lower_layer_coded(
+        StorageApiLowerLayer::Branch,
+        "not_found.branch.branch_id",
+        "branch read failed",
+        io_source(),
+    );
+    assert_eq!(coded.inner_code(), Some("not_found.branch.branch_id"));
+    // The API's own classification is unchanged: it does not model this
+    // failure, so it stays Internal and its code stays class-consistent.
+    assert_eq!(coded.class(), StorageApiErrorClass::Internal);
+    assert_eq!(coded.code(), "internal.storage_api.branch");
+
+    // A layer with no discriminant yet reports None rather than lying.
+    let uncoded =
+        StorageApiError::lower_layer_with(StorageApiLowerLayer::Commit, "failed", io_source());
+    assert_eq!(uncoded.inner_code(), None);
+
+    // Variants that are not LowerLayer have no inner code: their own
+    // code() is already specific.
+    assert_eq!(
+        StorageApiError::durable_uncertain("uncertain").inner_code(),
+        None
+    );
+}
+
+/// Two different branch failures must be distinguishable at the boundary —
+/// the property that did not exist before this slice.
+#[test]
+fn two_branch_failures_are_distinguishable_at_the_boundary() {
+    let missing = StorageApiError::lower_layer_coded(
+        StorageApiLowerLayer::Branch,
+        "not_found.branch.branch_id",
+        "branch read failed",
+        io_source(),
+    );
+    let bad_state = StorageApiError::lower_layer_coded(
+        StorageApiLowerLayer::Branch,
+        "failed_precondition.branch.state",
+        "branch read failed",
+        io_source(),
+    );
+    assert_eq!(
+        missing.code(),
+        bad_state.code(),
+        "same layer, same API code"
+    );
+    assert_ne!(
+        missing.inner_code(),
+        bad_state.inner_code(),
+        "but the inner discriminant must tell them apart without reading display text"
+    );
+}
