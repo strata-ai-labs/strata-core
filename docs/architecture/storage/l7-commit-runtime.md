@@ -146,7 +146,10 @@ transactions.
 - `crates/storage/src/txn/validation.rs`: read-set and CAS validation. Current
   semantics are snapshot isolation with first-committer-wins over read-set/CAS
   facts; blind writes do not conflict.
-- `crates/storage/src/txn/lock_ordering.rs`: explicit commit-path lock order.
+- `crates/storage/src/commit/guard.rs`: the commit-path lock order (documented in
+  its module header) and the branch-admission / quiesce guard mutex.
+  `crates/storage/src/commit/lock_order.rs` enforces that order under
+  `debug_assertions` (a lock-rank tracker; #2636).
 - `crates/storage/src/durability/commit_adapter.rs`: WAL-before-storage bridge.
   It serializes one commit payload, appends it to WAL when required, then lets
   the storage transaction manager apply rows.

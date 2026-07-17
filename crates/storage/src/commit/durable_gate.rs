@@ -7,11 +7,13 @@
 //! before branch admission, then proceed to registry validation and branch guard
 //! acquisition after the gate mutex has been released.
 
+use super::lock_order::{CommitLockOrderGuard, COMMIT_GUARD_RANK};
 use super::{
     CommitDurabilityClass, CommitRuntimeError, CommitRuntimeResult, CommitStamp,
     CommitVisibilityFacts,
 };
 use crate::observability::perf_trace;
+use std::ops::{Deref, DerefMut};
 use std::sync::{Mutex, MutexGuard};
 use strata_core::{BranchId, CommitVersion, Timestamp};
 
@@ -317,7 +319,7 @@ impl CommitUnresolvedDurableGate {
 
     /// Release the leader's group admission span (see [`begin_group_admission`]).
     pub(crate) fn end_group_admission(&self) {
-        if let Ok(mut state) = self.state.lock() {
+        if let Ok(mut state) = self.lock() {
             state.active_admissions = state.active_admissions.saturating_sub(1);
         }
     }
@@ -326,7 +328,7 @@ impl CommitUnresolvedDurableGate {
     /// right now — the sync chain uses this to decide whether a batching beat
     /// is worth waiting before it captures.
     pub(crate) fn open_admission_spans(&self) -> usize {
-        self.state.lock().map_or(0, |state| state.active_admissions)
+        self.lock().map_or(0, |state| state.active_admissions)
     }
 
     /// Group-member admission check (BS5.1): the leader's admission span is
@@ -437,12 +439,18 @@ impl CommitUnresolvedDurableGate {
         }
     }
 
-    fn lock(&self) -> CommitRuntimeResult<MutexGuard<'_, CommitUnresolvedDurableGateState>> {
-        self.state
+    fn lock(&self) -> CommitRuntimeResult<TrackedGateState<'_>> {
+        let order = CommitLockOrderGuard::acquire(COMMIT_GUARD_RANK);
+        let state = self
+            .state
             .lock()
             .map_err(|_| CommitRuntimeError::InvalidCommitState {
                 reason: "unresolved durable gate lock poisoned",
-            })
+            })?;
+        Ok(TrackedGateState {
+            state,
+            _order: order,
+        })
     }
 }
 
@@ -464,5 +472,25 @@ impl Drop for CommitUnresolvedDurableAdmission<'_> {
             state.active_admissions = state.active_admissions.saturating_sub(1);
         }
         self.active = false;
+    }
+}
+
+/// A held gate lock, bracketed by the commit lock-order tracker. `state` drops
+/// before `_order` (field order), releasing the mutex before recording it.
+struct TrackedGateState<'a> {
+    state: MutexGuard<'a, CommitUnresolvedDurableGateState>,
+    _order: CommitLockOrderGuard,
+}
+
+impl Deref for TrackedGateState<'_> {
+    type Target = CommitUnresolvedDurableGateState;
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl DerefMut for TrackedGateState<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
     }
 }

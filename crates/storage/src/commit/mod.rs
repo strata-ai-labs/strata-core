@@ -19,6 +19,7 @@ mod durable_gate;
 mod error;
 mod facts;
 mod guard;
+mod lock_order;
 mod outcome;
 mod replay;
 mod result;

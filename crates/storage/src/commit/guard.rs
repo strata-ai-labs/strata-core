@@ -23,9 +23,11 @@
 //! build it above this primitive with the typed `BranchGuardUnavailable` or
 //! `CommitQuiesceUnavailable` errors.
 
+use super::lock_order::{CommitLockOrderGuard, COMMIT_GUARD_RANK};
 use super::{CommitRuntimeError, CommitRuntimeResult};
 use crate::observability::perf_trace;
 use std::fmt;
+use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, MutexGuard};
 use strata_core::BranchId;
 
@@ -140,12 +142,42 @@ impl CommitBranchGuardSet {
         Ok(self.lock_state()?.quiescing)
     }
 
-    fn lock_state(&self) -> CommitRuntimeResult<MutexGuard<'_, CommitBranchGuardState>> {
-        self.inner
+    /// Lock the guard state under the commit lock-order bracket. The returned
+    /// value holds both the mutex guard and the lock-order token; dropping it
+    /// releases the mutex first, then the tracker (see field order below).
+    fn lock_state(&self) -> CommitRuntimeResult<TrackedBranchGuardState<'_>> {
+        let order = CommitLockOrderGuard::acquire(COMMIT_GUARD_RANK);
+        let state = self
+            .inner
             .lock()
             .map_err(|_| CommitRuntimeError::InvalidCommitState {
                 reason: "commit branch guard state lock is poisoned",
-            })
+            })?;
+        Ok(TrackedBranchGuardState {
+            state,
+            _order: order,
+        })
+    }
+}
+
+/// A held guard-state lock, bracketed by the commit lock-order tracker. Field
+/// order is load-bearing: `state` (the mutex guard) drops before `_order`, so
+/// the mutex is released before the tracker records the release.
+struct TrackedBranchGuardState<'a> {
+    state: MutexGuard<'a, CommitBranchGuardState>,
+    _order: CommitLockOrderGuard,
+}
+
+impl Deref for TrackedBranchGuardState<'_> {
+    type Target = CommitBranchGuardState;
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl DerefMut for TrackedBranchGuardState<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
     }
 }
 
@@ -157,6 +189,7 @@ impl CommitBranchGuard {
 
 impl Drop for CommitBranchGuard {
     fn drop(&mut self) {
+        let _order = CommitLockOrderGuard::acquire(COMMIT_GUARD_RANK);
         match self.inner.lock() {
             Ok(mut state) => {
                 remove_branch(&mut state.active_branches, self.branch_id);
@@ -171,6 +204,7 @@ impl Drop for CommitBranchGuard {
 
 impl Drop for CommitQuiesceGuard {
     fn drop(&mut self) {
+        let _order = CommitLockOrderGuard::acquire(COMMIT_GUARD_RANK);
         match self.inner.lock() {
             Ok(mut state) => {
                 state.quiescing = false;
@@ -222,5 +256,53 @@ fn remove_branch(active_branches: &mut Vec<BranchId>, branch_id: BranchId) {
         .position(|active| *active == branch_id)
     {
         active_branches.swap_remove(index);
+    }
+}
+
+#[cfg(test)]
+mod lock_order_tests {
+    use super::CommitBranchGuardSet;
+    use strata_core::BranchId;
+
+    fn branch(byte: u8) -> BranchId {
+        BranchId::from_bytes([byte; BranchId::BYTE_LEN])
+    }
+
+    /// Driving test for the commit lock-order instrumentation (#2636): the real
+    /// guard API — held RAII tokens across branches, quiesce, and token drops —
+    /// must not trip the lock-order tracker. The tracker's own unit tests
+    /// (`commit::lock_order::tests`) prove it *fires* on a nested acquisition;
+    /// this proves it does *not* false-positive on legitimate use, so the
+    /// instrumentation is correctly bracketed around each brief mutex hold.
+    #[test]
+    fn legitimate_guard_use_never_trips_the_lock_order_tracker() {
+        let guard_set = CommitBranchGuardSet::new();
+
+        // Independent-branch tokens held simultaneously: each acquisition takes
+        // and releases the guard mutex as a leaf, so holding both tokens at once
+        // is legal (the tokens are logical, not mutex guards).
+        let first = guard_set
+            .try_acquire_branch_guard(branch(0x01))
+            .expect("first branch guard");
+        let second = guard_set
+            .try_acquire_branch_guard(branch(0x02))
+            .expect("second branch guard");
+
+        // Introspection while tokens are held re-locks the mutex briefly — a
+        // legal sequential leaf acquisition, not a nested one.
+        assert_eq!(guard_set.active_guard_count().expect("count"), 2);
+        assert!(!guard_set.is_quiescing().expect("quiescing"));
+
+        // Dropping a token re-locks the mutex in Drop: still a leaf.
+        drop(first);
+        assert_eq!(guard_set.active_guard_count().expect("count"), 1);
+        drop(second);
+
+        // Quiesce takes the mutex, returns a token, releases the mutex; the
+        // token drop re-locks. All leaves.
+        let quiesce = guard_set.try_begin_quiesce().expect("begin quiesce");
+        assert!(guard_set.is_quiescing().expect("quiescing"));
+        drop(quiesce);
+        assert!(!guard_set.is_quiescing().expect("quiescing"));
     }
 }
