@@ -1033,7 +1033,7 @@ fn durable_flush_manifest_publish_uncertain_reports_uncertainty() {
     assert!(outcome.source_error().is_some());
     assert_eq!(
         outcome.source_error().expect("source error").code(),
-        "unknown.lifecycle.table_manifest_publication"
+        "ambiguous_commit.lifecycle.table_manifest_publication"
     );
     assert!(outcome.recovery_health().is_some());
 }
@@ -1245,7 +1245,7 @@ fn durable_reopen_failure_reports_published_not_installed() {
             .source_error()
             .expect("source error")
             .code(),
-        "unknown.lifecycle.flush_publication_orphan"
+        "ambiguous_commit.lifecycle.flush_publication_orphan"
     );
     assert!(outcome
         .maintenance_outcome()
@@ -1272,7 +1272,7 @@ fn durable_publish_visibility_uncertainty_is_typed() {
     )
     .expect_err("publish uncertainty");
 
-    assert_eq!(error.code(), "unknown.lifecycle.flush_publication");
+    assert_eq!(error.code(), "ambiguous_commit.lifecycle.flush_publication");
     assert!(error.source().is_some());
     assert_eq!(state.frozen_table_count(), 1);
     assert_eq!(state.owned_table_count(), 0);
@@ -1362,7 +1362,10 @@ fn durable_install_failure_reports_orphaned_object_fact() {
     assert!(outcome.object_facts().is_some());
     assert!(outcome.table_object().is_some());
     let failure = outcome.failure().expect("orphan failure");
-    assert_eq!(failure.code(), "unknown.lifecycle.flush_publication_orphan");
+    assert_eq!(
+        failure.code(),
+        "ambiguous_commit.lifecycle.flush_publication_orphan"
+    );
     assert!(failure.source().is_some());
     assert_eq!(state, before);
 }

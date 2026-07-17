@@ -2694,7 +2694,7 @@ fn commit_after_close_requested_rejects_before_version_allocation() {
         .expect("active commit guard");
 
     let error = runtime.close().expect_err("active guard blocks close");
-    assert_eq!(error.code(), "deadline_exceeded.lifecycle.close");
+    assert_eq!(error.code(), "failed_precondition.lifecycle.close_timeout");
     assert_eq!(runtime.state(), LifecycleState::Closing);
     let operations_after_close_failure = backend.operations().len();
     let allocation_before_commit = runtime.allocator().version_allocator().last_allocated();
@@ -2728,7 +2728,7 @@ fn durable_close_timeout_while_commit_guard_active_is_retryable() {
         .expect("active commit guard");
 
     let error = runtime.close().expect_err("active guard blocks close");
-    assert_eq!(error.code(), "deadline_exceeded.lifecycle.close");
+    assert_eq!(error.code(), "failed_precondition.lifecycle.close_timeout");
     assert_eq!(runtime.state(), LifecycleState::Closing);
     assert_eq!(
         runtime
@@ -2801,7 +2801,7 @@ fn durable_close_preserves_drain_required_checkpoint_when_quiesce_is_unavailable
         .close()
         .expect_err("checkpoint quiesce blocks close");
 
-    assert_eq!(error.code(), "deadline_exceeded.lifecycle.close");
+    assert_eq!(error.code(), "failed_precondition.lifecycle.close_timeout");
     assert_eq!(runtime.state(), LifecycleState::Closing);
     assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
     assert!(backend.lock_is_held());

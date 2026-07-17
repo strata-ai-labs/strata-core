@@ -1446,7 +1446,10 @@ fn rewrite_output_publish_uncertain_names_possibly_visible_object() {
         )
         .expect_err("uncertain publish");
 
-    assert_eq!(error.code(), "unknown.lifecycle.rewrite_publication");
+    assert_eq!(
+        error.code(),
+        "ambiguous_commit.lifecycle.rewrite_publication"
+    );
     match error {
         LifecycleError::RewritePublicationUncertain { objects, .. } => {
             assert_eq!(objects.len(), 1);
@@ -1488,7 +1491,10 @@ fn rewrite_output_reopen_failure_leaves_reads_unchanged_and_names_orphan() {
         )
         .expect_err("reopen failure");
 
-    assert_eq!(error.code(), "unknown.lifecycle.rewrite_publication_orphan");
+    assert_eq!(
+        error.code(),
+        "ambiguous_commit.lifecycle.rewrite_publication_orphan"
+    );
     match error {
         LifecycleError::RewritePublicationOrphaned { objects, .. } => {
             assert_eq!(objects.len(), 1);
@@ -1542,7 +1548,7 @@ fn rewrite_manifest_publish_uncertain_after_install_reports_debt() {
     assert!(maintenance.recovery_health().is_some());
     assert_eq!(
         maintenance.source_error().expect("source error").code(),
-        "unknown.lifecycle.table_manifest_publication"
+        "ambiguous_commit.lifecycle.table_manifest_publication"
     );
 }
 
@@ -1685,7 +1691,10 @@ fn recovery_after_output_publish_before_install_ignores_orphan_output() {
                 .expect("request"),
             )
             .expect_err("orphaned output");
-        assert_eq!(error.code(), "unknown.lifecycle.rewrite_publication_orphan");
+        assert_eq!(
+            error.code(),
+            "ambiguous_commit.lifecycle.rewrite_publication_orphan"
+        );
         assert_eq!(backend.table_object_names().len(), 1);
     }
 
@@ -1848,7 +1857,10 @@ fn durable_rewrite_does_not_delete_or_quarantine_replaced_or_orphaned_objects() 
         )
         .expect_err("orphaned output");
 
-    assert_eq!(error.code(), "unknown.lifecycle.rewrite_publication_orphan");
+    assert_eq!(
+        error.code(),
+        "ambiguous_commit.lifecycle.rewrite_publication_orphan"
+    );
     assert_eq!(backend.table_object_names().len(), 1);
     assert_eq!(backend.delete_calls(), 0);
     assert!(!backend

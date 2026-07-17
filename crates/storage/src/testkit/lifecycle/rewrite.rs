@@ -520,7 +520,7 @@ fn check_install_failure_after_publish(
         .expect_err("install collision should reject");
 
     ensure(
-        error.code() == "unknown.lifecycle.rewrite_publication_orphan",
+        error.code() == "ambiguous_commit.lifecycle.rewrite_publication_orphan",
         "install failure after publish did not produce an orphan-named lifecycle error",
     )?;
     outcome.install_failed_after_publish += 1;

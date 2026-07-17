@@ -207,7 +207,10 @@ fn durable_compaction_validates_output_facts_before_install() {
         .compact_branch_tables(&compaction_request(branch, "validate-before-install"))
         .expect_err("corrupt reopened output");
 
-    assert_eq!(error.code(), "unknown.lifecycle.rewrite_publication_orphan");
+    assert_eq!(
+        error.code(),
+        "ambiguous_commit.lifecycle.rewrite_publication_orphan"
+    );
     assert_eq!(runtime.branch_state().owned_table_count(), 2);
 }
 
@@ -224,7 +227,10 @@ fn durable_compaction_installs_only_after_all_outputs_validate() {
         .compact_branch_tables(&compaction_request(branch, "all-validate"))
         .expect_err("validation failure");
 
-    assert_eq!(error.code(), "unknown.lifecycle.rewrite_publication_orphan");
+    assert_eq!(
+        error.code(),
+        "ambiguous_commit.lifecycle.rewrite_publication_orphan"
+    );
     assert_eq!(runtime.branch_state().owned_table_count(), 6);
 }
 
@@ -687,7 +693,10 @@ fn durable_materialization_validates_replacement_facts() {
         .materialize_inherited_layer(&materialization_request(child, "validate-replacement"))
         .expect_err("corrupt replacement");
 
-    assert_eq!(error.code(), "unknown.lifecycle.rewrite_publication_orphan");
+    assert_eq!(
+        error.code(),
+        "ambiguous_commit.lifecycle.rewrite_publication_orphan"
+    );
     assert_eq!(runtime.branch_state().inherited_layer_count(), 1);
 }
 
@@ -993,7 +1002,10 @@ fn rewrite_output_publish_uncertain_reports_health_debt() {
         .compact_branch_tables(&compaction_request(branch, "uncertain-debt"))
         .expect_err("uncertain publish");
 
-    assert_eq!(error.code(), "unknown.lifecycle.rewrite_publication");
+    assert_eq!(
+        error.code(),
+        "ambiguous_commit.lifecycle.rewrite_publication"
+    );
     assert_eq!(runtime.branch_state().owned_table_count(), 2);
 }
 
@@ -1011,7 +1023,10 @@ fn rewrite_output_reopen_failure_leaves_reads_unchanged() {
         .compact_branch_tables(&compaction_request(branch, "reopen-unchanged"))
         .expect_err("reopen failure");
 
-    assert_eq!(error.code(), "unknown.lifecycle.rewrite_publication_orphan");
+    assert_eq!(
+        error.code(),
+        "ambiguous_commit.lifecycle.rewrite_publication_orphan"
+    );
     assert_eq!(
         latest_value_from_state(runtime.branch_state(), branch, b"right"),
         before
@@ -1071,7 +1086,10 @@ fn rewrite_install_failure_after_publish_names_orphan_outputs() {
         .compact_branch_tables(&compaction_request(branch, "install-collision"))
         .expect_err("install failure after publish");
 
-    assert_eq!(error.code(), "unknown.lifecycle.rewrite_publication_orphan");
+    assert_eq!(
+        error.code(),
+        "ambiguous_commit.lifecycle.rewrite_publication_orphan"
+    );
     match error {
         LifecycleError::RewritePublicationOrphaned { objects, .. } => {
             assert_eq!(objects.len(), 1);
@@ -1211,7 +1229,7 @@ fn rewrite_manifest_publish_uncertain_after_install_reports_uncertainty() {
     );
     assert_eq!(
         outcome.failure().expect("failure").code(),
-        "unknown.lifecycle.table_manifest_publication"
+        "ambiguous_commit.lifecycle.table_manifest_publication"
     );
 }
 

@@ -46,13 +46,6 @@ const CLASSES: &[&str] = &[
     "serialization",
     "internal",
     "data_loss",
-    // `unknown` and `deadline_exceeded` are NOT declared error classes — they
-    // are used as class prefixes by 8 lifecycle-internal codes (issue #2646).
-    // Tracked here (rather than left invisible) so the guard requires them
-    // asserted; when #2646 renames them to declared classes, drop these two
-    // and the lifecycle construct-all updates in lockstep.
-    "unknown",
-    "deadline_exceeded",
 ];
 
 /// Areas that form the middle segment of a stable 3-part code.
