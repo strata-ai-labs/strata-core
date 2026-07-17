@@ -443,3 +443,43 @@ fn sigkill_during_first_session_leaves_a_usable_database() {
         stderr(&put)
     );
 }
+
+// --- remote origin rendering --------------------------------------------
+
+/// `strata remote` on a database that was never cloned reports "no origin"
+/// as data (a null origin in a typed envelope), not as an error: exit 0 in
+/// both output modes, and the JSON envelope carries the stable result type.
+#[test]
+fn remote_on_a_never_cloned_database_reports_null_origin() {
+    let dir = tempfile::tempdir().expect("tmp");
+    let db = db_arg(dir.path());
+    assert_ok(
+        &strata(&["--db", &db, "kv", "put", "seed", "1"]),
+        "seed the database",
+    );
+
+    let json = strata(&["--db", &db, "--json", "remote"]);
+    assert_ok(&json, "remote --json");
+    let envelope: serde_json::Value =
+        serde_json::from_str(stdout(&json).trim()).expect("remote emits a JSON envelope");
+    assert_eq!(
+        envelope.get("type").and_then(serde_json::Value::as_str),
+        Some("remote_origin_result"),
+        "envelope: {envelope}"
+    );
+    assert!(
+        envelope
+            .get("data")
+            .and_then(|data| data.get("origin"))
+            .is_some_and(serde_json::Value::is_null),
+        "never-cloned database must report a null origin: {envelope}"
+    );
+
+    let human = strata(&["--db", &db, "remote"]);
+    assert_ok(&human, "remote (human mode)");
+    assert!(
+        stdout(&human).contains("origin"),
+        "human rendering names the origin field: {}",
+        stdout(&human)
+    );
+}

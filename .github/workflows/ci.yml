@@ -151,8 +151,16 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - name: Browser target check
-        run: cargo check --locked -p strata-wasm --target wasm32-unknown-unknown
+      - name: Install wasm-bindgen test runner
+        uses: taiki-e/install-action@v2
+        with:
+          # Pinned to the wasm-bindgen version in Cargo.lock — the runner
+          # refuses a version mismatch, so bumps must move in lockstep.
+          tool: wasm-bindgen-cli@0.2.118
+      - name: Browser target tests
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        run: cargo test --locked -p strata-wasm --target wasm32-unknown-unknown
 
   msrv:
     runs-on: ubuntu-latest
