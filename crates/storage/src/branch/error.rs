@@ -486,3 +486,216 @@ impl Error for BranchRuntimeError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{BranchCompactionInvalidity, BranchRuntimeError, BranchTimestampHistorySource};
+    use crate::table::TableRuntimeError;
+    use strata_core::{BranchId, Timestamp};
+
+    /// TCP3.2c reachability: every `BranchCompactionInvalidity` variant is
+    /// constructed and its code asserted (pins the codes, and makes the
+    /// workspace error-code guard see each as asserted). The `code()` match
+    /// is exhaustive with no catch-all, so a new variant is a compile error
+    /// until it is added here too.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the exhaustive variant/code table is the point"
+    )]
+    #[test]
+    fn every_compaction_invalidity_has_a_unique_code() {
+        let cases: [(BranchCompactionInvalidity, &str); 25] = [
+            (
+                BranchCompactionInvalidity::Generic("g"),
+                "failed_precondition.branch.invalid_compaction",
+            ),
+            (
+                BranchCompactionInvalidity::StaleCandidate,
+                "failed_precondition.branch.compaction_candidate_stale",
+            ),
+            (
+                BranchCompactionInvalidity::ProofMissing,
+                "failed_precondition.branch.row_pruning_proof_missing",
+            ),
+            (
+                BranchCompactionInvalidity::ProofStale,
+                "failed_precondition.branch.row_pruning_proof_stale",
+            ),
+            (
+                BranchCompactionInvalidity::ProofBranchMismatch,
+                "failed_precondition.branch.row_pruning_proof_branch_mismatch",
+            ),
+            (
+                BranchCompactionInvalidity::ProofUnsafeRecoveryHealth,
+                "failed_precondition.branch.row_pruning_proof_unsafe_recovery_health",
+            ),
+            (
+                BranchCompactionInvalidity::ProofVisibleVersionBelowState,
+                "failed_precondition.branch.row_pruning_proof_visible_version_below_state",
+            ),
+            (
+                BranchCompactionInvalidity::RetainedFloorAboveVisible,
+                "failed_precondition.branch.row_pruning_retained_floor_above_visible",
+            ),
+            (
+                BranchCompactionInvalidity::TimestampFloorWithoutCoverage,
+                "failed_precondition.branch.row_pruning_timestamp_floor_without_coverage",
+            ),
+            (
+                BranchCompactionInvalidity::PinnedViewBelowFloor,
+                "failed_precondition.branch.row_pruning_pinned_view_below_floor",
+            ),
+            (
+                BranchCompactionInvalidity::InheritedLayerUnknown,
+                "failed_precondition.branch.row_pruning_inherited_layer_unknown",
+            ),
+            (
+                BranchCompactionInvalidity::InheritedLayerUnsafe,
+                "failed_precondition.branch.row_pruning_inherited_layer_unsafe",
+            ),
+            (
+                BranchCompactionInvalidity::SharedTableSafetyUnknown,
+                "failed_precondition.branch.row_pruning_shared_table_safety_unknown",
+            ),
+            (
+                BranchCompactionInvalidity::TombstoneElisionMissing,
+                "failed_precondition.branch.row_pruning_tombstone_elision_missing",
+            ),
+            (
+                BranchCompactionInvalidity::TombstoneElisionNotBottommost,
+                "failed_precondition.branch.row_pruning_tombstone_elision_not_bottommost",
+            ),
+            (
+                BranchCompactionInvalidity::TombstoneResurrectionRisk,
+                "failed_precondition.branch.row_pruning_tombstone_resurrection_risk",
+            ),
+            (
+                BranchCompactionInvalidity::TtlElisionMissing,
+                "failed_precondition.branch.row_pruning_ttl_elision_missing",
+            ),
+            (
+                BranchCompactionInvalidity::TtlElisionNotBottommost,
+                "failed_precondition.branch.row_pruning_ttl_elision_not_bottommost",
+            ),
+            (
+                BranchCompactionInvalidity::TtlCutoffExceedsTimestampFloor,
+                "failed_precondition.branch.row_pruning_ttl_cutoff_exceeds_timestamp_floor",
+            ),
+            (
+                BranchCompactionInvalidity::ProofEpochInvalid,
+                "failed_precondition.branch.row_pruning_proof_epoch_invalid",
+            ),
+            (
+                BranchCompactionInvalidity::ProofFingerprintInvalid,
+                "failed_precondition.branch.row_pruning_proof_fingerprint_invalid",
+            ),
+            (
+                BranchCompactionInvalidity::TableManifestCoverageBeyondFloor,
+                "failed_precondition.branch.row_pruning_table_manifest_coverage_beyond_floor",
+            ),
+            (
+                BranchCompactionInvalidity::RetainedTimestampFloorMissing,
+                "failed_precondition.branch.row_pruning_retained_timestamp_floor_missing",
+            ),
+            (
+                BranchCompactionInvalidity::CandidateMissingLevel,
+                "failed_precondition.branch.compaction_candidate_missing_level",
+            ),
+            (
+                BranchCompactionInvalidity::CandidateMissingTable,
+                "failed_precondition.branch.compaction_candidate_missing_table",
+            ),
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for (invalidity, expected) in cases {
+            assert_eq!(invalidity.code(), expected, "compaction code drifted");
+            let parts: Vec<&str> = invalidity.code().split('.').collect();
+            assert_eq!(parts.len(), 3, "3-part code");
+            assert_eq!(parts[0], "failed_precondition");
+            assert_eq!(parts[1], "branch");
+            assert!(seen.insert(invalidity.code()), "duplicate compaction code");
+        }
+    }
+
+    /// Every `BranchRuntimeError` variant is constructed and its code
+    /// asserted. `InvalidCompaction` delegates to the invalidity code above.
+    #[test]
+    fn every_branch_runtime_error_has_a_well_formed_code() {
+        let branch = BranchId::from_bytes([1; 16]);
+        let cases: [(BranchRuntimeError, &str); 13] = [
+            (
+                BranchRuntimeError::InvalidConfig {
+                    field: "f",
+                    reason: "r",
+                },
+                "failed_precondition.branch.config",
+            ),
+            (
+                BranchRuntimeError::InvalidBranchState { reason: "r" },
+                "failed_precondition.branch.state",
+            ),
+            (
+                BranchRuntimeError::BranchNotFound { branch_id: branch },
+                "not_found.branch.branch_id",
+            ),
+            (
+                BranchRuntimeError::BranchAlreadyExists { branch_id: branch },
+                "already_exists.branch.branch_id",
+            ),
+            (
+                BranchRuntimeError::InvalidBranchRow { reason: "r" },
+                "failed_precondition.branch.row",
+            ),
+            (
+                BranchRuntimeError::InvalidReadBound { reason: "r" },
+                "failed_precondition.branch.read_bound",
+            ),
+            (
+                BranchRuntimeError::InsufficientTimestampHistory {
+                    branch_id: branch,
+                    requested_timestamp: Timestamp::from_micros(1),
+                    earliest_available_timestamp: None,
+                    source: BranchTimestampHistorySource::OwnState,
+                },
+                "failed_precondition.branch.insufficient_timestamp_history",
+            ),
+            (
+                BranchRuntimeError::InvalidInheritedLayer { reason: "r" },
+                "failed_precondition.branch.inherited_layer",
+            ),
+            (
+                BranchRuntimeError::InvalidReachability { reason: "r" },
+                "failed_precondition.branch.reachability",
+            ),
+            (
+                BranchRuntimeError::InvalidCompaction {
+                    reason: BranchCompactionInvalidity::ProofMissing,
+                },
+                "failed_precondition.branch.row_pruning_proof_missing",
+            ),
+            (
+                BranchRuntimeError::InvalidSnapshotInstall { reason: "r" },
+                "failed_precondition.branch.snapshot_install",
+            ),
+            (
+                BranchRuntimeError::TableRuntime {
+                    source: TableRuntimeError::Cache { reason: "r" },
+                },
+                "failed_precondition.branch.table_runtime",
+            ),
+            (
+                BranchRuntimeError::Publish {
+                    reason: "r",
+                    source: None,
+                },
+                "failed_precondition.branch.publish",
+            ),
+        ];
+        for (error, expected) in &cases {
+            assert_eq!(&error.code(), expected, "branch code drifted for {error:?}");
+            let parts: Vec<&str> = error.code().split('.').collect();
+            assert_eq!(parts.len(), 3, "3-part code: {}", error.code());
+            assert_eq!(parts[1], "branch");
+        }
+    }
+}

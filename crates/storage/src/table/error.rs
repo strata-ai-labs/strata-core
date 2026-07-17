@@ -51,6 +51,32 @@ pub(crate) enum TableRuntimeError {
 }
 
 impl TableRuntimeError {
+    /// Stable code for this failure (TCP3.2c, #2632), carried across the
+    /// storage API boundary as its `inner_code()` so a test can distinguish
+    /// two table failures without reading display text (Hard Rule 29).
+    ///
+    /// Exhaustive with no catch-all: a new variant is a compile error until
+    /// it is given a code.
+    pub(crate) const fn code(&self) -> &'static str {
+        match self {
+            Self::OutputSinkFailed => "failed_precondition.table.output_sink",
+            Self::InvalidConfig { .. } => "invalid_argument.table.config",
+            Self::InvalidRowOrder { .. } => "invalid_argument.table.row_order",
+            Self::DuplicateInternalKey { .. } => "invalid_argument.table.duplicate_internal_key",
+            Self::InvalidRange { .. } => "invalid_argument.table.range",
+            Self::BuildFormat { .. } => "serialization.table.build_format",
+            Self::DecodeFormat { .. } => "serialization.table.decode_format",
+            Self::SourceRead { .. } => "io.table.source_read",
+            Self::Cache { .. } => "failed_precondition.table.cache",
+            Self::CompactionPolicy { .. } => "failed_precondition.table.compaction_policy",
+            Self::LazyMaterializationDenied { .. } => {
+                "failed_precondition.table.lazy_materialization_denied"
+            }
+        }
+    }
+}
+
+impl TableRuntimeError {
     pub(crate) fn source_read(reason: &'static str) -> Self {
         Self::SourceRead {
             reason,
@@ -215,4 +241,96 @@ fn bounded_hex_bytes(bytes: &[u8]) -> String {
         output.push_str(" bytes)");
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TableRuntimeError;
+    use crate::format::FormatError;
+
+    /// TCP3.2c reachability: construct every `TableRuntimeError` variant and
+    /// assert its code. This both pins the codes and makes the workspace
+    /// error-code guard see each as asserted — a variant that stops being
+    /// constructible, or a code that drifts, fails here. The `code()` match
+    /// is exhaustive with no catch-all, so a new variant is a compile error
+    /// until it is added to both `code()` and this table.
+    #[test]
+    fn every_variant_has_a_unique_well_formed_code() {
+        const CLASSES: &[&str] = &[
+            "invalid_argument",
+            "failed_precondition",
+            "serialization",
+            "io",
+        ];
+        let format = || FormatError::InvalidLength {
+            field: "table_test",
+        };
+        let cases: [(TableRuntimeError, &str); 11] = [
+            (
+                TableRuntimeError::OutputSinkFailed,
+                "failed_precondition.table.output_sink",
+            ),
+            (
+                TableRuntimeError::InvalidConfig {
+                    field: "f",
+                    reason: "r",
+                },
+                "invalid_argument.table.config",
+            ),
+            (
+                TableRuntimeError::InvalidRowOrder {
+                    previous: vec![1],
+                    current: vec![0],
+                },
+                "invalid_argument.table.row_order",
+            ),
+            (
+                TableRuntimeError::DuplicateInternalKey { key: vec![1] },
+                "invalid_argument.table.duplicate_internal_key",
+            ),
+            (
+                TableRuntimeError::InvalidRange { field: "f" },
+                "invalid_argument.table.range",
+            ),
+            (
+                TableRuntimeError::BuildFormat { source: format() },
+                "serialization.table.build_format",
+            ),
+            (
+                TableRuntimeError::DecodeFormat { source: format() },
+                "serialization.table.decode_format",
+            ),
+            (TableRuntimeError::source_read("r"), "io.table.source_read"),
+            (
+                TableRuntimeError::Cache { reason: "r" },
+                "failed_precondition.table.cache",
+            ),
+            (
+                TableRuntimeError::CompactionPolicy { reason: "r" },
+                "failed_precondition.table.compaction_policy",
+            ),
+            (
+                TableRuntimeError::LazyMaterializationDenied { reason: "r" },
+                "failed_precondition.table.lazy_materialization_denied",
+            ),
+        ];
+
+        let mut seen = std::collections::BTreeSet::new();
+        for (error, expected) in &cases {
+            let code = error.code();
+            assert_eq!(&code, expected, "code drifted for {error:?}");
+            let parts: Vec<&str> = code.split('.').collect();
+            assert_eq!(
+                parts.len(),
+                3,
+                "code must be <class>.<area>.<detail>: {code}"
+            );
+            assert!(CLASSES.contains(&parts[0]), "unexpected class in {code}");
+            assert_eq!(parts[1], "table", "area must be `table`: {code}");
+            assert!(
+                seen.insert(code),
+                "two table variants share the code {code}"
+            );
+        }
+    }
 }
