@@ -266,11 +266,17 @@ pub(super) fn map_lifecycle_error(error: LifecycleError) -> StorageApiError {
         | LifecycleError::TableManifestPublicationUncertain { reason, source } => {
             StorageApiError::DurableUncertain { reason, source }
         }
-        LifecycleError::RewritePublicationFailed { reason, source }
-        | LifecycleError::TableManifestPublicationFailed { reason, source } => {
+        ref lifecycle @ (LifecycleError::RewritePublicationFailed { .. }
+        | LifecycleError::TableManifestPublicationFailed { .. }) => {
+            let inner_code = Some(lifecycle.code());
+            let (LifecycleError::RewritePublicationFailed { reason, source }
+            | LifecycleError::TableManifestPublicationFailed { reason, source }) = error
+            else {
+                unreachable!("matched a publication-failed variant above")
+            };
             StorageApiError::LowerLayer {
                 layer: StorageApiLowerLayer::Lifecycle,
-                inner_code: None,
+                inner_code,
                 reason,
                 source,
             }
@@ -285,14 +291,17 @@ pub(super) fn map_lifecycle_error(error: LifecycleError) -> StorageApiError {
             .cloned()
             .map_or_else(
                 || {
-                    StorageApiError::lower_layer_with(
+                    let wrapper = LifecycleError::LowerLayer {
+                        layer: crate::lifecycle::LifecycleLowerLayer::CommitRuntime,
+                        reason: "commit runtime failed",
+                        source: Some(source),
+                    };
+                    let code = wrapper.code();
+                    StorageApiError::lower_layer_coded(
                         StorageApiLowerLayer::Lifecycle,
+                        code,
                         "lifecycle commit runtime failed",
-                        LifecycleError::LowerLayer {
-                            layer: crate::lifecycle::LifecycleLowerLayer::CommitRuntime,
-                            reason: "commit runtime failed",
-                            source: Some(source),
-                        },
+                        wrapper,
                     )
                 },
                 commit_error,
@@ -311,11 +320,15 @@ pub(super) fn map_lifecycle_error(error: LifecycleError) -> StorageApiError {
             limit_bytes,
             reason,
         },
-        other => StorageApiError::lower_layer_with(
-            StorageApiLowerLayer::Lifecycle,
-            "lifecycle runtime failed",
-            other,
-        ),
+        other => {
+            let code = other.code();
+            StorageApiError::lower_layer_coded(
+                StorageApiLowerLayer::Lifecycle,
+                code,
+                "lifecycle runtime failed",
+                other,
+            )
+        }
     }
 }
 
@@ -351,7 +364,7 @@ pub(crate) fn map_maintenance_outcome_for_test(
 
 #[cfg(test)]
 mod tests {
-    use super::{branch_error, commit_error};
+    use super::{branch_error, commit_error, map_lifecycle_error};
     use crate::api::{StorageApiErrorClass, StorageApiLowerLayer};
     use crate::branch::error::BranchRuntimeError;
 
@@ -711,5 +724,39 @@ mod tests {
             assert!(distinct.insert(layer.code()), "sub-layers share a code");
         }
         assert_eq!(distinct.len(), sub_layers.len());
+    }
+
+    /// TCP3.2c: lifecycle failures the API does not model now carry the
+    /// lifecycle layer's own code across the boundary instead of one
+    /// constant.
+    #[test]
+    fn unmapped_lifecycle_errors_carry_their_code_across_the_boundary() {
+        use crate::lifecycle::LifecycleError;
+
+        let mapped = map_lifecycle_error(LifecycleError::CloseFailed { reason: "boom" });
+        assert_eq!(
+            mapped.inner_code(),
+            Some("failed_precondition.lifecycle.close")
+        );
+        assert_eq!(mapped.code(), "internal.storage_api.lifecycle");
+    }
+
+    /// The two publication-failed variants keep distinct codes despite
+    /// sharing the same boundary arm.
+    #[test]
+    fn lifecycle_publication_failures_stay_distinguishable() {
+        use crate::lifecycle::LifecycleError;
+
+        let rewrite = map_lifecycle_error(LifecycleError::RewritePublicationFailed {
+            reason: "r",
+            source: None,
+        });
+        let manifest = map_lifecycle_error(LifecycleError::TableManifestPublicationFailed {
+            reason: "r",
+            source: None,
+        });
+        assert!(rewrite.inner_code().is_some());
+        assert!(manifest.inner_code().is_some());
+        assert_ne!(rewrite.inner_code(), manifest.inner_code());
     }
 }
