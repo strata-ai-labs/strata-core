@@ -36,6 +36,25 @@ pub enum StorageApiLowerLayer {
     Lifecycle,
 }
 
+impl StorageApiLowerLayer {
+    /// The layer's own stable code, used when a lower-layer error reaches
+    /// the boundary without a discriminant of its own. Coarser than the
+    /// inner error's `code()` — it names the failing layer, not the
+    /// failure — but it beats collapsing every layer into one constant.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Backend => "internal.storage_api.backend",
+            Self::Layout => "internal.storage_api.layout",
+            Self::Format => "internal.storage_api.format",
+            Self::Service => "internal.storage_api.service",
+            Self::Table => "internal.storage_api.table",
+            Self::Branch => "internal.storage_api.branch",
+            Self::Commit => "internal.storage_api.commit",
+            Self::Lifecycle => "internal.storage_api.lifecycle",
+        }
+    }
+}
+
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub enum StorageApiError {
@@ -105,6 +124,17 @@ pub enum StorageApiError {
     },
     LowerLayer {
         layer: StorageApiLowerLayer,
+        /// The failing inner layer's stable code (e.g.
+        /// `not_found.branch.branch_id`), carried across the boundary so
+        /// callers — and tests, per Hard Rule 29 — can tell one
+        /// lower-layer failure from another without reading `reason`.
+        ///
+        /// Deliberately NOT this error's `code()`: from the API's
+        /// perspective an unmapped lower-layer failure IS internal, and
+        /// `code()` must keep agreeing with `class()`. This is diagnostic
+        /// detail, not a reclassification. `None` while a layer still has
+        /// no discriminant (TCP3.2b/c wire Commit and Table).
+        inner_code: Option<&'static str>,
         reason: &'static str,
         source: Option<Arc<dyn Error + Send + Sync + 'static>>,
     },
@@ -132,7 +162,7 @@ impl StorageApiError {
             Self::IncompatibleLayout { .. } => {
                 "failed_precondition.storage_api.incompatible_layout"
             }
-            Self::LowerLayer { .. } => "internal.storage_api.lower_layer",
+            Self::LowerLayer { layer, .. } => layer.code(),
         }
     }
 
@@ -219,6 +249,10 @@ impl StorageApiError {
         }
     }
 
+    /// Wrap a lower-layer error that has no stable discriminant yet. The
+    /// boundary code degrades to the layer's own code; prefer
+    /// [`Self::lower_layer_coded`] wherever the inner error implements
+    /// `code()` (TCP3.2 is converting these layer by layer).
     pub fn lower_layer_with(
         layer: StorageApiLowerLayer,
         reason: &'static str,
@@ -226,8 +260,38 @@ impl StorageApiError {
     ) -> Self {
         Self::LowerLayer {
             layer,
+            inner_code: None,
             reason,
             source: Some(Arc::new(source)),
+        }
+    }
+
+    /// Wrap a lower-layer error, carrying its stable code to the boundary
+    /// so the specific failure survives the crossing.
+    pub fn lower_layer_coded(
+        layer: StorageApiLowerLayer,
+        inner_code: &'static str,
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::LowerLayer {
+            layer,
+            inner_code: Some(inner_code),
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
+
+    /// The failing inner layer's stable code, when the layer has a
+    /// discriminant. `None` for every other variant (their `code()` is
+    /// already specific) and for layers TCP3.2 has not wired yet.
+    ///
+    /// This is what a test asserts to distinguish two lower-layer failures
+    /// without reading display text (Hard Rule 29).
+    pub const fn inner_code(&self) -> Option<&'static str> {
+        match self {
+            Self::LowerLayer { inner_code, .. } => *inner_code,
+            _ => None,
         }
     }
 

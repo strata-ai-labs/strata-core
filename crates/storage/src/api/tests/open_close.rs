@@ -223,7 +223,7 @@ fn close_failure_preserves_source_chain() {
         .close()
         .expect_err("missing writer guard fails close");
 
-    assert_eq!(error.code(), "internal.storage_api.lower_layer");
+    assert_eq!(error.code(), "internal.storage_api.lifecycle");
     assert_eq!(error.class(), StorageApiErrorClass::Internal);
     let source = error.source().expect("lifecycle source is preserved");
     assert!(source.is::<crate::lifecycle::LifecycleError>());

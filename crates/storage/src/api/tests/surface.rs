@@ -223,7 +223,7 @@ fn storage_api_error_source_chain_is_preserved() {
         SourceError,
     );
 
-    assert_eq!(error.code(), "internal.storage_api.lower_layer");
+    assert_eq!(error.code(), "internal.storage_api.service");
     assert!(error.source().is_some());
 }
 

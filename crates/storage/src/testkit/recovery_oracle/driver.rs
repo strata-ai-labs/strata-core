@@ -666,7 +666,7 @@ mod tests {
         match result {
             Ok(_) => panic!("corruption was silently tolerated — open succeeded"),
             Err(error) => {
-                assert_eq!(error.code(), "internal.storage_api.lower_layer");
+                assert_eq!(error.code(), "internal.storage_api.lifecycle");
                 assert_eq!(error.class(), StorageApiErrorClass::Internal);
                 assert!(
                     matches!(

@@ -148,10 +148,6 @@ pub(crate) enum BranchCompactionInvalidity {
 
 impl BranchCompactionInvalidity {
     /// Stable code suitable for telemetry and test assertions.
-    #[allow(
-        dead_code,
-        reason = "tests in this crate assert on the code() string; downstream crates will consume it"
-    )]
     pub(crate) const fn code(self) -> &'static str {
         match self {
             Self::Generic(_) => "failed_precondition.branch.invalid_compaction",
@@ -304,16 +300,12 @@ impl BranchRuntimeError {
     /// `BranchCompactionInvalidity` reason; tests can therefore assert
     /// on `error.code() == BranchCompactionInvalidity::ProofStale.code()`
     /// without depending on the human-readable display text.
-    #[allow(
-        dead_code,
-        reason = "tests in this crate assert on the code() string; downstream crates will consume it"
-    )]
     pub(crate) const fn code(&self) -> &'static str {
         match self {
             Self::InvalidConfig { .. } => "failed_precondition.branch.config",
             Self::InvalidBranchState { .. } => "failed_precondition.branch.state",
-            Self::BranchNotFound { .. } => "not_found.branch",
-            Self::BranchAlreadyExists { .. } => "already_exists.branch",
+            Self::BranchNotFound { .. } => "not_found.branch.branch_id",
+            Self::BranchAlreadyExists { .. } => "already_exists.branch.branch_id",
             Self::InvalidBranchRow { .. } => "failed_precondition.branch.row",
             Self::InvalidReadBound { .. } => "failed_precondition.branch.read_bound",
             Self::InsufficientTimestampHistory { .. } => {
