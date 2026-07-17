@@ -31,7 +31,16 @@ cargo +nightly fuzz run format_wal_commit_payload
 cargo +nightly fuzz run format_wal_record
 cargo +nightly fuzz run service_quarantine
 cargo +nightly fuzz run service_snapshot
+cargo +nightly fuzz run layout_object_name
+cargo +nightly fuzz run layout_id_roundtrip
 ```
+
+L2 object-layout classification is fuzzed by `layout_object_name` (arbitrary
+name text through every `classify_*` family — a malformed name read during a
+recovery `list` must never panic) and `layout_id_roundtrip` (every canonical
+WAL-segment / snapshot name must classify back to its exact u64 id). The
+`layer_fuzz_presence_guard` test asserts every decoder layer keeps at least one
+target, so this coverage cannot silently regress.
 
 L5 table-runtime behavior is covered by the normal `table_runtime_properties`
 proptest route, the `table_runtime_reader` arbitrary-byte open target, the
