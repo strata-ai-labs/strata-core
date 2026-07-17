@@ -81,8 +81,6 @@ const AREAS: &[&str] = &[
 const ALLOWED_UNASSERTED: &[(&str, &str)] = &[
     // --- storage internal-layer codes (surfaced by the TCP3.2a area fix) ---
     ("already_exists.lifecycle.branch", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
-    ("already_exists.storage_api.branch", "L9 boundary code; asserted by TCP3.3 L9 negative paths"),
-    ("conflict.storage_api.conflict", "L9 boundary code; asserted by TCP3.3 L9 negative paths"),
     ("corruption.lifecycle.quarantine", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
     ("failed_precondition.lifecycle.branch", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
     ("failed_precondition.lifecycle.branch_generation", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
@@ -96,10 +94,6 @@ const ALLOWED_UNASSERTED: &[(&str, &str)] = &[
     ("failed_precondition.lifecycle.table_runtime", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
     ("failed_precondition.lifecycle.timestamp_history", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
     ("internal.lifecycle.layout", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
-    ("internal.storage_api.backend", "L9 boundary code; asserted by TCP3.3 L9 negative paths"),
-    ("internal.storage_api.format", "L9 boundary code; asserted by TCP3.3 L9 negative paths"),
-    ("internal.storage_api.layout", "L9 boundary code; asserted by TCP3.3 L9 negative paths"),
-    ("internal.storage_api.table", "L9 boundary code; asserted by TCP3.3 L9 negative paths"),
     ("resource_exhausted.lifecycle.branch_generation", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
     ("serialization.lifecycle.format", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
     ("unavailable.lifecycle.rewrite_output_sweep_race", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),

@@ -1269,3 +1269,99 @@ fn assert_storage_row_matches_model(
     }
     Ok(())
 }
+
+// --- TCP3.3c: L9 negative paths for timeline / immutable-source / maintenance
+// --- methods the deep-dive found lacked negative coverage. Each asserts the
+// --- stable code (not just class) so the boundary contract is pinned.
+
+#[test]
+fn scan_immutable_sources_on_a_missing_branch_rejects() {
+    let mut runtime = open_runtime();
+    commit_put(&mut runtime, b"a", b"a", 10);
+
+    let error = runtime
+        .scan_immutable_sources(&ImmutableSourceScanReadRequest::new(
+            other_branch(),
+            engine_space(),
+            ScanRange::new(Some(api_key(b"a")), Some(api_key(b"z"))).expect("valid range"),
+            ReadBound::Latest,
+        ))
+        .expect_err("scan on a branch that does not exist must reject");
+    assert_eq!(error.code(), "not_found.storage_api.branch");
+}
+
+#[test]
+fn scan_immutable_sources_on_a_closed_runtime_rejects() {
+    let mut runtime = open_runtime();
+    commit_put(&mut runtime, b"a", b"a", 10);
+    runtime.close().expect("close");
+
+    let error = runtime
+        .scan_immutable_sources(&ImmutableSourceScanReadRequest::new(
+            branch(),
+            engine_space(),
+            ScanRange::new(Some(api_key(b"a")), Some(api_key(b"z"))).expect("valid range"),
+            ReadBound::Latest,
+        ))
+        .expect_err("closed runtime rejects immutable-source scan");
+    assert_eq!(error.code(), "failed_precondition.storage_api.state");
+}
+
+#[test]
+fn timeline_lookups_on_a_missing_branch_reject() {
+    let mut runtime = open_runtime();
+    commit_put(&mut runtime, b"a", b"a", 10);
+
+    let bounds = runtime
+        .timeline_bounds(TimelineBoundsRequest::new(other_branch()))
+        .expect_err("timeline bounds on a missing branch must reject");
+    assert_eq!(bounds.code(), "not_found.storage_api.branch");
+
+    let at = runtime
+        .lookup_version_at_or_before_timestamp(TimestampLookupRequest::new(
+            other_branch(),
+            Timestamp::from_micros(5),
+        ))
+        .expect_err("version-at-timestamp on a missing branch must reject");
+    assert_eq!(at.code(), "not_found.storage_api.branch");
+
+    let for_version = runtime
+        .lookup_timestamp_for_version(VersionLookupRequest::new(
+            other_branch(),
+            CommitVersion::new(1),
+        ))
+        .expect_err("timestamp-for-version on a missing branch must reject");
+    assert_eq!(for_version.code(), "not_found.storage_api.branch");
+}
+
+#[test]
+fn timestamp_lookup_before_retained_history_reports_history_unavailable() {
+    let mut runtime = open_runtime();
+    commit_put(&mut runtime, b"a", b"a", 100);
+
+    // A timestamp strictly before the earliest retained commit.
+    let error = runtime
+        .lookup_version_at_or_before_timestamp(TimestampLookupRequest::new(
+            branch(),
+            Timestamp::from_micros(1),
+        ))
+        .expect_err("timestamp before retained history must reject");
+    assert_eq!(error.code(), "history_unavailable.storage_api.timestamp");
+}
+
+#[test]
+fn maintenance_drain_on_a_closed_runtime_rejects() {
+    let mut runtime = open_runtime();
+    commit_put(&mut runtime, b"a", b"a", 10);
+    runtime.close().expect("close");
+
+    let drain = runtime
+        .drain_maintenance()
+        .expect_err("closed runtime rejects maintenance drain");
+    assert_eq!(drain.code(), "failed_precondition.storage_api.state");
+
+    let run = runtime
+        .run_next_maintenance()
+        .expect_err("closed runtime rejects run-next maintenance");
+    assert_eq!(run.code(), "failed_precondition.storage_api.state");
+}

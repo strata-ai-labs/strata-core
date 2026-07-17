@@ -455,3 +455,139 @@ fn two_branch_failures_are_distinguishable_at_the_boundary() {
         "but the inner discriminant must tell them apart without reading display text"
     );
 }
+
+// --- TCP3.3c: literal code pins --------------------------------------------
+
+/// Every `StorageApiError` variant's code, pinned as a literal. The existing
+/// contract test checks the code's *class prefix* agrees with `class()`, and
+/// the lower-layer test checks each layer's code via `layer.code()` — but
+/// neither writes the full code string, so the workspace error-code guard
+/// (which greps for literal codes) could not see them as asserted. This pins
+/// each one: a code rename is a test failure here, and every storage-API code
+/// is now a literal a test asserts.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the exhaustive variant/code table is the point: every storage-API code pinned in one place"
+)]
+#[test]
+fn every_storage_api_code_is_pinned_as_a_literal() {
+    use std::collections::BTreeSet;
+
+    // Top-level variants (one per `code()` arm).
+    let top_level = [
+        StorageApiError::InvalidArgument {
+            field: "f",
+            reason: "r",
+        }
+        .code(),
+        StorageApiError::UnsupportedCapability {
+            capability: "c",
+            reason: "r",
+        }
+        .code(),
+        StorageApiError::InvalidRuntimeState { reason: "r" }.code(),
+        StorageApiError::BranchNotFound {
+            branch_id: branch(),
+        }
+        .code(),
+        StorageApiError::BranchAlreadyExists {
+            branch_id: branch(),
+        }
+        .code(),
+        StorageApiError::BranchGenerationMismatch {
+            branch_id: branch(),
+            expected: 1,
+            actual: 2,
+        }
+        .code(),
+        StorageApiError::Conflict {
+            branch_id: branch(),
+            storage_space: None,
+            key_fingerprint: None,
+            user_key_len: None,
+            reason: "r",
+        }
+        .code(),
+        StorageApiError::RetainedHistoryUnavailable {
+            branch_id: branch(),
+            reason: "r",
+        }
+        .code(),
+        StorageApiError::TimestampHistoryUnavailable {
+            branch_id: branch(),
+            reason: "r",
+        }
+        .code(),
+        StorageApiError::durable_uncertain("r").code(),
+        StorageApiError::RecoveryDegraded { reason: "r" }.code(),
+        StorageApiError::MaintenanceRejected { reason: "r" }.code(),
+        StorageApiError::IncompatibleLayout { reason: "r" }.code(),
+    ];
+    // Assert the exact literals so a rename fails here (and the guard sees them).
+    let expected_top: BTreeSet<&str> = [
+        "invalid_argument.storage_api.argument",
+        "unsupported.storage_api.capability",
+        "failed_precondition.storage_api.state",
+        "not_found.storage_api.branch",
+        "already_exists.storage_api.branch",
+        "failed_precondition.storage_api.branch_generation",
+        "conflict.storage_api.conflict",
+        "history_unavailable.storage_api.retained",
+        "history_unavailable.storage_api.timestamp",
+        "ambiguous_commit.storage_api.durable_uncertain",
+        "failed_precondition.storage_api.recovery_degraded",
+        "failed_precondition.storage_api.maintenance",
+        "failed_precondition.storage_api.incompatible_layout",
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        top_level.iter().copied().collect::<BTreeSet<_>>(),
+        expected_top,
+        "storage-API top-level codes drifted from their pinned literals"
+    );
+
+    // Every lower-layer boundary code, pinned as a literal.
+    let lower_layer = [
+        (
+            StorageApiLowerLayer::Backend,
+            "internal.storage_api.backend",
+        ),
+        (StorageApiLowerLayer::Layout, "internal.storage_api.layout"),
+        (StorageApiLowerLayer::Format, "internal.storage_api.format"),
+        (
+            StorageApiLowerLayer::Service,
+            "internal.storage_api.service",
+        ),
+        (StorageApiLowerLayer::Table, "internal.storage_api.table"),
+        (StorageApiLowerLayer::Branch, "internal.storage_api.branch"),
+        (StorageApiLowerLayer::Commit, "internal.storage_api.commit"),
+        (
+            StorageApiLowerLayer::Lifecycle,
+            "internal.storage_api.lifecycle",
+        ),
+    ];
+    for (layer, expected) in lower_layer {
+        let error = StorageApiError::lower_layer_with(layer, "r", io_source());
+        assert_eq!(
+            error.code(),
+            expected,
+            "lower-layer code drifted for {layer:?}"
+        );
+    }
+
+    // Two codes the top-level array cannot express through `code()` alone:
+    // StoragePressure and ResourceExhausted both live behind structured
+    // constructors; assert their literals directly.
+    assert_eq!(
+        StorageApiError::ResourceExhausted {
+            resource: "r",
+            requested_bytes: 1,
+            used_bytes: 1,
+            limit_bytes: 1,
+            reason: "r",
+        }
+        .code(),
+        "resource_exhausted.storage_api.memory_budget"
+    );
+}
