@@ -1,0 +1,7 @@
+{
+  "class": "invalid_argument",
+  "code": "invalid_argument.executor.kv_batch_duplicate_key",
+  "commit_outcome": "not_started",
+  "retry_policy": "never",
+  "retryable": false
+}

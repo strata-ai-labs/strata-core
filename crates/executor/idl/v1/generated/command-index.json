@@ -6335,7 +6335,13 @@
       ],
       "fixtures": {
         "request": "requests/v1/kv/batch_put.json",
-        "response": "responses/v1/kv/batch_mutation_ok.json"
+        "response": "responses/v1/kv/batch_mutation_ok.json",
+        "error_cases": [
+          {
+            "request": "requests/v1/kv/batch_put_duplicate_key.json",
+            "expected_error": "responses/v1/errors/kv/batch_put_duplicate_key.json"
+          }
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/kv.yaml",
@@ -6581,6 +6587,12 @@
         "setup": [
           "requests/v1/kv/put.json",
           "requests/v1/setup/kv_put_a_two.json"
+        ],
+        "error_cases": [
+          {
+            "request": "requests/v1/kv/get_unretained_version.json",
+            "expected_error": "responses/v1/errors/kv/get_unretained_version.json"
+          }
         ]
       },
       "source": {
@@ -8183,6 +8195,12 @@
           "requests/v1/vector/collection_create.json",
           "requests/v1/vector/upsert.json",
           "requests/v1/setup/vector_upsert_doc_b.json"
+        ],
+        "error_cases": [
+          {
+            "request": "requests/v1/vector/get_missing_collection.json",
+            "expected_error": "responses/v1/errors/vector/get_missing_collection.json"
+          }
         ]
       },
       "source": {

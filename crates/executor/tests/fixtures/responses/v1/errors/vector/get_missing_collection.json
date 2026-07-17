@@ -1,0 +1,7 @@
+{
+  "class": "not_found",
+  "code": "not_found.engine.vector_collection",
+  "commit_outcome": "not_applicable",
+  "retry_policy": "never",
+  "retryable": false
+}

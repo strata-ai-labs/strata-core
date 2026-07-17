@@ -96,6 +96,9 @@ commands:
         - requests/v1/setup/vector_upsert_doc_b.json
       request: requests/v1/vector/get.json
       response: responses/v1/vector/get_found.json
+      error_cases:
+        - request: requests/v1/vector/get_missing_collection.json
+          expected_error: responses/v1/errors/vector/get_missing_collection.json
   - id: vector.history
     kind: read.history
     title: Read vector history

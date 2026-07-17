@@ -236,6 +236,13 @@ pub struct FixtureRefs {
     /// in `responses` must be reproduced by one of these.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cases: Vec<FixtureCase>,
+    /// Requests that must FAIL, each pinned to the stable structured fields of
+    /// the `ErrorStatus` envelope they produce (TCP3.8a). Replayed like `cases`
+    /// but the execution is expected to return an error, and the guard diffs
+    /// the envelope's code/class/retry/commit-outcome against the fixture —
+    /// the only replay coverage of the engine->executor error mapping.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub error_cases: Vec<ErrorFixtureCase>,
 }
 
 /// One executed fixture pair for the fixture-behavior guard.
@@ -249,6 +256,26 @@ pub struct FixtureCase {
     pub request: String,
     /// Response fixture the execution must reproduce.
     pub response: String,
+}
+
+/// One executed error fixture for the fixture-behavior guard: a request whose
+/// execution must fail, pinned to the stable structured fields of the resulting
+/// `ErrorStatus` (TCP3.8a).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ErrorFixtureCase {
+    /// Setup request fixtures replayed first (may seed state the failing
+    /// request then trips over).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setup: Vec<String>,
+    /// Request fixture executed for this case; its execution must return an
+    /// error.
+    pub request: String,
+    /// Fixture pinning the expected stable error fields (code, class,
+    /// `retry_policy`, `retryable`, `commit_outcome`). Prose and per-run fields
+    /// (`message`, `reference_id`, `trace_id`, `docs_url`) are deliberately not
+    /// pinned — they churn and are asserted elsewhere.
+    pub expected_error: String,
 }
 
 /// Authored source locations.
