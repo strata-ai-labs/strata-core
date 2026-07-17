@@ -548,3 +548,116 @@ fn off_lock_fork_and_materialize_under_concurrent_reads() {
     assert_eq!(read_checked(&runtime, child, STRESS_KEYS), Some(latest));
     runtime.close().expect("close durable runtime");
 }
+
+// ---- L6 families #23 / #24 — COW correctness under concurrent branch ops ----
+// The single-threaded branch suite proves fork/clear/pinned-view semantics in
+// isolation. These prove they hold while writers and background maintenance run
+// concurrently: a fork must capture a consistent COW snapshot mid-write, and a
+// reader must never tear across a background flush/compaction boundary.
+
+use std::sync::atomic::AtomicU64;
+
+const FORK_ITERATIONS: u64 = 200;
+
+/// Fork the write branch into a fresh child, and immediately verify the child
+/// shows one atomic batch (never a torn read) — the COW snapshot must be
+/// internally consistent no matter which instant of the writer's stream it
+/// captured. Returns the number of forks that observed a seeded state.
+fn forker_loop(
+    runtime: &StorageRuntime<'_>,
+    source: BranchId,
+    child_seq: &AtomicU64,
+    start: &Barrier,
+) -> u64 {
+    start.wait();
+    let mut observed = 0;
+    for _ in 0..FORK_ITERATIONS {
+        let seq = child_seq.fetch_add(1, Ordering::Relaxed);
+        let mut bytes = [0xC0u8; BranchId::BYTE_LEN];
+        bytes[..8].copy_from_slice(&seq.to_be_bytes());
+        let child = BranchId::from_bytes(bytes);
+
+        runtime
+            .branch(&crate::api::BranchRequest::new(
+                child,
+                crate::api::BranchAction::ForkCurrent { source },
+                Some(crate::api::BranchGeneration::new(1)),
+            ))
+            .expect("fork current under concurrent writes");
+
+        // read_checked panics on a torn read (mixed batch numbers or a partial
+        // key set). A consistent COW fork can only ever show one whole batch.
+        if read_checked(runtime, child, STRESS_KEYS).is_some() {
+            observed += 1;
+        }
+    }
+    observed
+}
+
+/// #23: a branch forked while a writer hammers it must capture a consistent
+/// copy-on-write snapshot — every fork sees exactly one atomic batch, never a
+/// mixture of the in-flight write and the prior state.
+#[test]
+fn fork_captures_a_consistent_snapshot_while_a_writer_races() {
+    let mut runtime = open_cache();
+    let source = StorageRuntime::default_branch_id_for_test();
+    // Seed batch 0 so a fork that lands after it always sees a full key set.
+    runtime
+        .commit(&stress_batch(source, 0, STRESS_KEYS))
+        .expect("seed batch 0");
+
+    let done = AtomicBool::new(false);
+    let child_seq = AtomicU64::new(0);
+    let start = Barrier::new(2);
+    let mut forks_with_state = 0;
+
+    std::thread::scope(|scope| {
+        let forker = scope.spawn(|| forker_loop(&runtime, source, &child_seq, &start));
+        // Writer streams atomic batches into the source branch throughout.
+        writer_loop(&runtime, source, &done, &start);
+        forks_with_state = forker.join().expect("forker thread");
+    });
+
+    // The forker ran to completion without a single torn read (any tear panics
+    // inside read_checked), and observed real seeded state — not a vacuous pass.
+    assert!(
+        forks_with_state > 0,
+        "no fork observed a seeded snapshot ({forks_with_state} of {FORK_ITERATIONS})"
+    );
+    runtime.close().expect("close cache runtime");
+}
+
+/// #24: readers holding pinned views must never tear while background flush and
+/// compaction rewrite the branch's LSM underneath them. The durable-background
+/// runtime forces frequent flush/compaction (tiny WAL thresholds) concurrently
+/// with the reader/writer race.
+#[test]
+fn pinned_reads_never_tear_across_background_flush_and_compaction() {
+    let mut runtime = open_durable_background("l6_pinned_reads_vs_maintenance");
+    let branch = StorageRuntime::default_branch_id_for_test();
+    runtime
+        .commit(&stress_batch(branch, 0, STRESS_KEYS))
+        .expect("seed batch 0");
+
+    let done = AtomicBool::new(false);
+    let start = Barrier::new(STRESS_READERS + 1);
+
+    std::thread::scope(|scope| {
+        for _ in 0..STRESS_READERS {
+            // reader_loop scans Latest repeatedly; read_checked panics on any
+            // torn read, including one straddling a flush or compaction rewrite.
+            scope.spawn(|| reader_loop(&runtime, branch, &done, &start));
+        }
+        scope.spawn(|| writer_loop(&runtime, branch, &done, &start));
+    });
+
+    // Final state is the writer's last batch, intact after all the background
+    // flush/compaction churn.
+    let final_batch = read_checked(&runtime, branch, STRESS_KEYS).expect("final read");
+    assert_eq!(
+        final_batch,
+        STRESS_BATCHES - 1,
+        "final visible batch mismatch"
+    );
+    runtime.close().expect("close durable background runtime");
+}
