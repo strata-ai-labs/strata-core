@@ -138,7 +138,7 @@ coverage. Slice status tracks in the table below as slices merge.
 
 | # | Slice | Status |
 |---|---|---|
-| 3.0 | Tracking machinery (product-only ratchets, workspace error-code guard) | Planned |
+| 3.0 | Tracking machinery (product-only ratchets, workspace error-code guard) | **Implemented (2026-07-17)** — `crates/storage/tests/error_code_assertion_guard.rs` (workspace scan: every 3-part code asserted or allowlisted with its owning slice; 65 seeded entries; shrink-only both ways — entries die when their code gains a test or stops existing); nightly coverage gate replaced by `scripts/coverage_floors.py` (per-crate product-only line floors, testkit/test infra excluded, ratchet-up hints; wasm excluded by design — its tests run on wasm32); `cli-command-coverage.md` marked superseded, deleted by TCP3.10's clap-tree guard |
 | 3.1 | Core (goldens, adversarial deserialize, doc-parity guard) | Planned |
 | 3.2 | Storage inner-error assertability | Planned |
 | 3.3 | Storage decode + fault edges (L2 fuzz, L1 recovery faults, L9 negatives) | Planned |
