@@ -46,6 +46,13 @@ const CLASSES: &[&str] = &[
     "serialization",
     "internal",
     "data_loss",
+    // `unknown` and `deadline_exceeded` are NOT declared error classes — they
+    // are used as class prefixes by 8 lifecycle-internal codes (issue #2646).
+    // Tracked here (rather than left invisible) so the guard requires them
+    // asserted; when #2646 renames them to declared classes, drop these two
+    // and the lifecycle construct-all updates in lockstep.
+    "unknown",
+    "deadline_exceeded",
 ];
 
 /// Areas that form the middle segment of a stable 3-part code.
@@ -80,23 +87,6 @@ const AREAS: &[&str] = &[
 /// (delete the dead entry).
 const ALLOWED_UNASSERTED: &[(&str, &str)] = &[
     // --- storage internal-layer codes (surfaced by the TCP3.2a area fix) ---
-    ("already_exists.lifecycle.branch", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
-    ("corruption.lifecycle.quarantine", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
-    ("failed_precondition.lifecycle.branch", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
-    ("failed_precondition.lifecycle.branch_generation", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
-    ("failed_precondition.lifecycle.branch_history", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
-    ("failed_precondition.lifecycle.branch_state", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
-    ("failed_precondition.lifecycle.fork_source_unflushed", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
-    ("failed_precondition.lifecycle.pinned_view_release", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
-    ("failed_precondition.lifecycle.quarantine_publication", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
-    ("failed_precondition.lifecycle.storage_pressure", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
-    ("failed_precondition.lifecycle.table_manifest_branch_install", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
-    ("failed_precondition.lifecycle.table_runtime", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
-    ("failed_precondition.lifecycle.timestamp_history", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
-    ("internal.lifecycle.layout", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
-    ("resource_exhausted.lifecycle.branch_generation", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
-    ("serialization.lifecycle.format", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
-    ("unavailable.lifecycle.rewrite_output_sweep_race", "lifecycle inner code; asserted by TCP3.2c lifecycle hop"),
     ("data_loss.engine.branch_id", "corruption detector; asserted by TCP3.15 corruption injection"),
     ("data_loss.engine.control_name", "corruption detector; asserted by TCP3.15 corruption injection"),
     ("data_loss.engine.graph_edge_record", "corruption detector; asserted by TCP3.15 corruption injection"),

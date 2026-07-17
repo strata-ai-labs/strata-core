@@ -1296,3 +1296,384 @@ impl fmt::Display for LifecycleLowerLayer {
         formatter.write_str(name)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ClosePhase, LifecycleError, LifecycleLowerLayer, LifecycleStoragePressureReason,
+        LifecycleStoragePressureSeverity, StorageBudgetPool, StorageMode,
+    };
+    use crate::backend::BackendCapability;
+    use strata_core::{BranchId, CommitVersion};
+
+    fn object_name() -> crate::object::ObjectName {
+        crate::layout::ObjectLayout::snapshot(1).expect("snapshot name")
+    }
+
+    /// TCP3.3d reachability: construct every named `LifecycleError` variant and
+    /// every `LowerLayer` sub-layer, and assert its code. Pins each code (a
+    /// rename fails here) and makes the workspace error-code guard see each as
+    /// asserted. The `code()` match is exhaustive with no catch-all, so a new
+    /// variant is a compile error until it is added to both `code()` and this
+    /// table.
+    ///
+    /// NOTE: the `unknown.*` and `deadline_exceeded.*` codes use class prefixes
+    /// that are not declared error classes (issue #2646). They are pinned here
+    /// as-is; when #2646 renames them this table updates in lockstep.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the exhaustive variant/code table is the point: every lifecycle code pinned in one place"
+    )]
+    #[test]
+    fn every_lifecycle_code_is_pinned_and_unique() {
+        let branch = BranchId::from_bytes([0x1c; BranchId::BYTE_LEN]);
+        let _ = &BackendCapability::ListPrefix; // ensure the import is load-bearing
+        let named: [(LifecycleError, &str); 47] = [
+            (
+                LifecycleError::InvalidConfig {
+                    field: "f",
+                    reason: "r",
+                },
+                "invalid_argument.lifecycle.config",
+            ),
+            (
+                LifecycleError::InvalidLifecycleState { reason: "r" },
+                "failed_precondition.lifecycle.state",
+            ),
+            (
+                LifecycleError::InvalidOpenPlan { reason: "r" },
+                "invalid_argument.lifecycle.open_plan",
+            ),
+            (
+                LifecycleError::BranchAlreadyExists { branch_id: branch },
+                "already_exists.lifecycle.branch",
+            ),
+            (
+                LifecycleError::BranchNotFound { branch_id: branch },
+                "not_found.lifecycle.branch",
+            ),
+            (
+                LifecycleError::BranchNotWritable {
+                    branch_id: branch,
+                    state: "deleted",
+                },
+                "failed_precondition.lifecycle.branch",
+            ),
+            (
+                LifecycleError::BranchGenerationMismatch {
+                    branch_id: branch,
+                    expected: 1,
+                    actual: 2,
+                },
+                "failed_precondition.lifecycle.branch_generation",
+            ),
+            (
+                LifecycleError::BranchGenerationExhausted {
+                    branch_id: branch,
+                    generation: 1,
+                },
+                "resource_exhausted.lifecycle.branch_generation",
+            ),
+            (
+                LifecycleError::BranchHistoryUnavailable {
+                    branch_id: branch,
+                    reason: "r",
+                },
+                "failed_precondition.lifecycle.branch_history",
+            ),
+            (
+                LifecycleError::InsufficientTimestampHistory {
+                    branch_id: branch,
+                    reason: "r",
+                },
+                "failed_precondition.lifecycle.timestamp_history",
+            ),
+            (
+                LifecycleError::PinnedViewReleaseBlocked {
+                    branch_id: branch,
+                    reason: "r",
+                },
+                "failed_precondition.lifecycle.pinned_view_release",
+            ),
+            (
+                LifecycleError::SourceHasUnflushedRows { branch_id: branch },
+                "failed_precondition.lifecycle.fork_source_unflushed",
+            ),
+            (
+                LifecycleError::BranchStateMismatch {
+                    expected: branch,
+                    actual: branch,
+                },
+                "failed_precondition.lifecycle.branch_state",
+            ),
+            (
+                LifecycleError::CapabilityMismatch {
+                    storage_mode: StorageMode::DurableLocalStandard,
+                    required: Vec::new(),
+                    missing: Vec::new(),
+                },
+                "failed_precondition.lifecycle.capability",
+            ),
+            (
+                LifecycleError::RecoveryFailed { reason: "r" },
+                "corruption.lifecycle.recovery",
+            ),
+            (
+                LifecycleError::MaintenanceFailed { reason: "r" },
+                "failed_precondition.lifecycle.maintenance",
+            ),
+            (
+                LifecycleError::MaintenanceQueueFull { reason: "r" },
+                "resource_exhausted.lifecycle.maintenance_queue",
+            ),
+            (
+                LifecycleError::MaintenanceTaskFailed { reason: "r" },
+                "failed_precondition.lifecycle.maintenance_task",
+            ),
+            (
+                LifecycleError::StoragePressureRejected {
+                    branch_id: branch,
+                    severity: LifecycleStoragePressureSeverity::Urgent,
+                    pressure_reason: LifecycleStoragePressureReason::FrozenBacklog,
+                    retryable: true,
+                    reason: "r",
+                },
+                "failed_precondition.lifecycle.storage_pressure",
+            ),
+            (
+                LifecycleError::StorageBudgetExceeded {
+                    pool: StorageBudgetPool::TableReader,
+                    requested_bytes: 1,
+                    used_bytes: 1,
+                    limit_bytes: 1,
+                    requested_count: 0,
+                    used_count: 0,
+                    limit_count: None,
+                    reason: "r",
+                },
+                "resource_exhausted.lifecycle.storage_budget",
+            ),
+            (
+                LifecycleError::FlushPublicationFailed { reason: "r" },
+                "failed_precondition.lifecycle.flush_publication",
+            ),
+            (
+                LifecycleError::FlushPublicationUncertain {
+                    reason: "r",
+                    source: None,
+                },
+                "unknown.lifecycle.flush_publication",
+            ),
+            (
+                LifecycleError::FlushPublicationOrphaned {
+                    object: None,
+                    reason: "r",
+                    source: None,
+                },
+                "unknown.lifecycle.flush_publication_orphan",
+            ),
+            (
+                LifecycleError::RewritePublicationFailed {
+                    reason: "r",
+                    source: None,
+                },
+                "failed_precondition.lifecycle.rewrite_publication",
+            ),
+            (
+                LifecycleError::RewritePublicationUncertain {
+                    objects: Vec::new(),
+                    reason: "r",
+                    source: None,
+                },
+                "unknown.lifecycle.rewrite_publication",
+            ),
+            (
+                LifecycleError::RewritePublicationOrphaned {
+                    objects: Vec::new(),
+                    reason: "r",
+                    source: None,
+                },
+                "unknown.lifecycle.rewrite_publication_orphan",
+            ),
+            (
+                LifecycleError::TableManifestPublicationFailed {
+                    reason: "r",
+                    source: None,
+                },
+                "failed_precondition.lifecycle.table_manifest_publication",
+            ),
+            (
+                LifecycleError::TableManifestPublicationUncertain {
+                    reason: "r",
+                    source: None,
+                },
+                "unknown.lifecycle.table_manifest_publication",
+            ),
+            (
+                LifecycleError::TableManifestRecoveryMismatch {
+                    reason: "r",
+                    source: None,
+                },
+                "corruption.lifecycle.table_manifest",
+            ),
+            (
+                LifecycleError::TableManifestBranchInstallFailed {
+                    reason: "r",
+                    source: None,
+                },
+                "failed_precondition.lifecycle.table_manifest_branch_install",
+            ),
+            (
+                LifecycleError::TableManifestCheckpointConflict { reason: "r" },
+                "failed_precondition.lifecycle.table_manifest_checkpoint_conflict",
+            ),
+            (
+                LifecycleError::RewriteOutputRacedSweep {
+                    object: object_name(),
+                },
+                "unavailable.lifecycle.rewrite_output_sweep_race",
+            ),
+            (
+                LifecycleError::CheckpointPublicationFailed { reason: "r" },
+                "failed_precondition.lifecycle.checkpoint_publication",
+            ),
+            (
+                LifecycleError::CheckpointSnapshotOrphaned {
+                    object: None,
+                    reason: "r",
+                },
+                "unknown.lifecycle.checkpoint_snapshot",
+            ),
+            (
+                LifecycleError::RetentionBlocked { reason: "r" },
+                "failed_precondition.lifecycle.retention",
+            ),
+            (
+                LifecycleError::QuarantineProofBlocked { reason: "r" },
+                "failed_precondition.lifecycle.quarantine",
+            ),
+            (
+                LifecycleError::QuarantineInventoryMismatch {
+                    reason: "r",
+                    source: None,
+                },
+                "corruption.lifecycle.quarantine",
+            ),
+            (
+                LifecycleError::QuarantinePublicationFailed {
+                    reason: "r",
+                    source: None,
+                },
+                "failed_precondition.lifecycle.quarantine_publication",
+            ),
+            (
+                LifecycleError::QuarantinePublicationUncertain {
+                    reason: "r",
+                    source: None,
+                },
+                "unknown.lifecycle.quarantine_publication",
+            ),
+            (
+                LifecycleError::PurgeProofBlocked { reason: "r" },
+                "failed_precondition.lifecycle.purge",
+            ),
+            (
+                LifecycleError::QuarantineRepairInconclusive {
+                    reason: "r",
+                    source: None,
+                },
+                "failed_precondition.lifecycle.quarantine_repair",
+            ),
+            (
+                LifecycleError::WalRetentionProofIncomplete { reason: "r" },
+                "failed_precondition.lifecycle.wal_retention",
+            ),
+            (
+                LifecycleError::CloseFailed { reason: "r" },
+                "failed_precondition.lifecycle.close",
+            ),
+            (
+                LifecycleError::CloseTimeout {
+                    phase: ClosePhase::DrainMaintenance,
+                    reason: "r",
+                },
+                "deadline_exceeded.lifecycle.close",
+            ),
+            (
+                LifecycleError::TimelineRecoveryMismatch { reason: "r" },
+                "corruption.lifecycle.timeline",
+            ),
+            (
+                LifecycleError::WalTailRepairRejected { reason: "r" },
+                "failed_precondition.lifecycle.wal_tail_repair",
+            ),
+            (
+                LifecycleError::RecoveryVisibilityFailed {
+                    recovered_visible_version: CommitVersion::new(1),
+                    reason: "r",
+                    source: None,
+                },
+                "failed_precondition.lifecycle.recovery_visibility",
+            ),
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for (error, expected) in &named {
+            assert_eq!(
+                &error.code(),
+                expected,
+                "lifecycle code drifted for {error:?}"
+            );
+            let parts: Vec<&str> = error.code().split('.').collect();
+            assert_eq!(parts.len(), 3, "3-part code: {}", error.code());
+            assert_eq!(
+                parts[1],
+                "lifecycle",
+                "area must be `lifecycle`: {}",
+                error.code()
+            );
+            assert!(
+                seen.insert(error.code()),
+                "two variants share the code {}",
+                error.code()
+            );
+        }
+
+        let layers = [
+            (LifecycleLowerLayer::Backend, "io.lifecycle.backend"),
+            (LifecycleLowerLayer::Layout, "internal.lifecycle.layout"),
+            (
+                LifecycleLowerLayer::Format,
+                "serialization.lifecycle.format",
+            ),
+            (
+                LifecycleLowerLayer::Service,
+                "failed_precondition.lifecycle.service",
+            ),
+            (
+                LifecycleLowerLayer::TableRuntime,
+                "failed_precondition.lifecycle.table_runtime",
+            ),
+            (
+                LifecycleLowerLayer::BranchRuntime,
+                "failed_precondition.lifecycle.branch_runtime",
+            ),
+            (
+                LifecycleLowerLayer::CommitRuntime,
+                "failed_precondition.lifecycle.commit_runtime",
+            ),
+        ];
+        for (layer, expected) in layers {
+            let error = LifecycleError::lower_layer(layer, "r");
+            assert_eq!(
+                error.code(),
+                expected,
+                "lower-layer code drifted for {layer:?}"
+            );
+            assert!(
+                seen.insert(error.code()),
+                "lower-layer shares a code: {}",
+                error.code()
+            );
+        }
+    }
+}
