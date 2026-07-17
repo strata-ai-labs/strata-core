@@ -43,6 +43,7 @@ mod format_fuzz;
 ))]
 mod fs_models;
 mod integration_harness;
+mod layout_fuzz;
 mod leak;
 mod lifecycle;
 #[cfg(all(
@@ -144,6 +145,7 @@ pub use integration_harness::{
     run_storage_stress_harness, CrashRecoveryHarnessOutcome, ServiceFaultWindowHarnessOutcome,
     StorageStressHarnessOutcome,
 };
+pub use layout_fuzz::{assert_u64_id_roundtrips, classify_object_text, LayoutClassifyOutcome};
 pub use leak::{forget_registered, leak_static};
 pub use lifecycle::{
     check_lifecycle_bootstrap_contract, check_lifecycle_branch_lifecycle_contract,

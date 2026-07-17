@@ -222,3 +222,17 @@ doc = false
 bench = false
 
 [workspace]
+
+[[bin]]
+name = "layout_object_name"
+path = "fuzz_targets/layout_object_name.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "layout_id_roundtrip"
+path = "fuzz_targets/layout_id_roundtrip.rs"
+test = false
+doc = false
+bench = false
