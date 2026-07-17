@@ -190,27 +190,27 @@ jobs:
         run: |
           cargo llvm-cov --locked --workspace --lcov --output-path lcov.info
           cargo llvm-cov report --summary-only | tee coverage-summary.txt
+          cargo llvm-cov report > coverage-per-file.txt
           {
             echo '## Workspace coverage'
             echo '```'
             cat coverage-summary.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Coverage floor gate
-        # Ratchet discipline: the floor only moves up, never down, and a
-        # raise is committed here alongside the coverage that earned it.
-        # Baseline 2026-07-16: workspace 73.6% region.
-        env:
-          WORKSPACE_REGION_FLOOR: "73.0"
+      - name: Per-crate product-only coverage floor gate
+        # TCP3.0: supersedes the workspace-mixed floor. Product code only
+        # (testkit/test infra excluded — the raw workspace number
+        # understates storage by 16 points); floors and their ratchet
+        # discipline live in scripts/coverage_floors.py.
         run: |
-          total=$(awk '/^TOTAL/ {print $4}' coverage-summary.txt | tr -d '%')
-          echo "workspace region coverage: ${total}% (floor ${WORKSPACE_REGION_FLOOR}%)"
-          awk -v got="$total" -v floor="$WORKSPACE_REGION_FLOOR" 'BEGIN {
-            if (got + 0 < floor + 0) {
-              printf "::error::workspace region coverage %.2f%% fell below the committed floor %.2f%%\n", got, floor
-              exit 1
-            }
-          }'
+          set -o pipefail
+          python3 scripts/coverage_floors.py coverage-per-file.txt | tee coverage-floors.txt
+          {
+            echo '## Per-crate product-only coverage'
+            echo '```'
+            cat coverage-floors.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -218,6 +218,8 @@ jobs:
           path: |
             lcov.info
             coverage-summary.txt
+            coverage-per-file.txt
+            coverage-floors.txt
           retention-days: 90
 
   release-mode-tests:

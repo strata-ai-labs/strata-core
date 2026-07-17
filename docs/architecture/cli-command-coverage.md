@@ -1,6 +1,12 @@
 # CLI-Next Command Coverage
 
-Status: Hand-maintained coverage inventory
+Status: **SUPERSEDED (2026-07-17, TCP3.0)** — this hand-maintained
+inventory has drifted (it predates the shipped `clone`/`remote`/`config
+set|unset|path|show`/`agents`/`mcp` verbs and still lists inference as
+raw-only). Per the Phase 3 plan (`v1-test-coverage-phase3-plan.md` §1),
+point-in-time inventories are not trackers: CLI verb coverage becomes a
+mechanical clap-tree enumeration guard in TCP3.10, and this file is
+deleted in that slice. Do not update it.
 
 Source documents:
 
