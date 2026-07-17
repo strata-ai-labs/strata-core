@@ -2563,6 +2563,145 @@ fn multi_branch_checkpoint_defers_so_lost_non_seeded_manifest_recovers_cleanly()
     );
 }
 
+// Close-drain companion to the guard regression above. The multi-branch guard is enforced at
+// background CLAIM time and on the synchronous checkpoint path — but a claimed task whose worker
+// dies mid-build (shutdown detaches workers on timeout; a panicked worker leaves its task active
+// for the close retry) is re-run by `drain_active_for_close` through the close runner, which
+// publishes via the single-branch collector with NO guard re-check. Two failures follow: the
+// snapshot omits every non-seeded branch's delta rows while its watermark still advances the
+// WAL-replay floor past them (silent loss on a clean close+reopen, no crash needed), and the
+// recorded snapshot is exactly the one the guard exists to prevent (a crash dropping the
+// non-seeded manifest then recovers a silent gap).
+#[allow(
+    clippy::too_many_lines,
+    reason = "multi-branch close-drain durability scenario: stranded checkpoint task, close, reopen-and-verify"
+)]
+#[test]
+fn close_drained_checkpoint_does_not_bypass_the_multi_branch_guard() {
+    use crate::lifecycle::{
+        FlushTableIdentitySeed, FlushTableObjectId, MaintenanceTask, MaintenanceTaskRequest,
+    };
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
+    let initial = branch_id(0x3b);
+    let extra = branch_id(0x4b);
+    let guard =
+        || CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation"));
+    let flush_req = |branch, seed: &str, object: &str| {
+        FlushFrozenRequest::new(
+            branch,
+            None,
+            FlushTableIdentitySeed::new(seed).expect("seed"),
+            FlushTableObjectId::new(object).expect("object id"),
+        )
+        .expect("flush request")
+    };
+
+    {
+        let mut shell = assemble_shell(lossy_open_plan(), initial, backend).expect("durable shell");
+        let request =
+            LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+        let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+            .recover(&request)
+            .expect("recovery outcome");
+        let mut runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+        runtime
+            .create_branch(
+                extra,
+                CommitBranchGeneration::new(1).expect("generation"),
+                Some(CommitVersion::new(2)),
+            )
+            .expect("create extra branch");
+
+        // Seeded branch: base -> rotate -> flush -> active delta.
+        runtime
+            .execute_durable_commit(
+                durable_standard_batch(initial, b"initial-base", b"initial-base-value"),
+                guard(),
+            )
+            .expect("commit initial base");
+        runtime
+            .rotate_active_for_maintenance()
+            .expect("rotate initial");
+        runtime
+            .flush_frozen(&flush_req(initial, "initial-seed", "initial-object"))
+            .expect("flush initial");
+        runtime
+            .execute_durable_commit(
+                durable_standard_batch(initial, b"initial-delta", b"initial-delta-value"),
+                guard(),
+            )
+            .expect("commit initial delta");
+
+        // Non-seeded branch base row. At THIS point a background worker claims a
+        // checkpoint task: no non-seeded branch holds a durable base yet, so the
+        // claim-time guard passes. The worker then dies mid-build — model the
+        // stranded claim with the active-task hook the close drain services.
+        runtime
+            .execute_durable_commit(
+                durable_standard_batch(extra, b"extra-base", b"extra-base-value"),
+                guard(),
+            )
+            .expect("commit extra base");
+        let stranded = MaintenanceTask::new_for_test(77, MaintenanceTaskRequest::checkpoint())
+            .expect("stranded checkpoint task");
+        runtime.set_active_maintenance_for_test(stranded);
+
+        // The non-seeded base lands inside the stranded build's window: rotate +
+        // flush (owned table + per-branch manifest), then an active delta that
+        // only the WAL holds.
+        runtime
+            .rotate_active_for_branch_for_maintenance(extra)
+            .expect("rotate extra");
+        runtime
+            .flush_frozen(&flush_req(extra, "extra-seed", "extra-object"))
+            .expect("flush extra");
+        runtime
+            .execute_durable_commit(
+                durable_standard_batch(extra, b"extra-delta", b"extra-delta-value"),
+                guard(),
+            )
+            .expect("commit extra delta");
+
+        // Clean close: `drain_active_for_close` re-runs the stranded checkpoint
+        // through the close runner. The guard contract requires it to DEFER —
+        // a published seeded-only snapshot would advance the replay floor past
+        // the non-seeded rows the snapshot does not carry.
+        runtime.close().expect("clean close");
+    }
+
+    // No crash, nothing dropped: a clean close followed by a clean reopen must
+    // recover every branch completely.
+    let mut shell = assemble_shell(lossy_open_plan(), initial, backend).expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    let runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+    let extra_state = runtime
+        .branch_catalog()
+        .branch_state(extra)
+        .expect("extra branch state");
+    let extra_view = extra_state.capture_read_view().expect("extra view");
+    let base_present = extra_view
+        .latest(&physical_key(extra, b"extra-base"))
+        .expect("read extra-base")
+        .is_some();
+    let delta_present = extra_view
+        .latest(&physical_key(extra, b"extra-delta"))
+        .expect("read extra-delta")
+        .is_some();
+    assert!(
+        base_present && delta_present,
+        "non-seeded branch lost rows across a clean close+reopen because a close-drained \
+         checkpoint bypassed the multi-branch guard \
+         (base_present={base_present}, delta_present={delta_present})",
+    );
+}
+
 #[test]
 fn recovery_rebuilds_inherited_layers() {
     // Open a durable runtime, commit + rotate + flush a row to the seeded
