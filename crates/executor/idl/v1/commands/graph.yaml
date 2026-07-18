@@ -15,6 +15,13 @@ commands:
     fixtures:
       request: requests/v1/graph/create.json
       response: responses/v1/graph/create_applied.json
+      error_cases:
+        - request: requests/v1/graph/create_empty_name.json
+          expected_error: responses/v1/errors/graph/create_empty_name.json
+        - setup:
+            - requests/v1/graph/create.json
+          request: requests/v1/graph/create.json
+          expected_error: responses/v1/errors/graph/create_duplicate.json
   - id: graph.delete
     kind: mutation.delete
     title: Delete graph

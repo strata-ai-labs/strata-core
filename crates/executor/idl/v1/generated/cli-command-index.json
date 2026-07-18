@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "abb6d48ef8946e61b5cfea894c35ab5c42a6f78d27d8ad1ac8879ae29894da8d",
+    "checksum_sha256": "3ec7e77734c0148dbb3be6db89c5d6ec6917d8b950d53119129c88ff15ebfa59",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -418,7 +418,16 @@
       ],
       "fixtures": {
         "request": "requests/v1/branches/create.json",
-        "response": "responses/v1/branches/create.json"
+        "response": "responses/v1/branches/create.json",
+        "error_cases": [
+          {
+            "setup": [
+              "requests/v1/branches/create.json"
+            ],
+            "request": "requests/v1/branches/create.json",
+            "expected_error": "responses/v1/errors/branches/create_duplicate.json"
+          }
+        ]
       },
       "wire_status": "stable"
     },
@@ -982,7 +991,13 @@
       ],
       "fixtures": {
         "request": "requests/v1/event/append.json",
-        "response": "responses/v1/event/append_applied.json"
+        "response": "responses/v1/event/append_applied.json",
+        "error_cases": [
+          {
+            "request": "requests/v1/event/append_empty_type.json",
+            "expected_error": "responses/v1/errors/event/append_empty_type.json"
+          }
+        ]
       },
       "wire_status": "stable"
     },
@@ -2134,7 +2149,20 @@
       ],
       "fixtures": {
         "request": "requests/v1/graph/create.json",
-        "response": "responses/v1/graph/create_applied.json"
+        "response": "responses/v1/graph/create_applied.json",
+        "error_cases": [
+          {
+            "request": "requests/v1/graph/create_empty_name.json",
+            "expected_error": "responses/v1/errors/graph/create_empty_name.json"
+          },
+          {
+            "setup": [
+              "requests/v1/graph/create.json"
+            ],
+            "request": "requests/v1/graph/create.json",
+            "expected_error": "responses/v1/errors/graph/create_duplicate.json"
+          }
+        ]
       },
       "wire_status": "stable"
     },
@@ -5279,7 +5307,13 @@
       ],
       "fixtures": {
         "request": "requests/v1/json/set.json",
-        "response": "responses/v1/json/set_applied.json"
+        "response": "responses/v1/json/set_applied.json",
+        "error_cases": [
+          {
+            "request": "requests/v1/json/set_empty_key.json",
+            "expected_error": "responses/v1/errors/json/set_empty_key.json"
+          }
+        ]
       },
       "wire_status": "stable"
     },
@@ -5516,7 +5550,13 @@
       ],
       "fixtures": {
         "request": "requests/v1/kv/batch_put.json",
-        "response": "responses/v1/kv/batch_mutation_ok.json"
+        "response": "responses/v1/kv/batch_mutation_ok.json",
+        "error_cases": [
+          {
+            "request": "requests/v1/kv/batch_put_duplicate_key.json",
+            "expected_error": "responses/v1/errors/kv/batch_put_duplicate_key.json"
+          }
+        ]
       },
       "wire_status": "stable"
     },
@@ -5714,6 +5754,10 @@
         {
           "code": "invalid_argument.engine.kv_key",
           "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
+        },
+        {
+          "code": "history_unavailable.engine.persistence_history",
+          "docs": "https://stratadb.org/e/history_unavailable.engine.persistence_history"
         }
       ],
       "fixtures": {
@@ -5722,6 +5766,12 @@
         "setup": [
           "requests/v1/kv/put.json",
           "requests/v1/setup/kv_put_a_two.json"
+        ],
+        "error_cases": [
+          {
+            "request": "requests/v1/kv/get_unretained_version.json",
+            "expected_error": "responses/v1/errors/kv/get_unretained_version.json"
+          }
         ]
       },
       "wire_status": "stable"
@@ -5878,7 +5928,13 @@
       ],
       "fixtures": {
         "request": "requests/v1/kv/put.json",
-        "response": "responses/v1/kv/write_applied.json"
+        "response": "responses/v1/kv/write_applied.json",
+        "error_cases": [
+          {
+            "request": "requests/v1/kv/put_empty_key.json",
+            "expected_error": "responses/v1/errors/kv/put_empty_key.json"
+          }
+        ]
       },
       "wire_status": "stable"
     },
@@ -6213,6 +6269,12 @@
         "response": "responses/v1/spaces/delete.json",
         "setup": [
           "requests/v1/spaces/create.json"
+        ],
+        "error_cases": [
+          {
+            "request": "requests/v1/spaces/delete_default.json",
+            "expected_error": "responses/v1/errors/spaces/delete_default.json"
+          }
         ]
       },
       "wire_status": "stable"
@@ -6653,7 +6715,13 @@
       ],
       "fixtures": {
         "request": "requests/v1/vector/collection_create.json",
-        "response": "responses/v1/vector/collection_list.json"
+        "response": "responses/v1/vector/collection_list.json",
+        "error_cases": [
+          {
+            "request": "requests/v1/vector/collection_create_zero_dim.json",
+            "expected_error": "responses/v1/errors/vector/collection_create_zero_dim.json"
+          }
+        ]
       },
       "wire_status": "transitional"
     },
@@ -7210,6 +7278,12 @@
           "requests/v1/vector/collection_create.json",
           "requests/v1/vector/upsert.json",
           "requests/v1/setup/vector_upsert_doc_b.json"
+        ],
+        "error_cases": [
+          {
+            "request": "requests/v1/vector/get_missing_collection.json",
+            "expected_error": "responses/v1/errors/vector/get_missing_collection.json"
+          }
         ]
       },
       "wire_status": "stable"

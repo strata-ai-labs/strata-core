@@ -9,6 +9,9 @@ commands:
     fixtures:
       request: requests/v1/kv/put.json
       response: responses/v1/kv/write_applied.json
+      error_cases:
+        - request: requests/v1/kv/put_empty_key.json
+          expected_error: responses/v1/errors/kv/put_empty_key.json
   - id: kv.get
     kind: read.get
     title: Get KV value
@@ -16,6 +19,8 @@ commands:
     output: Output::KvVersionedValue
     result: VersionedValue
     prose: commands/kv.get.md
+    errors+:
+      - history_unavailable.engine.persistence_history
     fixtures:
       request: requests/v1/kv/get.json
       response: responses/v1/kv/get_found.json

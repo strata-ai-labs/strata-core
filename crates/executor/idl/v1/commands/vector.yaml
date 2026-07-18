@@ -13,6 +13,9 @@ commands:
     fixtures:
       request: requests/v1/vector/collection_create.json
       response: responses/v1/vector/collection_list.json
+      error_cases:
+        - request: requests/v1/vector/collection_create_zero_dim.json
+          expected_error: responses/v1/errors/vector/collection_create_zero_dim.json
   - id: vector.collection.delete
     kind: mutation.delete
     title: Delete vector collection

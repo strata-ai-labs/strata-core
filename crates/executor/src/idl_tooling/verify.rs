@@ -26,6 +26,8 @@ pub(super) fn verify_fixtures(
     update: bool,
 ) -> Result<Vec<PathBuf>> {
     let mut blessed = Vec::new();
+    let mut replayed = std::collections::BTreeSet::new();
+    let mut command_replays: Vec<(String, String)> = Vec::new();
     for entry in &index.commands {
         if let Some(reason) = &entry.fixtures.replay_skip {
             if reason.trim().is_empty() {
@@ -49,8 +51,16 @@ pub(super) fn verify_fixtures(
         }
         enforce_alternates_have_cases(entry)?;
         for (position, case) in entry.fixtures.error_cases.iter().enumerate() {
-            verify_error_case(repo_root, entry, case, position, update, &mut blessed)?;
+            let code = verify_error_case(repo_root, entry, case, position, update, &mut blessed)?;
+            replayed.insert(code.clone());
+            command_replays.push((entry.id.clone(), code));
         }
+    }
+    // The replay-coverage ratchet is a property of the full corpus, so it runs
+    // once all error cases have executed. Skip it while blessing (`update`):
+    // the envelopes being written may not yet match the declared error lists.
+    if !update {
+        super::enforce_error_replay_coverage(repo_root, index, &replayed, &command_replays)?;
     }
     Ok(blessed)
 }
@@ -60,6 +70,8 @@ pub(super) fn verify_fixtures(
 /// `retryable`, `commit_outcome`) match the pinned fixture. This is the only replay
 /// coverage of the engine->executor error mapping — a mis-mapped class or a
 /// changed retry policy fails here instead of shipping to SDKs.
+/// Returns the error code the replay actually produced, so the caller can
+/// enforce declaration and coverage ratchets across the whole corpus.
 fn verify_error_case(
     repo_root: &Path,
     entry: &ResolvedCommand,
@@ -67,7 +79,7 @@ fn verify_error_case(
     position: usize,
     update: bool,
     blessed: &mut Vec<PathBuf>,
-) -> Result<()> {
+) -> Result<String> {
     let mut executor = Executor::open_cache().map_err(|error| {
         invalid(format!(
             "`{}`: scratch executor failed to open: {error}",
@@ -149,7 +161,17 @@ fn verify_error_case(
             )));
         }
     }
-    Ok(())
+
+    actual
+        .get("code")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            invalid(format!(
+                "`{}` error case {position}: replayed status carried no `code` field",
+                entry.id
+            ))
+        })
 }
 
 fn verify_case(

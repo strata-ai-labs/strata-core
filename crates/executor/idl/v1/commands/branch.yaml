@@ -43,6 +43,11 @@ commands:
     fixtures:
       request: requests/v1/branches/create.json
       response: responses/v1/branches/create.json
+      error_cases:
+        - setup:
+            - requests/v1/branches/create.json
+          request: requests/v1/branches/create.json
+          expected_error: responses/v1/errors/branches/create_duplicate.json
   - id: branch.fork
     kind: mutation.create
     title: Fork branch from current head

@@ -18,6 +18,9 @@ commands:
     fixtures:
       request: requests/v1/json/set.json
       response: responses/v1/json/set_applied.json
+      error_cases:
+        - request: requests/v1/json/set_empty_key.json
+          expected_error: responses/v1/errors/json/set_empty_key.json
   - id: json.get
     kind: read.get
     title: Get JSON value

@@ -48,6 +48,7 @@ Plus the optional scope: `branch` and `space` (default to the session branch and
 - [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
 - [`invalid_argument.engine.product_space`](https://stratadb.org/e/invalid_argument.engine.product_space)
 - [`invalid_argument.engine.kv_key`](https://stratadb.org/e/invalid_argument.engine.kv_key)
+- [`history_unavailable.engine.persistence_history`](https://stratadb.org/e/history_unavailable.engine.persistence_history)
 
 ## Invocation
 

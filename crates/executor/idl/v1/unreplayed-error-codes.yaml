@@ -1,0 +1,126 @@
+# Replay-coverage allowlist (drift guard, TCP3.8b).
+#
+# Distinct from uncovered-error-codes.yaml: that list tracks whether a code is
+# DOCUMENTED (declared in errors.yaml). This list tracks whether a declared code
+# has an error-case REPLAY FIXTURE that runs it against a scratch executor and
+# pins the resulting ErrorStatus envelope (code/class/retry_policy/retryable/
+# commit_outcome). A mis-mapped class or a changed retry policy fails the replay
+# instead of shipping silently to every SDK.
+#
+# Every code any command declares in errors[] must be replayed by at least one
+# error case (a fixtures.error_cases entry) or listed here. This list may ONLY
+# shrink: authoring a replay for a code requires deleting its line, and the
+# guard fails if a listed code becomes replayed or is no longer declared by any
+# command.
+#
+# The remaining entries need harnesses this replay lane does not provide: a
+# closed runtime (runtime_closed), a live inference provider (inference.*), Arrow
+# feature builds and IO faults (*.executor.arrow*), a configured hub
+# (*.hub_*), or state/fault setup not yet authored. Corruption- and
+# data-loss-class codes are covered separately by TCP3.15.
+unreplayed:
+  - already_exists.engine.json_index
+  - failed_precondition.engine.graph_negative_weight
+  - failed_precondition.engine.graph_ontology_edge_type
+  - failed_precondition.engine.graph_ontology_endpoint_type
+  - failed_precondition.engine.graph_ontology_freeze
+  - failed_precondition.engine.graph_ontology_frozen
+  - failed_precondition.engine.graph_ontology_node_type
+  - failed_precondition.engine.graph_ontology_required_property
+  - failed_precondition.engine.runtime_closed
+  - failed_precondition.engine.space_not_empty
+  - failed_precondition.executor.hub_clone
+  - inference.download_disabled
+  - inference.download_failed
+  - inference.download_verification_failed
+  - inference.invalid_request
+  - inference.io_failure
+  - inference.local_runtime_failed
+  - inference.missing_api_key
+  - inference.missing_model
+  - inference.model_load_failed
+  - inference.provider_auth_failed
+  - inference.provider_malformed_response
+  - inference.provider_rate_limited
+  - inference.provider_timeout
+  - inference.provider_unavailable
+  - inference.registry_corrupt
+  - inference.unsupported_operation
+  - inference.unsupported_parameter
+  - inference.unsupported_provider
+  - internal.executor.arrow
+  - invalid_argument.engine.branch_delete
+  - invalid_argument.engine.branch_name
+  - invalid_argument.engine.branch_name_reserved
+  - invalid_argument.engine.config_key
+  - invalid_argument.engine.event_batch
+  - invalid_argument.engine.event_payload
+  - invalid_argument.engine.event_payload_too_large
+  - invalid_argument.engine.graph_batch
+  - invalid_argument.engine.graph_binding
+  - invalid_argument.engine.graph_edge_endpoint
+  - invalid_argument.engine.graph_edge_type
+  - invalid_argument.engine.graph_edge_type_reserved
+  - invalid_argument.engine.graph_edge_weight
+  - invalid_argument.engine.graph_name_reserved
+  - invalid_argument.engine.graph_node_id
+  - invalid_argument.engine.graph_pagerank_options
+  - invalid_argument.engine.graph_personalization
+  - invalid_argument.engine.graph_properties
+  - invalid_argument.engine.graph_properties_too_large
+  - invalid_argument.engine.graph_property_name
+  - invalid_argument.engine.graph_type_hint
+  - invalid_argument.engine.graph_type_name
+  - invalid_argument.engine.graph_type_name_reserved
+  - invalid_argument.engine.json_array_too_large
+  - invalid_argument.engine.json_document_too_deep
+  - invalid_argument.engine.json_document_too_large
+  - invalid_argument.engine.json_index_name
+  - invalid_argument.engine.json_index_name_reserved
+  - invalid_argument.engine.json_path
+  - invalid_argument.engine.json_path_not_found
+  - invalid_argument.engine.json_path_too_long
+  - invalid_argument.engine.json_path_type
+  - invalid_argument.engine.json_value
+  - invalid_argument.engine.kv_batch
+  - invalid_argument.engine.kv_batch_duplicate_key
+  - invalid_argument.engine.product_space
+  - invalid_argument.engine.product_space_reserved
+  - invalid_argument.engine.space_delete_too_large
+  - invalid_argument.engine.vector_batch
+  - invalid_argument.engine.vector_collection
+  - invalid_argument.engine.vector_embedding
+  - invalid_argument.engine.vector_filter
+  - invalid_argument.engine.vector_key
+  - invalid_argument.engine.vector_metadata
+  - invalid_argument.engine.vector_metadata_patch
+  - invalid_argument.executor.arrow_base64
+  - invalid_argument.executor.arrow_collection
+  - invalid_argument.executor.arrow_embedding_type
+  - invalid_argument.executor.arrow_empty_export
+  - invalid_argument.executor.arrow_feature_disabled
+  - invalid_argument.executor.arrow_format
+  - invalid_argument.executor.arrow_graph
+  - invalid_argument.executor.arrow_input_missing
+  - invalid_argument.executor.arrow_json_key
+  - invalid_argument.executor.arrow_key_column
+  - invalid_argument.executor.arrow_value_column
+  - invalid_argument.executor.arrow_vector_dimension
+  - invalid_argument.executor.arrow_vector_key
+  - invalid_argument.executor.graph_analytics_budget
+  - invalid_argument.executor.hub_branch
+  - invalid_argument.executor.hub_dataset
+  - invalid_argument.executor.hub_feature_disabled
+  - invalid_argument.executor.hub_url
+  - invalid_argument.executor.json_batch_duplicate_key
+  - invalid_argument.executor.limit
+  - invalid_argument.executor.vector_batch_duplicate_key
+  - invalid_argument.executor.vector_dimension
+  - invalid_argument.executor.vector_limit
+  - not_found.engine.branch
+  - not_found.engine.graph
+  - not_found.engine.graph_node
+  - resource_exhausted.engine.graph_analytics_budget
+  - unavailable.executor.arrow_io
+  - unavailable.executor.hub_transport
+  - unsupported.engine.graph_binding_cross_branch
