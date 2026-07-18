@@ -295,7 +295,7 @@ SDKs may choose `Option`-returning APIs for ordinary missing lookups. The
 command, CLI, and IPC surfaces still need a status when absence is returned as
 an error.
 
-### Branch, Merge, And Time Travel
+### Branch And Time Travel
 
 Branch and temporal failures are product errors. They should not be generic
 invalid input strings.
@@ -311,9 +311,6 @@ Target codes:
 | Archived branch | `failed_precondition.branch_archived` |
 | Branch generation mismatch | `conflict.branch_generation` |
 | Version conflict | `conflict.version` |
-| Merge conflict | `conflict.branch_merge` |
-| Cherry-pick conflict | `conflict.branch_cherry_pick` |
-| Revert conflict | `conflict.branch_revert` |
 | Requested version unavailable | `history_unavailable.version` |
 | Requested timestamp unavailable | `history_unavailable.timestamp` |
 | Timestamp is after latest known commit | `failed_precondition.timestamp_after_latest` |
@@ -646,8 +643,8 @@ Engine-next error conformance tests should include:
 6. Open failure tests for invalid path, writer lock, IPC not running,
    permission denied, unsupported backend, corrupt storage, and incomplete clone.
 7. Branch tests for not-found, exists, archived, deleted, generation mismatch,
-   merge conflict, cherry-pick conflict, revert conflict, and history
-   unavailable.
+   and history unavailable. (Merge/cherry-pick/revert are absent in V1 — see
+   CLAUDE.md rule 20 and the `branch_merge_absence` guard.)
 8. Time-travel tests for version, timestamp, pruned history, timestamp after
    latest, and corrupt timeline.
 9. Capability tests for KV, JSON, event, vector, graph, and relationship-layer

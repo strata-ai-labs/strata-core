@@ -76,7 +76,7 @@ core  ← storage  ← engine  ← intelligence  ← executor / CLI / SDK
 17. Every capability declares lifecycle, branch adapter, search adapter, relationship adapter, and derived-state hooks.
 18. Cross-branch references are rejected.
 19. Empty branch creation is required.
-20. Branch merge is strict refusal on divergent concurrent history (V1).
+20. Branch merge, revert, and cherry-pick are absent in V1 — no entrypoint exists, so there is nothing to refuse yet. The strict-refusal surface lands with post-V1 merge work; until then absence is enforced by a guard (`crates/engine/tests/branch_merge_absence.rs`), which fails when such an entrypoint appears without its strict-refusal tests.
 21. JSON merge is document-level (V1).
 
 ### Retrieval and derived state
