@@ -290,6 +290,246 @@ impl InferenceEngine for FakeInferenceEngine {
     }
 }
 
+/// Deterministic runtime-level fake for the executor's
+/// [`crate::InferenceService`] surface: model management plus the wire-typed
+/// compute paths, with zero network, model files, or sleeps. Same inputs, same
+/// outputs, forever — so fixture replays are stable.
+#[derive(Clone, Debug)]
+pub struct FakeInferenceService {
+    embedding_dim: usize,
+}
+
+impl Default for FakeInferenceService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FakeInferenceService {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { embedding_dim: 8 }
+    }
+
+    #[must_use]
+    pub fn with_embedding_dim(mut self, dim: usize) -> Self {
+        self.embedding_dim = dim;
+        self
+    }
+
+    /// A pure, platform-stable pseudo-embedding (mirrors the engine fake).
+    fn embed_vector(&self, text: &str) -> Vec<f32> {
+        let seed = text.bytes().fold(0xdead_beef_u64, |acc, byte| {
+            acc.wrapping_mul(31).wrapping_add(u64::from(byte))
+        });
+        (0..self.embedding_dim)
+            .map(|position| {
+                let mut z =
+                    seed.wrapping_add(0x9e37_79b9_7f4a_7c15_u64.wrapping_mul(position as u64 + 1));
+                z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                z ^= z >> 31;
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "deterministic pseudo-embedding; exact float value is the contract"
+                )]
+                let unit = (z % 2_000_003) as f32 / 1_000_001.5 - 1.0;
+                unit
+            })
+            .collect()
+    }
+}
+
+fn fake_model(name: &str, task: crate::ModelTask, embedding_dim: usize) -> crate::ModelInfo {
+    crate::ModelInfo {
+        name: name.to_owned(),
+        task,
+        architecture: "fake".to_owned(),
+        default_quant: "q8_0".to_owned(),
+        embedding_dim,
+        is_local: false,
+        local_path: None,
+        size_bytes: 0,
+        hf_repo: "fake/fake".to_owned(),
+    }
+}
+
+/// The prompt text a chat request carries (prompt field, else the last message).
+fn chat_prompt(request: &crate::ChatRequest) -> String {
+    if let Some(prompt) = &request.prompt {
+        return prompt.clone();
+    }
+    request
+        .messages
+        .as_ref()
+        .and_then(|messages| messages.last())
+        .map(|message| message.content.clone())
+        .unwrap_or_default()
+}
+
+impl crate::InferenceService for FakeInferenceService {
+    fn list_models(&self) -> Vec<crate::ModelInfo> {
+        vec![
+            fake_model("fake-embed", crate::ModelTask::Embed, self.embedding_dim),
+            fake_model("fake-generate", crate::ModelTask::Generate, 0),
+            fake_model("fake-rank", crate::ModelTask::Rank, 0),
+        ]
+    }
+
+    fn list_local_models(&self) -> Vec<crate::ModelInfo> {
+        Vec::new()
+    }
+
+    fn pull_model(&self, model: &str) -> Result<crate::PullModelOutput, InferenceError> {
+        Ok(crate::PullModelOutput {
+            model: model.to_owned(),
+            path: std::path::PathBuf::from(format!("fake-models/{model}.gguf")),
+        })
+    }
+
+    fn capability(&self, model_spec: &str) -> Result<crate::InferenceCapability, InferenceError> {
+        Ok(crate::InferenceCapability {
+            provider: crate::ProviderKind::Local,
+            model: model_spec.to_owned(),
+            can_generate: true,
+            can_tokenize: true,
+            can_embed: true,
+            can_rank: true,
+            requires_network: false,
+            requires_api_key: false,
+            provider_feature_enabled: true,
+            network_enabled: false,
+            embedding_dim: self.embedding_dim,
+            supports_tools: false,
+            supports_json_object: true,
+            supports_json_schema: false,
+            supports_logprobs: false,
+        })
+    }
+
+    fn chat(
+        &self,
+        model_spec: &str,
+        request: &crate::ChatRequest,
+    ) -> Result<crate::ChatResponse, InferenceError> {
+        let prompt = chat_prompt(request);
+        let content = format!("fake:{prompt}");
+        let prompt_tokens = u32::try_from(prompt.split_whitespace().count()).unwrap_or(u32::MAX);
+        let completion_tokens =
+            u32::try_from(content.split_whitespace().count()).unwrap_or(u32::MAX);
+        Ok(crate::ChatResponse {
+            model: model_spec.to_owned(),
+            choices: vec![crate::ChatChoice {
+                index: 0,
+                message: crate::ChatMessage {
+                    role: crate::Role::Assistant,
+                    content,
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                finish_reason: crate::FinishReason::Stop,
+                logprobs: None,
+            }],
+            usage: crate::Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens: prompt_tokens.saturating_add(completion_tokens),
+            },
+        })
+    }
+
+    fn tokenize(
+        &self,
+        _model_spec: &str,
+        text: &str,
+        add_special: bool,
+    ) -> Result<Vec<u32>, InferenceError> {
+        let mut ids: Vec<u32> = text.bytes().map(u32::from).collect();
+        if add_special {
+            ids.insert(0, 1);
+            ids.push(2);
+        }
+        Ok(ids)
+    }
+
+    fn detokenize(&self, _model_spec: &str, ids: &[u32]) -> Result<String, InferenceError> {
+        Ok(ids
+            .iter()
+            .filter_map(|&id| u8::try_from(id).ok())
+            .map(char::from)
+            .collect())
+    }
+
+    fn embeddings(
+        &self,
+        model_spec: &str,
+        request: &crate::EmbeddingsRequest,
+    ) -> Result<crate::EmbeddingsResponse, InferenceError> {
+        let texts = request.input.to_vec();
+        let prompt_tokens = texts
+            .iter()
+            .map(|text| u32::try_from(text.split_whitespace().count()).unwrap_or(u32::MAX))
+            .fold(0u32, u32::saturating_add);
+        let data = texts
+            .iter()
+            .enumerate()
+            .map(|(index, text)| crate::EmbeddingItem {
+                index: u32::try_from(index).unwrap_or(u32::MAX),
+                embedding: self.embed_vector(text),
+            })
+            .collect();
+        Ok(crate::EmbeddingsResponse {
+            model: model_spec.to_owned(),
+            data,
+            dimension: self.embedding_dim,
+            usage: crate::Usage {
+                prompt_tokens,
+                completion_tokens: 0,
+                total_tokens: prompt_tokens,
+            },
+        })
+    }
+
+    fn rank(
+        &self,
+        _model_spec: &str,
+        request: &crate::RankRequest,
+    ) -> Result<crate::RankResponse, InferenceError> {
+        let query: BTreeSet<&str> = request.query.split_whitespace().collect();
+        let items = request
+            .passages
+            .iter()
+            .enumerate()
+            .map(|(index, passage)| {
+                let overlap = passage
+                    .split_whitespace()
+                    .filter(|word| query.contains(word))
+                    .count();
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "deterministic pseudo-score; exact value is the contract"
+                )]
+                let score = overlap as f32;
+                crate::RankRuntimeOutcome::Ok { index, score }
+            })
+            .collect();
+        Ok(crate::RankResponse { items })
+    }
+
+    fn unload(&self, _model_spec: Option<&str>) -> Result<bool, InferenceError> {
+        Ok(false)
+    }
+
+    fn cache_status(&self) -> Result<crate::ModelCacheStatus, InferenceError> {
+        Ok(crate::ModelCacheStatus {
+            generation_models: Vec::new(),
+            embedding_models: Vec::new(),
+            ranking_models: Vec::new(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

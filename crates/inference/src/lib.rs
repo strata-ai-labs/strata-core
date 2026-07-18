@@ -300,6 +300,58 @@ pub trait InferenceEngine: Send + std::fmt::Debug {
     }
 }
 
+/// The runtime-level inference surface the executor depends on.
+///
+/// Unlike [`InferenceEngine`] (a single model's compute: generate/embed/rank),
+/// this mirrors [`InferenceRuntime`]'s public API — model management plus the
+/// wire-typed compute paths — so the executor can hold `Box<dyn InferenceService>`
+/// and be driven by either the real runtime or a deterministic testkit fake.
+pub trait InferenceService: Send {
+    /// Lists every catalog model.
+    fn list_models(&self) -> Vec<ModelInfo>;
+
+    /// Lists the models present locally.
+    fn list_local_models(&self) -> Vec<ModelInfo>;
+
+    /// Resolves (downloading if needed) a model artifact.
+    fn pull_model(&self, model: &str) -> Result<PullModelOutput, InferenceError>;
+
+    /// Reports the capabilities of a model spec.
+    fn capability(&self, model_spec: &str) -> Result<InferenceCapability, InferenceError>;
+
+    /// Runs a chat generation request.
+    fn chat(&self, model_spec: &str, request: &ChatRequest)
+        -> Result<ChatResponse, InferenceError>;
+
+    /// Tokenizes text with a local model's tokenizer.
+    fn tokenize(
+        &self,
+        model_spec: &str,
+        text: &str,
+        add_special: bool,
+    ) -> Result<Vec<u32>, InferenceError>;
+
+    /// Detokenizes local token ids.
+    fn detokenize(&self, model_spec: &str, ids: &[u32]) -> Result<String, InferenceError>;
+
+    /// Runs an embeddings request.
+    fn embeddings(
+        &self,
+        model_spec: &str,
+        request: &EmbeddingsRequest,
+    ) -> Result<EmbeddingsResponse, InferenceError>;
+
+    /// Scores passages against a query.
+    fn rank(&self, model_spec: &str, request: &RankRequest)
+        -> Result<RankResponse, InferenceError>;
+
+    /// Unloads a cached model (or all when `None`).
+    fn unload(&self, model_spec: Option<&str>) -> Result<bool, InferenceError>;
+
+    /// Reports the model cache status.
+    fn cache_status(&self) -> Result<ModelCacheStatus, InferenceError>;
+}
+
 /// Parse a `"provider:model_name"` spec into its components.
 ///
 /// Format: `"provider:model_name"` where provider is one of: local, anthropic, openai, google.
