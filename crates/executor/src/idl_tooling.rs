@@ -23,6 +23,7 @@ const CLI_COMMAND_INDEX_FILE: &str = "cli-command-index.json";
 const UNCOVERED_COMMANDS_FILE: &str = "uncovered-commands.yaml";
 const UNCOVERED_ERROR_CODES_FILE: &str = "uncovered-error-codes.yaml";
 const UNREPLAYED_ERROR_CODES_FILE: &str = "unreplayed-error-codes.yaml";
+const REPLAY_SKIPPED_COMMANDS_FILE: &str = "replay-skipped-commands.yaml";
 const CLI_SURFACES: &[&str] = &["verb", "wire"];
 const SUPPORTED_COMMAND_SCHEMA_VERSION: &str = "strata.idl.v1";
 const SUPPORTED_COMMAND_GENERATOR_VERSION: &str = "strata-executor-idl.1";
@@ -488,6 +489,17 @@ struct UncoveredErrorCodesSource {
     uncovered: Vec<String>,
 }
 
+/// `replay-skipped-commands.yaml`: the shrink-only allowlist of commands whose
+/// primary fixture is not replayed by the behavior guard (TCP3.8c). Every
+/// command that sets `replay_skip` must be listed here; the list may only
+/// shrink, so a new skip cannot be added silently — a command must be made
+/// replayable or its skip justified and listed.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReplaySkippedCommandsSource {
+    skipped: Vec<String>,
+}
+
 /// `unreplayed-error-codes.yaml`: the shrink-only replay-coverage allowlist
 /// (TCP3.8b). Distinct from `uncovered-error-codes.yaml`, which tracks whether
 /// a code is *documented*; this tracks whether a declared code has an
@@ -756,6 +768,7 @@ pub fn resolve_index(repo_root: &Path) -> Result<CommandIndex> {
 
     resolved.sort_by(|left, right| left.id.cmp(&right.id));
     enforce_command_exhaustiveness(&idl_root, &command_refs, &resolved)?;
+    enforce_replay_skip_ratchet(&idl_root, &resolved)?;
     Ok(CommandIndex {
         generated: true,
         schema_version: manifest.schema_version,
@@ -1449,6 +1462,57 @@ fn enforce_command_exhaustiveness(
         covered.insert(variant_name(&entry.input, "Command")?.to_owned());
     }
     enforce_exhaustiveness_lists(command_refs, &covered, &allowlist.uncovered)
+}
+
+/// Every command whose primary fixture sets `replay_skip` (so the behavior
+/// guard never executes it) must be listed in `replay-skipped-commands.yaml`,
+/// and the list may only shrink (TCP3.8c). A newly added skip fails the build
+/// unless it is justified and listed; a listed command that becomes replayable
+/// must be removed. This keeps golden-or-replay coverage from silently eroding.
+fn enforce_replay_skip_ratchet(idl_root: &Path, resolved: &[ResolvedCommand]) -> Result<()> {
+    let allowlist: ReplaySkippedCommandsSource =
+        read_yaml(&idl_root.join(REPLAY_SKIPPED_COMMANDS_FILE))?;
+    let ids: BTreeSet<&str> = resolved.iter().map(|entry| entry.id.as_str()).collect();
+    let skipped: BTreeSet<&str> = resolved
+        .iter()
+        .filter(|entry| entry.fixtures.replay_skip.is_some())
+        .map(|entry| entry.id.as_str())
+        .collect();
+    enforce_replay_skip_lists(&ids, &skipped, &allowlist.skipped)
+}
+
+fn enforce_replay_skip_lists(
+    ids: &BTreeSet<&str>,
+    skipped: &BTreeSet<&str>,
+    allowlist: &[String],
+) -> Result<()> {
+    let mut listed = BTreeSet::new();
+    for id in allowlist {
+        if !ids.contains(id.as_str()) {
+            return Err(invalid(format!(
+                "replay-skipped-commands.yaml lists `{id}` which is not a command id; remove it"
+            )));
+        }
+        if !skipped.contains(id.as_str()) {
+            return Err(invalid(format!(
+                "`{id}` no longer sets replay_skip; remove it from replay-skipped-commands.yaml (the allowlist may only shrink)"
+            )));
+        }
+        if !listed.insert(id.as_str()) {
+            return Err(invalid(format!(
+                "duplicate `{id}` in replay-skipped-commands.yaml"
+            )));
+        }
+    }
+
+    for id in skipped {
+        if !listed.contains(id) {
+            return Err(invalid(format!(
+                "command `{id}` sets replay_skip but is not listed in replay-skipped-commands.yaml; make it replayable or justify and list the skip (the allowlist may only shrink)"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn enforce_exhaustiveness_lists(
@@ -2222,6 +2286,46 @@ mod tests {
         let listed = vec!["ghost.code.here".to_owned()];
         let error = enforce_error_code_lists(&registered, &declared, &listed).unwrap_err();
         assert!(error.to_string().contains("ghost.code.here"));
+    }
+
+    fn str_refs<'a>(names: &'a [&str]) -> BTreeSet<&'a str> {
+        names.iter().copied().collect()
+    }
+
+    #[test]
+    fn replay_skip_accepts_skipped_plus_listed() {
+        let ids = str_refs(&["kv.put", "kv.get", "inference.embed"]);
+        let skipped = str_refs(&["inference.embed"]);
+        let listed = vec!["inference.embed".to_owned()];
+        assert!(enforce_replay_skip_lists(&ids, &skipped, &listed).is_ok());
+    }
+
+    #[test]
+    fn replay_skip_rejects_a_new_unlisted_skip() {
+        let ids = str_refs(&["kv.put", "inference.embed"]);
+        let skipped = str_refs(&["inference.embed"]);
+        let error = enforce_replay_skip_lists(&ids, &skipped, &[]).unwrap_err();
+        assert!(error.to_string().contains("inference.embed"));
+        assert!(error.to_string().contains("not listed"));
+    }
+
+    #[test]
+    fn replay_skip_shrinks_only() {
+        // A listed command that no longer skips must be removed.
+        let ids = str_refs(&["kv.get"]);
+        let skipped = str_refs(&[]);
+        let listed = vec!["kv.get".to_owned()];
+        let error = enforce_replay_skip_lists(&ids, &skipped, &listed).unwrap_err();
+        assert!(error.to_string().contains("only shrink"));
+    }
+
+    #[test]
+    fn replay_skip_rejects_unknown_allowlist_ids() {
+        let ids = str_refs(&["kv.put"]);
+        let skipped = str_refs(&[]);
+        let listed = vec!["kv.ghost".to_owned()];
+        let error = enforce_replay_skip_lists(&ids, &skipped, &listed).unwrap_err();
+        assert!(error.to_string().contains("kv.ghost"));
     }
 
     #[test]
