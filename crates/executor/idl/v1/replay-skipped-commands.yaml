@@ -1,0 +1,33 @@
+# Replay-skip allowlist (drift guard, TCP3.8c).
+#
+# The fixture-behavior guard executes every command's primary request fixture
+# against a scratch cache executor and diffs the output against its golden
+# response. A command may opt out by setting `fixtures.replay_skip` (with a
+# reason), but every such command must be listed here and this list may ONLY
+# shrink: a new skip fails the build unless it is justified and added here, and
+# a command that becomes replayable must be removed. This keeps golden-or-replay
+# coverage from silently eroding.
+#
+# The current entries fall into four groups, each blocked by an environment the
+# scratch cache executor cannot provide deterministically:
+#   * hub — resolves and downloads a dataset over the network;
+#   * arrow — reads/writes real files outside the scratch executor;
+#   * inference — loads a model / performs network I/O / is machine-dependent;
+#   * event reads — wall-clock timestamps are hashed into event content, so the
+#     output never reproduces.
+skipped:
+  - admin.hub_clone
+  - arrow.export
+  - arrow.import
+  - event.get
+  - event.list
+  - event.range
+  - event.range_time
+  - inference.detokenize
+  - inference.embed
+  - inference.generate
+  - inference.models.list
+  - inference.models.local
+  - inference.models.pull
+  - inference.rank
+  - inference.tokenize
