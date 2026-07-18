@@ -1,20 +1,20 @@
 {
   "data": {
-    "can_embed": false,
+    "can_embed": true,
     "can_generate": true,
-    "can_rank": false,
-    "can_tokenize": false,
-    "embedding_dim": 0,
-    "model": "claude-3-5-haiku-latest",
-    "network_enabled": true,
-    "provider": "anthropic",
+    "can_rank": true,
+    "can_tokenize": true,
+    "embedding_dim": 8,
+    "model": "anthropic:claude-3-5-haiku-latest",
+    "network_enabled": false,
+    "provider": "local",
     "provider_feature_enabled": true,
-    "requires_api_key": true,
-    "requires_network": true,
-    "supports_json_object": false,
-    "supports_json_schema": true,
+    "requires_api_key": false,
+    "requires_network": false,
+    "supports_json_object": true,
+    "supports_json_schema": false,
     "supports_logprobs": false,
-    "supports_tools": true
+    "supports_tools": false
   },
   "type": "inference_capability"
 }

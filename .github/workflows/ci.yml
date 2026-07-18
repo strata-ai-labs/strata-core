@@ -62,12 +62,12 @@ jobs:
           cargo test --locked -p strata-engine --test capability_conformance
       - name: Executor IDL drift gates
         run: |
-          cargo run --locked -p strata-executor --features idl-tooling,inference --bin strata-idl -- check
-          cargo run --locked -p strata-executor --features idl-tooling,inference --bin strata-idl -- check-cli
-          cargo run --locked -p strata-executor --features idl-tooling,inference --bin strata-idl -- check-docs
-          cargo run --locked -p strata-executor --features idl-tooling,inference --bin strata-idl -- verify-examples
-          cargo run --locked -p strata-executor --features idl-tooling,inference --bin strata-idl -- verify-fixtures
-          cargo test --locked -p strata-executor --features idl-tooling,inference --test idl_kv_vector_overlay
+          cargo run --locked -p strata-executor --features idl-tooling,inference,testkit --bin strata-idl -- check
+          cargo run --locked -p strata-executor --features idl-tooling,inference,testkit --bin strata-idl -- check-cli
+          cargo run --locked -p strata-executor --features idl-tooling,inference,testkit --bin strata-idl -- check-docs
+          cargo run --locked -p strata-executor --features idl-tooling,inference,testkit --bin strata-idl -- verify-examples
+          cargo run --locked -p strata-executor --features idl-tooling,inference,testkit --bin strata-idl -- verify-fixtures
+          cargo test --locked -p strata-executor --features idl-tooling,inference,testkit --test idl_kv_vector_overlay
       - name: Inference feature lanes (offline)
         # The download module and the deterministic testkit are feature-gated
         # and invisible to the default workspace run; both are offline and

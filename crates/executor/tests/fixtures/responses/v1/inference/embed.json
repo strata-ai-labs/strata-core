@@ -1,22 +1,27 @@
 {
-  "type": "inference_embeddings",
   "data": {
-    "model": "miniLM",
     "data": [
       {
-        "index": 0,
         "embedding": [
-          0.1,
-          0.2,
-          0.3
-        ]
+          0.06806039810180664,
+          0.3584129810333252,
+          -0.20612019300460815,
+          -0.71190345287323,
+          -0.12423133850097656,
+          -0.5919586420059204,
+          -0.23881715536117554,
+          0.2620750665664673
+        ],
+        "index": 0
       }
     ],
-    "dimension": 3,
+    "dimension": 8,
+    "model": "miniLM",
     "usage": {
-      "prompt_tokens": 4,
       "completion_tokens": 0,
-      "total_tokens": 4
+      "prompt_tokens": 2,
+      "total_tokens": 2
     }
-  }
+  },
+  "type": "inference_embeddings"
 }

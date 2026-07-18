@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "3ec7e77734c0148dbb3be6db89c5d6ec6917d8b950d53119129c88ff15ebfa59",
+    "checksum_sha256": "bd62503c64c1a254daec6920c322019eb220163a1f1721183018c922b5d35a07",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -3799,8 +3799,7 @@
       ],
       "fixtures": {
         "request": "requests/v1/inference/detokenize.json",
-        "response": "responses/v1/inference/text.json",
-        "replay_skip": "detokenization loads a local model, which requires the local build feature"
+        "response": "responses/v1/inference/text.json"
       },
       "wire_status": "stable"
     },
@@ -3881,8 +3880,7 @@
       ],
       "fixtures": {
         "request": "requests/v1/inference/embed.json",
-        "response": "responses/v1/inference/embed.json",
-        "replay_skip": "embedding runs a model: local execution needs the local build feature and cloud execution needs a provider API key"
+        "response": "responses/v1/inference/embed.json"
       },
       "wire_status": "stable"
     },
@@ -3979,8 +3977,7 @@
       ],
       "fixtures": {
         "request": "requests/v1/inference/generate.json",
-        "response": "responses/v1/inference/generate.json",
-        "replay_skip": "text generation runs a model: local execution needs the local build feature and cloud execution needs a provider API key"
+        "response": "responses/v1/inference/generate.json"
       },
       "wire_status": "stable"
     },
@@ -4022,8 +4019,7 @@
       ],
       "fixtures": {
         "request": "requests/v1/inference/models_list.json",
-        "response": "responses/v1/inference/models_list.json",
-        "replay_skip": "list marks each model is_local from the machine's model directory (STRATA_MODELS_DIR or ~/.strata/models), so the success output is machine-dependent"
+        "response": "responses/v1/inference/models_list.json"
       },
       "wire_status": "stable"
     },
@@ -4065,8 +4061,7 @@
       ],
       "fixtures": {
         "request": "requests/v1/inference/models_local.json",
-        "response": "responses/v1/inference/models_local.json",
-        "replay_skip": "which models are present depends on the machine's model directory (STRATA_MODELS_DIR or ~/.strata/models)"
+        "response": "responses/v1/inference/models_local.json"
       },
       "wire_status": "stable"
     },
@@ -4132,8 +4127,7 @@
       ],
       "fixtures": {
         "request": "requests/v1/inference/models_pull.json",
-        "response": "responses/v1/inference/models_pull.json",
-        "replay_skip": "model download performs network I/O and requires the local execution build feature"
+        "response": "responses/v1/inference/models_pull.json"
       },
       "wire_status": "stable"
     },
@@ -4194,8 +4188,7 @@
       ],
       "fixtures": {
         "request": "requests/v1/inference/rank.json",
-        "response": "responses/v1/inference/rank.json",
-        "replay_skip": "ranking loads a local model, which requires the local build feature"
+        "response": "responses/v1/inference/rank.json"
       },
       "wire_status": "stable"
     },
@@ -4256,8 +4249,7 @@
       ],
       "fixtures": {
         "request": "requests/v1/inference/tokenize.json",
-        "response": "responses/v1/inference/tokenize.json",
-        "replay_skip": "tokenization loads a local model, which requires the local build feature"
+        "response": "responses/v1/inference/tokenize.json"
       },
       "wire_status": "stable"
     },

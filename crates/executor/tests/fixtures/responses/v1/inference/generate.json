@@ -1,21 +1,21 @@
 {
-  "type": "inference_generation",
   "data": {
-    "model": "anthropic:claude-3-5-haiku-latest",
     "choices": [
       {
+        "finish_reason": "stop",
         "index": 0,
         "message": {
-          "role": "assistant",
-          "content": "Rows in the deep dark,\nindexes light the query path,\nStrata answers fast."
-        },
-        "finish_reason": "stop"
+          "content": "fake:Write a haiku about databases.",
+          "role": "assistant"
+        }
       }
     ],
+    "model": "anthropic:claude-3-5-haiku-latest",
     "usage": {
-      "prompt_tokens": 10,
-      "completion_tokens": 8,
-      "total_tokens": 18
+      "completion_tokens": 5,
+      "prompt_tokens": 5,
+      "total_tokens": 10
     }
-  }
+  },
+  "type": "inference_generation"
 }

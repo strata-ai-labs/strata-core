@@ -18,6 +18,31 @@ use super::{
 use crate::executor::Executor;
 use crate::Command;
 
+/// Inference commands (ids under `inference.`) replay only against the testkit
+/// fake service, so their fixtures stay deterministic without a real model.
+fn is_inference_command(entry: &ResolvedCommand) -> bool {
+    entry.id.starts_with("inference.")
+}
+
+/// Opens the scratch executor for replaying `entry`: inference commands get the
+/// deterministic testkit fake service injected; every other command uses a bare
+/// cache executor.
+fn open_executor(entry: &ResolvedCommand) -> Result<Executor> {
+    let executor = Executor::open_cache().map_err(|error| {
+        invalid(format!(
+            "`{}`: scratch executor failed to open: {error}",
+            entry.id
+        ))
+    })?;
+    #[cfg(all(feature = "inference", feature = "testkit"))]
+    if is_inference_command(entry) {
+        return Ok(
+            executor.with_inference_runtime(strata_inference::testkit::FakeInferenceService::new())
+        );
+    }
+    Ok(executor)
+}
+
 /// Executes every fixture pair; returns the list of blessed files when
 /// `update` is set (empty means everything already matched).
 pub(super) fn verify_fixtures(
@@ -36,6 +61,13 @@ pub(super) fn verify_fixtures(
                     entry.id
                 )));
             }
+            continue;
+        }
+        // Inference commands replay only against the testkit fake service —
+        // their fixtures are blessed to its deterministic output. Without the
+        // `testkit` feature there is no fake, so skip them; the same coverage
+        // runs in the testkit CI lane.
+        if is_inference_command(entry) && !cfg!(feature = "testkit") {
             continue;
         }
         let primary = FixtureCase {
@@ -80,12 +112,7 @@ fn verify_error_case(
     update: bool,
     blessed: &mut Vec<PathBuf>,
 ) -> Result<String> {
-    let mut executor = Executor::open_cache().map_err(|error| {
-        invalid(format!(
-            "`{}`: scratch executor failed to open: {error}",
-            entry.id
-        ))
-    })?;
+    let mut executor = open_executor(entry)?;
 
     for setup_path in &case.setup {
         let setup_command = read_command(repo_root, setup_path)?;
@@ -182,12 +209,7 @@ fn verify_case(
     update: bool,
     blessed: &mut Vec<PathBuf>,
 ) -> Result<()> {
-    let mut executor = Executor::open_cache().map_err(|error| {
-        invalid(format!(
-            "`{}`: scratch executor failed to open: {error}",
-            entry.id
-        ))
-    })?;
+    let mut executor = open_executor(entry)?;
 
     for setup_path in &case.setup {
         let setup_command = read_command(repo_root, setup_path)?;
