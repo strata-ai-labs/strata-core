@@ -1,4 +1,4 @@
 {
-  "type": "inference_text",
-  "data": "hello"
+  "data": "hello",
+  "type": "inference_text"
 }

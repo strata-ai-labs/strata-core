@@ -4,15 +4,37 @@
     "has_more": false,
     "items": [
       {
-        "architecture": "bert",
-        "default_quant": "f16",
-        "embedding_dim": 384,
-        "hf_repo": "stratalab-org/all-MiniLM-L6-v2-GGUF",
+        "architecture": "fake",
+        "default_quant": "q8_0",
+        "embedding_dim": 8,
+        "hf_repo": "fake/fake",
         "is_local": false,
         "local_path": null,
-        "name": "miniLM",
-        "size_bytes": 45000000,
+        "name": "fake-embed",
+        "size_bytes": 0,
         "task": "embed"
+      },
+      {
+        "architecture": "fake",
+        "default_quant": "q8_0",
+        "embedding_dim": 0,
+        "hf_repo": "fake/fake",
+        "is_local": false,
+        "local_path": null,
+        "name": "fake-generate",
+        "size_bytes": 0,
+        "task": "generate"
+      },
+      {
+        "architecture": "fake",
+        "default_quant": "q8_0",
+        "embedding_dim": 0,
+        "hf_repo": "fake/fake",
+        "is_local": false,
+        "local_path": null,
+        "name": "fake-rank",
+        "size_bytes": 0,
+        "task": "rank"
       }
     ]
   },

@@ -9,7 +9,6 @@ commands:
     fixtures:
       request: requests/v1/inference/models_list.json
       response: responses/v1/inference/models_list.json
-      replay_skip: "list marks each model is_local from the machine's model directory (STRATA_MODELS_DIR or ~/.strata/models), so the success output is machine-dependent"
   - id: inference.models.local
     kind: inference.models_page
     title: List local models
@@ -20,7 +19,6 @@ commands:
     fixtures:
       request: requests/v1/inference/models_local.json
       response: responses/v1/inference/models_local.json
-      replay_skip: "which models are present depends on the machine's model directory (STRATA_MODELS_DIR or ~/.strata/models)"
   - id: inference.models.pull
     kind: inference.runtime_op
     title: Download a model
@@ -39,7 +37,6 @@ commands:
     fixtures:
       request: requests/v1/inference/models_pull.json
       response: responses/v1/inference/models_pull.json
-      replay_skip: "model download performs network I/O and requires the local execution build feature"
   - id: inference.capability
     kind: inference.runtime_op
     title: Report model capabilities
@@ -79,7 +76,6 @@ commands:
     fixtures:
       request: requests/v1/inference/generate.json
       response: responses/v1/inference/generate.json
-      replay_skip: "text generation runs a model: local execution needs the local build feature and cloud execution needs a provider API key"
   - id: inference.tokenize
     kind: inference.runtime_op
     title: Tokenize text
@@ -97,7 +93,6 @@ commands:
     fixtures:
       request: requests/v1/inference/tokenize.json
       response: responses/v1/inference/tokenize.json
-      replay_skip: "tokenization loads a local model, which requires the local build feature"
   - id: inference.detokenize
     kind: inference.runtime_op
     title: Detokenize token ids
@@ -115,7 +110,6 @@ commands:
     fixtures:
       request: requests/v1/inference/detokenize.json
       response: responses/v1/inference/text.json
-      replay_skip: "detokenization loads a local model, which requires the local build feature"
   - id: inference.embed
     kind: inference.runtime_op
     title: Embed one or more texts
@@ -138,7 +132,6 @@ commands:
     fixtures:
       request: requests/v1/inference/embed.json
       response: responses/v1/inference/embed.json
-      replay_skip: "embedding runs a model: local execution needs the local build feature and cloud execution needs a provider API key"
   - id: inference.rank
     kind: inference.runtime_op
     title: Rank passages
@@ -156,7 +149,6 @@ commands:
     fixtures:
       request: requests/v1/inference/rank.json
       response: responses/v1/inference/rank.json
-      replay_skip: "ranking loads a local model, which requires the local build feature"
   - id: inference.unload
     kind: inference.runtime_op
     title: Unload cached models

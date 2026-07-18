@@ -135,7 +135,7 @@ example or be in `missing-examples.yaml`.
 Run from the repo root (features match CI):
 
 ```bash
-F="--features idl-tooling,inference"
+F="--features idl-tooling,inference,testkit"
 R="cargo run --locked -p strata-executor $F --bin strata-idl --"
 
 $R generate         # command-index.json + generated/schemas/
