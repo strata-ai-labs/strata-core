@@ -921,6 +921,71 @@ impl InferenceRuntime {
     }
 }
 
+// Delegates to the inherent methods above — Rust resolves `self.method()` to the
+// inherent method (preferred over trait methods), so there is no recursion.
+impl crate::InferenceService for InferenceRuntime {
+    fn list_models(&self) -> Vec<crate::ModelInfo> {
+        self.list_models()
+    }
+
+    fn list_local_models(&self) -> Vec<crate::ModelInfo> {
+        self.list_local_models()
+    }
+
+    fn pull_model(&self, model: &str) -> Result<crate::PullModelOutput, InferenceError> {
+        self.pull_model(model)
+    }
+
+    fn capability(&self, model_spec: &str) -> Result<crate::InferenceCapability, InferenceError> {
+        self.capability(model_spec)
+    }
+
+    fn chat(
+        &self,
+        model_spec: &str,
+        request: &crate::wire::ChatRequest,
+    ) -> Result<crate::wire::ChatResponse, InferenceError> {
+        self.chat(model_spec, request)
+    }
+
+    fn tokenize(
+        &self,
+        model_spec: &str,
+        text: &str,
+        add_special: bool,
+    ) -> Result<Vec<u32>, InferenceError> {
+        self.tokenize(model_spec, text, add_special)
+    }
+
+    fn detokenize(&self, model_spec: &str, ids: &[u32]) -> Result<String, InferenceError> {
+        self.detokenize(model_spec, ids)
+    }
+
+    fn embeddings(
+        &self,
+        model_spec: &str,
+        request: &crate::wire::EmbeddingsRequest,
+    ) -> Result<crate::wire::EmbeddingsResponse, InferenceError> {
+        self.embeddings(model_spec, request)
+    }
+
+    fn rank(
+        &self,
+        model_spec: &str,
+        request: &crate::RankRequest,
+    ) -> Result<crate::RankResponse, InferenceError> {
+        self.rank(model_spec, request)
+    }
+
+    fn unload(&self, model_spec: Option<&str>) -> Result<bool, InferenceError> {
+        self.unload(model_spec)
+    }
+
+    fn cache_status(&self) -> Result<crate::ModelCacheStatus, InferenceError> {
+        self.cache_status()
+    }
+}
+
 #[cfg(any(feature = "anthropic", feature = "openai", feature = "google"))]
 fn api_key(provider: ProviderKind) -> Result<String, InferenceError> {
     if provider == ProviderKind::Local {

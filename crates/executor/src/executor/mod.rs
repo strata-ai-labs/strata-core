@@ -202,7 +202,7 @@ pub struct Executor {
     default_branch: String,
     default_space: String,
     #[cfg(feature = "inference")]
-    inference: strata_inference::InferenceRuntime,
+    inference: Box<dyn strata_inference::InferenceService>,
 }
 
 impl Executor {
@@ -226,15 +226,20 @@ impl Executor {
             default_branch,
             default_space: DEFAULT_SPACE.to_owned(),
             #[cfg(feature = "inference")]
-            inference: strata_inference::InferenceRuntime::default(),
+            inference: Box::new(strata_inference::InferenceRuntime::default()),
         }
     }
 
-    /// Replaces the inference runtime handle used by inference commands.
+    /// Replaces the inference backend used by inference commands. Accepts any
+    /// [`strata_inference::InferenceService`] — the real `InferenceRuntime` or a
+    /// deterministic testkit fake.
     #[cfg(feature = "inference")]
     #[must_use]
-    pub fn with_inference_runtime(mut self, inference: strata_inference::InferenceRuntime) -> Self {
-        self.inference = inference;
+    pub fn with_inference_runtime(
+        mut self,
+        inference: impl strata_inference::InferenceService + 'static,
+    ) -> Self {
+        self.inference = Box::new(inference);
         self
     }
 

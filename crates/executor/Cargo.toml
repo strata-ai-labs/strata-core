@@ -30,7 +30,7 @@ inference-local = [
 ]
 inference-openai = ["inference"]
 localfs = ["strata-engine/localfs"]
-testkit = ["strata-engine/testkit"]
+testkit = ["strata-engine/testkit", "strata-inference?/testkit"]
 jsonschema = ["dep:jsonschema"]
 
 [dependencies]
