@@ -1,0 +1,1 @@
+{"type": "vector_create_collection", "collection": "docs", "dimension": 0, "metric": "cosine"}

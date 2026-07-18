@@ -9,6 +9,9 @@ commands:
     fixtures:
       request: requests/v1/kv/put.json
       response: responses/v1/kv/write_applied.json
+      error_cases:
+        - request: requests/v1/kv/put_empty_key.json
+          expected_error: responses/v1/errors/kv/put_empty_key.json
   - id: kv.get
     kind: read.get
     title: Get KV value
@@ -16,9 +19,14 @@ commands:
     output: Output::KvVersionedValue
     result: VersionedValue
     prose: commands/kv.get.md
+    errors+:
+      - history_unavailable.engine.persistence_history
     fixtures:
       request: requests/v1/kv/get.json
       response: responses/v1/kv/get_found.json
+      error_cases:
+        - request: requests/v1/kv/get_unretained_version.json
+          expected_error: responses/v1/errors/kv/get_unretained_version.json
       setup:
         - requests/v1/kv/put.json
         - requests/v1/setup/kv_put_a_two.json
@@ -76,6 +84,9 @@ commands:
     fixtures:
       request: requests/v1/kv/batch_put.json
       response: responses/v1/kv/batch_mutation_ok.json
+      error_cases:
+        - request: requests/v1/kv/batch_put_duplicate_key.json
+          expected_error: responses/v1/errors/kv/batch_put_duplicate_key.json
   - id: kv.batch_get
     kind: batch.itemwise_read
     title: Batch get KV values

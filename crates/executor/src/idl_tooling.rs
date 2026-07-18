@@ -22,6 +22,7 @@ const COMMAND_INDEX_FILE: &str = "command-index.json";
 const CLI_COMMAND_INDEX_FILE: &str = "cli-command-index.json";
 const UNCOVERED_COMMANDS_FILE: &str = "uncovered-commands.yaml";
 const UNCOVERED_ERROR_CODES_FILE: &str = "uncovered-error-codes.yaml";
+const UNREPLAYED_ERROR_CODES_FILE: &str = "unreplayed-error-codes.yaml";
 const CLI_SURFACES: &[&str] = &["verb", "wire"];
 const SUPPORTED_COMMAND_SCHEMA_VERSION: &str = "strata.idl.v1";
 const SUPPORTED_COMMAND_GENERATOR_VERSION: &str = "strata-executor-idl.1";
@@ -236,6 +237,13 @@ pub struct FixtureRefs {
     /// in `responses` must be reproduced by one of these.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cases: Vec<FixtureCase>,
+    /// Requests that must FAIL, each pinned to the stable structured fields of
+    /// the `ErrorStatus` envelope they produce (TCP3.8a). Replayed like `cases`
+    /// but the execution is expected to return an error, and the guard diffs
+    /// the envelope's code/class/retry/commit-outcome against the fixture —
+    /// the only replay coverage of the engine->executor error mapping.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub error_cases: Vec<ErrorFixtureCase>,
 }
 
 /// One executed fixture pair for the fixture-behavior guard.
@@ -249,6 +257,26 @@ pub struct FixtureCase {
     pub request: String,
     /// Response fixture the execution must reproduce.
     pub response: String,
+}
+
+/// One executed error fixture for the fixture-behavior guard: a request whose
+/// execution must fail, pinned to the stable structured fields of the resulting
+/// `ErrorStatus` (TCP3.8a).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ErrorFixtureCase {
+    /// Setup request fixtures replayed first (may seed state the failing
+    /// request then trips over).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setup: Vec<String>,
+    /// Request fixture executed for this case; its execution must return an
+    /// error.
+    pub request: String,
+    /// Fixture pinning the expected stable error fields (code, class,
+    /// `retry_policy`, `retryable`, `commit_outcome`). Prose and per-run fields
+    /// (`message`, `reference_id`, `trace_id`, `docs_url`) are deliberately not
+    /// pinned — they churn and are asserted elsewhere.
+    pub expected_error: String,
 }
 
 /// Authored source locations.
@@ -458,6 +486,18 @@ struct UncoveredCommandsSource {
 #[serde(deny_unknown_fields)]
 struct UncoveredErrorCodesSource {
     uncovered: Vec<String>,
+}
+
+/// `unreplayed-error-codes.yaml`: the shrink-only replay-coverage allowlist
+/// (TCP3.8b). Distinct from `uncovered-error-codes.yaml`, which tracks whether
+/// a code is *documented*; this tracks whether a declared code has an
+/// error-case *replay fixture* pinning its `ErrorStatus` envelope. Every code a
+/// command declares in `errors[]` must be replayed by at least one error case
+/// or listed here; the list may only shrink.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UnreplayedErrorCodesSource {
+    unreplayed: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1522,6 +1562,80 @@ fn enforce_error_code_lists(
         if !declared.contains(code) && !listed.contains(code) {
             return Err(invalid(format!(
                 "registered error `{code}` is not declared in errors.yaml and not listed in uncovered-error-codes.yaml; declare it or list it explicitly"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Enforce error-envelope replay coverage (TCP3.8b). Given the set of codes an
+/// error-case replay actually produced (`replayed`) and the per-command
+/// replays (`command_replays`, pairs of command id and produced code), require:
+///
+/// * (B) consistency — every code a command replays is declared in that
+///   command's `errors[]` (a proven-reachable code must appear in the
+///   SDK-facing error list; fix by adding it via `errors+`);
+/// * (A) coverage — every code any command declares in `errors[]` is either
+///   replayed by an error case or listed in `unreplayed-error-codes.yaml`, and
+///   the allowlist may only shrink (a now-replayed or no-longer-declared entry
+///   must be removed).
+pub(super) fn enforce_error_replay_coverage(
+    repo_root: &Path,
+    index: &CommandIndex,
+    replayed: &BTreeSet<String>,
+    command_replays: &[(String, String)],
+) -> Result<()> {
+    let idl_root = repo_root.join(IDL_DIR);
+    let allowlist: UnreplayedErrorCodesSource =
+        read_yaml(&idl_root.join(UNREPLAYED_ERROR_CODES_FILE))?;
+
+    let mut declared: BTreeSet<&str> = BTreeSet::new();
+    for command in &index.commands {
+        for error in &command.errors {
+            declared.insert(error.code.as_str());
+        }
+    }
+
+    // (B) A replayed code proves the command can surface it; the declared list
+    // (which feeds SDK docs) must therefore name it.
+    for (command_id, code) in command_replays {
+        let command = index
+            .commands
+            .iter()
+            .find(|candidate| &candidate.id == command_id)
+            .ok_or_else(|| invalid(format!("replayed unknown command `{command_id}`")))?;
+        if !command.errors.iter().any(|error| &error.code == code) {
+            return Err(invalid(format!(
+                "command `{command_id}` replays error `{code}` but does not declare it in errors[]; add it via `errors+` so the SDK-facing error list names it"
+            )));
+        }
+    }
+
+    // (A) Coverage ratchet: declared - replayed must be a subset of the
+    // allowlist, and the allowlist may only shrink.
+    let mut listed = BTreeSet::new();
+    for code in &allowlist.unreplayed {
+        if !declared.contains(code.as_str()) {
+            return Err(invalid(format!(
+                "unreplayed-error-codes.yaml lists `{code}` which no command declares in errors[]; remove it"
+            )));
+        }
+        if replayed.contains(code) {
+            return Err(invalid(format!(
+                "`{code}` now has an error-case replay fixture; remove it from unreplayed-error-codes.yaml (the allowlist may only shrink)"
+            )));
+        }
+        if !listed.insert(code.as_str()) {
+            return Err(invalid(format!(
+                "duplicate `{code}` in unreplayed-error-codes.yaml"
+            )));
+        }
+    }
+
+    for code in &declared {
+        if !replayed.contains(*code) && !listed.contains(code) {
+            return Err(invalid(format!(
+                "declared error `{code}` is surfaced by a command but has no error-case replay fixture; add an `error_cases` entry that pins its envelope, or list it in unreplayed-error-codes.yaml"
             )));
         }
     }

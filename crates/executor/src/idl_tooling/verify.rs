@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use super::{invalid, CommandIndex, FixtureCase, IdlError, ResolvedCommand, Result};
+use super::{
+    invalid, CommandIndex, ErrorFixtureCase, FixtureCase, IdlError, ResolvedCommand, Result,
+};
 use crate::executor::Executor;
 use crate::Command;
 
@@ -24,6 +26,8 @@ pub(super) fn verify_fixtures(
     update: bool,
 ) -> Result<Vec<PathBuf>> {
     let mut blessed = Vec::new();
+    let mut replayed = std::collections::BTreeSet::new();
+    let mut command_replays: Vec<(String, String)> = Vec::new();
     for entry in &index.commands {
         if let Some(reason) = &entry.fixtures.replay_skip {
             if reason.trim().is_empty() {
@@ -46,8 +50,128 @@ pub(super) fn verify_fixtures(
             verify_case(repo_root, entry, case, position, update, &mut blessed)?;
         }
         enforce_alternates_have_cases(entry)?;
+        for (position, case) in entry.fixtures.error_cases.iter().enumerate() {
+            let code = verify_error_case(repo_root, entry, case, position, update, &mut blessed)?;
+            replayed.insert(code.clone());
+            command_replays.push((entry.id.clone(), code));
+        }
+    }
+    // The replay-coverage ratchet is a property of the full corpus, so it runs
+    // once all error cases have executed. Skip it while blessing (`update`):
+    // the envelopes being written may not yet match the declared error lists.
+    if !update {
+        super::enforce_error_replay_coverage(repo_root, index, &replayed, &command_replays)?;
     }
     Ok(blessed)
+}
+
+/// Replay an error fixture: run any setup, execute the request, and require it
+/// to FAIL with an `ErrorStatus` whose stable fields (code, class, `retry_policy`,
+/// `retryable`, `commit_outcome`) match the pinned fixture. This is the only replay
+/// coverage of the engine->executor error mapping — a mis-mapped class or a
+/// changed retry policy fails here instead of shipping to SDKs.
+/// Returns the error code the replay actually produced, so the caller can
+/// enforce declaration and coverage ratchets across the whole corpus.
+fn verify_error_case(
+    repo_root: &Path,
+    entry: &ResolvedCommand,
+    case: &ErrorFixtureCase,
+    position: usize,
+    update: bool,
+    blessed: &mut Vec<PathBuf>,
+) -> Result<String> {
+    let mut executor = Executor::open_cache().map_err(|error| {
+        invalid(format!(
+            "`{}`: scratch executor failed to open: {error}",
+            entry.id
+        ))
+    })?;
+
+    for setup_path in &case.setup {
+        let setup_command = read_command(repo_root, setup_path)?;
+        executor.execute(setup_command).map_err(|error| {
+            invalid(format!(
+                "`{}` error case {position}: setup fixture `{setup_path}` failed to execute: {error}",
+                entry.id
+            ))
+        })?;
+    }
+
+    let command = read_command(repo_root, &case.request)?;
+    let status = match executor.execute(command) {
+        Ok(output) => {
+            return Err(invalid(format!(
+                "`{}` error case {position}: request fixture `{}` was expected to fail but                  succeeded with output {}",
+                entry.id,
+                case.request,
+                compact(&serde_json::to_value(&output).unwrap_or(Value::Null)),
+            )));
+        }
+        Err(error) => error.into_status(),
+    };
+
+    // Pin only the stable, rule-29 fields; prose and per-run identifiers churn.
+    let full = serde_json::to_value(&status).map_err(|source| IdlError::Json {
+        path: PathBuf::from(&case.request),
+        source,
+    })?;
+    let actual = serde_json::json!({
+        "code": full.get("code").cloned().unwrap_or(Value::Null),
+        "class": full.get("class").cloned().unwrap_or(Value::Null),
+        "retry_policy": full.get("retry_policy").cloned().unwrap_or(Value::Null),
+        "retryable": full.get("retryable").cloned().unwrap_or(Value::Null),
+        "commit_outcome": full.get("commit_outcome").cloned().unwrap_or(Value::Null),
+    });
+
+    let expected_path = fixture_path(repo_root, &case.expected_error);
+    let expected: Value = match std::fs::read_to_string(&expected_path) {
+        Ok(text) => serde_json::from_str(&text).map_err(|source| IdlError::Json {
+            path: expected_path.clone(),
+            source,
+        })?,
+        Err(error) if update && error.kind() == std::io::ErrorKind::NotFound => Value::Null,
+        Err(source) => {
+            return Err(IdlError::Read {
+                path: expected_path,
+                source,
+            })
+        }
+    };
+
+    if actual != expected {
+        if update {
+            let mut text =
+                serde_json::to_string_pretty(&actual).map_err(|source| IdlError::Json {
+                    path: expected_path.clone(),
+                    source,
+                })?;
+            text.push('\n');
+            std::fs::write(&expected_path, text).map_err(|source| IdlError::Write {
+                path: expected_path.clone(),
+                source,
+            })?;
+            blessed.push(expected_path);
+        } else {
+            return Err(invalid(format!(
+                "`{}` error case {position}: error envelope `{}` does not match a real run.\n  expected (fixture): {}\n  actual   (replay):  {}\nRun `strata-idl verify-fixtures --update` and review the diff.",
+                entry.id,
+                case.expected_error,
+                compact(&expected),
+                compact(&actual),
+            )));
+        }
+    }
+
+    actual
+        .get("code")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            invalid(format!(
+                "`{}` error case {position}: replayed status carried no `code` field",
+                entry.id
+            ))
+        })
 }
 
 fn verify_case(

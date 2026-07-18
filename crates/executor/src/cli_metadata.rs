@@ -295,6 +295,10 @@ pub struct CliFixtureRefs {
     /// Executed request/response fixture pairs (behavior guard).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cases: Vec<serde_json::Value>,
+    /// Requests that must fail, each pinned to the structured fields of the
+    /// `ErrorStatus` envelope they produce (error-envelope replay guard).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub error_cases: Vec<serde_json::Value>,
     /// Alternate response fixtures for commands with multiple current wire outputs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub responses: Vec<String>,

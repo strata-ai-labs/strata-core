@@ -53,3 +53,6 @@ commands:
         - requests/v1/spaces/create.json
       request: requests/v1/spaces/delete.json
       response: responses/v1/spaces/delete.json
+      error_cases:
+        - request: requests/v1/spaces/delete_default.json
+          expected_error: responses/v1/errors/spaces/delete_default.json

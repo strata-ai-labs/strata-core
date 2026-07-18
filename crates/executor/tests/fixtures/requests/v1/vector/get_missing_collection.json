@@ -1,0 +1,1 @@
+{"type": "vector_get", "collection": "does-not-exist", "key": "doc-a"}

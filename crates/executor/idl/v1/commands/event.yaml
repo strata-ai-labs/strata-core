@@ -13,6 +13,9 @@ commands:
     fixtures:
       request: requests/v1/event/append.json
       response: responses/v1/event/append_applied.json
+      error_cases:
+        - request: requests/v1/event/append_empty_type.json
+          expected_error: responses/v1/errors/event/append_empty_type.json
   - id: event.batch_append
     kind: batch.itemwise_mutation
     title: Batch append events
