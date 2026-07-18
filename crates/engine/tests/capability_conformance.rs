@@ -14,6 +14,10 @@ mod common;
 
 use common::{assert_status, branch, key, open_cache_database, space, value};
 use serde_json::json;
+#[cfg(feature = "testkit")]
+use strata_engine::testkit::StorageFaultKind;
+#[cfg(feature = "testkit")]
+use strata_engine::EventSequence;
 use strata_engine::{
     Database, EngineErrorClass, EngineResult, EventPayload, EventType, GraphName, GraphNodeData,
     GraphNodeId, JsonDocumentId, JsonPath, JsonValue, VectorCollectionName, VectorConfig,
@@ -45,6 +49,16 @@ trait CapabilityFixture {
 
     /// Performs the cheapest read so `?` surfaces branch and runtime errors.
     fn probe(db: &mut Database, branch_name: &str, space_name: &str) -> EngineResult<()>;
+
+    /// Performs a keyed point read (routed to the storage read path, not a
+    /// scan), so an armed read fault surfaces. Events are keyed by sequence.
+    #[cfg(feature = "testkit")]
+    fn point_read(db: &mut Database, branch_name: &str, space_name: &str) -> EngineResult<()>;
+
+    /// Performs a scan/list read (routed to the storage scan path), so an armed
+    /// scan fault surfaces.
+    #[cfg(feature = "testkit")]
+    fn scan(db: &mut Database, branch_name: &str, space_name: &str) -> EngineResult<()>;
 }
 
 struct KvFixture;
@@ -79,6 +93,19 @@ impl CapabilityFixture for KvFixture {
     fn probe(db: &mut Database, branch_name: &str, space_name: &str) -> EngineResult<()> {
         db.kv(branch(branch_name), space(space_name))?
             .get(&key(b"probe"))?;
+        Ok(())
+    }
+
+    #[cfg(feature = "testkit")]
+    fn point_read(db: &mut Database, branch_name: &str, space_name: &str) -> EngineResult<()> {
+        db.kv(branch(branch_name), space(space_name))?
+            .get(&key(b"probe"))?;
+        Ok(())
+    }
+
+    #[cfg(feature = "testkit")]
+    fn scan(db: &mut Database, branch_name: &str, space_name: &str) -> EngineResult<()> {
+        db.kv(branch(branch_name), space(space_name))?.list(None)?;
         Ok(())
     }
 }
@@ -116,6 +143,21 @@ impl CapabilityFixture for JsonFixture {
         let id = JsonDocumentId::new("probe")?;
         db.json(branch(branch_name), space(space_name))?
             .get(&id, &JsonPath::root())?;
+        Ok(())
+    }
+
+    #[cfg(feature = "testkit")]
+    fn point_read(db: &mut Database, branch_name: &str, space_name: &str) -> EngineResult<()> {
+        let id = JsonDocumentId::new("probe")?;
+        db.json(branch(branch_name), space(space_name))?
+            .get(&id, &JsonPath::root())?;
+        Ok(())
+    }
+
+    #[cfg(feature = "testkit")]
+    fn scan(db: &mut Database, branch_name: &str, space_name: &str) -> EngineResult<()> {
+        db.json(branch(branch_name), space(space_name))?
+            .list(None, None, 16)?;
         Ok(())
     }
 }
@@ -163,6 +205,22 @@ impl CapabilityFixture for EventFixture {
 
     fn probe(db: &mut Database, branch_name: &str, space_name: &str) -> EngineResult<()> {
         db.event(branch(branch_name), space(space_name))?.len()?;
+        Ok(())
+    }
+
+    #[cfg(feature = "testkit")]
+    fn point_read(db: &mut Database, branch_name: &str, space_name: &str) -> EngineResult<()> {
+        // Events are keyed by sequence; this is the capability's point read.
+        db.event(branch(branch_name), space(space_name))?
+            .get(EventSequence::new(0))?;
+        Ok(())
+    }
+
+    #[cfg(feature = "testkit")]
+    fn scan(db: &mut Database, branch_name: &str, space_name: &str) -> EngineResult<()> {
+        let event_type = EventType::new("conformance.seed.1")?;
+        db.event(branch(branch_name), space(space_name))?
+            .get_by_type(&event_type, None, None)?;
         Ok(())
     }
 }
@@ -223,6 +281,23 @@ impl CapabilityFixture for VectorFixture {
             .exists(&name, &vector_key)?;
         Ok(())
     }
+
+    #[cfg(feature = "testkit")]
+    fn point_read(db: &mut Database, branch_name: &str, space_name: &str) -> EngineResult<()> {
+        let name = VectorCollectionName::new("conformance")?;
+        let vector_key = VectorKey::new("probe")?;
+        db.vector(branch(branch_name), space(space_name))?
+            .exists(&name, &vector_key)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "testkit")]
+    fn scan(db: &mut Database, branch_name: &str, space_name: &str) -> EngineResult<()> {
+        let name = VectorCollectionName::new("conformance")?;
+        db.vector(branch(branch_name), space(space_name))?
+            .list_keys(&name, None, None, 16)?;
+        Ok(())
+    }
 }
 
 struct GraphFixture;
@@ -269,6 +344,23 @@ impl CapabilityFixture for GraphFixture {
     fn probe(db: &mut Database, branch_name: &str, space_name: &str) -> EngineResult<()> {
         db.graph(branch(branch_name), space(space_name))?
             .list_graphs(None, 1)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "testkit")]
+    fn point_read(db: &mut Database, branch_name: &str, space_name: &str) -> EngineResult<()> {
+        let name = GraphName::new("conformance")?;
+        let node_id = GraphNodeId::new("probe")?;
+        db.graph(branch(branch_name), space(space_name))?
+            .get_node(&name, &node_id)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "testkit")]
+    fn scan(db: &mut Database, branch_name: &str, space_name: &str) -> EngineResult<()> {
+        let name = GraphName::new("conformance")?;
+        db.graph(branch(branch_name), space(space_name))?
+            .list_nodes(&name, None, None, 16)?;
         Ok(())
     }
 }
@@ -368,6 +460,70 @@ fn durable_reopen_preserves<C: CapabilityFixture>() {
     );
 }
 
+// Fault-injection dimension (TCP3.6a): every capability's write, point read,
+// and scan must route through the persistence boundary so an armed storage
+// fault surfaces as the same mapped engine error. Gated on `testkit`, which
+// builds the injection seam. `persistence_faults.rs` pins the KV mappings in
+// detail; this proves json/event/vector/graph are wired to the identical path.
+
+/// A commit fault fails the write and, because it fires before the storage
+/// mutation and then clears, leaves nothing visible.
+#[cfg(feature = "testkit")]
+fn commit_fault_surfaces_and_persists_nothing<C: CapabilityFixture>() {
+    let mut db = open_cache_database().expect("cache database opens");
+    C::ensure(&mut db, "default", "default").expect("ensure container");
+    db.inject_commit_fault_for_test(StorageFaultKind::ResourceExhausted);
+    let error =
+        C::write(&mut db, "default", "default", 7).expect_err("armed commit fault fails the write");
+    assert_status(
+        &error,
+        EngineErrorClass::Unavailable,
+        "resource_exhausted.engine.persistence_budget",
+        true,
+    );
+    assert!(
+        !C::exists(&mut db, "default", "default", 7).expect("post-fault read"),
+        "{}: a failed commit must leave no visible value",
+        C::label()
+    );
+}
+
+/// A read fault on the capability's point read surfaces the mapped, retryable
+/// unavailable status.
+#[cfg(feature = "testkit")]
+fn read_fault_surfaces_unavailable<C: CapabilityFixture>() {
+    let mut db = open_cache_database().expect("cache database opens");
+    C::ensure(&mut db, "default", "default").expect("ensure container");
+    C::write(&mut db, "default", "default", 1).expect("seed write");
+    db.inject_read_fault_for_test(StorageFaultKind::Unavailable);
+    let error =
+        C::point_read(&mut db, "default", "default").expect_err("armed read fault fails the read");
+    assert_status(
+        &error,
+        EngineErrorClass::Unavailable,
+        "unavailable.engine.persistence",
+        true,
+    );
+}
+
+/// A scan fault on the capability's scan surfaces the mapped, retryable
+/// unavailable status.
+#[cfg(feature = "testkit")]
+fn scan_fault_surfaces_unavailable<C: CapabilityFixture>() {
+    let mut db = open_cache_database().expect("cache database opens");
+    C::ensure(&mut db, "default", "default").expect("ensure container");
+    C::write(&mut db, "default", "default", 1).expect("seed write");
+    db.inject_scan_fault_for_test(StorageFaultKind::Unavailable);
+    let error =
+        C::scan(&mut db, "default", "default").expect_err("armed scan fault fails the scan");
+    assert_status(
+        &error,
+        EngineErrorClass::Unavailable,
+        "unavailable.engine.persistence",
+        true,
+    );
+}
+
 macro_rules! conformance_suite {
     ($module:ident, $fixture:ty) => {
         mod $module {
@@ -376,6 +532,24 @@ macro_rules! conformance_suite {
             #[test]
             fn write_then_read_visible() {
                 super::write_then_read_visible::<$fixture>();
+            }
+
+            #[cfg(feature = "testkit")]
+            #[test]
+            fn commit_fault_surfaces_and_persists_nothing() {
+                super::commit_fault_surfaces_and_persists_nothing::<$fixture>();
+            }
+
+            #[cfg(feature = "testkit")]
+            #[test]
+            fn read_fault_surfaces_unavailable() {
+                super::read_fault_surfaces_unavailable::<$fixture>();
+            }
+
+            #[cfg(feature = "testkit")]
+            #[test]
+            fn scan_fault_surfaces_unavailable() {
+                super::scan_fault_surfaces_unavailable::<$fixture>();
             }
 
             #[test]
