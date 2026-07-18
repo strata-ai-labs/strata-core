@@ -23,6 +23,7 @@ const CLI_COMMAND_INDEX_FILE: &str = "cli-command-index.json";
 const UNCOVERED_COMMANDS_FILE: &str = "uncovered-commands.yaml";
 const UNCOVERED_ERROR_CODES_FILE: &str = "uncovered-error-codes.yaml";
 const UNREPLAYED_ERROR_CODES_FILE: &str = "unreplayed-error-codes.yaml";
+const REPLAY_SKIPPED_COMMANDS_FILE: &str = "replay-skipped-commands.yaml";
 const CLI_SURFACES: &[&str] = &["verb", "wire"];
 const SUPPORTED_COMMAND_SCHEMA_VERSION: &str = "strata.idl.v1";
 const SUPPORTED_COMMAND_GENERATOR_VERSION: &str = "strata-executor-idl.1";
@@ -488,6 +489,17 @@ struct UncoveredErrorCodesSource {
     uncovered: Vec<String>,
 }
 
+/// `replay-skipped-commands.yaml`: the shrink-only allowlist of commands whose
+/// primary fixture is not replayed by the behavior guard (TCP3.8c). Every
+/// command that sets `replay_skip` must be listed here; the list may only
+/// shrink, so a new skip cannot be added silently — a command must be made
+/// replayable or its skip justified and listed.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReplaySkippedCommandsSource {
+    skipped: Vec<String>,
+}
+
 /// `unreplayed-error-codes.yaml`: the shrink-only replay-coverage allowlist
 /// (TCP3.8b). Distinct from `uncovered-error-codes.yaml`, which tracks whether
 /// a code is *documented*; this tracks whether a declared code has an
@@ -756,6 +768,7 @@ pub fn resolve_index(repo_root: &Path) -> Result<CommandIndex> {
 
     resolved.sort_by(|left, right| left.id.cmp(&right.id));
     enforce_command_exhaustiveness(&idl_root, &command_refs, &resolved)?;
+    enforce_replay_skip_ratchet(&idl_root, &resolved)?;
     Ok(CommandIndex {
         generated: true,
         schema_version: manifest.schema_version,
@@ -1451,6 +1464,57 @@ fn enforce_command_exhaustiveness(
     enforce_exhaustiveness_lists(command_refs, &covered, &allowlist.uncovered)
 }
 
+/// Every command whose primary fixture sets `replay_skip` (so the behavior
+/// guard never executes it) must be listed in `replay-skipped-commands.yaml`,
+/// and the list may only shrink (TCP3.8c). A newly added skip fails the build
+/// unless it is justified and listed; a listed command that becomes replayable
+/// must be removed. This keeps golden-or-replay coverage from silently eroding.
+fn enforce_replay_skip_ratchet(idl_root: &Path, resolved: &[ResolvedCommand]) -> Result<()> {
+    let allowlist: ReplaySkippedCommandsSource =
+        read_yaml(&idl_root.join(REPLAY_SKIPPED_COMMANDS_FILE))?;
+    let ids: BTreeSet<&str> = resolved.iter().map(|entry| entry.id.as_str()).collect();
+    let skipped: BTreeSet<&str> = resolved
+        .iter()
+        .filter(|entry| entry.fixtures.replay_skip.is_some())
+        .map(|entry| entry.id.as_str())
+        .collect();
+    enforce_replay_skip_lists(&ids, &skipped, &allowlist.skipped)
+}
+
+fn enforce_replay_skip_lists(
+    ids: &BTreeSet<&str>,
+    skipped: &BTreeSet<&str>,
+    allowlist: &[String],
+) -> Result<()> {
+    let mut listed = BTreeSet::new();
+    for id in allowlist {
+        if !ids.contains(id.as_str()) {
+            return Err(invalid(format!(
+                "replay-skipped-commands.yaml lists `{id}` which is not a command id; remove it"
+            )));
+        }
+        if !skipped.contains(id.as_str()) {
+            return Err(invalid(format!(
+                "`{id}` no longer sets replay_skip; remove it from replay-skipped-commands.yaml (the allowlist may only shrink)"
+            )));
+        }
+        if !listed.insert(id.as_str()) {
+            return Err(invalid(format!(
+                "duplicate `{id}` in replay-skipped-commands.yaml"
+            )));
+        }
+    }
+
+    for id in skipped {
+        if !listed.contains(id) {
+            return Err(invalid(format!(
+                "command `{id}` sets replay_skip but is not listed in replay-skipped-commands.yaml; make it replayable or justify and list the skip (the allowlist may only shrink)"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn enforce_exhaustiveness_lists(
     command_refs: &BTreeSet<String>,
     covered: &BTreeSet<String>,
@@ -1590,37 +1654,55 @@ pub(super) fn enforce_error_replay_coverage(
         read_yaml(&idl_root.join(UNREPLAYED_ERROR_CODES_FILE))?;
 
     let mut declared: BTreeSet<&str> = BTreeSet::new();
+    let mut declared_by_command: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for command in &index.commands {
+        let entry = declared_by_command.entry(command.id.as_str()).or_default();
         for error in &command.errors {
             declared.insert(error.code.as_str());
+            entry.insert(error.code.as_str());
         }
     }
 
-    // (B) A replayed code proves the command can surface it; the declared list
-    // (which feeds SDK docs) must therefore name it.
+    let replayed: BTreeSet<&str> = replayed.iter().map(String::as_str).collect();
+    enforce_replay_declaration(&declared_by_command, command_replays)?;
+    enforce_replay_coverage_lists(&declared, &replayed, &allowlist.unreplayed)
+}
+
+/// (B) A replayed code proves its command can surface it, so the command's
+/// declared `errors[]` (which feeds SDK docs) must name it.
+fn enforce_replay_declaration(
+    declared_by_command: &BTreeMap<&str, BTreeSet<&str>>,
+    command_replays: &[(String, String)],
+) -> Result<()> {
     for (command_id, code) in command_replays {
-        let command = index
-            .commands
-            .iter()
-            .find(|candidate| &candidate.id == command_id)
+        let declared = declared_by_command
+            .get(command_id.as_str())
             .ok_or_else(|| invalid(format!("replayed unknown command `{command_id}`")))?;
-        if !command.errors.iter().any(|error| &error.code == code) {
+        if !declared.contains(code.as_str()) {
             return Err(invalid(format!(
                 "command `{command_id}` replays error `{code}` but does not declare it in errors[]; add it via `errors+` so the SDK-facing error list names it"
             )));
         }
     }
+    Ok(())
+}
 
-    // (A) Coverage ratchet: declared - replayed must be a subset of the
-    // allowlist, and the allowlist may only shrink.
+/// (A) Every code any command declares must be replayed by an error case or
+/// listed in `unreplayed-error-codes.yaml`, and the allowlist may only shrink
+/// (a now-replayed or no-longer-declared entry must be removed).
+fn enforce_replay_coverage_lists(
+    declared: &BTreeSet<&str>,
+    replayed: &BTreeSet<&str>,
+    allowlist: &[String],
+) -> Result<()> {
     let mut listed = BTreeSet::new();
-    for code in &allowlist.unreplayed {
+    for code in allowlist {
         if !declared.contains(code.as_str()) {
             return Err(invalid(format!(
                 "unreplayed-error-codes.yaml lists `{code}` which no command declares in errors[]; remove it"
             )));
         }
-        if replayed.contains(code) {
+        if replayed.contains(code.as_str()) {
             return Err(invalid(format!(
                 "`{code}` now has an error-case replay fixture; remove it from unreplayed-error-codes.yaml (the allowlist may only shrink)"
             )));
@@ -1632,8 +1714,8 @@ pub(super) fn enforce_error_replay_coverage(
         }
     }
 
-    for code in &declared {
-        if !replayed.contains(*code) && !listed.contains(code) {
+    for code in declared {
+        if !replayed.contains(code) && !listed.contains(code) {
             return Err(invalid(format!(
                 "declared error `{code}` is surfaced by a command but has no error-case replay fixture; add an `error_cases` entry that pins its envelope, or list it in unreplayed-error-codes.yaml"
             )));
@@ -2222,6 +2304,107 @@ mod tests {
         let listed = vec!["ghost.code.here".to_owned()];
         let error = enforce_error_code_lists(&registered, &declared, &listed).unwrap_err();
         assert!(error.to_string().contains("ghost.code.here"));
+    }
+
+    fn str_refs<'a>(names: &'a [&str]) -> BTreeSet<&'a str> {
+        names.iter().copied().collect()
+    }
+
+    #[test]
+    fn replay_coverage_accepts_replayed_plus_listed() {
+        let declared = str_refs(&["a.b.c", "d.e.f", "g.h.i"]);
+        let replayed = str_refs(&["a.b.c"]);
+        let listed = vec!["d.e.f".to_owned(), "g.h.i".to_owned()];
+        assert!(enforce_replay_coverage_lists(&declared, &replayed, &listed).is_ok());
+    }
+
+    #[test]
+    fn replay_coverage_rejects_a_declared_code_neither_replayed_nor_listed() {
+        let declared = str_refs(&["a.b.c", "d.e.f"]);
+        let replayed = str_refs(&["a.b.c"]);
+        let error = enforce_replay_coverage_lists(&declared, &replayed, &[]).unwrap_err();
+        assert!(error.to_string().contains("d.e.f"));
+        assert!(error.to_string().contains("no error-case replay fixture"));
+    }
+
+    #[test]
+    fn replay_coverage_shrinks_only_when_a_listed_code_becomes_replayed() {
+        let declared = str_refs(&["a.b.c"]);
+        let replayed = str_refs(&["a.b.c"]);
+        let listed = vec!["a.b.c".to_owned()];
+        let error = enforce_replay_coverage_lists(&declared, &replayed, &listed).unwrap_err();
+        assert!(error.to_string().contains("only shrink"));
+    }
+
+    #[test]
+    fn replay_coverage_rejects_a_listed_code_no_command_declares() {
+        let declared = str_refs(&["a.b.c"]);
+        let replayed = str_refs(&[]);
+        let listed = vec!["ghost.code.here".to_owned()];
+        let error = enforce_replay_coverage_lists(&declared, &replayed, &listed).unwrap_err();
+        assert!(error.to_string().contains("ghost.code.here"));
+    }
+
+    #[test]
+    fn replay_declaration_accepts_a_replayed_declared_code() {
+        let mut by_command: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        by_command.insert("kv.get", str_refs(&["not_found.engine.branch", "x.y.z"]));
+        let replays = vec![("kv.get".to_owned(), "x.y.z".to_owned())];
+        assert!(enforce_replay_declaration(&by_command, &replays).is_ok());
+    }
+
+    #[test]
+    fn replay_declaration_rejects_a_replay_the_command_does_not_declare() {
+        let mut by_command: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        by_command.insert("kv.get", str_refs(&["not_found.engine.branch"]));
+        let replays = vec![("kv.get".to_owned(), "undeclared.code.here".to_owned())];
+        let error = enforce_replay_declaration(&by_command, &replays).unwrap_err();
+        assert!(error.to_string().contains("undeclared.code.here"));
+        assert!(error.to_string().contains("does not declare it"));
+    }
+
+    #[test]
+    fn replay_declaration_rejects_an_unknown_command() {
+        let by_command: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        let replays = vec![("kv.ghost".to_owned(), "a.b.c".to_owned())];
+        let error = enforce_replay_declaration(&by_command, &replays).unwrap_err();
+        assert!(error.to_string().contains("kv.ghost"));
+    }
+
+    #[test]
+    fn replay_skip_accepts_skipped_plus_listed() {
+        let ids = str_refs(&["kv.put", "kv.get", "inference.embed"]);
+        let skipped = str_refs(&["inference.embed"]);
+        let listed = vec!["inference.embed".to_owned()];
+        assert!(enforce_replay_skip_lists(&ids, &skipped, &listed).is_ok());
+    }
+
+    #[test]
+    fn replay_skip_rejects_a_new_unlisted_skip() {
+        let ids = str_refs(&["kv.put", "inference.embed"]);
+        let skipped = str_refs(&["inference.embed"]);
+        let error = enforce_replay_skip_lists(&ids, &skipped, &[]).unwrap_err();
+        assert!(error.to_string().contains("inference.embed"));
+        assert!(error.to_string().contains("not listed"));
+    }
+
+    #[test]
+    fn replay_skip_shrinks_only() {
+        // A listed command that no longer skips must be removed.
+        let ids = str_refs(&["kv.get"]);
+        let skipped = str_refs(&[]);
+        let listed = vec!["kv.get".to_owned()];
+        let error = enforce_replay_skip_lists(&ids, &skipped, &listed).unwrap_err();
+        assert!(error.to_string().contains("only shrink"));
+    }
+
+    #[test]
+    fn replay_skip_rejects_unknown_allowlist_ids() {
+        let ids = str_refs(&["kv.put"]);
+        let skipped = str_refs(&[]);
+        let listed = vec!["kv.ghost".to_owned()];
+        let error = enforce_replay_skip_lists(&ids, &skipped, &listed).unwrap_err();
+        assert!(error.to_string().contains("kv.ghost"));
     }
 
     #[test]
