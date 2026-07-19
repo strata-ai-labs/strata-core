@@ -17,3 +17,6 @@ pub(crate) mod openai;
 
 #[cfg(feature = "google")]
 pub(crate) mod google;
+
+#[cfg(test)]
+mod wire_goldens;
