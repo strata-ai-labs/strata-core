@@ -1715,3 +1715,186 @@ pub(crate) enum InferenceModelsCommand {
         model: String,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    /// Collects every leaf verb path (a subcommand with no further
+    /// subcommands) from the clap tree, e.g. `"kv get"`, `"config set"`.
+    fn leaf_verbs() -> Vec<String> {
+        fn walk(command: &clap::Command, prefix: &str, out: &mut Vec<String>) {
+            let mut subs = command.get_subcommands().peekable();
+            if subs.peek().is_none() {
+                if !prefix.is_empty() {
+                    out.push(prefix.to_owned());
+                }
+                return;
+            }
+            for sub in subs {
+                let path = if prefix.is_empty() {
+                    sub.get_name().to_owned()
+                } else {
+                    format!("{prefix} {}", sub.get_name())
+                };
+                walk(sub, &path, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&super::Cli::command(), "", &mut out);
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Every leaf verb the `strata` clap tree exposes. This is the mechanical,
+    /// executable inventory that replaced the hand-maintained (and drifted)
+    /// `docs/architecture/cli-command-coverage.md`: the guard below fails when a
+    /// verb is added or removed without updating this list, so the CLI surface
+    /// can never silently drift again.
+    const EXPECTED_VERBS: &[&str] = &[
+        "agents commands",
+        "agents errors",
+        "agents guide",
+        "agents init",
+        "agents skill",
+        "arrow export",
+        "arrow import",
+        "begin",
+        "branch create",
+        "branch delete",
+        "branch diff",
+        "branch fork",
+        "branch get",
+        "branch list",
+        "branch merge",
+        "branch note",
+        "branch tag",
+        "clone",
+        "command print",
+        "command run",
+        "commit",
+        "compact",
+        "config get",
+        "config get-key",
+        "config path",
+        "config set",
+        "config show",
+        "config unset",
+        "describe",
+        "doctor",
+        "down",
+        "event append",
+        "event by-type",
+        "event count",
+        "event exists",
+        "event get",
+        "event list",
+        "event range",
+        "event range-time",
+        "event types",
+        "event verify-chain",
+        "flush",
+        "graph add-edge",
+        "graph add-node",
+        "graph bfs",
+        "graph bulk-insert",
+        "graph cdlp",
+        "graph create",
+        "graph delete",
+        "graph get-edge",
+        "graph get-node",
+        "graph lcc",
+        "graph list",
+        "graph list-nodes",
+        "graph meta",
+        "graph neighbors",
+        "graph nodes-by-type",
+        "graph ontology define-link-type",
+        "graph ontology define-object-type",
+        "graph ontology delete-link-type",
+        "graph ontology delete-object-type",
+        "graph ontology freeze",
+        "graph ontology get",
+        "graph ontology summary",
+        "graph pagerank",
+        "graph remove-edge",
+        "graph remove-node",
+        "graph sample",
+        "graph sssp",
+        "graph wcc",
+        "health",
+        "inference cache-status",
+        "inference capability",
+        "inference detokenize",
+        "inference embed",
+        "inference generate",
+        "inference models list",
+        "inference models local",
+        "inference models pull",
+        "inference rank",
+        "inference tokenize",
+        "inference unload",
+        "info",
+        "init",
+        "json count",
+        "json delete",
+        "json exists",
+        "json get",
+        "json history",
+        "json index create",
+        "json index drop",
+        "json index list",
+        "json list",
+        "json sample",
+        "json scan",
+        "json set",
+        "kv count",
+        "kv delete",
+        "kv exists",
+        "kv get",
+        "kv history",
+        "kv list",
+        "kv put",
+        "kv sample",
+        "kv scan",
+        "mcp serve",
+        "metrics",
+        "ping",
+        "recipe",
+        "remote",
+        "rollback",
+        "search",
+        "space create",
+        "space delete",
+        "space exists",
+        "space list",
+        "txn",
+        "uninstall",
+        "up",
+        "vector collection create",
+        "vector collection delete",
+        "vector collection list",
+        "vector collection stats",
+        "vector count",
+        "vector delete",
+        "vector delete-all",
+        "vector delete-by-filter",
+        "vector exists",
+        "vector get",
+        "vector history",
+        "vector keys",
+        "vector query",
+        "vector sample",
+        "vector scan",
+        "vector update-metadata",
+        "vector upsert",
+    ];
+
+    #[test]
+    fn clap_verbs_match_the_enumerated_inventory() {
+        let actual = leaf_verbs();
+        let expected: Vec<String> = EXPECTED_VERBS.iter().map(|v| (*v).to_owned()).collect();
+        assert_eq!(actual, expected, "\nACTUAL VERBS:\n{}", actual.join("\n"));
+    }
+}

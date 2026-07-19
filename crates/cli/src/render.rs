@@ -718,6 +718,79 @@ mod tests {
         Bytes::new(text.as_bytes().to_vec())
     }
 
+    /// The executor result-type tags the human/raw renderers dispatch on
+    /// specially (everything else falls through to the generic renderer). This
+    /// is the executable inventory of special-cased render coverage — the
+    /// `rendered_tag_inventory_matches_dispatch_arms` guard keeps it in sync
+    /// with the actual `match` arms, so a new special-cased tag can't be added
+    /// (or removed) without updating this list and its rendering test.
+    const RENDERED_TAGS: &[&str] = &[
+        "bool",
+        "event_count",
+        "event_record",
+        "graph_edge_result",
+        "graph_node_result",
+        "inference_embeddings",
+        "inference_generation",
+        "inference_model_pulled",
+        "inference_models",
+        "inference_ranking",
+        "inference_text",
+        "inference_token_ids",
+        "inference_unload_result",
+        "json_value",
+        "json_version_history",
+        "json_versioned_value",
+        "kv_versioned_value",
+        "pong",
+        "uint",
+        "vector_data",
+        "vector_matches",
+    ];
+
+    /// Extracts the string literals that head a `match` arm (`"tag" =>` or
+    /// `"tag" | "tag2" =>`) from the render source — the tags the renderers
+    /// special-case. Format-string arguments (`line!(out, "...")`) never sit
+    /// before `=>`/`|`, so they are not mistaken for tags.
+    fn dispatch_tags() -> std::collections::BTreeSet<String> {
+        let full = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/render.rs"))
+            .expect("read render.rs source");
+        // Scan only the production code; the test module below contains `"tag"`
+        // examples in its comments that are not real dispatch arms.
+        let source = full.split("#[cfg(test)]").next().unwrap_or(&full);
+        let mut tags = std::collections::BTreeSet::new();
+        let mut cursor = 0;
+        while let Some(rel) = source[cursor..].find('"') {
+            let start = cursor + rel + 1;
+            let Some(end_rel) = source[start..].find('"') else {
+                break;
+            };
+            let end = start + end_rel;
+            let content = &source[start..end];
+            let rest = source[end + 1..].trim_start();
+            let is_tag = !content.is_empty()
+                && content.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+                && (rest.starts_with("=>") || rest.starts_with('|'));
+            if is_tag {
+                tags.insert(content.to_owned());
+            }
+            cursor = end + 1;
+        }
+        tags
+    }
+
+    #[test]
+    fn rendered_tag_inventory_matches_dispatch_arms() {
+        let arms = dispatch_tags();
+        let inventory: std::collections::BTreeSet<String> =
+            RENDERED_TAGS.iter().map(|tag| (*tag).to_owned()).collect();
+        assert_eq!(
+            arms, inventory,
+            "the render dispatch arms drifted from RENDERED_TAGS; \
+             add or remove the tag in the list (and its rendering test)"
+        );
+    }
+
     #[test]
     fn kv_value_decodes_to_text_for_human_output() {
         let output =
