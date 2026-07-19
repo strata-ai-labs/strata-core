@@ -82,10 +82,6 @@ const ALLOWED_UNASSERTED: &[(&str, &str)] = &[
     // --- storage internal-layer codes (surfaced by the TCP3.2a area fix) ---
     ("data_loss.engine.branch_id", "corruption detector; asserted by TCP3.15 corruption injection"),
     ("data_loss.engine.control_name", "corruption detector; asserted by TCP3.15 corruption injection"),
-    ("data_loss.engine.graph_edge_record", "corruption detector; asserted by TCP3.15 corruption injection"),
-    ("data_loss.engine.graph_node_record", "corruption detector; asserted by TCP3.15 corruption injection"),
-    ("data_loss.engine.graph_type_index_key", "corruption detector; asserted by TCP3.15 corruption injection"),
-    ("data_loss.engine.graph_type_index_record", "corruption detector; asserted by TCP3.15 corruption injection"),
     ("data_loss.engine.vector_artifact", "corruption detector; asserted by TCP3.15 corruption injection"),
     ("data_loss.engine.vector_artifacts", "corruption detector; asserted by TCP3.15 corruption injection"),
     ("data_loss.engine.vector_index_manifest", "corruption detector; asserted by TCP3.15 corruption injection"),

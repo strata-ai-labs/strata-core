@@ -395,7 +395,7 @@ impl StoragePersistence {
     fn corrupt_rows(&mut self, op: FaultOp, rows: &mut [PersistenceReadRow]) {
         if let Some(corruption) = self.corruption.take(op) {
             for row in rows.iter_mut() {
-                corruption.apply(&mut row.value);
+                corruption.apply(&mut row.key, &mut row.value);
             }
         }
     }
