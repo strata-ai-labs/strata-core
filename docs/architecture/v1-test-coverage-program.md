@@ -189,13 +189,23 @@ coverage. Slice status tracks in the table below as slices merge.
 **Phase 3 closed 2026-07-18.** All 15 slices implemented; the layer-by-layer
 coverage plans (core, storage L1–L9, engine conformance, executor/IDL, CLI,
 inference, hub, wasm/stratadb, corruption) are done. The workspace error-code
-guard is the durable artifact: its allowlist now holds **36 entries, every one
+guard is the durable artifact: its allowlist now holds **32 entries, every one
 legitimately deferred** — 22 defensive/unreachable-via-API (the `#2651` encode
-arms + 2 verified-unreachable guards), 10 asserted by IDL replay fixtures (JSON,
-invisible to the grep-guard), and 4 CLI doctor/environment codes that need a
-host-env harness. No stale "a future slice will assert this" promise remains.
-The finale also surfaced **#2682** (a possible off-lock torn-read / atomicity
-question), filed with a classification plan rather than dismissed.
+arms + 2 verified-unreachable guards) and 10 asserted by IDL replay fixtures
+(JSON, invisible to the grep-guard). No stale "a future slice will assert this"
+promise remains. The finale also surfaced **#2682** (a possible off-lock
+torn-read / atomicity question), filed with a classification plan rather than
+dismissed.
+
+**Addendum — TCP3.16 (2026-07-18).** The exit gate first re-labelled the four
+CLI `doctor` codes as "deferred — needs a host-env harness." A follow-up
+question exposed that as too charitable: `doctor.rs` simply had zero tests, and
+all four codes are reachable hermetically by perturbing one environment axis
+(`--db` at a missing path, `STRATA_HOME` at a file, `HOME`/`STRATA_HOME` unset,
+`PATH` without the binary). New `crates/cli/tests/doctor_behavior.rs` (5 tests,
+real-binary) asserts all four plus the healthy path, dropping them off the
+allowlist (36 → 32). The remaining 32 are the only two honest categories:
+defensive-unreachable and IDL-fixture-asserted.
 
 ## Phase 4 — Volume via generation (bug-hunting to 10×)
 
