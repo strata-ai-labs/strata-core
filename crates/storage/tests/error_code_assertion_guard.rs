@@ -96,7 +96,6 @@ const ALLOWED_UNASSERTED: &[(&str, &str)] = &[
     ("failed_precondition.cli.home_unresolved", "doctor/environment path; asserted by TCP3.10 CLI slice"),
     ("failed_precondition.engine.vector_artifact", "reopen-time incompatible_layout on a version-mismatched persisted artifact; asserted by TCP3.15 fault/reopen injection"),
     ("failed_precondition.engine.vector_index_manifest", "reopen-time incompatible_layout on a version-mismatched manifest; asserted by TCP3.15 fault/reopen injection"),
-    ("failed_precondition.executor.hub_clone", "asserted by TCP3.13 hub fault lane via executor envelope"),
     ("invalid_argument.engine.event_batch", "internal invariant: the public empty batch short-circuits to success before this check (#2651)"),
     ("invalid_argument.engine.event_metadata", "defensive serde_json::to_vec encode arm (never fails on a valid record); unreachable (#2651)"),
     ("invalid_argument.engine.event_record", "defensive encode-error arm; unreachable with a valid record (#2651)"),
@@ -128,7 +127,6 @@ const ALLOWED_UNASSERTED: &[(&str, &str)] = &[
     ("invalid_argument.executor.limit", "asserted by TCP3.8 error-envelope replay fixtures"),
     ("invalid_argument.executor.vector_limit", "asserted by TCP3.8 error-envelope replay fixtures"),
     ("not_found.cli.database_path", "doctor/environment path; asserted by TCP3.10 CLI slice"),
-    ("not_found.engine.database", "emitted by hub remote.rs under an engine area (layering review); asserted by TCP3.13 hub fault lane"),
     ("unavailable.engine.vector_artifacts", "vector-artifact IO failure; asserted by TCP3.15 IO-fault injection"),
 ];
 

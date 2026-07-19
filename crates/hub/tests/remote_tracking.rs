@@ -9,7 +9,7 @@ use strata_engine::{
 };
 use strata_hub::{
     import_bundle, read_remote_tracking_ref, write_remote_tracking_ref, EngineExportOptions,
-    RemoteTrackingRef, StrataCoreEngine,
+    RemoteRefError, RemoteTrackingRef, StrataCoreEngine,
 };
 use stratahub_protocol::{BranchName, DatasetName, Hash};
 use time::OffsetDateTime;
@@ -134,5 +134,21 @@ fn sample_ref(fetched_at_secs: i64, hash: &str) -> RemoteTrackingRef {
         manifest_hash: Hash::parse(hash).expect("hash"),
         fetched_at: OffsetDateTime::from_unix_timestamp(fetched_at_secs).expect("timestamp"),
         base_frontier: vec![("default".to_owned(), hash.to_owned(), None)],
+    }
+}
+
+#[test]
+fn reading_a_ref_from_a_path_that_is_not_a_database_reports_not_found() {
+    // Opening a path that holds no existing database surfaces the engine's
+    // not-found code through the remote-tracking layer (TCP3.13). The engine
+    // area is a known layering wrinkle recorded in the error-code guard.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let error =
+        read_remote_tracking_ref(&dir.path().join("no-such-db")).expect_err("must not find a db");
+    match error {
+        RemoteRefError::Engine { code } => {
+            assert_eq!(code, "not_found.engine.database");
+        }
+        other => panic!("expected an engine not-found, got {other:?}"),
     }
 }

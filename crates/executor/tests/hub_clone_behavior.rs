@@ -187,3 +187,42 @@ fn hub_clone_transport_failures_report_the_transport_code() {
         .expect_err("transport failure refuses");
     assert_eq!(error.status().code(), "unavailable.executor.hub_transport");
 }
+
+#[test]
+fn hub_clone_of_an_incompatible_bundle_reports_the_precondition_code() {
+    // A well-formed bundle whose manifest demands an engine this build cannot
+    // satisfy. The pre-download compatibility gate refuses it, and the failure
+    // surfaces through the executor as the non-retryable clone envelope
+    // (TCP3.13). No objects are served: the gate fires before any download.
+    let source = tempfile::tempdir().expect("tempdir");
+    build_source(source.path());
+    let mut engine = StrataCoreEngine::open(source.path()).expect("open");
+    let output = engine
+        .export_bundle(&EngineExportOptions::default())
+        .expect("export");
+    let mut manifest = output.manifest;
+    manifest.engine_compatibility.required_engine_version = ">=99.0.0".to_owned();
+    let manifest_bytes = manifest.canonical_bytes().expect("canonicalize");
+    let manifest_hash = strata_hub::stratahub_protocol::hash_bytes(&manifest_bytes);
+    let base = serve_bundle(manifest_bytes, &manifest_hash, HashMap::new());
+
+    let workdir = tempfile::tempdir().expect("workdir");
+    let dest = workdir.path().join("titanic.strata");
+    let mut executor = Executor::open_cache().expect("cache executor");
+    let error = executor
+        .execute(Command::HubClone {
+            dataset: "titanic".to_owned(),
+            branch: Some("default".to_owned()),
+            dest: dest.display().to_string(),
+            hub_url: Some(base),
+        })
+        .expect_err("incompatible bundle refuses");
+    assert_eq!(
+        error.status().code(),
+        "failed_precondition.executor.hub_clone"
+    );
+    assert!(
+        !dest.exists(),
+        "no destination state on an incompatible clone"
+    );
+}
