@@ -132,14 +132,19 @@ mod injection {
         /// Replace the value bytes with malformed content: present, but not
         /// decodable as the record the caller expects.
         SetValue(Vec<u8>),
+        /// Replace the key bytes with malformed content — for rows whose *key*
+        /// is itself a decoded record (index keys), so the key decoder rejects
+        /// them before the value is ever read.
+        SetKey(Vec<u8>),
     }
 
     impl RowCorruption {
-        /// Applies this corruption to one row's value cell.
-        pub(crate) fn apply(&self, value: &mut Option<Vec<u8>>) {
+        /// Applies this corruption to one row's key and value cells.
+        pub(crate) fn apply(&self, key: &mut Vec<u8>, value: &mut Option<Vec<u8>>) {
             match self {
                 Self::DropValue => *value = None,
                 Self::SetValue(bytes) => *value = Some(bytes.clone()),
+                Self::SetKey(bytes) => key.clone_from(bytes),
             }
         }
     }
