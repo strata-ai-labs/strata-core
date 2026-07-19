@@ -1,6 +1,6 @@
 # V1 Test Coverage Program
 
-Status: active — Phase 1 not started
+Status: active — Phases 1–3 closed (2026-07-16 / -18); Phase 4 (volume via generation) open
 Created: 2026-07-16
 
 ## Purpose
@@ -180,10 +180,93 @@ coverage. Slice status tracks in the table below as slices merge.
 | 3.12 | Inference deterministic residuals (request goldens, wire mapping) | **Implemented (2026-07-18)** — the three cloud providers already have dense field-by-field wire tests, but no test pinned a **whole request body**, so whole-shape drift (an extra/dropped/renamed key elsewhere in the body) was invisible, and the cross-provider silent-drop contract was covered asymmetrically. New in-crate module `crates/inference/src/provider/wire_goldens.rs` (10 tests) pins the **entire JSON** each provider emits for one canonical chat/generate/embed request (parsed-`Value` goldens: key-order-insensitive, but extra/missing/changed keys fail), across openai/anthropic/google. Gotchas encoded: floats restricted to exactly-f32-representable values (0.5/0.25/0.75) so the f32→f64 JSON widening stays lossless; chat sets `temperature` alone because Anthropic rejects temperature+top_p. Also pins the **silent-drop parity** (OpenAI serializes `logit_bias`/penalties/`seed`; Anthropic and Google must drop them) and fills the symmetric gap where OpenAI's `parse_chat_response_json` had no malformed-JSON test (asserts on the `Provider` error variant, not display text). Deferred residuals (documented, low-value): `map_http_error` string branches (all collapse to one `Provider` class — display-text-only) and `parse_tool_calls`/`parse_logprobs` malformed inputs |
 | 3.13 | Hub transport fault injection | **Implemented (2026-07-18)** — `clone_flow.rs` fault-tested only `get_object` (missing object); the earlier §3.6 clone steps and the integrity boundary were unguarded. New `crates/hub/tests/clone_faults.rs` (5 tests): a configurable fault transport that fails at any step and **counts every call**, proving each fault (a) surfaces the right `CloneError`, (b) **short-circuits** — a `default_branch`/`resolve_ref`/`get_manifest` failure never reaches the next wire call — and (c) leaves **no destination state**. Adds two paths the missing-object test can't reach: **corrupted object bytes** (valid hash, tampered body → import's per-object hash check rejects with `ObjectHashMismatch`, no dest) and a **malformed engine requirement** (non-semver → refused before any download). Closed the two error codes the charter deferred here (shrink-only guard entries removed): `failed_precondition.executor.hub_clone` — asserted end-to-end in `hub_clone_behavior.rs` by serving a manifest whose engine requirement this build can't satisfy (compat gate → executor envelope); and `not_found.engine.database` — asserted in `remote_tracking.rs` by reading a remote ref from a non-database path. **Verified** the executor's `clone_error` `_ =>` arm is not a class/code bug: `public_class_for_executor` derives the public class from the code prefix (`failed_precondition.`), overriding the passed `Unavailable` |
 | 3.14 | wasm + stratadb residuals | **Implemented (2026-07-18)** — 2.6 gave both facades a first test; this closes the residuals. **wasm** (`session.rs`, +4 tests, executed on wasm32 via `wasm-bindgen-test-runner`): the **space isolation axis had zero coverage** (branch was tested, space — the parallel scoping axis exposed via `space()`/`setSpace()` — was not), so a stored key under one space must be invisible under another; plus `setSpace` rejects a reserved name (throws), `close()` then a further command comes back as an **error envelope, not a throw** (a closed handle refuses work), and `engine_version()` reports a non-empty semver. **stratadb** (`facade.rs`, +2 tests): the crate's "branchable, time-traveling" headline was never exercised through the re-exported names — `fork_current` inherits the parent seed then diverges without touching the parent (note `create` makes an *empty* branch per rule 19; `fork_current` is the inheriting fork), and a version pinned by `get_versioned().version()` still reads its old value via `get_at_version` after an overwrite (the `CommitVersion` threads by inference, proving the versioned-read surface is reachably re-exported) |
-| 3.15 | Engine corruption injection (data_loss assertion) | **In progress** — closes the 14 remaining allowlisted corruption/reopen/IO codes across 4 sub-slices (a: infra + KV/JSON, b: graph, c: vector + reopen + IO, d: control-plane + Phase 3 exit gate). The existing `StorageFaultKind` seam only *fails* an op (covers 1 of the 14); the other 13 are **content corruption** — the read succeeds but the record is malformed, so the engine's `data_loss.*` decoders run on the real read path |
+| 3.15 | Engine corruption injection (data_loss assertion) | **Done (2026-07-18)** — closed the 14 allowlisted corruption/reopen/IO codes across 4 sub-slices (a: infra + KV/JSON, b: graph, c: vector + reopen + IO, d: control-plane + Phase 3 exit gate). Of the 14: **7 asserted through the real read path or a genuine fault** (kv/json + the 4 graph codes via the content-corruption seam; vector `unavailable` via a durable IO fault), **5 asserted at the decoder** (the 4 vector `data_loss`/`failed_precondition` codes, which the runtime swallows into a `"corrupt"` status by design — rule 26 graceful degradation — so the decoder is the only place they surface; plus `control_name`, whose branch-catalog decode runs only at open), and **2 re-classified as genuinely unreachable** (`vector_artifacts` plural, `branch_id`) after verification. The existing `StorageFaultKind` seam only *fails* an op; the seam this phase added (`RowCorruption`) mangles a *successful* read's bytes so the `data_loss.*` decoders run on the real path |
 | 3.15a | Corruption infra + KV/JSON | **Implemented (2026-07-18)** — built the content-corruption seam as a sibling to the storage-fault seam: `RowCorruption` (`DropValue` / `SetValue(bytes)`) + a `CorruptionSchedule` in `persistence/fault.rs`, armed via `Database::inject_scan_corruption_for_test` / `inject_read_corruption_for_test`, applied to the just-read rows inside the adapter's `read_row`/`scan_prefix`/`scan_range` (a gated `corrupt_rows` step next to `guard_fault`; a production no-op twin, so shipped builds carry nothing). New `corruption_injection.rs` (2 tests) closes `data_loss.engine.kv_value` (a scanned KV row with its value stripped → the scan decoder rejects it) and `data_loss.engine.json_index` (an index-definition row with a wrong leading format-version byte → `decode_index_definition` rejects it). Both drive the **real read path** (not a leaf-decoder unit test); the exact-code assertions confirm the corruption hit the intended decoder. Two allowlist entries removed |
 | 3.15b | Graph corruption | **Implemented (2026-07-18)** — the 4 graph corruption codes, all reached through public graph queries on the real scan path. Three are value-byte decoders (`SetValue` with a wrong leading format-version byte, the row key left valid): `graph_node_record` via `list_nodes`, `graph_edge_record` via `neighbors`, `graph_type_index_record` via `nodes_by_type`. The fourth, `graph_type_index_key`, is a **key** decoder — so the seam gained a `RowCorruption::SetKey(bytes)` variant, and the same `nodes_by_type` scan with a malformed key is rejected by the key decoder *before* the value is read (`SetKey` vs `SetValue` on the one scan cleanly separates the type-index key/record codes). 4 allowlist entries removed |
 | 3.15c | Vector corruption + reopen + IO | **Implemented (2026-07-18)** — the 6 vector-family codes, but an Explore audit found the plan's premise only partly holds: **4 of the 6 codes are swallowed by design**. At `service.rs:1853` and `artifact.rs:851/910` the decode errors are discarded (`let Ok(x) = decode(..) else { return Corrupt }`) — vector retrieval degrades gracefully to authoritative source rows on corrupt derived state (rule 26), so the corruption codes never propagate to a caller (they surface only as a `"corrupt"` diagnostic status). The row-corruption seam can mangle the bytes but the error is dropped, so those 4 are only assertable at the decoder. Per a plan-mode decision, closed them with **decoder unit tests** (the detector's whole contract is to return the code): `data_loss.engine.vector_index_manifest` + `failed_precondition.engine.vector_index_manifest` (unsupported `policy_version`) in `manifest.rs`; `data_loss.engine.vector_artifact` + `failed_precondition.engine.vector_artifact` (unsupported format version) in `artifact.rs`. The two `failed_precondition` codes can't be hit by arbitrary bytes — the checksum covers the version field, so a byte-flip trips the `data_loss` checksum path first — so the payloads are rebuilt at the bad version with a matching checksum. The one genuinely-propagating code, `unavailable.engine.vector_artifacts`, is asserted by a **durable IO-fault** integration test (`engine_vector.rs`): seal a flat artifact to disk, replace the artifact directory with a regular file so the next write's `create_dir_all` fails (a not-a-directory error — root-proof, unlike a chmod). The 6th, `data_loss.engine.vector_artifacts` (plural), is genuinely **unreachable** (a `path.parent() == None` guard, but the durable store always joins subdirectories; result also `let _`-discarded) — re-classified in the allowlist as defensive/unreachable rather than asserted. 5 allowlist entries removed, 1 re-worded |
+| 3.15d | Control-plane corruption + Phase 3 exit gate — **closes Phase 3** | **Implemented (2026-07-18)** — the two control-plane codes come from the branch-catalog record decoder (`decode_branch_record`), which runs only at open/bootstrap, so the post-open seam can't reach them. `data_loss.engine.control_name` is asserted in `records.rs` by decoding a branch record whose length-prefixed name bytes are corrupted to invalid UTF-8; `data_loss.engine.branch_id` is **genuinely unreachable** (its field always `take`s exactly `BranchId::BYTE_LEN` bytes and `try_from_slice` validates length only) and re-classified. **Exit gate:** the error-code guard's allowlist now holds only legitimately-deferred entries and carries **zero `asserted by TCP3.15` promises**; trued-up the stale forward-references left by completed slices (the graph encode-arm `#2651` entries whose decode counterparts are now asserted; the CLI doctor codes mislabelled "asserted by TCP3.10" that 3.10 never took) to honest deferral reasons |
+
+**Phase 3 closed 2026-07-18.** All 15 slices implemented; the layer-by-layer
+coverage plans (core, storage L1–L9, engine conformance, executor/IDL, CLI,
+inference, hub, wasm/stratadb, corruption) are done. The workspace error-code
+guard is the durable artifact: its allowlist now holds **36 entries, every one
+legitimately deferred** — 22 defensive/unreachable-via-API (the `#2651` encode
+arms + 2 verified-unreachable guards), 10 asserted by IDL replay fixtures (JSON,
+invisible to the grep-guard), and 4 CLI doctor/environment codes that need a
+host-env harness. No stale "a future slice will assert this" promise remains.
+The finale also surfaced **#2682** (a possible off-lock torn-read / atomicity
+question), filed with a classification plan rather than dismissed.
+
+## Phase 4 — Volume via generation (bug-hunting to 10×)
+
+Phases 1–3 built the *oracles*: the STH-1 recovery oracle, the config-sweep
+differential, the temporal/event timeline models, the IDL (125 commands with
+schemas/errors/examples), the golden-vector infrastructure, and 30 fuzz
+targets. Those are the fuel a test *generator* burns. Phase 4 turns them loose
+to hunt bugs exhaustively.
+
+The target is a **10× test:code ratio — as an internal robustness target, not a
+published number.** The point is to iron out every findable bug; 10× is simply
+the scale of machinery required to hunt that exhaustively, and the ratio is a
+*byproduct* of building it, not the goal. Whether and how to publish the number
+as a credibility headline is a **separate review round after Phase 4 closes** —
+gated on the mutation-kill and coverage evidence behind it, so the figure can
+withstand a sophisticated reader.
+
+**You reach 10× by generation and vendoring, not by typing.** Current: ~1.9×
+(~314K test / ~163K product). 10× is ~1.6–2.0M test LOC — north of a million
+new lines, unreachable by hand. SQLite's ~590× is TH3 (generated MC/DC), SQL
+Logic Test (~7M generated queries run differentially), and fuzz corpora — not
+92M hand-written lines. Same model here: the volume comes from a few
+oracle-checked generators, so every generated case is a *bug-detection surface*,
+never a vanity line.
+
+### Phase 4 gates (how the volume stays honest)
+
+1. **Mutation-kill is the primary ratchet** (only ratchets up). A generation
+   lane that adds LOC but does not raise the workspace mutation-kill rate is
+   cut. This single rule is the entire defense against LOC-farming.
+2. **Every generated case is oracle-checked** — differential, metamorphic,
+   property, or golden-pinned. No shallow (`is_some`/status-only) assertions in
+   a generator template.
+3. **Regeneration is deterministic.** Committed corpora regenerate
+   byte-identically in CI (a drift guard asserts no diff), so reviewers review
+   the *generator and its oracle*, never a million generated lines.
+4. **CI is tiered.** A fast representative subset runs per-PR; the full corpora
+   and soaks run nightly. Volume must not wreck PR latency.
+5. **Every bug found → issue → fix → regression test**, immediately (standing
+   program rule). Phase 4's deliverable is *bugs found and fixed*; the ratio is
+   the receipt.
+6. **The ratio is a thermometer, never a gate** — consistent with the program's
+   coverage-over-line-count principle. Coverage and mutation-kill are the gates.
+
+### Phase 4 slices
+
+Sequenced foundation-first: 4.1 establishes the generate → drift-guard →
+mutation-gate pattern that every later lane reuses.
+
+| # | Slice | Scope | Status |
+|---|---|---|---|
+| 4.1 | **IDL conformance generator** | Emit per-command generated test files from the 125-command IDL: request/response round-trip × render mode (json/raw/human), every declared error envelope, schema/boundary conformance, adversarial deserialize. Regenerate on IDL change; drift guard + mutation gate. Highest leverage per effort (monetizes an owned asset) and proves the generation pattern | Planned |
+| 4.2 | **Differential/metamorphic corpus engine** | The bulk of the 10×. Generate seed-pinned operation sequences across all six capabilities and run them against the existing reference models (STH-1 recovery oracle, config-differential, temporal/event timeline); commit (sequence → expected state). Any oracle divergence is a filed bug. Volume is a dial; assurance rises with it | Planned |
+| 4.3 | **Exhaustive concurrency-schedule exploration** | loom/shuttle over the commit / BS5 write-group / latest-scan interleavings, turning rare CI flakes into deterministic, seed-reproducible findings. #2682 (off-lock torn read) is the seed case. High bug yield for a database; the highest-value non-LOC lever | Planned |
+| 4.4 | **Vendored public conformance suites** | Import battle-tested corpora wholesale: JSONPath Compliance Test Suite, Unicode collation/normalization, float-format edge cases, and analogous KV/vector/graph reference sets. A small runner over large vendored data | Planned |
+| 4.5 | **Golden + combinatorial matrix expansion** | Every record type × canonical/boundary/adversarial vectors across the frozen codec; the full config × capability × operation cross-product (STH-6 extended), generated and result-equality-checked | Planned |
+| 4.6 | **Committed fuzz corpora + surface expansion** | Version the accumulated persistent-corpus interesting-inputs; extend the 30 fuzz targets to the full decoder/API surface; commit crash-triage regressions | Planned |
+
+### Milestones and exit
+
+The ratio is a thermometer read at three checkpoints — **4–5× (the program's
+existing working floor) → 7× → 10×** — and at *each* checkpoint the mutation-kill
+floor must have risen. If marginal generated volume stops finding bugs
+(mutation-kill plateaus), we stop adding it: 10× is the aspiration, bugs-found
+is the constraint.
+
+**Phase 4 exit** = "all findable bugs ironed out," operationalized: mutation-kill
+plateaus at a high floor, the differential and fuzz soaks run sustained-clean,
+concurrency-schedule exploration exhausts the tractable interleavings, and the
+ratio has reached ~10× as a byproduct. Only then does the separate review round
+decide whether to publish the ratio as an external credibility headline.
 
 ## Deferred register
 

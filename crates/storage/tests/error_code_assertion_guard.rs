@@ -80,20 +80,19 @@ const AREAS: &[&str] = &[
 /// (delete the dead entry).
 const ALLOWED_UNASSERTED: &[(&str, &str)] = &[
     // --- storage internal-layer codes (surfaced by the TCP3.2a area fix) ---
-    ("data_loss.engine.branch_id", "corruption detector; asserted by TCP3.15 corruption injection"),
-    ("data_loss.engine.control_name", "corruption detector; asserted by TCP3.15 corruption injection"),
+    ("data_loss.engine.branch_id", "unreachable defensive guard (TCP3.15d): the branch-record decoder's `branch_id` field always `take`s exactly `BranchId::BYTE_LEN` bytes, and `BranchId::try_from_slice` validates length only — so the invalid-payload arm cannot fire (a short row errors earlier as `data_loss.engine.control_plane`). Sibling `control_name` is asserted by `records.rs`"),
     ("data_loss.engine.vector_artifacts", "unreachable defensive guard (TCP3.15c): the sole site is a `path.parent() == None` check in `persist_raw_flat_payload_at`, but the durable store always joins subdirectories so the payload path always has a parent; the normal store path also discards its result via `let _`. Note this is the *plural* code — the singular `data_loss.engine.vector_artifact` is asserted"),
-    ("failed_precondition.cli.binary_not_on_path", "doctor/environment path; asserted by TCP3.10 CLI slice"),
-    ("failed_precondition.cli.home_not_directory", "doctor/environment path; asserted by TCP3.10 CLI slice"),
-    ("failed_precondition.cli.home_unresolved", "doctor/environment path; asserted by TCP3.10 CLI slice"),
+    ("failed_precondition.cli.binary_not_on_path", "CLI doctor/environment precondition, reachable only via a broken host environment; NOT covered by TCP3.10 (which took the config/render surface). Deferred — needs a host-env harness (candidate for the Phase 4 vendored/host lane)"),
+    ("failed_precondition.cli.home_not_directory", "CLI doctor/environment precondition, reachable only via a broken host environment; NOT covered by TCP3.10 (which took the config/render surface). Deferred — needs a host-env harness (candidate for the Phase 4 vendored/host lane)"),
+    ("failed_precondition.cli.home_unresolved", "CLI doctor/environment precondition, reachable only via a broken host environment; NOT covered by TCP3.10 (which took the config/render surface). Deferred — needs a host-env harness (candidate for the Phase 4 vendored/host lane)"),
     ("invalid_argument.engine.event_batch", "internal invariant: the public empty batch short-circuits to success before this check (#2651)"),
     ("invalid_argument.engine.event_metadata", "defensive serde_json::to_vec encode arm (never fails on a valid record); unreachable (#2651)"),
     ("invalid_argument.engine.event_record", "defensive encode-error arm; unreachable with a valid record (#2651)"),
     ("invalid_argument.engine.graph_batch", "internal invariant: the public empty batch short-circuits to success before this defensive check; unreachable via the API (#2651)"),
-    ("invalid_argument.engine.graph_binding_record", "defensive encode-error path; unreachable with valid records (TCP3.15 tracks the decode side)"),
-    ("invalid_argument.engine.graph_edge_record", "defensive encode-error path; decode counterpart data_loss.engine.graph_edge_record (TCP3.15); see #2651"),
+    ("invalid_argument.engine.graph_binding_record", "defensive encode-error path; unreachable with valid records (#2651). Its decode counterpart data_loss.engine.graph_binding_record is asserted (graph/service.rs inline test)"),
+    ("invalid_argument.engine.graph_edge_record", "defensive encode-error path; unreachable (#2651). Its decode counterpart data_loss.engine.graph_edge_record is asserted by TCP3.15b"),
     ("invalid_argument.engine.graph_metadata", "defensive encode-error path (encode_graph_metadata_record); unreachable with a valid record (#2651)"),
-    ("invalid_argument.engine.graph_node_record", "defensive encode-error path (serde_json::to_vec on a plain struct never fails); the decode/corruption counterpart is data_loss.engine.graph_node_record (TCP3.15); see #2651"),
+    ("invalid_argument.engine.graph_node_record", "defensive encode-error path (serde_json::to_vec on a plain struct never fails); unreachable (#2651). Its decode counterpart data_loss.engine.graph_node_record is asserted by TCP3.15b"),
     ("invalid_argument.engine.graph_ontology_record", "defensive encode-error path (serde_json::to_vec of a valid ontology); unreachable via the public API (#2651)"),
     ("invalid_argument.engine.graph_type_index_record", "defensive encode-error path (encode_graph_type_index_record); unreachable with a valid record (#2651)"),
     ("invalid_argument.engine.json_batch", "internal invariant: the public empty batch short-circuits to success before this check (#2651)"),
@@ -116,7 +115,7 @@ const ALLOWED_UNASSERTED: &[(&str, &str)] = &[
     ("invalid_argument.executor.kv_batch_duplicate_key", "asserted by TCP3.8 error-envelope replay fixtures"),
     ("invalid_argument.executor.limit", "asserted by TCP3.8 error-envelope replay fixtures"),
     ("invalid_argument.executor.vector_limit", "asserted by TCP3.8 error-envelope replay fixtures"),
-    ("not_found.cli.database_path", "doctor/environment path; asserted by TCP3.10 CLI slice"),
+    ("not_found.cli.database_path", "CLI doctor/environment precondition, reachable only via a broken host environment; NOT covered by TCP3.10 (which took the config/render surface). Deferred — needs a host-env harness (candidate for the Phase 4 vendored/host lane)"),
 ];
 
 fn repo_root() -> PathBuf {

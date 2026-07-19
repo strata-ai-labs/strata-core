@@ -659,6 +659,31 @@ mod tests {
         assert_eq!(error.class(), EngineErrorClass::Corruption);
     }
 
+    // Corruption-code assertion (TCP3.15d). The branch catalog is decoded only
+    // at open/bootstrap, so a corrupt record surfaces there rather than through
+    // a runtime read; this pins the code the name decoder returns for a
+    // non-UTF-8 branch name. (The sibling `data_loss.engine.branch_id` code is
+    // unreachable: its `try_from_slice` validates length only, and the cursor
+    // always hands it exactly `BranchId::BYTE_LEN` bytes.)
+    #[test]
+    fn branch_record_decode_reports_control_name_for_a_non_utf8_name() {
+        let record =
+            BranchCatalogRecord::root(BranchName::new("default").expect("valid branch"), 1);
+        let mut bytes = encode_branch_record(&record);
+        // The name is length-prefixed (`u16` BE = 7) then its UTF-8 bytes; flip
+        // the first name byte to 0xFF, an invalid UTF-8 lead byte.
+        let name_field = [0x00u8, 0x07, b'd', b'e', b'f', b'a', b'u', b'l', b't'];
+        let pos = bytes
+            .windows(name_field.len())
+            .position(|window| window == name_field)
+            .expect("length-prefixed branch name is present in the encoding");
+        bytes[pos + 2] = 0xFF;
+
+        let error = decode_branch_record(&bytes).expect_err("a non-UTF-8 name must be rejected");
+        assert_eq!(error.code(), "data_loss.engine.control_name");
+        assert_eq!(error.class(), EngineErrorClass::Corruption);
+    }
+
     #[test]
     fn space_index_round_trips_sorted_spaces() {
         let spaces = [
