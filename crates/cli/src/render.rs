@@ -8,6 +8,14 @@ use strata_executor::Output;
 use crate::options::Format;
 use crate::CliError;
 
+// Writing to a String is infallible; the macro keeps the call sites terse.
+macro_rules! line {
+    ($out:expr, $($arg:tt)*) => {{
+        use std::fmt::Write as _;
+        let _ = writeln!($out, $($arg)*);
+    }};
+}
+
 pub(crate) fn render_output(output: &Output, format: Format) -> Result<(), CliError> {
     let mut value = serde_json::to_value(output)?;
     // Human and raw formats show KV keys/values as text when possible. The
@@ -24,8 +32,16 @@ pub(crate) fn render_value(value: &Value, format: Format) -> Result<(), CliError
     match format {
         Format::Json => println!("{}", serde_json::to_string(value)?),
         Format::Pretty => println!("{}", serde_json::to_string_pretty(value)?),
-        Format::Human => render_human(value)?,
-        Format::Raw => render_raw(value),
+        Format::Human => {
+            let mut out = String::new();
+            render_human(value, &mut out)?;
+            print!("{out}");
+        }
+        Format::Raw => {
+            let mut out = String::new();
+            render_raw(value, &mut out);
+            print!("{out}");
+        }
     }
     Ok(())
 }
@@ -54,30 +70,32 @@ fn render_serialized_error(rendered: Result<String, serde_json::Error>) {
     }
 }
 
-fn render_human(value: &Value) -> Result<(), CliError> {
+fn render_human(value: &Value, out: &mut String) -> Result<(), CliError> {
     if let Some((kind, data)) = tagged_output(value) {
         match kind {
-            "pong" => println!(
+            "pong" => line!(
+                out,
                 "pong {}",
                 data.get("version").and_then(Value::as_str).unwrap_or("")
             ),
-            "bool" | "uint" => println!("{}", scalar_summary(data)),
-            "event_count" => print_count(data),
-            "kv_versioned_value" => print_optional_data(data),
+            "bool" | "uint" => line!(out, "{}", scalar_summary(data)),
+            "event_count" => print_count(data, out),
+            "kv_versioned_value" => print_optional_data(data, out),
             "vector_data" | "event_record" | "graph_node_result" | "graph_edge_result" => {
-                print_optional_record(data)?;
+                print_optional_record(data, out)?;
             }
-            "json_value" | "json_versioned_value" => print_maybe_json(kind, data)?,
-            "json_version_history" => print_bare_items(data),
-            "vector_matches" => print_matches_data(data),
-            "inference_generation" => print_inference_generation(data, true),
-            "inference_text" => println!("{}", data.as_str().unwrap_or_default()),
-            "inference_token_ids" => print_token_ids(data),
-            "inference_embeddings" => print_embeddings_summary(data),
-            "inference_ranking" => print_ranking(data),
-            "inference_models" => print_inference_models(data),
-            "inference_model_pulled" => print_model_pulled(data),
-            "inference_unload_result" => println!(
+            "json_value" | "json_versioned_value" => print_maybe_json(kind, data, out)?,
+            "json_version_history" => print_bare_items(data, out),
+            "vector_matches" => print_matches_data(data, out),
+            "inference_generation" => print_inference_generation(data, true, out),
+            "inference_text" => line!(out, "{}", data.as_str().unwrap_or_default()),
+            "inference_token_ids" => print_token_ids(data, out),
+            "inference_embeddings" => print_embeddings_summary(data, out),
+            "inference_ranking" => print_ranking(data, out),
+            "inference_models" => print_inference_models(data, out),
+            "inference_model_pulled" => print_model_pulled(data, out),
+            "inference_unload_result" => line!(
+                out,
                 "{}",
                 if data.get("unloaded").and_then(Value::as_bool) == Some(true) {
                     "unloaded"
@@ -85,57 +103,57 @@ fn render_human(value: &Value) -> Result<(), CliError> {
                     "no cached entry"
                 }
             ),
-            _ => render_human_data(data)?,
+            _ => render_human_data(data, out)?,
         }
         return Ok(());
     }
 
-    render_human_data(value)
+    render_human_data(value, out)
 }
 
-fn render_human_data(data: &Value) -> Result<(), CliError> {
+fn render_human_data(data: &Value, out: &mut String) -> Result<(), CliError> {
     if data.is_null() {
-        println!("(nil)");
+        line!(out, "(nil)");
         return Ok(());
     }
 
     if let Some(items) = data.get("items").and_then(Value::as_array) {
-        print_items(items);
-        print_page_tail(data);
+        print_items(items, out);
+        print_page_tail(data, out);
         return Ok(());
     }
 
     if let Some(items) = data.get("matches").and_then(Value::as_array) {
-        print_vector_matches(items);
+        print_vector_matches(items, out);
         return Ok(());
     }
 
     if let Some(found) = data.get("found").and_then(Value::as_bool) {
         if !found {
-            println!("(nil)");
+            line!(out, "(nil)");
             return Ok(());
         }
         if let Some(value) = data.get("value") {
-            println!("{}", scalar_summary(value));
+            line!(out, "{}", scalar_summary(value));
             return Ok(());
         }
     }
 
     if let Some(effect) = data.get("effect") {
-        println!("{}", mutation_summary(data, effect));
+        line!(out, "{}", mutation_summary(data, effect));
         return Ok(());
     }
 
     match data {
         Value::Bool(_) | Value::Number(_) | Value::String(_) => {
-            println!("{}", scalar_summary(data));
+            line!(out, "{}", scalar_summary(data));
         }
-        _ => println!("{}", serde_json::to_string_pretty(data)?),
+        _ => line!(out, "{}", serde_json::to_string_pretty(data)?),
     }
     Ok(())
 }
 
-fn render_raw(value: &Value) {
+fn render_raw(value: &Value, out: &mut String) {
     let (kind, data) = tagged_output(value).unwrap_or(("", value));
 
     if data.is_null() {
@@ -146,57 +164,57 @@ fn render_raw(value: &Value) {
         "json_value" | "json_versioned_value" => {
             let found = data.get("found").and_then(Value::as_bool).unwrap_or(false);
             if let Some(leaf) = json_leaf(kind, data, found) {
-                println!("{}", raw_scalar(leaf));
+                line!(out, "{}", raw_scalar(leaf));
             }
             return;
         }
         "kv_versioned_value" => {
             // The KV record nests the stored value under its own `value` field.
             if let Some(value) = point_read_record(data).and_then(|record| record.get("value")) {
-                println!("{}", raw_scalar(value));
+                line!(out, "{}", raw_scalar(value));
             }
             return;
         }
         "json_version_history" => {
             if let Some(items) = data.as_array() {
-                print_items(items);
+                print_items(items, out);
             }
             return;
         }
         "vector_matches" => {
-            print_matches_data(data);
+            print_matches_data(data, out);
             return;
         }
         "event_count" => {
-            print_count(data);
+            print_count(data, out);
             return;
         }
         "inference_generation" => {
-            print_inference_generation(data, false);
+            print_inference_generation(data, false, out);
             return;
         }
         "inference_text" => {
-            println!("{}", data.as_str().unwrap_or_default());
+            line!(out, "{}", data.as_str().unwrap_or_default());
             return;
         }
         "inference_token_ids" => {
-            print_token_ids(data);
+            print_token_ids(data, out);
             return;
         }
         "inference_embeddings" => {
-            print_embedding_values(data);
+            print_embedding_values(data, out);
             return;
         }
         _ => {}
     }
 
     if let Some(items) = data.get("items").and_then(Value::as_array) {
-        print_items(items);
+        print_items(items, out);
         return;
     }
 
     if let Some(items) = data.get("matches").and_then(Value::as_array) {
-        print_vector_matches(items);
+        print_vector_matches(items, out);
         return;
     }
 
@@ -209,17 +227,17 @@ fn render_raw(value: &Value) {
             return;
         }
         if let Some(value) = data.get("value") {
-            println!("{}", raw_scalar(value));
+            line!(out, "{}", raw_scalar(value));
             return;
         }
     }
 
     if let Some(value) = data.get("value") {
-        println!("{}", raw_scalar(value));
+        line!(out, "{}", raw_scalar(value));
         return;
     }
 
-    println!("{}", raw_scalar(data));
+    line!(out, "{}", raw_scalar(data));
 }
 
 fn tagged_output(value: &Value) -> Option<(&str, &Value)> {
@@ -231,7 +249,7 @@ fn tagged_output(value: &Value) -> Option<(&str, &Value)> {
 
 /// Prints generated text; with `stats` a trailing summary line follows so the
 /// human can see why generation stopped (raw mode prints the text alone).
-fn print_inference_generation(data: &Value, stats: bool) {
+fn print_inference_generation(data: &Value, stats: bool, out: &mut String) {
     let choice = data
         .get("choices")
         .and_then(Value::as_array)
@@ -241,7 +259,7 @@ fn print_inference_generation(data: &Value, stats: bool) {
         .and_then(|message| message.get("content"))
         .and_then(Value::as_str)
         .unwrap_or("");
-    println!("{text}");
+    line!(out, "{text}");
     if stats {
         let stop = choice
             .and_then(|choice| choice.get("finish_reason"))
@@ -256,11 +274,14 @@ fn print_inference_generation(data: &Value, stats: bool) {
             .and_then(|usage| usage.get("completion_tokens"))
             .and_then(Value::as_u64)
             .unwrap_or(0);
-        println!("-- stop: {stop} · prompt {prompt} tok · completion {completion} tok");
+        line!(
+            out,
+            "-- stop: {stop} · prompt {prompt} tok · completion {completion} tok"
+        );
     }
 }
 
-fn print_token_ids(data: &Value) {
+fn print_token_ids(data: &Value, out: &mut String) {
     let ids = data
         .as_array()
         .map(|items| {
@@ -272,11 +293,11 @@ fn print_token_ids(data: &Value) {
                 .join(" ")
         })
         .unwrap_or_default();
-    println!("{ids}");
+    line!(out, "{ids}");
 }
 
 /// Prints raw embedding vectors, one line per input, values space-joined.
-fn print_embedding_values(data: &Value) {
+fn print_embedding_values(data: &Value, out: &mut String) {
     let items = data
         .get("data")
         .and_then(Value::as_array)
@@ -295,18 +316,18 @@ fn print_embedding_values(data: &Value) {
                     .join(" ")
             })
             .unwrap_or_default();
-        println!("{values}");
+        line!(out, "{values}");
     }
 }
 
-fn print_embeddings_summary(data: &Value) {
+fn print_embeddings_summary(data: &Value, out: &mut String) {
     let dimension = data.get("dimension").and_then(Value::as_u64).unwrap_or(0);
     let items = data
         .get("data")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    println!("{} embeddings · dim {dimension}", items.len());
+    line!(out, "{} embeddings · dim {dimension}", items.len());
     for item in &items {
         let index = item.get("index").and_then(Value::as_u64).unwrap_or(0);
         let preview = item.get("embedding").and_then(Value::as_array).map_or_else(
@@ -323,13 +344,13 @@ fn print_embeddings_summary(data: &Value) {
                 format!("[{head}{ellipsis}]")
             },
         );
-        println!("  [{index}] {preview}");
+        line!(out, "  [{index}] {preview}");
     }
 }
 
-fn print_ranking(data: &Value) {
+fn print_ranking(data: &Value, out: &mut String) {
     let Some(items) = data.get("items").and_then(Value::as_array) else {
-        println!("(nil)");
+        line!(out, "(nil)");
         return;
     };
     let mut scored: Vec<(u64, f64)> = items
@@ -344,24 +365,24 @@ fn print_ranking(data: &Value) {
         .collect();
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     for (index, score) in scored {
-        println!("{index}\t{score:.6}");
+        line!(out, "{index}\t{score:.6}");
     }
     for item in items {
         if item.get("status").and_then(Value::as_str) == Some("error") {
             let code = item.get("code").and_then(Value::as_str).unwrap_or("error");
-            println!("failed: {code}");
+            line!(out, "failed: {code}");
         }
     }
 }
 
-fn print_inference_models(data: &Value) {
+fn print_inference_models(data: &Value, out: &mut String) {
     const MIB: u64 = 1_048_576;
     let Some(items) = data.get("items").and_then(Value::as_array) else {
-        println!("(nil)");
+        line!(out, "(nil)");
         return;
     };
     if items.is_empty() {
-        println!("(none)");
+        line!(out, "(none)");
         return;
     }
     for item in items {
@@ -380,7 +401,8 @@ fn print_inference_models(data: &Value) {
             || "-".to_owned(),
             |bytes| format!("{}.{} MB", bytes / MIB, (bytes % MIB) * 10 / MIB),
         );
-        println!(
+        line!(
+            out,
             "{}\t{}\t{}\t{}\t{}\t{}",
             text("name"),
             text("task"),
@@ -392,10 +414,10 @@ fn print_inference_models(data: &Value) {
     }
 }
 
-fn print_model_pulled(data: &Value) {
+fn print_model_pulled(data: &Value, out: &mut String) {
     let model = data.get("model").and_then(Value::as_str).unwrap_or("model");
     let path = data.get("path").and_then(Value::as_str).unwrap_or("-");
-    println!("pulled {model} -> {path}");
+    line!(out, "pulled {model} -> {path}");
 }
 
 /// Unwraps a `{found, value}` point-read envelope to its record, or `None`
@@ -407,39 +429,44 @@ fn point_read_record(data: &Value) -> Option<&Value> {
     }
 }
 
-fn print_optional_data(data: &Value) {
+// The local `line!` macro expands to an inline block, which trips the pedantic
+// `single_match_else` lint on these Option matches where the std `println!`
+// macro (opaque to the lint) did not. The match form is intentional here.
+#[allow(clippy::single_match_else)]
+fn print_optional_data(data: &Value, out: &mut String) {
     // KV point reads answer with a {found, value} envelope whose record nests
     // the stored value under its own `value` field.
     match point_read_record(data) {
-        None => println!("(nil)"),
+        None => line!(out, "(nil)"),
         Some(record) => match record.get("value") {
-            Some(value) => println!("{}", scalar_summary(value)),
-            None => println!("{}", scalar_summary(record)),
+            Some(value) => line!(out, "{}", scalar_summary(value)),
+            None => line!(out, "{}", scalar_summary(record)),
         },
     }
 }
 
-fn print_optional_record(data: &Value) -> Result<(), CliError> {
+fn print_optional_record(data: &Value, out: &mut String) -> Result<(), CliError> {
     // Vector/event/graph point reads share the envelope but carry structured
     // records; show the record itself, or `(nil)` when absent.
     match point_read_record(data) {
-        None => println!("(nil)"),
-        Some(record) => render_human_data(record)?,
+        None => line!(out, "(nil)"),
+        Some(record) => render_human_data(record, out)?,
     }
     Ok(())
 }
 
-fn print_maybe_json(kind: &str, data: &Value) -> Result<(), CliError> {
+#[allow(clippy::single_match_else)]
+fn print_maybe_json(kind: &str, data: &Value, out: &mut String) -> Result<(), CliError> {
     let Some(found) = data.get("found").and_then(Value::as_bool) else {
-        println!("{}", serde_json::to_string_pretty(data)?);
+        line!(out, "{}", serde_json::to_string_pretty(data)?);
         return Ok(());
     };
     match json_leaf(kind, data, found) {
         // Human output shows the JSON encoding of the leaf value so `"null"`
         // vs `null` and strings vs numbers stay unambiguous; raw output
         // unwraps strings for scripting.
-        Some(leaf) => println!("{}", serde_json::to_string(leaf)?),
-        None => println!("(nil)"),
+        Some(leaf) => line!(out, "{}", serde_json::to_string(leaf)?),
+        None => line!(out, "(nil)"),
     }
     Ok(())
 }
@@ -462,50 +489,52 @@ fn json_leaf<'a>(kind: &str, data: &'a Value, found: bool) -> Option<&'a Value> 
 
 /// `json_version_history` serializes as a bare item array (or null when the
 /// document never existed), unlike the `{count, items}` KV history envelope.
-fn print_bare_items(data: &Value) {
+fn print_bare_items(data: &Value, out: &mut String) {
     if let Value::Array(items) = data {
-        print_items(items);
+        print_items(items, out);
     } else {
-        println!("(nil)");
+        line!(out, "(nil)");
     }
 }
 
 /// `vector_matches` serializes its match list as the bare `data` array, so the
 /// tabular key/score renderer must be dispatched by tag.
-fn print_matches_data(data: &Value) {
+#[allow(clippy::single_match_else)]
+fn print_matches_data(data: &Value, out: &mut String) {
     match data.as_array() {
-        Some(items) => print_vector_matches(items),
-        None => println!("(empty)"),
+        Some(items) => print_vector_matches(items, out),
+        None => line!(out, "(empty)"),
     }
 }
 
 /// `event_count` wraps its count in `{count}`; humans and scripts get the
 /// bare number, matching how `kv count` (a plain `uint`) renders.
-fn print_count(data: &Value) {
-    println!(
+fn print_count(data: &Value, out: &mut String) {
+    line!(
+        out,
         "{}",
         data.get("count").map_or_else(String::new, scalar_summary)
     );
 }
 
-fn print_items(items: &[Value]) {
+fn print_items(items: &[Value], out: &mut String) {
     for item in items {
-        println!("{}", scalar_summary(item));
+        line!(out, "{}", scalar_summary(item));
     }
     if items.is_empty() {
-        println!("(empty)");
+        line!(out, "(empty)");
     }
 }
 
-fn print_page_tail(data: &Value) {
+fn print_page_tail(data: &Value, out: &mut String) {
     if data.get("has_more").and_then(Value::as_bool) == Some(true) {
         if let Some(cursor) = data.get("cursor") {
-            println!("-- more: {}", scalar_summary(cursor));
+            line!(out, "-- more: {}", scalar_summary(cursor));
         }
     }
 }
 
-fn print_vector_matches(items: &[Value]) {
+fn print_vector_matches(items: &[Value], out: &mut String) {
     for item in items {
         let key = item
             .get("key")
@@ -516,13 +545,13 @@ fn print_vector_matches(items: &[Value]) {
             .map(scalar_summary)
             .unwrap_or_default();
         if score.is_empty() {
-            println!("{key}");
+            line!(out, "{key}");
         } else {
-            println!("{key}\t{score}");
+            line!(out, "{key}\t{score}");
         }
     }
     if items.is_empty() {
-        println!("(empty)");
+        line!(out, "(empty)");
     }
 }
 
@@ -775,5 +804,203 @@ mod tests {
             Some(&serde_json::Value::Null)
         );
         assert_eq!(super::json_leaf("json_value", &data, false), None);
+    }
+
+    fn human(value: &serde_json::Value) -> String {
+        let mut out = String::new();
+        super::render_human(value, &mut out).expect("render_human");
+        out
+    }
+
+    fn raw(value: &serde_json::Value) -> String {
+        let mut out = String::new();
+        super::render_raw(value, &mut out);
+        out
+    }
+
+    #[test]
+    fn human_event_count_prints_bare_number() {
+        let value = json!({ "type": "event_count", "data": { "count": 5 } });
+        assert_eq!(human(&value), "5\n");
+    }
+
+    #[test]
+    fn raw_event_count_prints_bare_number() {
+        let value = json!({ "type": "event_count", "data": { "count": 5 } });
+        assert_eq!(raw(&value), "5\n");
+    }
+
+    #[test]
+    fn human_bool_and_uint_scalars() {
+        assert_eq!(human(&json!({ "type": "bool", "data": true })), "true\n");
+        assert_eq!(human(&json!({ "type": "uint", "data": 42 })), "42\n");
+    }
+
+    #[test]
+    fn human_kv_versioned_value_found_and_missing() {
+        let found = json!({
+            "type": "kv_versioned_value",
+            "data": { "found": true, "value": { "value": "hello", "version": 1, "timestamp": 10 } }
+        });
+        assert_eq!(human(&found), "hello\n");
+        let missing = json!({
+            "type": "kv_versioned_value",
+            "data": { "found": false, "value": null }
+        });
+        assert_eq!(human(&missing), "(nil)\n");
+    }
+
+    #[test]
+    fn raw_kv_versioned_value_found() {
+        let found = json!({
+            "type": "kv_versioned_value",
+            "data": { "found": true, "value": { "value": "hello", "version": 1, "timestamp": 10 } }
+        });
+        assert_eq!(raw(&found), "hello\n");
+    }
+
+    #[test]
+    fn human_json_value_and_versioned_value() {
+        let plain = json!({
+            "type": "json_value",
+            "data": { "found": true, "value": { "name": "Ada" } }
+        });
+        assert_eq!(human(&plain), "{\"name\":\"Ada\"}\n");
+        let versioned = json!({
+            "type": "json_versioned_value",
+            "data": { "found": true, "value": {
+                "value": { "name": "Ada" }, "version": 3, "timestamp": 30, "document_version": 1
+            } }
+        });
+        assert_eq!(human(&versioned), "{\"name\":\"Ada\"}\n");
+    }
+
+    #[test]
+    fn human_json_version_history_items_and_nil() {
+        let items = json!({
+            "type": "json_version_history",
+            "data": [{ "version": 1 }, { "version": 2 }]
+        });
+        assert_eq!(human(&items), "{\"version\":1}\n{\"version\":2}\n");
+        let nil = json!({ "type": "json_version_history", "data": null });
+        assert_eq!(human(&nil), "(nil)\n");
+    }
+
+    #[test]
+    fn human_vector_matches_some_and_empty() {
+        let some = json!({
+            "type": "vector_matches",
+            "data": [{ "key": "a", "score": 0.5 }]
+        });
+        assert_eq!(human(&some), "a\t0.5\n");
+        let empty = json!({ "type": "vector_matches", "data": [] });
+        assert_eq!(human(&empty), "(empty)\n");
+    }
+
+    #[test]
+    fn human_inference_generation_has_stats_line() {
+        let value = json!({
+            "type": "inference_generation",
+            "data": {
+                "choices": [{ "message": { "content": "hi" }, "finish_reason": "stop" }],
+                "usage": { "prompt_tokens": 3, "completion_tokens": 2 }
+            }
+        });
+        assert_eq!(
+            human(&value),
+            "hi\n-- stop: stop · prompt 3 tok · completion 2 tok\n"
+        );
+    }
+
+    #[test]
+    fn raw_inference_generation_omits_stats_line() {
+        let value = json!({
+            "type": "inference_generation",
+            "data": {
+                "choices": [{ "message": { "content": "hi" }, "finish_reason": "stop" }],
+                "usage": { "prompt_tokens": 3, "completion_tokens": 2 }
+            }
+        });
+        assert_eq!(raw(&value), "hi\n");
+    }
+
+    #[test]
+    fn human_inference_text() {
+        let value = json!({ "type": "inference_text", "data": "hello" });
+        assert_eq!(human(&value), "hello\n");
+    }
+
+    #[test]
+    fn human_inference_token_ids() {
+        let value = json!({ "type": "inference_token_ids", "data": [1, 2, 3] });
+        assert_eq!(human(&value), "1 2 3\n");
+    }
+
+    #[test]
+    fn human_inference_embeddings_summary_and_raw_values() {
+        let value = json!({
+            "type": "inference_embeddings",
+            "data": { "dimension": 4, "data": [{ "index": 0, "embedding": [0.1, 0.2, 0.3, 0.4] }] }
+        });
+        assert_eq!(
+            human(&value),
+            "1 embeddings · dim 4\n  [0] [0.1000, 0.2000, 0.3000, 0.4000]\n"
+        );
+        assert_eq!(raw(&value), "0.1 0.2 0.3 0.4\n");
+    }
+
+    #[test]
+    fn human_inference_ranking_sorts_scores_and_reports_errors() {
+        let value = json!({
+            "type": "inference_ranking",
+            "data": { "items": [
+                { "status": "ok", "index": 0, "score": 0.9 },
+                { "status": "ok", "index": 1, "score": 0.5 },
+                { "status": "error", "code": "bad" }
+            ] }
+        });
+        assert_eq!(human(&value), "0\t0.900000\n1\t0.500000\nfailed: bad\n");
+    }
+
+    #[test]
+    fn human_inference_models_list_none_and_nil() {
+        let list = json!({
+            "type": "inference_models",
+            "data": { "items": [{
+                "name": "m", "task": "chat", "architecture": "llama",
+                "default_quant": "q4", "is_local": true, "size_bytes": 1_048_576
+            }] }
+        });
+        assert_eq!(human(&list), "m\tchat\tllama\tq4\tlocal\t1.0 MB\n");
+        let none = json!({ "type": "inference_models", "data": { "items": [] } });
+        assert_eq!(human(&none), "(none)\n");
+        let nil = json!({ "type": "inference_models", "data": {} });
+        assert_eq!(human(&nil), "(nil)\n");
+    }
+
+    #[test]
+    fn human_inference_model_pulled() {
+        let value = json!({
+            "type": "inference_model_pulled",
+            "data": { "model": "m", "path": "/p" }
+        });
+        assert_eq!(human(&value), "pulled m -> /p\n");
+    }
+
+    #[test]
+    fn human_inference_unload_result_both_branches() {
+        let unloaded = json!({ "type": "inference_unload_result", "data": { "unloaded": true } });
+        assert_eq!(human(&unloaded), "unloaded\n");
+        let cold = json!({ "type": "inference_unload_result", "data": { "unloaded": false } });
+        assert_eq!(human(&cold), "no cached entry\n");
+    }
+
+    #[test]
+    fn human_data_generic_items_empty_and_nil() {
+        let items = json!({ "items": [1, 2] });
+        assert_eq!(human(&items), "1\n2\n");
+        let empty = json!({ "items": [] });
+        assert_eq!(human(&empty), "(empty)\n");
+        assert_eq!(human(&serde_json::Value::Null), "(nil)\n");
     }
 }
