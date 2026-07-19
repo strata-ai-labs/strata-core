@@ -29,7 +29,7 @@ use crate::diagnostics::{
 
 use super::fault::FaultOp;
 #[cfg(any(test, feature = "testkit"))]
-use super::fault::{FaultSchedule, StorageFaultKind};
+use super::fault::{CorruptionSchedule, FaultSchedule, RowCorruption, StorageFaultKind};
 use super::{CommitPlan, ReadSelector, RowAddress, RowClass, RowMutation};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,6 +64,8 @@ pub(crate) struct StoragePersistence {
     replay_commit_timestamp: Option<Timestamp>,
     #[cfg(any(test, feature = "testkit"))]
     faults: FaultSchedule,
+    #[cfg(any(test, feature = "testkit"))]
+    corruption: CorruptionSchedule,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -342,6 +344,8 @@ impl StoragePersistence {
                 replay_commit_timestamp: None,
                 #[cfg(any(test, feature = "testkit"))]
                 faults: FaultSchedule::default(),
+                #[cfg(any(test, feature = "testkit"))]
+                corruption: CorruptionSchedule::default(),
             },
             PersistenceOpenSummary { created, durable },
         ))
@@ -372,6 +376,35 @@ impl StoragePersistence {
     pub(crate) fn arm_storage_fault(&mut self, op: FaultOp, kind: StorageFaultKind, skip: usize) {
         self.faults.arm(op, kind, skip);
     }
+
+    /// Arms a content corruption applied to the rows the next matching read
+    /// returns (after `skip` matching reads pass). The read still succeeds; its
+    /// rows come back corrupted, so the engine's decoders run on the real path.
+    #[cfg(any(test, feature = "testkit"))]
+    pub(crate) fn arm_row_corruption(
+        &mut self,
+        op: FaultOp,
+        corruption: RowCorruption,
+        skip: usize,
+    ) {
+        self.corruption.arm(op, corruption, skip);
+    }
+
+    /// Applies an armed corruption to a batch of just-read rows, if one is due.
+    #[cfg(any(test, feature = "testkit"))]
+    fn corrupt_rows(&mut self, op: FaultOp, rows: &mut [PersistenceReadRow]) {
+        if let Some(corruption) = self.corruption.take(op) {
+            for row in rows.iter_mut() {
+                corruption.apply(&mut row.value);
+            }
+        }
+    }
+
+    /// Production builds carry no corruption schedule, so this is a no-op — the
+    /// call shape matches the test build so read paths need no `cfg` branching.
+    #[cfg(not(any(test, feature = "testkit")))]
+    #[allow(clippy::unused_self)]
+    fn corrupt_rows(&self, _op: FaultOp, _rows: &mut [PersistenceReadRow]) {}
 
     pub(crate) fn create_system_branch_for_new_database(&mut self) -> EngineResult<()> {
         self.ensure_branch_created(SYSTEM_BRANCH_ID, DEFAULT_BRANCH_GENERATION)
@@ -547,9 +580,13 @@ impl StoragePersistence {
             .runtime
             .read_point(&point_read_request(address, selector)?)
             .map_err(map_storage_error)?;
-        Ok(outcome
+        let mut row = outcome
             .into_row()
-            .map(PersistenceReadRow::from_storage_owned))
+            .map(PersistenceReadRow::from_storage_owned);
+        if let Some(inner) = row.as_mut() {
+            self.corrupt_rows(FaultOp::Read, std::slice::from_mut(inner));
+        }
+        Ok(row)
     }
 
     pub(crate) fn read_history(
@@ -633,11 +670,13 @@ impl StoragePersistence {
                 after_version,
             )?)
             .map_err(map_storage_error)?;
-        Ok(outcome
+        let mut rows: Vec<PersistenceReadRow> = outcome
             .rows()
             .iter()
             .map(PersistenceReadRow::from_storage)
-            .collect())
+            .collect();
+        self.corrupt_rows(FaultOp::Scan, &mut rows);
+        Ok(rows)
     }
 
     pub(crate) fn scan_range(
@@ -660,11 +699,13 @@ impl StoragePersistence {
                 branch_id, row_class, start, end, selector, limit,
             )?)
             .map_err(map_storage_error)?;
-        Ok(outcome
+        let mut rows: Vec<PersistenceReadRow> = outcome
             .rows()
             .iter()
             .map(PersistenceReadRow::from_storage)
-            .collect())
+            .collect();
+        self.corrupt_rows(FaultOp::Scan, &mut rows);
+        Ok(rows)
     }
 
     pub(crate) fn scan_immutable_sources(

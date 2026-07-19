@@ -17,7 +17,8 @@ use crate::persistence::{
 };
 #[cfg(any(test, feature = "testkit"))]
 use crate::persistence::{
-    encode_json_index_entry_prefix, FaultOp, ReadSelector, RowClass, StorageFaultKind,
+    encode_json_index_entry_prefix, FaultOp, ReadSelector, RowClass, RowCorruption,
+    StorageFaultKind,
 };
 
 use super::{
@@ -442,6 +443,23 @@ impl Database {
     #[cfg(any(test, feature = "testkit"))]
     pub fn inject_scan_fault_for_test(&mut self, kind: StorageFaultKind) {
         self.persistence.arm_storage_fault(FaultOp::Scan, kind, 0);
+    }
+
+    /// Corrupts the rows the next persistence scan returns — the read succeeds
+    /// but its rows come back malformed, so the engine's `data_loss.*` decoders
+    /// run on the genuine read path. Used by corruption-injection tests.
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn inject_scan_corruption_for_test(&mut self, corruption: RowCorruption) {
+        self.persistence
+            .arm_row_corruption(FaultOp::Scan, corruption, 0);
+    }
+
+    /// Corrupts the row the next persistence point read returns (see
+    /// [`Self::inject_scan_corruption_for_test`]).
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn inject_read_corruption_for_test(&mut self, corruption: RowCorruption) {
+        self.persistence
+            .arm_row_corruption(FaultOp::Read, corruption, 0);
     }
 
     /// Arms a storage fault that fires on the next persistence branch action.

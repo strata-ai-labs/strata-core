@@ -86,8 +86,6 @@ const ALLOWED_UNASSERTED: &[(&str, &str)] = &[
     ("data_loss.engine.graph_node_record", "corruption detector; asserted by TCP3.15 corruption injection"),
     ("data_loss.engine.graph_type_index_key", "corruption detector; asserted by TCP3.15 corruption injection"),
     ("data_loss.engine.graph_type_index_record", "corruption detector; asserted by TCP3.15 corruption injection"),
-    ("data_loss.engine.json_index", "corruption detector; asserted by TCP3.15 corruption injection"),
-    ("data_loss.engine.kv_value", "corruption detector; asserted by TCP3.15 corruption injection"),
     ("data_loss.engine.vector_artifact", "corruption detector; asserted by TCP3.15 corruption injection"),
     ("data_loss.engine.vector_artifacts", "corruption detector; asserted by TCP3.15 corruption injection"),
     ("data_loss.engine.vector_index_manifest", "corruption detector; asserted by TCP3.15 corruption injection"),

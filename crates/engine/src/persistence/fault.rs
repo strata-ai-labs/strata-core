@@ -17,9 +17,9 @@ pub(crate) enum FaultOp {
 }
 
 #[cfg(any(test, feature = "testkit"))]
-pub(crate) use injection::FaultSchedule;
+pub(crate) use injection::{CorruptionSchedule, FaultSchedule};
 #[cfg(any(test, feature = "testkit"))]
-pub use injection::StorageFaultKind;
+pub use injection::{RowCorruption, StorageFaultKind};
 
 #[cfg(any(test, feature = "testkit"))]
 mod injection {
@@ -115,6 +115,68 @@ mod injection {
                 return None;
             }
             Some(self.entries.remove(position).error)
+        }
+    }
+
+    /// A content corruption to apply to the rows a successful read returns —
+    /// modelling on-disk bit-rot that the storage layer hands back intact but
+    /// whose *content* the engine's decoders must reject. Distinct from
+    /// [`StorageFaultKind`], which fails the operation outright; this lets the
+    /// read succeed and corrupts what it yields, so the engine's `data_loss.*`
+    /// detectors run on the genuine decode path.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub enum RowCorruption {
+        /// Strip the value cell from the row (`Some(bytes)` -> `None`), as if the
+        /// stored row lost its value.
+        DropValue,
+        /// Replace the value bytes with malformed content: present, but not
+        /// decodable as the record the caller expects.
+        SetValue(Vec<u8>),
+    }
+
+    impl RowCorruption {
+        /// Applies this corruption to one row's value cell.
+        pub(crate) fn apply(&self, value: &mut Option<Vec<u8>>) {
+            match self {
+                Self::DropValue => *value = None,
+                Self::SetValue(bytes) => *value = Some(bytes.clone()),
+            }
+        }
+    }
+
+    struct ScheduledCorruption {
+        op: FaultOp,
+        corruption: RowCorruption,
+        /// Number of matching operations that pass before this corruption fires.
+        skip: usize,
+    }
+
+    /// FIFO schedule of pending row corruptions, matched and consumed per
+    /// operation exactly like [`FaultSchedule`].
+    #[derive(Default)]
+    pub(crate) struct CorruptionSchedule {
+        entries: Vec<ScheduledCorruption>,
+    }
+
+    impl CorruptionSchedule {
+        /// Arms a corruption that fires after `skip` matching operations pass.
+        pub(crate) fn arm(&mut self, op: FaultOp, corruption: RowCorruption, skip: usize) {
+            self.entries.push(ScheduledCorruption {
+                op,
+                corruption,
+                skip,
+            });
+        }
+
+        /// Returns the corruption for `op` if one is due, letting `skip`
+        /// occurrences pass through uncorrupted first.
+        pub(crate) fn take(&mut self, op: FaultOp) -> Option<RowCorruption> {
+            let position = self.entries.iter().position(|entry| entry.op == op)?;
+            if self.entries[position].skip > 0 {
+                self.entries[position].skip -= 1;
+                return None;
+            }
+            Some(self.entries.remove(position).corruption)
         }
     }
 }

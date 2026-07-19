@@ -50,4 +50,4 @@ pub(crate) use space::row_class_storage_id_for_test;
 #[cfg(any(test, feature = "testkit"))]
 pub(crate) use fault::FaultOp;
 #[cfg(any(test, feature = "testkit"))]
-pub use fault::StorageFaultKind;
+pub use fault::{RowCorruption, StorageFaultKind};
