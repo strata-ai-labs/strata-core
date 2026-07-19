@@ -5,7 +5,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use strata_wasm::StrataSession;
+use strata_wasm::{engine_version, StrataSession};
 use wasm_bindgen_test::wasm_bindgen_test;
 
 fn execute(session: &mut StrataSession, command: &str) -> serde_json::Value {
@@ -96,5 +96,86 @@ fn branch_scoping_isolates_writes_in_the_browser_session() {
     assert!(
         session.set_branch("_system_").is_err(),
         "reserved branch names must throw"
+    );
+}
+
+#[wasm_bindgen_test]
+fn space_scoping_isolates_the_same_key_across_spaces() {
+    // Spaces are the second isolation axis (branch is the first). The browser
+    // surface exposes them via space()/setSpace(), and nothing tested them.
+    let mut session = StrataSession::new().expect("session opens");
+    assert_eq!(session.space(), "default");
+
+    // Write the same key in two spaces with different values.
+    session.set_space("docs").expect("valid space");
+    let put_docs = execute(
+        &mut session,
+        &format!(r#"{{"type":"kv_put","key":"{KEY_FLAG}","value":"{VALUE_ON}"}}"#),
+    );
+    assert!(put_docs.get("error").is_none(), "docs put: {put_docs}");
+
+    session.set_space("default").expect("valid space");
+    let get_default = execute(
+        &mut session,
+        &format!(r#"{{"type":"kv_get","key":"{KEY_FLAG}"}}"#),
+    );
+    // base64("on") written under `docs` must not be visible under `default`.
+    assert!(
+        !get_default.to_string().contains(VALUE_ON),
+        "default space must not see docs writes: {get_default}"
+    );
+
+    // The docs write is still there under its own space.
+    session.set_space("docs").expect("valid space");
+    let get_docs = execute(
+        &mut session,
+        &format!(r#"{{"type":"kv_get","key":"{KEY_FLAG}"}}"#),
+    );
+    assert!(
+        get_docs.to_string().contains(VALUE_ON),
+        "docs space must still see its own write: {get_docs}"
+    );
+}
+
+#[wasm_bindgen_test]
+fn invalid_space_name_throws() {
+    let mut session = StrataSession::new().expect("session opens");
+    assert!(
+        session.set_space("_system_").is_err(),
+        "reserved space names must throw"
+    );
+}
+
+#[wasm_bindgen_test]
+fn a_closed_session_reports_the_close_and_then_refuses_work() {
+    let mut session = StrataSession::new().expect("session opens");
+    let put = execute(
+        &mut session,
+        &format!(r#"{{"type":"kv_put","key":"{KEY_GREETING}","value":"{VALUE_HELLO}"}}"#),
+    );
+    assert!(put.get("error").is_none(), "pre-close put: {put}");
+
+    session.close().expect("close succeeds");
+
+    // After close the handle is unusable: executed commands come back as
+    // error envelopes (the runtime is closed), not successful outputs.
+    let after = execute(
+        &mut session,
+        &format!(r#"{{"type":"kv_get","key":"{KEY_GREETING}"}}"#),
+    );
+    assert!(
+        after.get("error").is_some(),
+        "a closed session must refuse further work: {after}"
+    );
+}
+
+#[wasm_bindgen_test]
+fn engine_version_reports_a_non_empty_semver() {
+    let version = engine_version();
+    assert!(!version.is_empty(), "version must be reported");
+    // Compiled-in crate version: at least `major.minor`.
+    assert!(
+        version.split('.').count() >= 2,
+        "version looks like semver: {version}"
     );
 }
