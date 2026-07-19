@@ -229,7 +229,10 @@ new lines, unreachable by hand. SQLite's ~590× is TH3 (generated MC/DC), SQL
 Logic Test (~7M generated queries run differentially), and fuzz corpora — not
 92M hand-written lines. Same model here: the volume comes from a few
 oracle-checked generators, so every generated case is a *bug-detection surface*,
-never a vanity line.
+never a vanity line. The single biggest lever (4.2) is the multi-model analog of
+SLT — **differential testing each capability against a reference database**
+(KV vs RocksDB/Redis, JSON vs Mongo, graph vs Neo4j), since a database built by
+other people is a stronger oracle than any model we could write ourselves.
 
 ### Phase 4 gates (how the volume stays honest)
 
@@ -258,11 +261,67 @@ mutation-gate pattern that every later lane reuses.
 | # | Slice | Scope | Status |
 |---|---|---|---|
 | 4.1 | **IDL conformance generator** | Emit per-command generated test files from the 125-command IDL: request/response round-trip × render mode (json/raw/human), every declared error envelope, schema/boundary conformance, adversarial deserialize. Regenerate on IDL change; drift guard + mutation gate. Highest leverage per effort (monetizes an owned asset) and proves the generation pattern | Planned |
-| 4.2 | **Differential/metamorphic corpus engine** | The bulk of the 10×. Generate seed-pinned operation sequences across all six capabilities and run them against the existing reference models (STH-1 recovery oracle, config-differential, temporal/event timeline); commit (sequence → expected state). Any oracle divergence is a filed bug. Volume is a dial; assurance rises with it | Planned |
+| 4.2 | **Differential testing vs reference databases (the SLT model)** | The bulk of the 10× and the highest bug yield. StrataDB is *multi-model*, so each capability is diffed against the mature reference implementation of that model — KV vs **RocksDB + Redis**, JSON vs **MongoDB**, graph vs **Neo4j**, etc. — on the *shared* semantic contract, plus in-house metamorphic relations (branches, time-travel) reusing the Phase 1–3 oracles. Seed-pinned op-sequences, committed corpora, divergence = filed bug. **Detailed below; starts with KV (4.2a).** | Planned |
 | 4.3 | **Exhaustive concurrency-schedule exploration** | loom/shuttle over the commit / BS5 write-group / latest-scan interleavings, turning rare CI flakes into deterministic, seed-reproducible findings. #2682 (off-lock torn read) is the seed case. High bug yield for a database; the highest-value non-LOC lever | Planned |
 | 4.4 | **Vendored public conformance suites** | Import battle-tested corpora wholesale: JSONPath Compliance Test Suite, Unicode collation/normalization, float-format edge cases, and analogous KV/vector/graph reference sets. A small runner over large vendored data | Planned |
 | 4.5 | **Golden + combinatorial matrix expansion** | Every record type × canonical/boundary/adversarial vectors across the frozen codec; the full config × capability × operation cross-product (STH-6 extended), generated and result-equality-checked | Planned |
 | 4.6 | **Committed fuzz corpora + surface expansion** | Version the accumulated persistent-corpus interesting-inputs; extend the 30 fuzz targets to the full decoder/API surface; commit crash-triage regressions | Planned |
+
+### 4.2 in detail — differential testing against reference databases
+
+The strongest oracle is not one we write — it is a mature database built by
+other people who do not share our assumptions or our bugs. That is SQLite's SLT
+model: it diffs SQL semantics against PostgreSQL, MySQL, and Oracle. StrataDB is
+**multi-model**, so the same move applies *per capability* — each has a
+reference implementation of its model to diff against:
+
+| Capability | Reference oracle(s) | Validates | Sub-slice |
+|---|---|---|---|
+| KV | **RocksDB** (ordered, embedded) + **Redis** (hash, independent) | put/get/delete/exists/count; ordered scan & range; snapshot/as-of reads (RocksDB) | 4.2a — **first** |
+| JSON / document | **MongoDB** | document set/get/patch, path reads, index-backed queries | 4.2b |
+| Graph | **Neo4j** | nodes/edges, neighbors by direction/type, reachability/traversal | 4.2c |
+| Event | append-log oracle (Redis Streams / in-house) | append ordering, per-type sequence, range/reverse reads | 4.2d |
+| Vector | **brute-force exact k-NN** (in-house; external ANN is approximate) | exact top-k and recall bounds, not byte-equality | 4.2e |
+
+**The contract is the whole game.** StrataDB is not RocksDB and not Redis; a
+naive "same ops, diff everything" is a noise machine the moment semantics
+diverge. Each harness diffs only the *intersection where the backends provably
+agree*, and excludes the rest **by construction** — not by triaging failures
+after the fact. KV is the worked example, in three tiers:
+
+| Tier | Ops | Shared with |
+|---|---|---|
+| A — universal | put / get / delete / exists / overwrite / count / batch | RocksDB + Redis |
+| B — ordered keyspace | `list(prefix)`, `scan_range`, ordered pagination | RocksDB only (Redis is unordered) |
+| C — snapshot / as-of | `get_at_version`, `get_at`, `count_at` | RocksDB only (RocksDB snapshot after op N ↔ Strata as-of N) |
+| Strata-only | branches, spaces, deep history (`get_versions`) | *none* → in-house metamorphic |
+
+So 4.2 is a **hybrid** per capability: external differential on the shared
+tiers, plus in-house metamorphic relations on the Strata-specific parts (fork
+isolation, "as-of(v) = the state after ops ≤ v", history monotonicity,
+cache ≡ durable, reopen-preserves-state — reusing the STH-1 oracle,
+config-differential, and timeline models from Phases 1–3).
+
+**Architecture** (small): a `KvOracle` trait with `StrataKv`/`RocksKv`/`RedisKv`
+adapters; a seed-pinned generator emitting op-sequences over a
+**domain-restricted** key/value space (the intersection of what all backends
+accept — e.g. non-empty keys, bounded byte values); after each op, diff the
+tiers each backend supports; divergence on a supported tier = filed bug +
+committed seed. The seed corpora are the SLT-analog volume.
+
+**Infra and honesty.** RocksDB is an ordered embedded LSM — nearly a semantic
+twin of Strata's KV substrate — so it validates Tiers A–C and runs
+**in-process** (a feature-gated dev-dependency, zero external infra); it does
+most of the bug-finding. Redis covers only Tier A, but it is architecturally
+*unlike* Strata (in-memory hash, not LSM), so it catches design-family blind
+spots RocksDB and Strata might share — real defense-in-depth. Redis/Mongo/Neo4j
+run as **service containers in a nightly lane**; nothing external touches a
+per-PR build. Every 4.2 lane sits behind a `differential` feature + nightly CI.
+
+**Sub-slices**, ordered by semantic simplicity and foundation value: **4.2a KV
+(RocksDB + Redis)** — builds the harness/generator/contract pattern the rest
+reuse — then 4.2b JSON (Mongo), 4.2c graph (Neo4j), 4.2d event, 4.2e vector
+(exact k-NN oracle). 4.2a first.
 
 ### Milestones and exit
 
