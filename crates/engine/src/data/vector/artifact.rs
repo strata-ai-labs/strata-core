@@ -2045,6 +2045,39 @@ mod tests {
         assert!(decode_flat_vector_artifact(&impossible_row_count, usize::MAX).is_err());
     }
 
+    // --- corruption-code assertions (TCP3.15c) ---------------------------
+    //
+    // The runtime swallows these decode errors into a "corrupt" artifact load
+    // status (source rows stay authoritative — rule 26), so the corruption
+    // codes never propagate to a public caller. These decoder unit tests are
+    // the only place the codes are assertable.
+
+    #[test]
+    fn decode_reports_the_data_loss_code_for_a_corrupt_artifact_checksum() {
+        let encoded = encode_flat_vector_artifact(&<()>::artifact("dl")).expect("artifact encodes");
+        let mut corrupt = encoded.clone();
+        *corrupt.last_mut().expect("checksum byte") ^= 0xFF;
+        let error = decode_flat_vector_artifact(&corrupt, usize::MAX)
+            .expect_err("a checksum mismatch is rejected");
+        assert_eq!(error.code(), "data_loss.engine.vector_artifact");
+        assert_eq!(error.class(), EngineErrorClass::Corruption);
+    }
+
+    #[test]
+    fn decode_reports_the_precondition_code_for_an_unsupported_artifact_version() {
+        // The version byte lives inside the checksummed body, so a plain flip
+        // trips the checksum (data_loss) first. Rebuild the body at version 2
+        // and re-checksum it, so decode reaches the version gate.
+        let encoded = encode_flat_vector_artifact(&<()>::artifact("fp")).expect("artifact encodes");
+        let mut body = encoded[..encoded.len() - 8].to_vec();
+        body[super::FLAT_ARTIFACT_MAGIC.len()] = 2;
+        let checksum = super::artifact_payload_checksum(&body);
+        super::write_u64(&mut body, checksum);
+        let error = decode_flat_vector_artifact(&body, usize::MAX)
+            .expect_err("an unsupported version is rejected");
+        assert_eq!(error.code(), "failed_precondition.engine.vector_artifact");
+    }
+
     #[test]
     fn hnsw_vector_artifact_round_trips_with_deterministic_bytes() {
         let artifact = <()>::hnsw_artifact("hnsw-roundtrip");

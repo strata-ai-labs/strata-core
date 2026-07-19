@@ -82,14 +82,10 @@ const ALLOWED_UNASSERTED: &[(&str, &str)] = &[
     // --- storage internal-layer codes (surfaced by the TCP3.2a area fix) ---
     ("data_loss.engine.branch_id", "corruption detector; asserted by TCP3.15 corruption injection"),
     ("data_loss.engine.control_name", "corruption detector; asserted by TCP3.15 corruption injection"),
-    ("data_loss.engine.vector_artifact", "corruption detector; asserted by TCP3.15 corruption injection"),
-    ("data_loss.engine.vector_artifacts", "corruption detector; asserted by TCP3.15 corruption injection"),
-    ("data_loss.engine.vector_index_manifest", "corruption detector; asserted by TCP3.15 corruption injection"),
+    ("data_loss.engine.vector_artifacts", "unreachable defensive guard (TCP3.15c): the sole site is a `path.parent() == None` check in `persist_raw_flat_payload_at`, but the durable store always joins subdirectories so the payload path always has a parent; the normal store path also discards its result via `let _`. Note this is the *plural* code — the singular `data_loss.engine.vector_artifact` is asserted"),
     ("failed_precondition.cli.binary_not_on_path", "doctor/environment path; asserted by TCP3.10 CLI slice"),
     ("failed_precondition.cli.home_not_directory", "doctor/environment path; asserted by TCP3.10 CLI slice"),
     ("failed_precondition.cli.home_unresolved", "doctor/environment path; asserted by TCP3.10 CLI slice"),
-    ("failed_precondition.engine.vector_artifact", "reopen-time incompatible_layout on a version-mismatched persisted artifact; asserted by TCP3.15 fault/reopen injection"),
-    ("failed_precondition.engine.vector_index_manifest", "reopen-time incompatible_layout on a version-mismatched manifest; asserted by TCP3.15 fault/reopen injection"),
     ("invalid_argument.engine.event_batch", "internal invariant: the public empty batch short-circuits to success before this check (#2651)"),
     ("invalid_argument.engine.event_metadata", "defensive serde_json::to_vec encode arm (never fails on a valid record); unreachable (#2651)"),
     ("invalid_argument.engine.event_record", "defensive encode-error arm; unreachable with a valid record (#2651)"),
@@ -121,7 +117,6 @@ const ALLOWED_UNASSERTED: &[(&str, &str)] = &[
     ("invalid_argument.executor.limit", "asserted by TCP3.8 error-envelope replay fixtures"),
     ("invalid_argument.executor.vector_limit", "asserted by TCP3.8 error-envelope replay fixtures"),
     ("not_found.cli.database_path", "doctor/environment path; asserted by TCP3.10 CLI slice"),
-    ("unavailable.engine.vector_artifacts", "vector-artifact IO failure; asserted by TCP3.15 IO-fault injection"),
 ];
 
 fn repo_root() -> PathBuf {

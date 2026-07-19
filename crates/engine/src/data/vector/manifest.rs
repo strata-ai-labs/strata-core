@@ -543,7 +543,7 @@ mod tests {
 
     use super::{
         decode_vector_index_manifest, encode_vector_index_manifest, VectorArtifactKind,
-        VectorArtifactRef, VectorIndexManifest, MANIFEST_MAX_BYTES,
+        VectorArtifactRef, VectorIndexManifest, MANIFEST_MAX_BYTES, MANIFEST_POLICY_VERSION,
     };
     use crate::data::kv::ProductSpace;
     use crate::data::vector::{VectorCollectionName, VectorDistanceMetric};
@@ -665,6 +665,76 @@ mod tests {
                 derived_bytes: 1024,
                 checksum: 99,
             }],
+            active_delta_count: 0,
+        };
+        let body_bytes = serde_json::to_vec(&body).expect("body encodes");
+        let envelope = super::StoredManifestEnvelope {
+            checksum: super::manifest_checksum(&body_bytes),
+            body,
+        };
+        let mut bytes = vec![super::MANIFEST_FORMAT_VERSION];
+        bytes.extend(serde_json::to_vec(&envelope).expect("envelope encodes"));
+        bytes
+    }
+
+    // --- corruption-code assertions (TCP3.15c) ---------------------------
+    //
+    // The runtime swallows these decode errors into a "corrupt" manifest
+    // status (source rows stay authoritative — rule 26), so the corruption
+    // codes never propagate to a public caller. These decoder unit tests are
+    // the only place the codes are assertable, and the corruption detector's
+    // contract is exactly to return them.
+
+    fn sample_manifest(seed: u8) -> VectorIndexManifest {
+        VectorIndexManifest::empty(
+            BranchId::from_bytes([seed; BranchId::BYTE_LEN]),
+            3,
+            ProductSpace::new("default").expect("valid space"),
+            VectorCollectionName::new("docs").expect("valid collection"),
+            1,
+        )
+    }
+
+    #[test]
+    fn decode_reports_the_data_loss_code_for_malformed_manifest_bytes() {
+        let mut encoded =
+            encode_vector_index_manifest(&sample_manifest(1)).expect("manifest encodes");
+        encoded[0] = 0xFF; // wrong leading format-version byte (valid is 1)
+        let error =
+            decode_vector_index_manifest(&encoded).expect_err("malformed manifest is rejected");
+        assert_eq!(error.code(), "data_loss.engine.vector_index_manifest");
+        assert_eq!(error.class(), EngineErrorClass::Corruption);
+    }
+
+    #[test]
+    fn decode_reports_the_precondition_code_for_an_unsupported_policy_version() {
+        // Bytes that decode cleanly (valid format byte, JSON, and checksum) but
+        // carry a policy version this build does not support. Arbitrary garbage
+        // cannot reach this path — the checksum covers the policy field — so the
+        // body is rebuilt with a matching checksum.
+        let bytes =
+            encode_manifest_with_policy_version(&sample_manifest(2), MANIFEST_POLICY_VERSION + 1);
+        let error =
+            decode_vector_index_manifest(&bytes).expect_err("unsupported policy is rejected");
+        assert_eq!(
+            error.code(),
+            "failed_precondition.engine.vector_index_manifest"
+        );
+    }
+
+    fn encode_manifest_with_policy_version(
+        base: &VectorIndexManifest,
+        policy_version: u16,
+    ) -> Vec<u8> {
+        let body = super::StoredManifestBody {
+            manifest_generation: base.manifest_generation,
+            branch_id: base.branch_id,
+            branch_generation: base.branch_generation,
+            space: base.space.clone(),
+            collection: base.collection.clone(),
+            collection_generation: base.collection_generation,
+            policy_version,
+            artifact_refs: Vec::new(),
             active_delta_count: 0,
         };
         let body_bytes = serde_json::to_vec(&body).expect("body encodes");

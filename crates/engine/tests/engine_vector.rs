@@ -1467,3 +1467,49 @@ fn descending_fixture_upsert(index: u16, metadata_value: Value) -> VectorUpsertE
         metadata_value,
     )
 }
+
+/// A write-time IO failure on the durable artifact directory surfaces the one
+/// vector corruption code that genuinely propagates: `unavailable.engine.
+/// vector_artifacts` (TCP3.15c). The other five vector corruption codes are
+/// swallowed into a "corrupt" status by design (source rows stay authoritative,
+/// rule 26) and are asserted by decoder unit tests in `manifest.rs`/`artifact.rs`.
+#[cfg(feature = "testkit")]
+#[test]
+fn a_write_failure_on_the_artifact_directory_reports_the_unavailable_code() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let flat_dir = tempdir
+        .path()
+        .join("engine-artifacts")
+        .join("vector")
+        .join("flat");
+
+    let mut database = open_durable_database(tempdir.path()).expect("durable open");
+    let mut vectors = vector_service(&mut database, "default", "default");
+    let docs = collection("io-fault");
+    vectors
+        .create_collection(docs.clone(), config(2, VectorDistanceMetric::Cosine))
+        .expect("collection create");
+    vectors
+        .upsert(docs.clone(), vector_key("a"), embedding([1.0, 0.0]), None)
+        .expect("upsert");
+    // Materialize a flat artifact on disk (durable mode writes the `.bin`).
+    vectors
+        .seed_flat_index_manifest_from_visible_rows_for_test(&docs, "source-a")
+        .expect("seed flat artifact");
+    assert!(
+        flat_dir.is_dir(),
+        "seeding must create the flat artifact directory"
+    );
+
+    // Replace the artifact directory with a regular file: the next artifact
+    // write's `create_dir_all` fails with a not-a-directory error regardless of
+    // the process uid (root-proof, unlike a chmod).
+    std::fs::remove_dir_all(&flat_dir).expect("remove flat dir");
+    std::fs::write(&flat_dir, b"blocker").expect("place blocker file");
+
+    let error = vectors
+        .corrupt_flat_artifact_for_test(&docs, "source-a")
+        .expect_err("a write into a non-directory path must fail");
+    assert_eq!(error.code(), "unavailable.engine.vector_artifacts");
+    assert_eq!(error.class(), EngineErrorClass::Unavailable);
+}
