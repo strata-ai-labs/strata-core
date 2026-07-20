@@ -661,8 +661,9 @@ pub enum Command {
         collection: String,
         /// Vector key.
         key: String,
-        /// Dense embedding.
-        vector: Vec<f32>,
+        /// Dense embedding. Accepted at wire (f64) precision and narrowed to the
+        /// stored f32; a value that underflows or overflows f32 is rejected.
+        vector: Vec<f64>,
         /// Optional metadata.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,

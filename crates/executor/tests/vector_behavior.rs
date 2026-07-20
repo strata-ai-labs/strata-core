@@ -16,6 +16,61 @@ fn cache_executor_runs_complete_vector_command_suite() {
 }
 
 #[test]
+fn vector_upsert_rejects_a_subnormal_embedding_instead_of_storing_zeros() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    executor
+        .execute(Command::VectorCreateCollection {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            dimension: 3,
+            metric: VectorDistanceMetric::Cosine,
+        })
+        .expect("collection create succeeds");
+
+    // The SDK sends JSON numbers (f64). A finite but subnormal-magnitude embedding
+    // must be rejected, not silently narrowed to the zero vector and reported as
+    // applied. Deserialize through the wire command so the engine sees the f64
+    // precision (a `Vec<f32>` built in Rust would already have underflowed).
+    let subnormal: Command = serde_json::from_str(
+        r#"{"type":"vector_upsert","collection":"docs","key":"z","vector":[1e-308,1e-308,1e-308]}"#,
+    )
+    .expect("command deserializes");
+    let error = executor
+        .execute(subnormal)
+        .expect_err("a subnormal embedding is rejected");
+    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+    assert_eq!(error.code(), "invalid_argument.engine.vector_embedding");
+
+    // The opposite extreme is (and stays) rejected with the same code.
+    let overflow: Command = serde_json::from_str(
+        r#"{"type":"vector_upsert","collection":"docs","key":"big","vector":[1e308,0.0,0.0]}"#,
+    )
+    .expect("command deserializes");
+    assert_eq!(
+        executor
+            .execute(overflow)
+            .expect_err("an overflowing embedding is rejected")
+            .code(),
+        "invalid_argument.engine.vector_embedding"
+    );
+
+    // Neither rejected upsert stored anything.
+    let Output::Uint(count) = executor
+        .execute(Command::VectorCount {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            as_of: None,
+        })
+        .expect("count succeeds")
+    else {
+        panic!("unexpected vector count output");
+    };
+    assert_eq!(count, 0);
+}
+
+#[test]
 fn vector_batch_get_reports_missing_keys_as_misses() {
     // A missing key in a batch read is a positional miss, not a success —
     // matching kv batch-get. The outer batch is then partial.
@@ -582,7 +637,7 @@ fn invalid_input_vector_commands() -> Vec<Command> {
             space: None,
             collection: "docs".to_owned(),
             key: "nan-vector".to_owned(),
-            vector: vec![f32::NAN, 0.0],
+            vector: vec![f64::NAN, 0.0],
             metadata: None,
         },
         Command::VectorUpdateMetadata {
@@ -1781,7 +1836,7 @@ fn upsert_without_metadata(
     executor: &mut Executor,
     collection: &str,
     key: &str,
-    vector: Vec<f32>,
+    vector: Vec<f64>,
 ) -> u64 {
     let Output::VectorWriteResult { commit, .. } = executor
         .execute(Command::VectorUpsert {
@@ -1803,7 +1858,7 @@ fn upsert_vector(
     executor: &mut Executor,
     collection: &str,
     key: &str,
-    vector: Vec<f32>,
+    vector: Vec<f64>,
     metadata: serde_json::Value,
 ) -> u64 {
     let Output::VectorWriteResult { commit, .. } = executor
@@ -1828,7 +1883,7 @@ fn upsert_vector_in(
     space: Option<&str>,
     collection: &str,
     key: &str,
-    vector: Vec<f32>,
+    vector: Vec<f64>,
     metadata: serde_json::Value,
 ) {
     executor
@@ -2274,7 +2329,7 @@ fn vector_scan_returns_ordered_rows_and_paginates_honestly() {
                 space: None,
                 collection: "docs".to_owned(),
                 key: format!("doc-{i}"),
-                vector: vec![f32::from(i) + 1.0, 1.0],
+                vector: vec![f64::from(i) + 1.0, 1.0],
                 metadata: Some(json!({ "n": i })),
             })
             .expect("upsert succeeds");

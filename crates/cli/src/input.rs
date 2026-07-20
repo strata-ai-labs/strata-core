@@ -79,9 +79,26 @@ pub(crate) fn parse_vector_argument(
     value: Option<&str>,
     file: Option<&PathBuf>,
     label: &str,
-) -> Result<Vec<f32>, CliError> {
+) -> Result<Vec<f64>, CliError> {
     let text = text_argument(value, file, label)?;
     parse_vector_text(&text)
+}
+
+/// Parses a *query* vector, narrowing to the f32 the query command carries.
+/// Query vectors are not stored, so they keep f32 wire precision; the
+/// stored-embedding underflow guard (#2689) applies to upserts, which parse at
+/// full f64 precision. Query-side precision is tracked separately (#2710).
+pub(crate) fn parse_query_vector_argument(
+    value: Option<&str>,
+    file: Option<&PathBuf>,
+    label: &str,
+) -> Result<Vec<f32>, CliError> {
+    let vector = parse_vector_argument(value, file, label)?;
+    #[allow(clippy::cast_possible_truncation)]
+    Ok(vector
+        .into_iter()
+        .map(|component| component as f32)
+        .collect())
 }
 
 pub(crate) fn parse_filter_argument(
@@ -134,7 +151,7 @@ fn read_inline_or_file_shorthand(value: &str) -> Result<Vec<u8>, CliError> {
     Ok(value.as_bytes().to_vec())
 }
 
-fn parse_vector_text(value: &str) -> Result<Vec<f32>, CliError> {
+fn parse_vector_text(value: &str) -> Result<Vec<f64>, CliError> {
     if value.trim_start().starts_with('[') {
         return serde_json::from_str(value).map_err(CliError::from);
     }
@@ -143,7 +160,7 @@ fn parse_vector_text(value: &str) -> Result<Vec<f32>, CliError> {
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .map(|part| {
-            part.parse::<f32>().map_err(|error| {
+            part.parse::<f64>().map_err(|error| {
                 CliError::usage(format!("invalid vector element `{part}`: {error}"))
             })
         })

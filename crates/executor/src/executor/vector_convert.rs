@@ -25,8 +25,16 @@ pub(super) fn optional_vector_key(key: Option<String>) -> ExecutorResult<Option<
     key.map(vector_key).transpose()
 }
 
-pub(super) fn vector_embedding(vector: Vec<f32>) -> ExecutorResult<EngineVectorEmbedding> {
-    EngineVectorEmbedding::new(vector).map_err(ExecutorError::from)
+pub(super) fn vector_embedding(vector: Vec<f64>) -> ExecutorResult<EngineVectorEmbedding> {
+    EngineVectorEmbedding::from_wire(vector).map_err(ExecutorError::from)
+}
+
+/// Builds an engine embedding for a *query* vector, which is not stored. Query
+/// vectors stay f32 at the wire boundary; the wire-precision underflow guard
+/// (`from_wire`) applies to stored embeddings only. Extending it to queries is
+/// tracked separately (#2710).
+pub(super) fn query_embedding(query: Vec<f32>) -> ExecutorResult<EngineVectorEmbedding> {
+    EngineVectorEmbedding::new(query).map_err(ExecutorError::from)
 }
 
 pub(super) fn optional_vector_metadata(

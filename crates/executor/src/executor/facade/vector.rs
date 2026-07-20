@@ -75,7 +75,7 @@ impl Executor {
             space: None,
             collection: collection.into(),
             key: key.into(),
-            vector,
+            vector: vector.into_iter().map(f64::from).collect(),
             metadata,
         })
     }

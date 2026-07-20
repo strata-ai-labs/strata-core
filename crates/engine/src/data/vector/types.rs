@@ -169,6 +169,19 @@ impl VectorEmbedding {
     pub(crate) fn from_stored(values: Vec<f32>) -> EngineResult<Self> {
         Self::new(values)
     }
+
+    /// Creates a validated embedding from wire-precision f64 values, narrowing to
+    /// the stored f32 representation. A value that cannot be represented in f32
+    /// without becoming non-finite or losing a non-zero magnitude to underflow is
+    /// rejected with `invalid_argument.engine.vector_embedding`, so the caller is
+    /// told rather than a corrupted (silently zeroed) vector being stored.
+    pub fn from_wire(values: Vec<f64>) -> EngineResult<Self> {
+        let narrowed = values
+            .into_iter()
+            .map(narrow_embedding_value)
+            .collect::<EngineResult<Vec<f32>>>()?;
+        Self::new(narrowed)
+    }
 }
 
 impl<'de> Deserialize<'de> for VectorEmbedding {
@@ -710,6 +723,23 @@ fn validate_embedding_values(values: &[f32]) -> EngineResult<()> {
     Ok(())
 }
 
+/// Narrows one wire-precision f64 component to the stored f32. A non-zero
+/// magnitude that underflows to zero is rejected here — the case that otherwise
+/// silently corrupted a stored vector, and which `VectorEmbedding::new` cannot
+/// see (`0.0` is finite). Non-finite input and overflow to infinity are left to
+/// `new`'s finiteness check, which rejects them with the same code.
+fn narrow_embedding_value(value: f64) -> EngineResult<f32> {
+    #[allow(clippy::cast_possible_truncation)]
+    let narrowed = value as f32;
+    if narrowed == 0.0 && value != 0.0 {
+        return Err(EngineError::invalid_input(
+            "invalid_argument.engine.vector_embedding",
+            "vector embedding value underflows to zero in f32",
+        ));
+    }
+    Ok(narrowed)
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -719,6 +749,44 @@ mod tests {
         VectorFilterCondition, VectorFilterOp, VectorKey, VectorMetadataPatch, VectorScalar,
     };
     use crate::diagnostics::EngineErrorClass;
+
+    #[test]
+    fn from_wire_rejects_non_representable_values_and_keeps_genuine_zero() {
+        // Overflow to infinity (the extreme that was already rejected).
+        let overflow = VectorEmbedding::from_wire(vec![1e308, 0.0]).expect_err("overflow rejected");
+        assert_eq!(overflow.class(), EngineErrorClass::InvalidInput);
+        assert_eq!(overflow.code(), "invalid_argument.engine.vector_embedding");
+
+        // Non-finite input.
+        assert_eq!(
+            VectorEmbedding::from_wire(vec![f64::INFINITY, 0.0])
+                .expect_err("non-finite rejected")
+                .code(),
+            "invalid_argument.engine.vector_embedding"
+        );
+
+        // The bug: a non-zero magnitude that underflows to zero in f32 must be
+        // rejected, not silently stored as the zero vector.
+        assert_eq!(
+            VectorEmbedding::from_wire(vec![1e-308, 1e-308])
+                .expect_err("subnormal underflow rejected")
+                .code(),
+            "invalid_argument.engine.vector_embedding"
+        );
+
+        // A representable value keeps its magnitude; a genuine zero component is
+        // fine, and an all-zero (degenerate) vector is still a valid embedding.
+        assert_eq!(
+            VectorEmbedding::from_wire(vec![0.5, 0.0])
+                .expect("valid embedding")
+                .as_slice(),
+            [0.5_f32, 0.0]
+        );
+        assert!(VectorEmbedding::from_wire(vec![0.0, 0.0]).is_ok());
+
+        // Dimension bounds still apply.
+        assert!(VectorEmbedding::from_wire(Vec::new()).is_err());
+    }
 
     #[test]
     fn vector_type_validation_rejects_invalid_inputs() {
