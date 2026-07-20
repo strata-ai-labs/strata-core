@@ -226,6 +226,81 @@ fn parquet_vector_import_and_export_uses_batch_commands() {
 }
 
 #[test]
+fn vector_export_import_round_trip_preserves_metadata_without_leaking_internals() {
+    let dir = TempDir::new().expect("temp dir");
+    let source_path = dir.path().join("source.parquet");
+    let exported_path = dir.path().join("exported.parquet");
+    write_vector_parquet(&source_path);
+
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    create_docs_collection(&mut executor);
+    // Seed `docs` with metadata {"kind":"a"} / {"kind":"b"}.
+    executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: source_path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Parquet),
+            target: ArrowImportTarget::Vector,
+            key_column: None,
+            value_column: None,
+            collection: Some("docs".to_owned()),
+        })
+        .expect("seed import succeeds");
+
+    // Export the real vector schema (a JSON `metadata` column + internal fields).
+    executor
+        .execute(Command::ArrowExport {
+            branch: None,
+            space: None,
+            primitive: ArrowExportPrimitive::Vector,
+            format: ArrowFileFormat::Parquet,
+            path: exported_path.to_string_lossy().into_owned(),
+            prefix: None,
+            limit: None,
+            collection: Some("docs".to_owned()),
+            graph: None,
+            event_type: None,
+        })
+        .expect("export succeeds");
+
+    // Re-import into a fresh collection and confirm the metadata round-trips.
+    executor
+        .execute(Command::VectorCreateCollection {
+            branch: None,
+            space: None,
+            collection: "docs_roundtrip".to_owned(),
+            dimension: 2,
+            metric: VectorDistanceMetric::Cosine,
+        })
+        .expect("second collection create succeeds");
+    executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: exported_path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Parquet),
+            target: ArrowImportTarget::Vector,
+            key_column: None,
+            value_column: None,
+            collection: Some("docs_roundtrip".to_owned()),
+        })
+        .expect("round-trip import succeeds");
+
+    assert_eq!(vector_count(&mut executor, "docs_roundtrip"), 2);
+    // Metadata must survive identically: no `metadata`-string wrapper, no
+    // leaked `vector_revision` field.
+    assert_eq!(
+        vector_get_metadata(&mut executor, "docs_roundtrip", "doc-a"),
+        json!({"kind": "a"})
+    );
+    assert_eq!(
+        vector_get_metadata(&mut executor, "docs_roundtrip", "doc-b"),
+        json!({"kind": "b"})
+    );
+}
+
+#[test]
 fn vector_import_into_missing_collection_fails_instead_of_defaulting_a_metric() {
     let dir = TempDir::new().expect("temp dir");
     let input_path = dir.path().join("vectors.parquet");
