@@ -36,7 +36,7 @@ $ strata vector exists docs a
 | `collection` | `string` | yes | Collection name. |
 | `key` | `string` | yes | Vector key. |
 | `metadata` | `any` | no | Optional metadata. |
-| `vector` | `number[]` | yes | Dense embedding. |
+| `vector` | `number[]` | yes | Dense embedding. Accepted at wire (f64) precision and narrowed to the stored f32; a value that underflows or overflows f32 is rejected. |
 
 Plus the optional scope: `branch` and `space` (default to the session branch and the `"default"` space).
 
