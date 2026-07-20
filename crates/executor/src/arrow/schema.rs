@@ -15,6 +15,7 @@ use super::{internal_error, invalid_input};
 pub(crate) struct ImportMapping {
     pub(crate) key_idx: usize,
     pub(crate) value_idx: Option<usize>,
+    pub(crate) metadata_idx: Option<usize>,
     pub(crate) extra_indices: Vec<usize>,
     pub(crate) extra_names: Vec<String>,
     pub(crate) key_encoding_idx: Option<usize>,
@@ -28,10 +29,26 @@ pub(crate) fn resolve_mapping(
     value_column: Option<&str>,
 ) -> ExecutorResult<ImportMapping> {
     let key_idx = resolve_key_column(schema, key_column)?;
-    let (value_idx, extra_indices, extra_names) = match target {
+    let (value_idx, mut extra_indices, mut extra_names) = match target {
         ArrowImportTarget::Kv => resolve_kv_value(schema, key_idx, value_column)?,
         ArrowImportTarget::Json => resolve_json_document(schema, key_idx, value_column)?,
         ArrowImportTarget::Vector => resolve_vector_embedding(schema, key_idx, value_column)?,
+    };
+    // A vector export writes a designated JSON `metadata` column plus an internal
+    // `vector_revision`. Treat metadata as a document (parsed by `vector_metadata`,
+    // not re-wrapped as a string) and drop both it and the revision from the
+    // generic extras bundle so neither leaks into reconstructed metadata.
+    let metadata_idx = if matches!(target, ArrowImportTarget::Vector) {
+        let metadata_idx = schema.index_of("metadata").ok();
+        remove_extra(&mut extra_indices, &mut extra_names, metadata_idx);
+        remove_extra(
+            &mut extra_indices,
+            &mut extra_names,
+            schema.index_of("vector_revision").ok(),
+        );
+        metadata_idx
+    } else {
+        None
     };
     // `key_encoding` / `value_encoding` are optional metadata columns; a
     // missing column (`index_of` returns Err) means "no encoding override",
@@ -41,6 +58,7 @@ pub(crate) fn resolve_mapping(
     Ok(ImportMapping {
         key_idx,
         value_idx,
+        metadata_idx,
         extra_indices,
         extra_names,
         key_encoding_idx,
@@ -105,6 +123,16 @@ pub(crate) fn vector_metadata(
     mapping: &ImportMapping,
     row: usize,
 ) -> ExecutorResult<Option<Value>> {
+    // A designated `metadata` column (as written by `arrow export vector`) is a
+    // JSON document: parse it and return it unwrapped, matching what was stored.
+    if let Some(metadata_idx) = mapping.metadata_idx {
+        let column = batch.column(metadata_idx);
+        if column.is_null(row) {
+            return Ok(None);
+        }
+        return Ok(Some(cell_to_json_document(column.as_ref(), row)?));
+    }
+    // Hand-authored files without a `metadata` column: bundle any stray columns.
     if mapping.extra_indices.is_empty() {
         return Ok(None);
     }
@@ -272,6 +300,19 @@ fn resolve_extras(schema: &Schema, exclude: &[usize]) -> (Option<usize>, Vec<usi
     let value_idx = exclude.last().copied();
     let (extra_indices, extra_names) = collect_extras(schema, exclude);
     (value_idx, extra_indices, extra_names)
+}
+
+/// Removes a column from the parallel `(indices, names)` extras vectors, keeping
+/// them in sync. Used to pull designated/internal vector columns out of the
+/// generic extras bundle.
+fn remove_extra(indices: &mut Vec<usize>, names: &mut Vec<String>, target: Option<usize>) {
+    let Some(target) = target else {
+        return;
+    };
+    if let Some(position) = indices.iter().position(|&index| index == target) {
+        indices.remove(position);
+        names.remove(position);
+    }
 }
 
 fn collect_extras(schema: &Schema, exclude: &[usize]) -> (Vec<usize>, Vec<String>) {
@@ -794,6 +835,113 @@ mod tests {
         assert_eq!(
             vector_embedding(&list_float32, &mapping, 0).expect("embedding"),
             vec![3.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn vector_metadata_parses_the_designated_column_without_leaking_internal_fields() {
+        // Mirrors the schema `arrow export vector` writes: a JSON-string
+        // `metadata` column plus internal version/timestamp/vector_revision
+        // columns. Import must parse `metadata` back into its object and never
+        // surface `vector_revision`.
+        // Row 0 carries metadata; row 1 has none (export writes a null cell),
+        // which must round-trip to `None`, not spurious metadata.
+        let mut embedding = FixedSizeListBuilder::new(Float32Builder::new(), 2);
+        for value in [1.0, 0.0, 0.0, 1.0] {
+            embedding.values().append_value(value);
+        }
+        embedding.append(true);
+        embedding.append(true);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                utf8_field("key"),
+                Field::new(
+                    "embedding",
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", DataType::Float32, true)),
+                        2,
+                    ),
+                    false,
+                ),
+                Field::new("metadata", DataType::Utf8, true),
+                Field::new("version", DataType::UInt64, false),
+                Field::new("timestamp", DataType::UInt64, false),
+                Field::new("vector_revision", DataType::UInt64, false),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec!["doc-a", "doc-b"])),
+                Arc::new(embedding.finish()),
+                Arc::new(StringArray::from(vec![
+                    Some("{\"kind\":\"note\",\"rank\":1}"),
+                    None,
+                ])),
+                Arc::new(UInt64Array::from(vec![7_u64, 8])),
+                Arc::new(UInt64Array::from(vec![9_u64, 10])),
+                Arc::new(UInt64Array::from(vec![1_u64, 2])),
+            ],
+        )
+        .expect("vector batch");
+        let mapping = resolve_mapping(
+            batch.schema().as_ref(),
+            ArrowImportTarget::Vector,
+            None,
+            None,
+        )
+        .expect("mapping resolves");
+        let metadata = vector_metadata(&batch, &mapping, 0)
+            .expect("metadata")
+            .expect("metadata present");
+        assert_eq!(metadata, json!({"kind": "note", "rank": 1}));
+        assert_eq!(
+            vector_metadata(&batch, &mapping, 1).expect("metadata"),
+            None,
+            "a null metadata cell must round-trip to no metadata"
+        );
+    }
+
+    #[test]
+    fn vector_metadata_bundles_user_columns_but_drops_the_internal_revision() {
+        // A hand-authored vector file with no designated `metadata` column: the
+        // genuine user column is bundled, but the internal `vector_revision` is
+        // stripped rather than leaked.
+        let mut embedding = FixedSizeListBuilder::new(Float32Builder::new(), 2);
+        embedding.values().append_value(1.0);
+        embedding.values().append_value(0.0);
+        embedding.append(true);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                utf8_field("key"),
+                Field::new(
+                    "embedding",
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", DataType::Float32, true)),
+                        2,
+                    ),
+                    false,
+                ),
+                utf8_field("note"),
+                Field::new("vector_revision", DataType::UInt64, false),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec!["doc-a"])),
+                Arc::new(embedding.finish()),
+                Arc::new(StringArray::from(vec!["hello"])),
+                Arc::new(UInt64Array::from(vec![1_u64])),
+            ],
+        )
+        .expect("vector batch");
+        let mapping = resolve_mapping(
+            batch.schema().as_ref(),
+            ArrowImportTarget::Vector,
+            None,
+            None,
+        )
+        .expect("mapping resolves");
+        assert_eq!(
+            vector_metadata(&batch, &mapping, 0)
+                .expect("metadata")
+                .expect("metadata present"),
+            json!({"note": "hello"})
         );
     }
 
