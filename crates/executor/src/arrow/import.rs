@@ -191,7 +191,12 @@ fn import_vector(
                 ));
             }
             let metadata = vector_metadata(batch, mapping, row)?;
-            entries.push(BatchVectorEntry::new(key, vector, metadata));
+            // Arrow embeddings are already f32; widen losslessly to the wire type.
+            entries.push(BatchVectorEntry::new(
+                key,
+                vector.into_iter().map(f64::from).collect(),
+                metadata,
+            ));
         }
         if !entries.is_empty() {
             let output = executor.execute(Command::VectorBatchUpsert {

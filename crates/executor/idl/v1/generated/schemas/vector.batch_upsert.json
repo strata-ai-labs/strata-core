@@ -162,8 +162,9 @@
         },
         "metadata": true,
         "vector": {
+          "description": "Dense embedding at wire (f64) precision; narrowed to the stored f32 by the\nengine, which rejects values that underflow or overflow f32.",
           "items": {
-            "format": "float",
+            "format": "double",
             "type": "number"
           },
           "type": "array"

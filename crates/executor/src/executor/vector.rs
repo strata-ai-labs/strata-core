@@ -3,8 +3,8 @@ use super::{
     empty_vector_batch_results, engine_vector_metric, finish_presence_exists_results,
     finish_vector_batch_get_results, finish_vector_batch_results, optional_limit,
     optional_vector_key, optional_vector_metadata, presence_exists_failed, presence_exists_item,
-    reject_duplicate_vector_keys, require_vector_collection_info, required_usize, update_effect,
-    upsert_effect, usize_to_u64, vector_batch_get_failed, vector_batch_get_item,
+    query_embedding, reject_duplicate_vector_keys, require_vector_collection_info, required_usize,
+    update_effect, upsert_effect, usize_to_u64, vector_batch_get_failed, vector_batch_get_item,
     vector_batch_item_failed, vector_batch_item_result, vector_bulk_delete_output,
     vector_collection, vector_collection_info, vector_dimension_mismatch_error, vector_embedding,
     vector_filter, vector_history_result, vector_index_diagnostics, vector_key,
@@ -130,7 +130,7 @@ impl Executor {
         space: Option<&str>,
         collection: String,
         key: String,
-        vector: Vec<f32>,
+        vector: Vec<f64>,
         metadata: Option<serde_json::Value>,
     ) -> ExecutorResult<Output> {
         let collection = vector_collection(collection)?;
@@ -386,7 +386,7 @@ impl Executor {
         as_of: Option<u64>,
     ) -> ExecutorResult<Output> {
         let collection = vector_collection(collection)?;
-        let query = vector_embedding(query)?;
+        let query = query_embedding(query)?;
         let k = required_usize(
             k,
             "invalid_argument.executor.vector_limit",
@@ -422,7 +422,7 @@ impl Executor {
         as_of: Option<u64>,
     ) -> ExecutorResult<Output> {
         let collection = vector_collection(collection)?;
-        let query = vector_embedding(query)?;
+        let query = query_embedding(query)?;
         let k = required_usize(
             k,
             "invalid_argument.executor.vector_limit",

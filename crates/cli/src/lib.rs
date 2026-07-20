@@ -28,8 +28,8 @@ mod repl;
 use context::{CommandContext, Scope};
 use input::{
     bytes_argument, cursor_argument, parse_filter_argument, parse_json_argument,
-    parse_optional_filter_argument, parse_optional_json_argument, parse_relaxed_json_argument,
-    parse_vector_argument,
+    parse_optional_filter_argument, parse_optional_json_argument, parse_query_vector_argument,
+    parse_relaxed_json_argument, parse_vector_argument,
 };
 use options::{
     ArrowCommand, BranchCommand, Cli, CommandCommand, ConfigCommand, EventCommand, GraphCommand,
@@ -854,7 +854,11 @@ fn vector_command(command: VectorCommand, scope: &Scope) -> Result<Command, CliE
                     branch: scope.branch.clone(),
                     space: scope.space.clone(),
                     collection,
-                    query: parse_vector_argument(query.as_deref(), file.as_ref(), "query vector")?,
+                    query: parse_query_vector_argument(
+                        query.as_deref(),
+                        file.as_ref(),
+                        "query vector",
+                    )?,
                     k,
                     filter: command_filter,
                     as_of,
@@ -864,7 +868,11 @@ fn vector_command(command: VectorCommand, scope: &Scope) -> Result<Command, CliE
                     branch: scope.branch.clone(),
                     space: scope.space.clone(),
                     collection,
-                    query: parse_vector_argument(query.as_deref(), file.as_ref(), "query vector")?,
+                    query: parse_query_vector_argument(
+                        query.as_deref(),
+                        file.as_ref(),
+                        "query vector",
+                    )?,
                     k,
                     filter: command_filter,
                     as_of,

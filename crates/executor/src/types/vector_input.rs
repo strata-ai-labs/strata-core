@@ -136,14 +136,16 @@ impl VectorMetadataFilter {
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct BatchVectorEntry {
     key: String,
-    vector: Vec<f32>,
+    /// Dense embedding at wire (f64) precision; narrowed to the stored f32 by the
+    /// engine, which rejects values that underflow or overflow f32.
+    vector: Vec<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     metadata: Option<Value>,
 }
 
 impl BatchVectorEntry {
     /// Creates a vector batch upsert entry.
-    pub fn new(key: impl Into<String>, vector: Vec<f32>, metadata: Option<Value>) -> Self {
+    pub fn new(key: impl Into<String>, vector: Vec<f64>, metadata: Option<Value>) -> Self {
         Self {
             key: key.into(),
             vector,
@@ -157,7 +159,7 @@ impl BatchVectorEntry {
     }
 
     /// Returns the embedding.
-    pub fn vector(&self) -> &[f32] {
+    pub fn vector(&self) -> &[f64] {
         &self.vector
     }
 
@@ -167,7 +169,7 @@ impl BatchVectorEntry {
     }
 
     /// Consumes the entry.
-    pub fn into_parts(self) -> (String, Vec<f32>, Option<Value>) {
+    pub fn into_parts(self) -> (String, Vec<f64>, Option<Value>) {
         (self.key, self.vector, self.metadata)
     }
 }
