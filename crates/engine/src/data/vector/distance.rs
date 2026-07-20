@@ -156,4 +156,20 @@ mod tests {
             "near {near_score} should outrank far {far_score}"
         );
     }
+
+    #[test]
+    fn cosine_matches_a_known_partial_overlap_value() {
+        // A 45-degree pair has cosine 1/sqrt(2). Pinning an exact value strictly
+        // between 0 and 1 is what distinguishes `dot / denominator` from a
+        // `dot * denominator` (the product clamps to 1.0), which the
+        // extremes-only cases cannot see.
+        let query = VectorEmbedding::new([1.0, 0.0]).expect("valid query");
+        let candidate = VectorEmbedding::new([1.0, 1.0]).expect("valid vector");
+        let score = vector_score(&query, &candidate, VectorDistanceMetric::Cosine).expect("score");
+        let expected = 1.0_f32 / 2.0_f32.sqrt();
+        assert!(
+            (score - expected).abs() < 1e-4,
+            "cosine {score}, expected {expected}"
+        );
+    }
 }
