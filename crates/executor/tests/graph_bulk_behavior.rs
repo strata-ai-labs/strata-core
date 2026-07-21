@@ -91,3 +91,33 @@ fn exercise_bulk_command(executor: &mut Executor) {
         .expect_err("dangling endpoint");
     assert_eq!(error.code(), "invalid_argument.engine.graph_edge_endpoint");
 }
+
+#[test]
+fn graph_bulk_insert_rejects_unknown_node_and_edge_keys_instead_of_dropping_data() {
+    // A misspelled optional key on a bulk node/edge must be rejected, not
+    // silently dropped: dropping it ingests the item without the intended
+    // properties/binding/weight, with no error.
+    let node_error = serde_json::from_str::<Command>(
+        r#"{"type":"graph_bulk_insert","graph":"g","nodes":[{"node_id":"a","propertes":{}}]}"#,
+    )
+    .expect_err("an unknown node key is rejected");
+    assert!(
+        node_error.to_string().contains("propertes"),
+        "the rejection names the unknown node key: {node_error}"
+    );
+
+    let edge_error = serde_json::from_str::<Command>(
+        r#"{"type":"graph_bulk_insert","graph":"g","edges":[{"src":"a","edge_type":"e","dst":"b","weightt":2.0}]}"#,
+    )
+    .expect_err("an unknown edge key is rejected");
+    assert!(
+        edge_error.to_string().contains("weightt"),
+        "the rejection names the unknown edge key: {edge_error}"
+    );
+
+    // Correctly-spelled bulk items still deserialize.
+    serde_json::from_str::<Command>(
+        r#"{"type":"graph_bulk_insert","graph":"g","nodes":[{"node_id":"a","properties":{"k":1}}],"edges":[{"src":"a","edge_type":"e","dst":"b","weight":2.0}]}"#,
+    )
+    .expect("valid bulk items deserialize");
+}

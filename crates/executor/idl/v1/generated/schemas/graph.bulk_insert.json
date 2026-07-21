@@ -93,6 +93,7 @@
       "type": "object"
     },
     "GraphBulkEdge": {
+      "additionalProperties": false,
       "description": "One edge in a bulk ingest (input form).",
       "properties": {
         "dst": {
@@ -127,6 +128,7 @@
       "type": "object"
     },
     "GraphBulkNode": {
+      "additionalProperties": false,
       "description": "One node in a bulk ingest (input form).",
       "properties": {
         "binding": {

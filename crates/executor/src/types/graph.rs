@@ -1290,6 +1290,7 @@ impl GraphBfsData {
 /// One node in a bulk ingest (input form).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct GraphBulkNode {
     /// Node id.
     node_id: String,
@@ -1343,6 +1344,7 @@ impl GraphBulkNode {
 /// One edge in a bulk ingest (input form).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct GraphBulkEdge {
     /// Source node id.
     src: String,
