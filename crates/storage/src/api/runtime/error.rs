@@ -199,6 +199,13 @@ pub(super) fn map_lifecycle_error(error: LifecycleError) -> StorageApiError {
         | LifecycleError::PinnedViewReleaseBlocked { reason, .. } => {
             StorageApiError::InvalidRuntimeState { reason }
         }
+        // Recovery decoded corrupt durable bytes (checksum/magic mismatch). This
+        // is permanent: the on-disk state is malformed, so the open is refused
+        // with a non-retryable recovery failure rather than a transient
+        // lower-layer outage a caller would retry forever.
+        LifecycleError::RecoveryCorruption { reason } => {
+            StorageApiError::RecoveryDegraded { reason }
+        }
         LifecycleError::BranchNotFound { branch_id } => {
             StorageApiError::BranchNotFound { branch_id }
         }

@@ -73,6 +73,14 @@ pub(crate) enum LifecycleError {
     RecoveryFailed {
         reason: &'static str,
     },
+    /// A durable object could not be decoded during recovery — a checksum
+    /// mismatch, bad magic, or other malformed byte stream. Distinct from a
+    /// transient lower-layer read failure: the bytes on disk are corrupt, so
+    /// retrying the open cannot help. Maps to a permanent, non-retryable
+    /// recovery failure.
+    RecoveryCorruption {
+        reason: &'static str,
+    },
     MaintenanceFailed {
         reason: &'static str,
     },
@@ -416,6 +424,7 @@ impl LifecycleError {
             Self::BranchStateMismatch { .. } => "failed_precondition.lifecycle.branch_state",
             Self::CapabilityMismatch { .. } => "failed_precondition.lifecycle.capability",
             Self::RecoveryFailed { .. } => "corruption.lifecycle.recovery",
+            Self::RecoveryCorruption { .. } => "corruption.lifecycle.recovery_corruption",
             Self::MaintenanceFailed { .. } => "failed_precondition.lifecycle.maintenance",
             Self::MaintenanceQueueFull { .. } => "resource_exhausted.lifecycle.maintenance_queue",
             Self::MaintenanceTaskFailed { .. } => "failed_precondition.lifecycle.maintenance_task",
@@ -525,6 +534,10 @@ impl LifecycleError {
             )
             | (Self::InvalidOpenPlan { reason: left }, Self::InvalidOpenPlan { reason: right })
             | (Self::RecoveryFailed { reason: left }, Self::RecoveryFailed { reason: right })
+            | (
+                Self::RecoveryCorruption { reason: left },
+                Self::RecoveryCorruption { reason: right },
+            )
             | (
                 Self::MaintenanceFailed { reason: left },
                 Self::MaintenanceFailed { reason: right },
@@ -995,6 +1008,9 @@ impl fmt::Display for LifecycleError {
                 )
             }
             Self::RecoveryFailed { reason } => write!(formatter, "recovery failed: {reason}"),
+            Self::RecoveryCorruption { reason } => {
+                write!(formatter, "recovery found corrupt durable state: {reason}")
+            }
             Self::MaintenanceFailed { reason } => {
                 write!(formatter, "maintenance failed: {reason}")
             }
@@ -1318,6 +1334,21 @@ mod tests {
         crate::layout::ObjectLayout::snapshot(1).expect("snapshot name")
     }
 
+    /// Reason-only variants compare by their reason, so two corruptions with
+    /// different reasons are distinct. Guards the shared `PartialEq` helper
+    /// against collapsing every reason-only variant to a single value.
+    #[test]
+    fn recovery_corruption_equality_distinguishes_by_reason() {
+        assert_eq!(
+            LifecycleError::RecoveryCorruption { reason: "same" },
+            LifecycleError::RecoveryCorruption { reason: "same" },
+        );
+        assert_ne!(
+            LifecycleError::RecoveryCorruption { reason: "left" },
+            LifecycleError::RecoveryCorruption { reason: "right" },
+        );
+    }
+
     /// TCP3.3d reachability: construct every named `LifecycleError` variant and
     /// every `LowerLayer` sub-layer, and assert its code. Pins each code (a
     /// rename fails here) and makes the workspace error-code guard see each as
@@ -1336,7 +1367,7 @@ mod tests {
     fn every_lifecycle_code_is_pinned_and_unique() {
         let branch = BranchId::from_bytes([0x1c; BranchId::BYTE_LEN]);
         let _ = &BackendCapability::ListPrefix; // ensure the import is load-bearing
-        let named: [(LifecycleError, &str); 47] = [
+        let named: [(LifecycleError, &str); 48] = [
             (
                 LifecycleError::InvalidConfig {
                     field: "f",
@@ -1425,6 +1456,10 @@ mod tests {
             (
                 LifecycleError::RecoveryFailed { reason: "r" },
                 "corruption.lifecycle.recovery",
+            ),
+            (
+                LifecycleError::RecoveryCorruption { reason: "r" },
+                "corruption.lifecycle.recovery_corruption",
             ),
             (
                 LifecycleError::MaintenanceFailed { reason: "r" },
