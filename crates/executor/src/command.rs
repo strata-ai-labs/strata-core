@@ -825,8 +825,9 @@ pub enum Command {
         space: Option<String>,
         /// Collection name.
         collection: String,
-        /// Query embedding.
-        query: Vec<f32>,
+        /// Query embedding. Accepted at wire (f64) precision and narrowed to the
+        /// searched f32; a value that underflows or overflows f32 is rejected.
+        query: Vec<f64>,
         /// Maximum number of matches.
         k: u64,
         /// Optional metadata filter.
@@ -846,8 +847,9 @@ pub enum Command {
         space: Option<String>,
         /// Collection name.
         collection: String,
-        /// Query embedding.
-        query: Vec<f32>,
+        /// Query embedding. Accepted at wire (f64) precision and narrowed to the
+        /// searched f32; a value that underflows or overflows f32 is rejected.
+        query: Vec<f64>,
         /// Maximum number of matches.
         k: u64,
         /// Optional metadata filter.

@@ -39,7 +39,7 @@ $ strata vector query docs [1.0,0.0,0.0] 2
 | `collection` | `string` | yes | Collection name. |
 | `filter` | `VectorMetadataFilter` | no | Optional metadata filter. |
 | `k` | `integer` | yes | Maximum number of matches. |
-| `query` | `number[]` | yes | Query embedding. |
+| `query` | `number[]` | yes | Query embedding. Accepted at wire (f64) precision and narrowed to the searched f32; a value that underflows or overflows f32 is rejected. |
 
 Plus the optional scope: `branch` and `space` (default to the session branch and the `"default"` space).
 

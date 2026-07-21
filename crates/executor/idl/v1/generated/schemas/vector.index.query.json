@@ -391,9 +391,9 @@
         "type": "integer"
       },
       "query": {
-        "description": "Query embedding.",
+        "description": "Query embedding. Accepted at wire (f64) precision and narrowed to the\nsearched f32; a value that underflows or overflows f32 is rejected.",
         "items": {
-          "format": "float",
+          "format": "double",
           "type": "number"
         },
         "type": "array"

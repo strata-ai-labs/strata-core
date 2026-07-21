@@ -96,23 +96,6 @@ pub(crate) fn parse_vector_argument(
     parse_vector_text(&text)
 }
 
-/// Parses a *query* vector, narrowing to the f32 the query command carries.
-/// Query vectors are not stored, so they keep f32 wire precision; the
-/// stored-embedding underflow guard (#2689) applies to upserts, which parse at
-/// full f64 precision. Query-side precision is tracked separately (#2710).
-pub(crate) fn parse_query_vector_argument(
-    value: Option<&str>,
-    file: Option<&PathBuf>,
-    label: &str,
-) -> Result<Vec<f32>, CliError> {
-    let vector = parse_vector_argument(value, file, label)?;
-    #[allow(clippy::cast_possible_truncation)]
-    Ok(vector
-        .into_iter()
-        .map(|component| component as f32)
-        .collect())
-}
-
 pub(crate) fn parse_filter_argument(
     value: Option<&str>,
     file: Option<&PathBuf>,

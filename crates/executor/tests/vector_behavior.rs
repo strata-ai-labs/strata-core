@@ -71,6 +71,64 @@ fn vector_upsert_rejects_a_subnormal_embedding_instead_of_storing_zeros() {
 }
 
 #[test]
+fn vector_query_rejects_a_subnormal_query_vector_instead_of_searching_zeros() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    executor
+        .execute(Command::VectorCreateCollection {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            dimension: 3,
+            metric: VectorDistanceMetric::Cosine,
+        })
+        .expect("collection create succeeds");
+    let seed: Command = serde_json::from_str(
+        r#"{"type":"vector_upsert","collection":"docs","key":"a","vector":[1.0,0.0,0.0]}"#,
+    )
+    .expect("command deserializes");
+    executor.execute(seed).expect("seed upsert succeeds");
+
+    // A query embedding whose components underflow f32 must be rejected, not
+    // silently narrowed to the zero vector and matched against every row.
+    // Deserialize through the wire command so the engine sees f64 precision.
+    let subnormal: Command = serde_json::from_str(
+        r#"{"type":"vector_query","collection":"docs","query":[1e-308,1e-308,1e-308],"k":5}"#,
+    )
+    .expect("command deserializes");
+    let error = executor
+        .execute(subnormal)
+        .expect_err("a subnormal query vector is rejected");
+    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+    assert_eq!(error.code(), "invalid_argument.engine.vector_embedding");
+
+    // The index-planner query shares the guard, and the overflow extreme stays
+    // rejected with the same code.
+    let subnormal_index: Command = serde_json::from_str(
+        r#"{"type":"vector_index_query","collection":"docs","query":[1e-308,1e-308,1e-308],"k":5}"#,
+    )
+    .expect("command deserializes");
+    assert_eq!(
+        executor
+            .execute(subnormal_index)
+            .expect_err("a subnormal index query vector is rejected")
+            .code(),
+        "invalid_argument.engine.vector_embedding"
+    );
+
+    let overflow: Command = serde_json::from_str(
+        r#"{"type":"vector_query","collection":"docs","query":[1e308,0.0,0.0],"k":5}"#,
+    )
+    .expect("command deserializes");
+    assert_eq!(
+        executor
+            .execute(overflow)
+            .expect_err("an overflowing query vector is rejected")
+            .code(),
+        "invalid_argument.engine.vector_embedding"
+    );
+}
+
+#[test]
 fn vector_batch_get_reports_missing_keys_as_misses() {
     // A missing key in a batch read is a positional miss, not a success —
     // matching kv batch-get. The outer batch is then partial.
@@ -2138,7 +2196,7 @@ fn list_vector_keys(
 fn query_vector_keys(
     executor: &mut Executor,
     collection: &str,
-    query: Vec<f32>,
+    query: Vec<f64>,
     k: u64,
     filter: Option<VectorMetadataFilter>,
 ) -> Vec<String> {
@@ -2150,7 +2208,7 @@ fn query_vector_keys_in(
     branch: Option<&str>,
     space: Option<&str>,
     collection: &str,
-    query: Vec<f32>,
+    query: Vec<f64>,
     k: u64,
 ) -> Vec<String> {
     query_vector_keys_with_options(executor, branch, space, collection, query, k, None, None)
@@ -2159,7 +2217,7 @@ fn query_vector_keys_in(
 fn query_vector_keys_as_of(
     executor: &mut Executor,
     collection: &str,
-    query: Vec<f32>,
+    query: Vec<f64>,
     k: u64,
     as_of: u64,
 ) -> Vec<String> {
@@ -2181,7 +2239,7 @@ fn query_vector_keys_with_options(
     branch: Option<&str>,
     space: Option<&str>,
     collection: &str,
-    query: Vec<f32>,
+    query: Vec<f64>,
     k: u64,
     filter: Option<VectorMetadataFilter>,
     as_of: Option<u64>,
