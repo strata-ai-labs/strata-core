@@ -464,6 +464,117 @@ fn exercise_iterative_algorithms(mut database: Database) {
 }
 
 #[test]
+fn cdlp_converges_a_star_to_a_single_community_instead_of_oscillating() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let mut graph = graph_service(&mut database, "default", "default");
+    let name = graph_name("star");
+    graph.create_graph(name.clone()).expect("graph created");
+    for id in ["h", "a", "b", "c"] {
+        graph
+            .upsert_node(&name, node_id(id), GraphNodeData::default())
+            .expect("node");
+    }
+    // Directed star h -> {a, b, c}. The default `Both` direction makes the
+    // adjacency symmetric, i.e. an undirected star.
+    for leaf in ["a", "b", "c"] {
+        graph
+            .upsert_edge(
+                &name,
+                node_id("h"),
+                edge_type("e"),
+                node_id(leaf),
+                edge_data(1.0),
+            )
+            .expect("edge");
+    }
+
+    let index = graph
+        .adjacency_index(&name, &GraphAnalyticsBudget::default())
+        .expect("index builds");
+    let at = |id: &str| index.node_index(&node_id(id)).expect("node indexed");
+
+    // A star is a single community. Synchronous label propagation oscillates
+    // with period 2 and separates the hub from its leaves; asynchronous
+    // propagation converges to one label for every node.
+    let cdlp = index.cdlp(&GraphCdlpOptions::default());
+    let hub = cdlp.label(at("h"));
+    assert_eq!(cdlp.label(at("a")), hub, "leaf a joins the hub's community");
+    assert_eq!(cdlp.label(at("b")), hub, "leaf b joins the hub's community");
+    assert_eq!(cdlp.label(at("c")), hub, "leaf c joins the hub's community");
+}
+
+#[test]
+fn cdlp_follows_the_majority_label_and_settles_over_multiple_sweeps() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let mut graph = graph_service(&mut database, "default", "default");
+    let name = graph_name("majority");
+    graph.create_graph(name.clone()).expect("graph created");
+    // Node ids are index-sorted, so names fix the initial labels: the "b"
+    // triangle takes the lowest labels, the "y" triangle higher ones, "zz" is
+    // the bridge (highest), and "aa" is a pendant on the bridge (lowest).
+    for id in ["aa", "b0", "b1", "b2", "y0", "y1", "y2", "zz"] {
+        graph
+            .upsert_node(&name, node_id(id), GraphNodeData::default())
+            .expect("node");
+    }
+    let mut link = |src: &str, dst: &str| {
+        graph
+            .upsert_edge(
+                &name,
+                node_id(src),
+                edge_type("e"),
+                node_id(dst),
+                edge_data(1.0),
+            )
+            .expect("edge");
+    };
+    // Two triangles (each collapses to one community) ...
+    for (a, b) in [("b0", "b1"), ("b1", "b2"), ("b2", "b0")] {
+        link(a, b);
+    }
+    for (a, b) in [("y0", "y1"), ("y1", "y2"), ("y2", "y0")] {
+        link(a, b);
+    }
+    // ... bridged by `zz`, which has three edges into the higher `y` community
+    // and only one into the lower `b` community, plus a pendant `aa`.
+    for dst in ["y0", "y1", "y2", "b0", "aa"] {
+        link("zz", dst);
+    }
+
+    let index = graph
+        .adjacency_index(&name, &GraphAnalyticsBudget::default())
+        .expect("index builds");
+    let at = |id: &str| index.node_index(&node_id(id)).expect("node indexed");
+    let cdlp = index.cdlp(&GraphCdlpOptions::default());
+
+    // The bridge follows the *majority* of its neighbors (three `y` votes) into
+    // the higher-labeled community, not the single lower `b` vote — a run that
+    // only tracked the minimum neighbor label would merge everything instead.
+    assert_ne!(
+        cdlp.label(at("b0")),
+        cdlp.label(at("y0")),
+        "the two triangles stay distinct communities"
+    );
+    assert_eq!(
+        cdlp.label(at("zz")),
+        cdlp.label(at("y0")),
+        "the bridge joins the majority community"
+    );
+    assert_ne!(
+        cdlp.label(at("zz")),
+        cdlp.label(at("b0")),
+        "the bridge does not join the single-vote minority"
+    );
+    // The pendant only learns the bridge's final label on the second sweep, so
+    // stopping after one sweep would leave it in its own community.
+    assert_eq!(
+        cdlp.label(at("aa")),
+        cdlp.label(at("zz")),
+        "the pendant converges to the bridge's community"
+    );
+}
+
+#[test]
 fn traversal_runs_over_snapshots_in_cache_and_durable_modes() {
     run_database_modes(exercise_traversal);
 }
