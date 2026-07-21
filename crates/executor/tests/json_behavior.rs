@@ -10,6 +10,66 @@ use strata_executor::{
 use tempfile::TempDir;
 
 #[test]
+#[allow(clippy::result_large_err)] // ExecutorResult mirrors the wire error type
+fn wire_command_guard_rejects_integers_beyond_i64_u64_range() {
+    use strata_executor::guard_json_integers;
+
+    // The guard scans a raw wire command for integer literals serde_json would
+    // silently coerce to a lossy f64, rejecting them before parse. Bindings call
+    // it before `from_str::<Command>`; one scan covers every user-JSON field in
+    // every command. Representable extremes (u64::MAX, 2^63, i64::MIN, and any
+    // float) pass and round-trip exactly.
+    let json_set = |value: &str| {
+        guard_json_integers(&format!(
+            r#"{{"type":"json_set","key":"k","path":"$","value":{value}}}"#
+        ))
+    };
+    let error = json_set(r#"{"i":18446744073709551616}"#).expect_err("2^64 is rejected");
+    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+    assert_eq!(error.code(), "invalid_argument.executor.json_number");
+    assert!(json_set(r#"{"i":-9223372036854775809}"#).is_err()); // -(2^63) - 1
+    assert!(json_set("18446744073709551617").is_err());
+    // The same guard covers user JSON in any other command.
+    assert!(
+        guard_json_integers(r#"{"type":"event_append","payload":{"n":18446744073709551616}}"#)
+            .is_err()
+    );
+
+    json_set(r#"{"max":18446744073709551615,"mid":9223372036854775808}"#)
+        .expect("in-range integers pass the guard");
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let command: Command = serde_json::from_str(
+        r#"{"type":"json_set","key":"k","path":"$","value":{"max":18446744073709551615,"mid":9223372036854775808,"min":-9223372036854775808,"f":1.5}}"#,
+    )
+    .expect("in-range command parses");
+    executor
+        .execute(command)
+        .expect("in-range numbers are stored");
+    let stored = match executor
+        .execute(Command::JsonGet {
+            branch: None,
+            space: None,
+            key: "k".to_owned(),
+            path: "$".to_owned(),
+            as_of: None,
+        })
+        .expect("get succeeds")
+    {
+        Output::JsonVersionedValue(value) => value.value().map(|value| value.value().clone()),
+        other => panic!("unexpected get output: {other:?}"),
+    };
+    assert_eq!(
+        stored,
+        Some(json!({
+            "max": 18_446_744_073_709_551_615_u64,
+            "mid": 9_223_372_036_854_775_808_u64,
+            "min": -9_223_372_036_854_775_808_i64,
+            "f": 1.5,
+        }))
+    );
+}
+
+#[test]
 fn cache_executor_runs_complete_json_command_suite() {
     let mut executor = Executor::open_cache().expect("cache executor opens");
     run_json_command_suite(&mut executor);

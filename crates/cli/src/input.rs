@@ -52,7 +52,17 @@ pub(crate) fn parse_relaxed_json_argument(
     label: &str,
 ) -> Result<Value, CliError> {
     let text = text_argument(value, file, label)?;
-    Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
+    // Non-JSON text is stored as a plain string; but when the argument *is* JSON,
+    // reject an integer serde_json would coerce to a lossy f64 rather than storing
+    // the loss (a plain string that merely contains big digits still parses as a
+    // string and is unaffected).
+    match serde_json::from_str::<Value>(&text) {
+        Ok(parsed) => {
+            strata_executor::guard_json_integers(&text).map_err(CliError::from)?;
+            Ok(parsed)
+        }
+        Err(_) => Ok(Value::String(text)),
+    }
 }
 
 pub(crate) fn parse_json_argument(
@@ -61,6 +71,8 @@ pub(crate) fn parse_json_argument(
     label: &str,
 ) -> Result<Value, CliError> {
     let text = text_argument(value, file, label)?;
+    // Reject an integer serde_json would coerce to a lossy f64 before parsing.
+    strata_executor::guard_json_integers(&text).map_err(CliError::from)?;
     serde_json::from_str(&text).map_err(CliError::from)
 }
 
@@ -170,6 +182,26 @@ fn parse_vector_text(value: &str) -> Result<Vec<f64>, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_arguments_reject_integers_beyond_i64_u64_range() {
+        // Strict JSON argument (json.patch, event payload, metadata): an
+        // out-of-range integer is rejected rather than stored as a lossy f64.
+        // (The executor guard test pins the stable error code.)
+        assert!(parse_json_argument(Some(r#"{"i":18446744073709551616}"#), None, "v").is_err());
+        // Representable extremes still parse.
+        parse_json_argument(Some(r#"{"max":18446744073709551615}"#), None, "v")
+            .expect("u64::MAX parses");
+
+        // Relaxed argument (json.set value): rejects a JSON integer, but a plain
+        // string that merely contains big digits is stored as a string untouched.
+        assert!(parse_relaxed_json_argument(Some("18446744073709551616"), None, "v").is_err());
+        assert_eq!(
+            parse_relaxed_json_argument(Some("order 18446744073709551616 shipped"), None, "v")
+                .expect("plain string stored"),
+            Value::String("order 18446744073709551616 shipped".to_owned())
+        );
+    }
 
     #[test]
     fn parses_comma_vector() {
