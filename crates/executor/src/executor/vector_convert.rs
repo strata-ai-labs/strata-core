@@ -29,12 +29,12 @@ pub(super) fn vector_embedding(vector: Vec<f64>) -> ExecutorResult<EngineVectorE
     EngineVectorEmbedding::from_wire(vector).map_err(ExecutorError::from)
 }
 
-/// Builds an engine embedding for a *query* vector, which is not stored. Query
-/// vectors stay f32 at the wire boundary; the wire-precision underflow guard
-/// (`from_wire`) applies to stored embeddings only. Extending it to queries is
-/// tracked separately (#2710).
-pub(super) fn query_embedding(query: Vec<f32>) -> ExecutorResult<EngineVectorEmbedding> {
-    EngineVectorEmbedding::new(query).map_err(ExecutorError::from)
+/// Builds an engine embedding for a *query* vector. Like a stored embedding it
+/// is accepted at wire (f64) precision and validated before narrowing, so a
+/// query component that underflows or overflows f32 is rejected rather than
+/// silently searching against the zero vector.
+pub(super) fn query_embedding(query: Vec<f64>) -> ExecutorResult<EngineVectorEmbedding> {
+    EngineVectorEmbedding::from_wire(query).map_err(ExecutorError::from)
 }
 
 pub(super) fn optional_vector_metadata(
