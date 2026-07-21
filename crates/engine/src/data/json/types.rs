@@ -283,8 +283,14 @@ impl FromStr for JsonPath {
         } else if let Some(rest) = text.strip_prefix('$') {
             text = rest;
         }
-        if let Some(rest) = text.strip_prefix('.') {
-            text = rest;
+        // A leading dot after the root means a doubled dot (`$..`), i.e.
+        // recursive descent — which is unsupported. Reject it rather than
+        // silently collapsing `$..b` to the top-level key `b`, matching the
+        // rejection of a doubled dot mid-path.
+        if text.starts_with('.') {
+            return Err(path_error(
+                "recursive descent is not supported in JSON path",
+            ));
         }
         if text.is_empty() {
             return Ok(Self::root());
@@ -930,6 +936,29 @@ mod tests {
         assert_eq!(
             too_long.code(),
             "invalid_argument.engine.json_path_too_long"
+        );
+    }
+
+    #[test]
+    fn path_parser_rejects_recursive_descent_instead_of_collapsing_it() {
+        // A leading `$..` must not silently collapse to a top-level key
+        // (`$..b` -> `b`), which returns wrong results on nested keys; reject it
+        // with the same typed error as a doubled dot mid-path (`$.a..b`).
+        for input in ["$..b", "$..top", "$..", "$.a..b", ".b"] {
+            let error = input
+                .parse::<JsonPath>()
+                .expect_err("recursive descent is rejected");
+            assert_eq!(error.code(), "invalid_argument.engine.json_path");
+        }
+
+        // Ordinary single-target paths are unaffected.
+        assert_eq!(
+            "$.a.b"
+                .parse::<JsonPath>()
+                .expect("valid path")
+                .segments()
+                .len(),
+            2
         );
     }
 
