@@ -29,6 +29,11 @@ const MAX_TYPE_NAME_BYTES: usize = 256;
 const MAX_PROPERTY_NAME_BYTES: usize = 256;
 const MAX_HINT_BYTES: usize = 256;
 
+/// The cardinality values a graph link type may declare. Unlike a free-form
+/// hint, an unrecognized value is rejected so a typo cannot be stored forever.
+const GRAPH_LINK_CARDINALITIES: [&str; 4] =
+    ["one-to-one", "one-to-many", "many-to-one", "many-to-many"];
+
 /// A validated ontology type name (object or link type).
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize)]
 #[serde(transparent)]
@@ -174,6 +179,13 @@ impl GraphLinkTypeDef {
                 "invalid_argument.engine.graph_type_hint",
                 "graph link cardinality hint",
             )?;
+            if !GRAPH_LINK_CARDINALITIES.contains(&hint) {
+                return Err(EngineError::invalid_input(
+                    "invalid_argument.engine.graph_type_hint",
+                    "graph link cardinality must be one of one-to-one, one-to-many, \
+                     many-to-one, many-to-many",
+                ));
+            }
         }
         Ok(Self {
             name,
@@ -887,6 +899,30 @@ mod tests {
         );
         let error = GraphTypeName::new("").expect_err("empty");
         assert_eq!(error.code(), "invalid_argument.engine.graph_type_name");
+    }
+
+    #[test]
+    fn graph_link_cardinality_rejects_values_outside_the_defined_set() {
+        let link = |cardinality: Option<&str>| {
+            GraphLinkTypeDef::new(
+                GraphTypeName::new("wrote").expect("name"),
+                GraphTypeName::new("Author").expect("source"),
+                GraphTypeName::new("Document").expect("target"),
+                cardinality.map(str::to_owned),
+                [],
+            )
+        };
+
+        // Every defined cardinality is accepted, and an absent one is fine.
+        for value in ["one-to-one", "one-to-many", "many-to-one", "many-to-many"] {
+            link(Some(value)).unwrap_or_else(|_| panic!("`{value}` is a valid cardinality"));
+        }
+        link(None).expect("cardinality is optional");
+
+        // An unrecognized cardinality is rejected with a typed error rather than
+        // stored forever as a meaningless free-form hint.
+        let error = link(Some("wat")).expect_err("unknown cardinality is rejected");
+        assert_eq!(error.code(), "invalid_argument.engine.graph_type_hint");
     }
 
     #[test]
