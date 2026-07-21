@@ -1241,6 +1241,9 @@ pub struct GraphBfsData {
     visited: Vec<String>,
     depths: std::collections::BTreeMap<String, u64>,
     edges: Vec<GraphBfsEdgeData>,
+    /// Whether a depth or node-count cap stopped the traversal before every
+    /// reachable node was visited, so `visited`/`edges` are a partial result.
+    truncated: bool,
 }
 
 impl GraphBfsData {
@@ -1251,6 +1254,7 @@ impl GraphBfsData {
         visited: Vec<String>,
         depths: std::collections::BTreeMap<String, u64>,
         edges: Vec<GraphBfsEdgeData>,
+        truncated: bool,
     ) -> Self {
         Self {
             graph,
@@ -1258,7 +1262,13 @@ impl GraphBfsData {
             visited,
             depths,
             edges,
+            truncated,
         }
+    }
+
+    /// Whether a depth or node-count cap made this a partial traversal.
+    pub const fn truncated(&self) -> bool {
+        self.truncated
     }
 
     /// Returns the graph name.

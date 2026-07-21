@@ -122,6 +122,31 @@ fn exercise_analytics_commands(executor: &mut Executor) {
     );
     assert_eq!(bfs.edges().len(), 3);
     assert!(!bfs.depths().contains_key("lone"));
+    assert!(!bfs.truncated(), "a complete traversal is not truncated");
+
+    // A node cap makes bfs a partial result, flagged on the wire.
+    let Output::GraphBfsResult(capped) = executor
+        .execute(Command::GraphBfs {
+            branch: None,
+            space: None,
+            graph: "web".to_owned(),
+            start: "a".to_owned(),
+            max_depth: None,
+            max_nodes: Some(2),
+            edge_types: None,
+            direction: None,
+            budget: None,
+            as_of: None,
+        })
+        .expect("capped bfs runs")
+    else {
+        panic!("unexpected bfs output");
+    };
+    assert!(
+        capped.truncated(),
+        "a node cap that stops mid-traversal is reported truncated"
+    );
+    assert_eq!(capped.visited().len(), 2, "the node cap is honored");
 }
 
 #[test]

@@ -21,6 +21,7 @@
     ],
     "graph": "social",
     "start": "alice",
+    "truncated": false,
     "visited": [
       "alice",
       "bob",

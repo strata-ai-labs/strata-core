@@ -887,5 +887,6 @@ pub(super) fn graph_bfs_output(
         visited,
         depths,
         edges,
+        result.truncated(),
     ))
 }

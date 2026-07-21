@@ -370,5 +370,6 @@ pub(super) fn graph_bfs_output() -> GraphBfsData {
             "depends_on".to_owned(),
             1.0,
         )],
+        false,
     )
 }

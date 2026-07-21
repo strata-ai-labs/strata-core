@@ -15,6 +15,7 @@
         "edge_type": "depends_on",
         "weight": 1.0
       }
-    ]
+    ],
+    "truncated": false
   }
 }

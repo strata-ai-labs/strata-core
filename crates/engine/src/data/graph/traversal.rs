@@ -132,6 +132,7 @@ pub struct GraphBfsResult {
     visited: Vec<usize>,
     depths: Vec<Option<usize>>,
     edges: Vec<GraphTraversalEdge>,
+    truncated: bool,
 }
 
 impl GraphBfsResult {
@@ -158,6 +159,13 @@ impl GraphBfsResult {
     /// Returns the tree edges in discovery order.
     pub fn edges(&self) -> &[GraphTraversalEdge] {
         &self.edges
+    }
+
+    #[must_use]
+    /// Whether a depth or node-count cap stopped the traversal before every
+    /// reachable node was visited, so `visited`/`edges` are a partial result.
+    pub fn truncated(&self) -> bool {
+        self.truncated
     }
 }
 
@@ -240,6 +248,7 @@ impl GraphAdjacencyIndex {
         let mut edges: Vec<GraphTraversalEdge> = Vec::new();
         let mut seen = vec![false; self.node_count()];
         let mut queue: VecDeque<(usize, usize)> = VecDeque::new();
+        let mut truncated = false;
 
         seen[start_index] = true;
         queue.push_back((start_index, 0));
@@ -247,12 +256,34 @@ impl GraphAdjacencyIndex {
         while let Some((current, depth)) = queue.pop_front() {
             if let Some(max) = options.max_nodes() {
                 if visited.len() >= max {
+                    // A node remained to visit past the cap, so the result is a
+                    // partial traversal.
+                    truncated = true;
                     break;
                 }
             }
             visited.push(current);
             depths[current] = Some(depth);
             if depth >= options.max_depth() {
+                // Stopping at the depth cap leaves any not-yet-seen neighbor of
+                // this node unvisited, so the result is partial.
+                let has_unseen = |list: &[super::GraphAdjacencyEdge]| {
+                    list.iter().any(|edge| {
+                        type_filter
+                            .as_ref()
+                            .is_none_or(|filter| filter.contains(&edge.edge_type()))
+                            && !seen[edge.neighbor()]
+                    })
+                };
+                if match options.direction() {
+                    GraphDirection::Outgoing => has_unseen(self.outgoing(current)),
+                    GraphDirection::Incoming => has_unseen(self.incoming(current)),
+                    GraphDirection::Both => {
+                        has_unseen(self.outgoing(current)) || has_unseen(self.incoming(current))
+                    }
+                } {
+                    truncated = true;
+                }
                 continue;
             }
 
@@ -285,10 +316,16 @@ impl GraphAdjacencyIndex {
             }
         }
 
+        // A node cap discovers a level's edges before it stops visiting, so an
+        // edge can point at a node that was never visited; drop those so every
+        // emitted edge connects two visited nodes.
+        edges.retain(|edge| depths[edge.target].is_some());
+
         Ok(GraphBfsResult {
             visited,
             depths,
             edges,
+            truncated,
         })
     }
 
