@@ -21,6 +21,7 @@ pub mod idl_tooling;
 pub mod output;
 mod time_compat;
 pub mod types;
+mod wire_json;
 
 pub use command::Command;
 pub use error::{
@@ -80,3 +81,4 @@ pub use types::{
     VectorMatch, VectorMetadataFilter, VectorScalar, VectorVersionedData, VersionedValue,
     DEFAULT_BRANCH, DEFAULT_SPACE,
 };
+pub use wire_json::guard_json_integers;

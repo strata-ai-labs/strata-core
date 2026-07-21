@@ -13,7 +13,7 @@
 //! page. That makes the browser a faithful demo of the volatile session
 //! surface, not a persistence story.
 
-use strata_executor::{Command, Executor};
+use strata_executor::{guard_json_integers, Command, Executor};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsError;
 
@@ -58,6 +58,11 @@ impl StrataSession {
     /// set, so the thrown message is the teaching. Executed commands never
     /// throw; their failures are `{"error": ...}` envelopes.
     pub fn execute(&mut self, command_json: &str) -> Result<String, JsError> {
+        // serde_json coerces an out-of-range JSON integer to a lossy f64 during
+        // deserialization; reject it on the raw text first (see
+        // `strata_executor::guard_json_integers`).
+        guard_json_integers(command_json)
+            .map_err(|error| JsError::new(&format!("invalid command: {error}")))?;
         let command: Command = serde_json::from_str(command_json)
             .map_err(|error| JsError::new(&format!("invalid command: {error}")))?;
         let envelope = match self.executor.execute(command) {
