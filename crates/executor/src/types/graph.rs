@@ -970,6 +970,7 @@ impl GraphOntologySummaryData {
 /// Unset fields use the engine defaults.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct GraphAnalyticsBudget {
     /// Maximum node count admitted into the snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]

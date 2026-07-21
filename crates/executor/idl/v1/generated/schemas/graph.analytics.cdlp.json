@@ -1,6 +1,7 @@
 {
   "$defs": {
     "GraphAnalyticsBudget": {
+      "additionalProperties": false,
       "description": "Optional size bounds for one graph analytics snapshot (input form).\nUnset fields use the engine defaults.",
       "properties": {
         "max_edges": {
