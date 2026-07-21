@@ -681,3 +681,138 @@ fn exercise_traversal(mut database: Database) {
         subgraph
     );
 }
+
+#[test]
+fn bfs_reports_truncation_and_drops_edges_to_unvisited_nodes() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let mut graph = graph_service(&mut database, "default", "default");
+    let name = graph_name("star");
+    graph.create_graph(name.clone()).expect("graph created");
+    for id in ["h", "a", "b", "c"] {
+        graph
+            .upsert_node(&name, node_id(id), GraphNodeData::default())
+            .expect("node");
+    }
+    for leaf in ["a", "b", "c"] {
+        graph
+            .upsert_edge(
+                &name,
+                node_id("h"),
+                edge_type("e"),
+                node_id(leaf),
+                edge_data(1.0),
+            )
+            .expect("edge");
+    }
+    let index = graph
+        .adjacency_index(&name, &GraphAnalyticsBudget::default())
+        .expect("index builds");
+    let at = |id: &str| index.node_index(&node_id(id)).expect("node indexed");
+
+    // A node cap of 1 visits only the hub. Its three tree edges were discovered
+    // but the leaves were never visited: the result must report truncation and
+    // must not emit edges that reference an unvisited node.
+    let capped = index
+        .bfs(
+            &node_id("h"),
+            &GraphBfsOptions::new(100, Some(1), None, GraphDirection::Both),
+        )
+        .expect("bfs runs");
+    assert_eq!(capped.visited(), &[at("h")]);
+    assert!(
+        capped.truncated(),
+        "a node cap that stops mid-traversal is truncated"
+    );
+    assert!(
+        capped.edges().is_empty(),
+        "no edge may reference a node that was not visited: {:?}",
+        capped.edges()
+    );
+
+    // The uncapped traversal completes and is not truncated.
+    let full = index
+        .bfs(
+            &node_id("h"),
+            &GraphBfsOptions::new(100, None, None, GraphDirection::Both),
+        )
+        .expect("bfs runs");
+    assert_eq!(full.visited().len(), 4);
+    assert!(!full.truncated(), "a complete traversal is not truncated");
+    assert_eq!(full.edges().len(), 3);
+
+    // A depth cap that stops before every reachable node is also truncated,
+    // and emits no edge to a node it never expanded to.
+    let shallow = index
+        .bfs(
+            &node_id("h"),
+            &GraphBfsOptions::new(0, None, None, GraphDirection::Both),
+        )
+        .expect("bfs runs");
+    assert_eq!(
+        shallow.visited(),
+        &[at("h")],
+        "depth 0 visits only the start"
+    );
+    assert!(
+        shallow.truncated(),
+        "a depth cap with unreached neighbors is truncated"
+    );
+    assert!(shallow.edges().is_empty());
+}
+
+#[test]
+fn bfs_at_depth_cap_ignores_neighbors_behind_filtered_out_edges() {
+    // h -[keep]-> a -[skip]-> b. A traversal restricted to `keep` reaches only
+    // {h, a}; `b` is reachable solely through the excluded `skip` edge. At the
+    // depth cap on `a`, its one unseen neighbor `b` sits behind a filtered-out
+    // edge, so the restricted traversal is complete and must NOT be truncated.
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let mut graph = graph_service(&mut database, "default", "default");
+    let name = graph_name("filtered");
+    graph.create_graph(name.clone()).expect("graph created");
+    for id in ["h", "a", "b"] {
+        graph
+            .upsert_node(&name, node_id(id), GraphNodeData::default())
+            .expect("node");
+    }
+    graph
+        .upsert_edge(
+            &name,
+            node_id("h"),
+            edge_type("keep"),
+            node_id("a"),
+            edge_data(1.0),
+        )
+        .expect("edge");
+    graph
+        .upsert_edge(
+            &name,
+            node_id("a"),
+            edge_type("skip"),
+            node_id("b"),
+            edge_data(1.0),
+        )
+        .expect("edge");
+    let index = graph
+        .adjacency_index(&name, &GraphAnalyticsBudget::default())
+        .expect("index builds");
+    let at = |id: &str| index.node_index(&node_id(id)).expect("node indexed");
+
+    let filtered = index
+        .bfs(
+            &node_id("h"),
+            &GraphBfsOptions::new(
+                1,
+                None,
+                Some(vec![edge_type("keep")]),
+                GraphDirection::Outgoing,
+            ),
+        )
+        .expect("bfs runs");
+    assert_eq!(filtered.visited(), &[at("h"), at("a")]);
+    assert!(
+        !filtered.truncated(),
+        "a node behind a filtered-out edge is not reachable, so the restricted \
+         traversal is complete: {filtered:?}"
+    );
+}

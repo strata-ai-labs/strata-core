@@ -48,6 +48,10 @@
         "start": {
           "type": "string"
         },
+        "truncated": {
+          "description": "Whether a depth or node-count cap stopped the traversal before every\nreachable node was visited, so `visited`/`edges` are a partial result.",
+          "type": "boolean"
+        },
         "visited": {
           "items": {
             "type": "string"
@@ -60,7 +64,8 @@
         "start",
         "visited",
         "depths",
-        "edges"
+        "edges",
+        "truncated"
       ],
       "type": "object"
     },
