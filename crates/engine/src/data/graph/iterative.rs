@@ -182,13 +182,17 @@ fn personalization_error(message: &'static str) -> EngineError {
 }
 
 impl GraphAdjacencyIndex {
-    /// Detects communities via synchronous label propagation.
+    /// Detects communities via asynchronous label propagation.
     ///
     /// Every node starts labeled with its own index; each iteration
-    /// re-labels every node with the most frequent label among its
-    /// neighbors along `options.direction()` (previous-iteration labels,
-    /// ties broken by the smaller label), stopping early once no label
-    /// changes. Nodes without neighbors keep their label.
+    /// re-labels every node in node-index order with the most frequent
+    /// label among its neighbors along `options.direction()` — reading the
+    /// labels already updated earlier in the same sweep, ties broken by the
+    /// smaller label — and stops early once a full sweep changes no label.
+    /// Nodes without neighbors keep their label. Updating in place converges
+    /// on bipartite structures (e.g. a star collapses to one community),
+    /// where synchronous propagation oscillates with period two and never
+    /// settles.
     #[must_use]
     pub fn cdlp(&self, options: &GraphCdlpOptions) -> GraphCdlpResult {
         let node_count = self.node_count();
@@ -196,40 +200,40 @@ impl GraphAdjacencyIndex {
 
         for _ in 0..options.max_iterations() {
             let mut changed = false;
-            let mut new_labels = labels.clone();
 
             for node in 0..node_count {
-                let mut frequency: HashMap<usize, usize> = HashMap::new();
-                let mut tally = |edges: &[super::GraphAdjacencyEdge]| {
-                    for edge in edges {
-                        *frequency.entry(labels[edge.neighbor()]).or_insert(0) += 1;
+                let best_label = {
+                    let mut frequency: HashMap<usize, usize> = HashMap::new();
+                    let mut tally = |edges: &[super::GraphAdjacencyEdge]| {
+                        for edge in edges {
+                            *frequency.entry(labels[edge.neighbor()]).or_insert(0) += 1;
+                        }
+                    };
+                    match options.direction() {
+                        GraphDirection::Outgoing => tally(self.outgoing(node)),
+                        GraphDirection::Incoming => tally(self.incoming(node)),
+                        GraphDirection::Both => {
+                            tally(self.outgoing(node));
+                            tally(self.incoming(node));
+                        }
                     }
+                    let top_count = frequency.values().copied().max();
+                    top_count.and_then(|top_count| {
+                        frequency
+                            .iter()
+                            .filter(|(_, count)| **count == top_count)
+                            .map(|(label, _)| *label)
+                            .min()
+                    })
                 };
-                match options.direction() {
-                    GraphDirection::Outgoing => tally(self.outgoing(node)),
-                    GraphDirection::Incoming => tally(self.incoming(node)),
-                    GraphDirection::Both => {
-                        tally(self.outgoing(node));
-                        tally(self.incoming(node));
+                if let Some(best_label) = best_label {
+                    if best_label != labels[node] {
+                        labels[node] = best_label;
+                        changed = true;
                     }
-                }
-                if frequency.is_empty() {
-                    continue;
-                }
-                let top_count = frequency.values().copied().max().unwrap_or(0);
-                let best_label = frequency
-                    .iter()
-                    .filter(|(_, count)| **count == top_count)
-                    .map(|(label, _)| *label)
-                    .min()
-                    .unwrap_or(labels[node]);
-                if best_label != labels[node] {
-                    new_labels[node] = best_label;
-                    changed = true;
                 }
             }
 
-            labels = new_labels;
             if !changed {
                 break;
             }

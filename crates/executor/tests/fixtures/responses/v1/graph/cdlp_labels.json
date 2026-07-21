@@ -2,9 +2,9 @@
   "data": {
     "graph": "social",
     "labels": {
-      "alice": "alice",
-      "bob": "alice",
-      "carol": "alice",
+      "alice": "bob",
+      "bob": "bob",
+      "carol": "bob",
       "dave": "dave"
     }
   },
