@@ -342,6 +342,19 @@ pub(crate) enum WalServiceError {
         expected: u64,
         actual: u64,
     },
+    /// The active WAL segment an existing database resolves to is absent from
+    /// the backend — the durable log was removed. Distinct from a fresh store
+    /// (where creating the first segment is expected): here recovery would
+    /// silently discard committed data, so open must fail closed.
+    MissingActiveSegment {
+        segment_id: u64,
+    },
+    /// The on-disk WAL segments have a gap between the lowest and highest
+    /// present id (retention only trims a contiguous prefix, so an interior
+    /// hole means a segment — and its committed records — was removed).
+    SegmentInventoryGap {
+        missing_segment: u64,
+    },
 }
 
 impl fmt::Display for WalServiceError {
@@ -434,6 +447,14 @@ impl fmt::Display for WalServiceError {
                 formatter,
                 "WAL object {object} has size {actual}, expected {expected}"
             ),
+            Self::MissingActiveSegment { segment_id } => write!(
+                formatter,
+                "active WAL segment {segment_id} is absent; the durable log was removed"
+            ),
+            Self::SegmentInventoryGap { missing_segment } => write!(
+                formatter,
+                "WAL segment {missing_segment} is missing from an otherwise contiguous log"
+            ),
         }
     }
 }
@@ -456,7 +477,9 @@ impl std::error::Error for WalServiceError {
             | Self::RepairUncertain { .. }
             | Self::UnexpectedAppendOffset { .. }
             | Self::UnexpectedAppendLength { .. }
-            | Self::UnexpectedObjectSize { .. } => None,
+            | Self::UnexpectedObjectSize { .. }
+            | Self::MissingActiveSegment { .. }
+            | Self::SegmentInventoryGap { .. } => None,
         }
     }
 }
@@ -478,14 +501,22 @@ impl WalServiceError {
         )
     }
 
-    /// Whether this failure means the durable WAL bytes are malformed rather
-    /// than the backend being transiently unavailable. A decode failure
-    /// (`Format` — checksum/magic/version/length mismatch) or a segment that
-    /// belongs to a different database (`DatabaseMismatch` — tamper/corruption)
-    /// is permanent corruption: retrying the read cannot recover it. Backend IO,
-    /// listing, and publish failures may be transient.
+    /// Whether this failure means the durable WAL is malformed, incomplete, or
+    /// belongs to a different database, rather than the backend being
+    /// transiently unavailable. A decode failure (`Format` — checksum/magic/
+    /// version/length mismatch), a segment from a different database
+    /// (`DatabaseMismatch` — tamper/corruption), or a removed/gapped segment
+    /// (`MissingActiveSegment` / `SegmentInventoryGap`) is permanent data loss:
+    /// retrying the read cannot recover it. Backend IO, listing, and publish
+    /// failures may be transient.
     pub(crate) const fn is_durable_corruption(&self) -> bool {
-        matches!(self, Self::Format { .. } | Self::DatabaseMismatch { .. })
+        matches!(
+            self,
+            Self::Format { .. }
+                | Self::DatabaseMismatch { .. }
+                | Self::MissingActiveSegment { .. }
+                | Self::SegmentInventoryGap { .. }
+        )
     }
 }
 
@@ -2079,6 +2110,51 @@ pub(crate) fn resolve_resume_segment(
         perf_trace::record_wal_open_segment_reconciliation();
     }
     Ok(resolved)
+}
+
+/// Verify the on-disk WAL segment inventory before opening, so a removed
+/// segment surfaces as permanent data loss instead of silently resolving to a
+/// fresh empty log (the [`resolve_resume_segment`] +
+/// [`open_or_create_segment`] path would otherwise recreate the absent segment
+/// and discard every record it held).
+///
+/// The caller invokes this only when the WAL is the database's sole durable
+/// store — an existing database with no checkpoint or snapshot — so every
+/// committed record lives in the log and a missing segment is unrecoverable.
+/// `manifest_active_segment` is the manifest's recorded active segment (the
+/// resume seed).
+pub(crate) fn verify_wal_segment_inventory(
+    backend: &dyn Backend,
+    manifest_active_segment: u64,
+) -> WalServiceResult<()> {
+    let segments = list_segments(backend)?;
+    // Retention only ever trims a contiguous prefix of sealed segments, so a
+    // hole between the lowest and highest present id means a segment was
+    // removed out of band.
+    for window in segments.windows(2) {
+        let (lower, _) = &window[0];
+        let (upper, _) = &window[1];
+        if *upper != lower.saturating_add(1) {
+            return Err(WalServiceError::SegmentInventoryGap {
+                missing_segment: lower.saturating_add(1),
+            });
+        }
+    }
+    // The segment recovery resumes from must be present: with no checkpoint, it
+    // holds committed data that a fresh segment would silently discard.
+    let on_disk_max = segments.last().map(|(segment_id, _)| *segment_id);
+    let resolved = on_disk_max.map_or(manifest_active_segment, |max| {
+        max.max(manifest_active_segment)
+    });
+    let present = segments
+        .iter()
+        .any(|(segment_id, _)| *segment_id == resolved);
+    if !present {
+        return Err(WalServiceError::MissingActiveSegment {
+            segment_id: resolved,
+        });
+    }
+    Ok(())
 }
 
 fn list_segments(backend: &dyn Backend) -> WalServiceResult<Vec<WalSegmentObject>> {

@@ -24,9 +24,10 @@ use crate::format::DatabaseManifest;
 use crate::layout::{LayoutError, ObjectLayout};
 use crate::object::ObjectName;
 use crate::service::{
-    wal_segments_present, BranchCatalogManifestService, CheckpointService, DatabaseManifestService,
-    ManifestServiceError, PendingReleasesManifestService, QuarantineService, SnapshotService,
-    TableManifestService, TableObjectReaderService, TableObjectService,
+    verify_wal_segment_inventory, wal_segments_present, BranchCatalogManifestService,
+    CheckpointService, DatabaseManifestService, ManifestServiceError,
+    PendingReleasesManifestService, QuarantineService, SnapshotService, TableManifestService,
+    TableObjectReaderService, TableObjectService,
     WalSegmentMetadataSidecarService, WalService, WalServiceConfig, WalServiceError,
 };
 use std::fmt;
@@ -349,6 +350,21 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             return Err(LifecycleError::recovery_corruption(
                 "database manifest attests a checkpoint but no WAL segment objects exist",
             ));
+        }
+
+        // When the WAL is the database's sole durable store — an existing
+        // database with no checkpoint or snapshot — every committed record
+        // lives in the log, so a removed segment is unrecoverable data loss.
+        // Fail closed before recovery can silently resume onto a fresh empty
+        // log. A just-created database (no segment yet) and a checkpointed
+        // database (data safely in the snapshot) both legitimately tolerate an
+        // absent segment, so they are not checked here.
+        if disposition == StorageOpenDisposition::OpenedExisting
+            && manifest.flushed_through_commit_id().is_none()
+            && manifest.snapshot_watermark().is_none()
+        {
+            verify_wal_segment_inventory(&backend, manifest.active_wal_segment())
+                .map_err(wal_open_error)?;
         }
 
         let wal = WalService::open(

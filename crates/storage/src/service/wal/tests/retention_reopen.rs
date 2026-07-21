@@ -1172,3 +1172,39 @@ fn reopen_with_stale_seed_keeps_retention_boundary_at_the_true_tail() {
     assert_segment_missing(&backend, &three);
     assert_segment_present(&backend, &four);
 }
+
+#[test]
+fn segment_inventory_check_catches_removed_and_gapped_segments() {
+    use super::super::verify_wal_segment_inventory;
+
+    // An existing, un-checkpointed database whose only segment was removed must
+    // fail closed instead of resolving back to a fresh empty log.
+    let erased = StoredWalBackend::new();
+    assert!(matches!(
+        verify_wal_segment_inventory(&erased, 1),
+        Err(WalServiceError::MissingActiveSegment { segment_id: 1 })
+    ));
+
+    // A contiguous, present inventory opens cleanly.
+    let healthy = StoredWalBackend::new();
+    seed_segment(&healthy, 1, &[record(1, b"a".to_vec())]);
+    seed_segment(&healthy, 2, &[record(2, b"b".to_vec())]);
+    verify_wal_segment_inventory(&healthy, 1).expect("contiguous present inventory is valid");
+
+    // Retention trims a contiguous prefix, leaving a higher-based run — this is
+    // legitimate and must not be flagged as loss.
+    let retained = StoredWalBackend::new();
+    seed_segment(&retained, 2, &[record(2, b"b".to_vec())]);
+    seed_segment(&retained, 3, &[record(3, b"c".to_vec())]);
+    verify_wal_segment_inventory(&retained, 2)
+        .expect("a contiguous run above a retention floor is valid");
+
+    // A hole in the middle means a segment was removed out of band.
+    let gapped = StoredWalBackend::new();
+    seed_segment(&gapped, 1, &[record(1, b"a".to_vec())]);
+    seed_segment(&gapped, 3, &[record(3, b"c".to_vec())]);
+    assert!(matches!(
+        verify_wal_segment_inventory(&gapped, 1),
+        Err(WalServiceError::SegmentInventoryGap { missing_segment: 2 })
+    ));
+}

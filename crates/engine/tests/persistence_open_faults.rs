@@ -85,6 +85,40 @@ fn opening_a_byte_corrupted_wal_reports_permanent_corruption() {
 }
 
 #[test]
+fn deleting_the_sole_wal_segment_refuses_to_open_instead_of_silently_erasing() {
+    let dir = tempfile::tempdir().expect("tmp");
+    let root = dir.path().join("db");
+    {
+        let mut db = open_durable_database(&root).expect("durable open");
+        let mut kv = db.kv(branch("default"), space("app")).expect("kv opens");
+        kv.put(key(b"alpha"), value(b"1")).expect("seed write");
+        kv.put(key(b"beta"), value(b"2")).expect("seed write");
+        drop(kv);
+        db.close().expect("clean close flushes the WAL");
+    }
+
+    // Remove the sole WAL segment — the un-checkpointed rows live only there.
+    // The manifest, written at creation, still records that this database
+    // exists, so a reopen must refuse rather than silently reset to empty.
+    let segment = active_wal_segment(&root);
+    std::fs::remove_file(&segment).expect("remove the sole wal segment");
+
+    let error = open_durable_database(&root).err().expect(
+        "a database whose sole WAL segment was removed must refuse to open, \
+         not silently recreate an empty log",
+    );
+
+    assert_status(
+        &error,
+        EngineErrorClass::Corruption,
+        "corruption.engine.persistence_recovery",
+        false,
+    );
+    assert_eq!(error.public_class(), ErrorClass::Corruption);
+    assert_eq!(error.retry_policy(), RetryPolicy::Never);
+}
+
+#[test]
 fn opening_a_regular_file_as_a_database_reports_invalid_input() {
     let dir = tempfile::tempdir().expect("tmp");
     let root = dir.path().join("not-a-db");
