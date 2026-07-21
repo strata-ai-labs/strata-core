@@ -1248,9 +1248,10 @@ fn quarantine_error_object(source: &QuarantineServiceError) -> Option<ObjectName
 }
 
 fn format_error(source: FormatError) -> LifecycleError {
-    LifecycleError::lower_layer_with(
-        LifecycleLowerLayer::Format,
-        "snapshot section decode failed",
+    // A snapshot section that fails to decode is malformed durable state, not a
+    // transient read failure: recovery cannot succeed on a retry.
+    LifecycleError::recovery_corruption_with(
+        "snapshot section failed to decode during recovery",
         source,
     )
 }
@@ -1284,9 +1285,10 @@ fn wal_error(source: WalServiceError) -> LifecycleError {
 /// listing, publish) may be transient and stays a lower-layer error.
 fn wal_recovery_error(source: WalServiceError) -> LifecycleError {
     if source.is_durable_corruption() {
-        return LifecycleError::RecoveryCorruption {
-            reason: "WAL segment failed to decode during recovery",
-        };
+        return LifecycleError::recovery_corruption_with(
+            "WAL segment failed to decode during recovery",
+            source,
+        );
     }
     wal_error(source)
 }

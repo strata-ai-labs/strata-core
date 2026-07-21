@@ -1682,14 +1682,10 @@ fn checkpoint_row_section_round_trips_and_rejects_trailing_bytes() {
     let error = LifecycleRecoveryRuntime::new(&mut shell)
         .recover(&request)
         .expect_err("trailing row section rejects");
-    assert!(matches!(
-        error,
-        LifecycleError::LowerLayer {
-            layer: LifecycleLowerLayer::Format,
-            reason: "snapshot section decode failed",
-            ..
-        }
-    ));
+    // A malformed snapshot section is permanent durable corruption, not a
+    // transient lower-layer read failure; recovery refuses with a non-retryable
+    // corruption error that still preserves the underlying decode source.
+    assert!(matches!(error, LifecycleError::RecoveryCorruption { .. }));
     assert!(error.source().is_some());
 }
 
@@ -1736,14 +1732,10 @@ fn checkpoint_row_section_rejects_declared_rows_without_length_prefixes() {
         .recover(&request)
         .expect_err("impossible row count rejects");
 
-    assert!(matches!(
-        error,
-        LifecycleError::LowerLayer {
-            layer: LifecycleLowerLayer::Format,
-            reason: "snapshot section decode failed",
-            ..
-        }
-    ));
+    // A malformed snapshot section is permanent durable corruption, not a
+    // transient lower-layer read failure; recovery refuses with a non-retryable
+    // corruption error that still preserves the underlying decode source.
+    assert!(matches!(error, LifecycleError::RecoveryCorruption { .. }));
     assert!(error.source().is_some());
     assert!(shell.branch_state().is_empty());
 }

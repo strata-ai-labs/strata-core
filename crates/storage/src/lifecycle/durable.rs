@@ -679,9 +679,10 @@ fn wal_error(error: WalServiceError) -> LifecycleError {
 /// lower-layer outage.
 fn wal_open_error(error: WalServiceError) -> LifecycleError {
     if error.is_durable_corruption() {
-        return LifecycleError::RecoveryCorruption {
-            reason: "WAL segment failed to decode while opening the database",
-        };
+        return LifecycleError::recovery_corruption_with(
+            "WAL segment failed to decode while opening the database",
+            error,
+        );
     }
     wal_error(error)
 }

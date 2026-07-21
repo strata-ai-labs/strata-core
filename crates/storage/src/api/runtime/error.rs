@@ -199,11 +199,15 @@ pub(super) fn map_lifecycle_error(error: LifecycleError) -> StorageApiError {
         | LifecycleError::PinnedViewReleaseBlocked { reason, .. } => {
             StorageApiError::InvalidRuntimeState { reason }
         }
-        // Recovery decoded corrupt durable bytes (checksum/magic mismatch). This
-        // is permanent: the on-disk state is malformed, so the open is refused
-        // with a non-retryable recovery failure rather than a transient
-        // lower-layer outage a caller would retry forever.
-        LifecycleError::RecoveryCorruption { reason } => {
+        // Recovery-integrity failures are permanent: the durable state is
+        // corrupt or inconsistent, so recovery is refused with a non-retryable
+        // recovery failure rather than a transient lower-layer outage a caller
+        // would retry forever. `RecoveryCorruption` is a malformed byte stream;
+        // `RecoveryFailed` and `TimelineRecoveryMismatch` are already coded
+        // `corruption.lifecycle.*` and must surface with a matching class.
+        LifecycleError::RecoveryCorruption { reason, .. }
+        | LifecycleError::RecoveryFailed { reason }
+        | LifecycleError::TimelineRecoveryMismatch { reason } => {
             StorageApiError::RecoveryDegraded { reason }
         }
         LifecycleError::BranchNotFound { branch_id } => {
@@ -765,5 +769,35 @@ mod tests {
         assert!(rewrite.inner_code().is_some());
         assert!(manifest.inner_code().is_some());
         assert_ne!(rewrite.inner_code(), manifest.inner_code());
+    }
+
+    /// Recovery-integrity failures are coded corruption; they must surface as
+    /// the permanent, non-retryable recovery-degraded class rather than falling
+    /// to the catch-all `internal.storage_api.lifecycle` (which the engine maps
+    /// to a retryable outage a caller would loop on forever).
+    #[test]
+    fn recovery_integrity_failures_map_to_non_retryable_corruption() {
+        use crate::api::StorageApiError;
+        use crate::lifecycle::LifecycleError;
+
+        for error in [
+            LifecycleError::RecoveryFailed {
+                reason: "replay failed",
+            },
+            LifecycleError::TimelineRecoveryMismatch {
+                reason: "timeline gap",
+            },
+        ] {
+            let mapped = map_lifecycle_error(error);
+            assert!(
+                matches!(mapped, StorageApiError::RecoveryDegraded { .. }),
+                "recovery-integrity failure must map to RecoveryDegraded, got {}",
+                mapped.code()
+            );
+            assert_eq!(
+                mapped.code(),
+                "failed_precondition.storage_api.recovery_degraded"
+            );
+        }
     }
 }
