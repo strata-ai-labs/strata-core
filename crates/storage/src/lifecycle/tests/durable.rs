@@ -584,14 +584,10 @@ fn durable_wal_header_database_mismatch_rejects_existing_segment() {
     )
     .expect_err("wrong segment header database should reject");
 
-    assert!(matches!(
-        error,
-        LifecycleError::LowerLayer {
-            layer: LifecycleLowerLayer::Service,
-            reason: "WAL service failed",
-            ..
-        }
-    ));
+    // A WAL segment header from a different database is tamper/corruption, not a
+    // transient outage; assembly refuses with a non-retryable corruption error
+    // that still preserves the underlying WAL service source.
+    assert!(matches!(error, LifecycleError::RecoveryCorruption { .. }));
     assert!(error.source().is_some());
     assert!(!backend.lock_is_held());
 }

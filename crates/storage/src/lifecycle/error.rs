@@ -73,13 +73,16 @@ pub(crate) enum LifecycleError {
     RecoveryFailed {
         reason: &'static str,
     },
-    /// A durable object could not be decoded during recovery — a checksum
-    /// mismatch, bad magic, or other malformed byte stream. Distinct from a
-    /// transient lower-layer read failure: the bytes on disk are corrupt, so
-    /// retrying the open cannot help. Maps to a permanent, non-retryable
-    /// recovery failure.
+    /// A durable object could not be decoded or reconciled during recovery — a
+    /// checksum mismatch, bad magic, a wrong-database segment, or a malformed
+    /// snapshot section. Distinct from a transient lower-layer read failure: the
+    /// bytes on disk are corrupt, so retrying the open cannot help. Maps to a
+    /// permanent, non-retryable recovery failure. The optional source preserves
+    /// the underlying decode error for storage diagnostics (it is dropped at the
+    /// engine boundary, which surfaces only the class and code).
     RecoveryCorruption {
         reason: &'static str,
+        source: Option<Arc<dyn Error + Send + Sync + 'static>>,
     },
     MaintenanceFailed {
         reason: &'static str,
@@ -248,6 +251,23 @@ impl LifecycleError {
     ) -> Self {
         Self::LowerLayer {
             layer,
+            reason,
+            source: Some(Arc::new(source)),
+        }
+    }
+
+    pub(crate) const fn recovery_corruption(reason: &'static str) -> Self {
+        Self::RecoveryCorruption {
+            reason,
+            source: None,
+        }
+    }
+
+    pub(crate) fn recovery_corruption_with(
+        reason: &'static str,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::RecoveryCorruption {
             reason,
             source: Some(Arc::new(source)),
         }
@@ -535,8 +555,8 @@ impl LifecycleError {
             | (Self::InvalidOpenPlan { reason: left }, Self::InvalidOpenPlan { reason: right })
             | (Self::RecoveryFailed { reason: left }, Self::RecoveryFailed { reason: right })
             | (
-                Self::RecoveryCorruption { reason: left },
-                Self::RecoveryCorruption { reason: right },
+                Self::RecoveryCorruption { reason: left, .. },
+                Self::RecoveryCorruption { reason: right, .. },
             )
             | (
                 Self::MaintenanceFailed { reason: left },
@@ -1008,7 +1028,7 @@ impl fmt::Display for LifecycleError {
                 )
             }
             Self::RecoveryFailed { reason } => write!(formatter, "recovery failed: {reason}"),
-            Self::RecoveryCorruption { reason } => {
+            Self::RecoveryCorruption { reason, .. } => {
                 write!(formatter, "recovery found corrupt durable state: {reason}")
             }
             Self::MaintenanceFailed { reason } => {
@@ -1222,6 +1242,10 @@ impl Error for LifecycleError {
                 source: Some(source),
                 ..
             }
+            | Self::RecoveryCorruption {
+                source: Some(source),
+                ..
+            }
             | Self::FlushPublicationUncertain {
                 source: Some(source),
                 ..
@@ -1340,12 +1364,12 @@ mod tests {
     #[test]
     fn recovery_corruption_equality_distinguishes_by_reason() {
         assert_eq!(
-            LifecycleError::RecoveryCorruption { reason: "same" },
-            LifecycleError::RecoveryCorruption { reason: "same" },
+            LifecycleError::recovery_corruption("same"),
+            LifecycleError::recovery_corruption("same"),
         );
         assert_ne!(
-            LifecycleError::RecoveryCorruption { reason: "left" },
-            LifecycleError::RecoveryCorruption { reason: "right" },
+            LifecycleError::recovery_corruption("left"),
+            LifecycleError::recovery_corruption("right"),
         );
     }
 
@@ -1458,7 +1482,7 @@ mod tests {
                 "corruption.lifecycle.recovery",
             ),
             (
-                LifecycleError::RecoveryCorruption { reason: "r" },
+                LifecycleError::recovery_corruption("r"),
                 "corruption.lifecycle.recovery_corruption",
             ),
             (
