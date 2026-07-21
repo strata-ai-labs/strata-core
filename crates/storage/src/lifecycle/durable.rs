@@ -9,7 +9,7 @@ use super::{
     StorageMode, StorageOpenDisposition, StorageOpenPlan,
 };
 use crate::backend::{
-    Backend, BackendError, BackendHandle, BackendWriterGuard, PublishFailureKind,
+    Backend, BackendError, BackendErrorKind, BackendHandle, BackendWriterGuard, PublishFailureKind,
 };
 use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::state::BranchLocalState;
@@ -328,7 +328,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
         let writer_lock_object = ObjectLayout::writer_lock().map_err(layout_error)?;
         let writer_guard = backend
             .acquire_writer_lock(&writer_lock_object)
-            .map_err(backend_error)?;
+            .map_err(writer_lock_open_error)?;
 
         let manifest_service = DatabaseManifestService::new(backend.clone());
         let (manifest, disposition) = load_or_create_manifest(&manifest_service, &request)?;
@@ -341,7 +341,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             durability_policy,
             request.wal_config(),
         )
-        .map_err(wal_error)?;
+        .map_err(wal_open_error)?;
         if wal.active_segment_id() > manifest.active_wal_segment() {
             // Expected after post-checkpoint segment rolls: the manifest pointer
             // advances only when a checkpoint publishes, so the writer resumed
@@ -614,6 +614,25 @@ fn backend_error(error: BackendError) -> LifecycleError {
     LifecycleError::lower_layer_with(LifecycleLowerLayer::Backend, "backend failed", error)
 }
 
+/// Classify the first backend touch of an open — acquiring the writer lock,
+/// which creates the database directory. A path-shape failure here (the parent
+/// directory is missing, or the path is a file rather than a directory) is a
+/// caller-supplied invalid argument, not a transient backend outage a caller
+/// should retry. Every other failure stays a lower-layer backend error.
+fn writer_lock_open_error(error: BackendError) -> LifecycleError {
+    match error.kind() {
+        BackendErrorKind::NotFound => LifecycleError::InvalidConfig {
+            field: "path",
+            reason: "database path or a parent directory does not exist",
+        },
+        BackendErrorKind::Corruption => LifecycleError::InvalidConfig {
+            field: "path",
+            reason: "database path is not a directory",
+        },
+        _ => backend_error(error),
+    }
+}
+
 fn layout_error(error: LayoutError) -> LifecycleError {
     LifecycleError::lower_layer_with(LifecycleLowerLayer::Layout, "layout failed", error)
 }
@@ -652,6 +671,19 @@ fn manifest_error(error: ManifestServiceError) -> LifecycleError {
 
 fn wal_error(error: WalServiceError) -> LifecycleError {
     LifecycleError::lower_layer_with(LifecycleLowerLayer::Service, "WAL service failed", error)
+}
+
+/// Classify a WAL failure while opening the service during assembly. A segment
+/// that fails to decode (checksum/magic mismatch) is permanent corruption,
+/// refused with a non-retryable recovery error rather than a transient
+/// lower-layer outage.
+fn wal_open_error(error: WalServiceError) -> LifecycleError {
+    if error.is_durable_corruption() {
+        return LifecycleError::RecoveryCorruption {
+            reason: "WAL segment failed to decode while opening the database",
+        };
+    }
+    wal_error(error)
 }
 
 fn branch_error(error: impl std::error::Error + Send + Sync + 'static) -> LifecycleError {

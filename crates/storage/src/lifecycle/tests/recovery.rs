@@ -1017,14 +1017,12 @@ fn recovery_rejects_non_latest_partial_wal_tail_as_corruption() {
         .recover(&request)
         .expect_err("non-latest partial tail must fail closed");
 
-    assert!(matches!(
-        error,
-        LifecycleError::LowerLayer {
-            layer: LifecycleLowerLayer::Service,
-            reason: "WAL recovery read failed",
-            ..
-        }
-    ));
+    // A partial tail on a non-latest segment is unrepairable durable corruption
+    // (only the latest segment may carry a torn tail), so recovery refuses with
+    // a permanent, non-retryable corruption error rather than a transient
+    // lower-layer read failure.
+    assert!(matches!(error, LifecycleError::RecoveryCorruption { .. }));
+    assert_eq!(error.code(), "corruption.lifecycle.recovery_corruption");
     assert_eq!(
         backend
             .object_bytes(&first_object)

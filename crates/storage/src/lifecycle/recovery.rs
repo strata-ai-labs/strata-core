@@ -348,7 +348,7 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
             .services()
             .wal()
             .read_after_commit_version(replay_start)
-            .map_err(wal_error)?;
+            .map_err(wal_recovery_error)?;
         let truncation = read.truncation().cloned();
         let repair = match truncation.as_ref() {
             Some(truncation) => {
@@ -1275,6 +1275,20 @@ fn wal_error(source: WalServiceError) -> LifecycleError {
         "WAL recovery read failed",
         source,
     )
+}
+
+/// Classify a WAL read failure encountered during recovery. A decode failure
+/// (`Format` — checksum/magic mismatch) means the durable log itself is
+/// corrupt, so recovery cannot succeed on a retry: it is a permanent
+/// [`LifecycleError::RecoveryCorruption`]. Every other WAL failure (backend IO,
+/// listing, publish) may be transient and stays a lower-layer error.
+fn wal_recovery_error(source: WalServiceError) -> LifecycleError {
+    if source.is_durable_corruption() {
+        return LifecycleError::RecoveryCorruption {
+            reason: "WAL segment failed to decode during recovery",
+        };
+    }
+    wal_error(source)
 }
 
 fn wal_repair_error(source: WalServiceError) -> LifecycleError {

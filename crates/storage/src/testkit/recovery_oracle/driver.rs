@@ -461,8 +461,7 @@ mod tests {
     use super::super::workload::oracle_key;
     use super::*;
     use crate::api::{
-        StorageApiError, StorageApiErrorClass, StorageApiLowerLayer, StorageApiResult,
-        StorageOpenOutcome, StorageValue,
+        StorageApiError, StorageApiErrorClass, StorageApiResult, StorageOpenOutcome, StorageValue,
     };
     use strata_core::CommitVersion;
 
@@ -660,23 +659,21 @@ mod tests {
         StorageRuntime::open_with_backend(options, backend).map(StorageOpenOutcome::into_runtime)
     }
 
-    /// A corruption must surface as a loud lifecycle recovery failure at the
-    /// public open boundary — never a silent successful open.
+    /// A corruption must surface as a loud, permanent recovery failure at the
+    /// public open boundary — never a silent successful open, and never a
+    /// transient outage a caller would retry forever.
     fn assert_lifecycle_open_failure(result: StorageApiResult<StorageRuntime<'static>>) {
         match result {
             Ok(_) => panic!("corruption was silently tolerated — open succeeded"),
             Err(error) => {
-                assert_eq!(error.code(), "internal.storage_api.lifecycle");
-                assert_eq!(error.class(), StorageApiErrorClass::Internal);
+                assert_eq!(
+                    error.code(),
+                    "failed_precondition.storage_api.recovery_degraded"
+                );
+                assert_eq!(error.class(), StorageApiErrorClass::FailedPrecondition);
                 assert!(
-                    matches!(
-                        &error,
-                        StorageApiError::LowerLayer {
-                            layer: StorageApiLowerLayer::Lifecycle,
-                            ..
-                        }
-                    ),
-                    "expected a lifecycle lower-layer recovery failure"
+                    matches!(&error, StorageApiError::RecoveryDegraded { .. }),
+                    "expected a permanent recovery-corruption failure"
                 );
             }
         }

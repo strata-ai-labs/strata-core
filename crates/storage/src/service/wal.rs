@@ -477,6 +477,15 @@ impl WalServiceError {
                 | Self::UnexpectedObjectSize { .. }
         )
     }
+
+    /// Whether this failure means the durable WAL bytes are malformed rather
+    /// than the backend being transiently unavailable. A decode failure
+    /// (`Format` — checksum/magic/version/length mismatch) is permanent
+    /// corruption: retrying the read cannot recover it. Backend IO, listing,
+    /// and publish failures may be transient.
+    pub(crate) const fn is_durable_corruption(&self) -> bool {
+        matches!(self, Self::Format { .. })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
