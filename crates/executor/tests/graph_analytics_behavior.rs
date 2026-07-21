@@ -244,3 +244,24 @@ fn exercise_refusals(executor: &mut Executor) {
         "invalid_argument.engine.graph_personalization"
     );
 }
+
+#[test]
+fn graph_analytics_budget_rejects_unknown_keys_instead_of_disabling_the_guard() {
+    // A misspelled budget key must be rejected, not silently ignored: ignoring
+    // it deserializes to an all-default budget, which falls back to the engine
+    // limits and disables the guard the caller believed was active.
+    let typo = serde_json::from_str::<Command>(
+        r#"{"type":"graph_pagerank","graph":"g","budget":{"typo":1}}"#,
+    );
+    let error = typo.expect_err("an unknown budget key is rejected");
+    assert!(
+        error.to_string().contains("typo"),
+        "the rejection names the unknown key: {error}"
+    );
+
+    // A correctly-spelled budget still deserializes.
+    serde_json::from_str::<Command>(
+        r#"{"type":"graph_pagerank","graph":"g","budget":{"max_nodes":1}}"#,
+    )
+    .expect("a valid budget key deserializes");
+}
