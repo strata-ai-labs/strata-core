@@ -124,7 +124,7 @@
         ]
       },
       "cardinality": {
-        "description": "Optional cardinality hint (e.g. `one-to-many`).",
+        "description": "Optional cardinality: one of `one-to-one`, `one-to-many`,\n`many-to-one`, or `many-to-many`. Unknown values are rejected.",
         "type": [
           "string",
           "null"

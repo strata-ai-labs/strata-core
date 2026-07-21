@@ -35,7 +35,7 @@ $ strata graph ontology get g
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `cardinality` | `string` | no | Optional cardinality hint (e.g. `one-to-many`). |
+| `cardinality` | `string` | no | Optional cardinality: one of `one-to-one`, `one-to-many`, `many-to-one`, or `many-to-many`. Unknown values are rejected. |
 | `graph` | `string` | yes | Graph name. |
 | `name` | `string` | yes | Link type name. |
 | `properties` | `object` | no | Declared properties by name. |

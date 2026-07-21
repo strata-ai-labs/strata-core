@@ -1339,7 +1339,8 @@ pub enum Command {
         source: String,
         /// Declared target object type.
         target: String,
-        /// Optional cardinality hint (e.g. `one-to-many`).
+        /// Optional cardinality: one of `one-to-one`, `one-to-many`,
+        /// `many-to-one`, or `many-to-many`. Unknown values are rejected.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cardinality: Option<String>,
         /// Declared properties by name.
