@@ -218,6 +218,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::ArrowExport",
+      "wire": "arrow_export",
       "outputs": [
         "Output::ArrowExportResult"
       ],
@@ -300,6 +301,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::ArrowImport",
+      "wire": "arrow_import",
       "outputs": [
         "Output::ArrowImportResult"
       ],
@@ -394,6 +396,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::BranchCreate",
+      "wire": "branch_create",
       "outputs": [
         "Output::Branch"
       ],
@@ -452,6 +455,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::BranchDelete",
+      "wire": "branch_delete",
       "outputs": [
         "Output::BranchDeleteResult"
       ],
@@ -508,6 +512,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::BranchForkCurrent",
+      "wire": "branch_fork_current",
       "outputs": [
         "Output::Branch"
       ],
@@ -564,6 +569,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::BranchForkAtTimestamp",
+      "wire": "branch_fork_at_timestamp",
       "outputs": [
         "Output::Branch"
       ],
@@ -624,6 +630,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::BranchForkAtVersion",
+      "wire": "branch_fork_at_version",
       "outputs": [
         "Output::Branch"
       ],
@@ -684,6 +691,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::BranchGet",
+      "wire": "branch_get",
       "outputs": [
         "Output::Branch"
       ],
@@ -736,6 +744,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::BranchList",
+      "wire": "branch_list",
       "outputs": [
         "Output::Branches"
       ],
@@ -775,6 +784,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::HubClone",
+      "wire": "hub_clone",
       "outputs": [
         "Output::HubCloneResult"
       ],
@@ -837,6 +847,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::ConfigGet",
+      "wire": "config_get",
       "outputs": [
         "Output::Config"
       ],
@@ -874,6 +885,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::ConfigureGetKey",
+      "wire": "configure_get_key",
       "outputs": [
         "Output::ConfigValue"
       ],
@@ -914,6 +926,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::Describe",
+      "wire": "describe",
       "outputs": [
         "Output::Described"
       ],
@@ -959,6 +972,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::EventAppend",
+      "wire": "event_append",
       "outputs": [
         "Output::EventAppendResult"
       ],
@@ -1022,6 +1036,7 @@
       "pagination": "none",
       "batch": "itemwise",
       "input": "Command::EventBatchAppend",
+      "wire": "event_batch_append",
       "outputs": [
         "Output::EventBatchAppendResults"
       ],
@@ -1083,6 +1098,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::EventCount",
+      "wire": "event_count",
       "outputs": [
         "Output::EventCount"
       ],
@@ -1132,6 +1148,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::EventExists",
+      "wire": "event_exists",
       "outputs": [
         "Output::Bool"
       ],
@@ -1180,6 +1197,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::EventGet",
+      "wire": "event_get",
       "outputs": [
         "Output::EventRecord"
       ],
@@ -1229,6 +1247,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::EventList",
+      "wire": "event_list",
       "outputs": [
         "Output::EventRecords"
       ],
@@ -1287,6 +1306,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::EventRange",
+      "wire": "event_range",
       "outputs": [
         "Output::EventRangeResult"
       ],
@@ -1345,6 +1365,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::EventRangeByTime",
+      "wire": "event_range_by_time",
       "outputs": [
         "Output::EventRangeResult"
       ],
@@ -1403,6 +1424,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::EventListTypes",
+      "wire": "event_list_types",
       "outputs": [
         "Output::EventTypeList"
       ],
@@ -1452,6 +1474,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::EventVerifyChain",
+      "wire": "event_verify_chain",
       "outputs": [
         "Output::EventChainVerification"
       ],
@@ -1501,6 +1524,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphAddEdge",
+      "wire": "graph_add_edge",
       "outputs": [
         "Output::GraphEdgeWriteResult"
       ],
@@ -1599,6 +1623,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphAddNode",
+      "wire": "graph_add_node",
       "outputs": [
         "Output::GraphNodeWriteResult"
       ],
@@ -1687,6 +1712,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphApplyDeletePolicy",
+      "wire": "graph_apply_delete_policy",
       "outputs": [
         "Output::GraphDeletePolicyResult"
       ],
@@ -1740,6 +1766,7 @@
       "pagination": "none",
       "batch": "atomic",
       "input": "Command::GraphBatchWrite",
+      "wire": "graph_batch_write",
       "outputs": [
         "Output::GraphBatchWriteResult"
       ],
@@ -1820,6 +1847,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphBfs",
+      "wire": "graph_bfs",
       "outputs": [
         "Output::GraphBfsResult"
       ],
@@ -1901,6 +1929,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::GraphBindingsForEntity",
+      "wire": "graph_bindings_for_entity",
       "outputs": [
         "Output::GraphBindingPage"
       ],
@@ -1954,6 +1983,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphBulkInsert",
+      "wire": "graph_bulk_insert",
       "outputs": [
         "Output::GraphBulkInsertResult"
       ],
@@ -2046,6 +2076,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphCdlp",
+      "wire": "graph_cdlp",
       "outputs": [
         "Output::GraphCdlpResult"
       ],
@@ -2117,6 +2148,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphCreate",
+      "wire": "graph_create",
       "outputs": [
         "Output::GraphCreateResult"
       ],
@@ -2187,6 +2219,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphDelete",
+      "wire": "graph_delete",
       "outputs": [
         "Output::GraphDeleteResult"
       ],
@@ -2243,6 +2276,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphGetEdge",
+      "wire": "graph_get_edge",
       "outputs": [
         "Output::GraphEdgeResult"
       ],
@@ -2310,6 +2344,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphGetNode",
+      "wire": "graph_get_node",
       "outputs": [
         "Output::GraphNodeResult"
       ],
@@ -2371,6 +2406,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphLcc",
+      "wire": "graph_lcc",
       "outputs": [
         "Output::GraphLccResult"
       ],
@@ -2441,6 +2477,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::GraphList",
+      "wire": "graph_list",
       "outputs": [
         "Output::GraphNamePage"
       ],
@@ -2493,6 +2530,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::GraphListNodes",
+      "wire": "graph_list_nodes",
       "outputs": [
         "Output::GraphNodePage"
       ],
@@ -2556,6 +2594,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphGetMeta",
+      "wire": "graph_get_meta",
       "outputs": [
         "Output::GraphInfoResult"
       ],
@@ -2615,6 +2654,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::GraphNeighbors",
+      "wire": "graph_neighbors",
       "outputs": [
         "Output::GraphNeighborPage"
       ],
@@ -2684,6 +2724,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::GraphNodesByType",
+      "wire": "graph_nodes_by_type",
       "outputs": [
         "Output::GraphNodePage"
       ],
@@ -2752,6 +2793,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphDefineLinkType",
+      "wire": "graph_define_link_type",
       "outputs": [
         "Output::GraphOntologyWriteResult"
       ],
@@ -2826,6 +2868,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphDefineObjectType",
+      "wire": "graph_define_object_type",
       "outputs": [
         "Output::GraphOntologyWriteResult"
       ],
@@ -2899,6 +2942,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphDeleteLinkType",
+      "wire": "graph_delete_link_type",
       "outputs": [
         "Output::GraphOntologyDeleteResult"
       ],
@@ -2966,6 +3010,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphDeleteObjectType",
+      "wire": "graph_delete_object_type",
       "outputs": [
         "Output::GraphOntologyDeleteResult"
       ],
@@ -3032,6 +3077,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphFreezeOntology",
+      "wire": "graph_freeze_ontology",
       "outputs": [
         "Output::GraphOntologyFreezeResult"
       ],
@@ -3099,6 +3145,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphGetOntology",
+      "wire": "graph_get_ontology",
       "outputs": [
         "Output::GraphOntologyResult"
       ],
@@ -3159,6 +3206,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphOntologySummary",
+      "wire": "graph_ontology_summary",
       "outputs": [
         "Output::GraphOntologySummaryResult"
       ],
@@ -3219,6 +3267,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphPagerank",
+      "wire": "graph_pagerank",
       "outputs": [
         "Output::GraphPagerankResult"
       ],
@@ -3298,6 +3347,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphRemoveEdge",
+      "wire": "graph_remove_edge",
       "outputs": [
         "Output::GraphDeleteResult"
       ],
@@ -3365,6 +3415,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphRemoveNode",
+      "wire": "graph_remove_node",
       "outputs": [
         "Output::GraphDeleteResult"
       ],
@@ -3426,6 +3477,7 @@
       "pagination": "sample",
       "batch": "none",
       "input": "Command::GraphSample",
+      "wire": "graph_sample",
       "outputs": [
         "Output::GraphSampleResult"
       ],
@@ -3485,6 +3537,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphSssp",
+      "wire": "graph_sssp",
       "outputs": [
         "Output::GraphSsspResult"
       ],
@@ -3562,6 +3615,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::GraphWcc",
+      "wire": "graph_wcc",
       "outputs": [
         "Output::GraphWccResult"
       ],
@@ -3632,6 +3686,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::Health",
+      "wire": "health",
       "outputs": [
         "Output::Health"
       ],
@@ -3677,6 +3732,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::InferenceCacheStatus",
+      "wire": "inference_cache_status",
       "outputs": [
         "Output::InferenceCacheStatus"
       ],
@@ -3718,6 +3774,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::InferenceModelCapability",
+      "wire": "inference_model_capability",
       "outputs": [
         "Output::InferenceCapability"
       ],
@@ -3763,6 +3820,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::InferenceDetokenize",
+      "wire": "inference_detokenize",
       "outputs": [
         "Output::InferenceText"
       ],
@@ -3824,6 +3882,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::InferenceEmbed",
+      "wire": "inference_embed",
       "outputs": [
         "Output::InferenceEmbeddings"
       ],
@@ -3905,6 +3964,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::InferenceGenerate",
+      "wire": "inference_generate",
       "outputs": [
         "Output::InferenceGeneration"
       ],
@@ -4003,6 +4063,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::InferenceModelsList",
+      "wire": "inference_models_list",
       "outputs": [
         "Output::InferenceModels"
       ],
@@ -4045,6 +4106,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::InferenceModelsLocal",
+      "wire": "inference_models_local",
       "outputs": [
         "Output::InferenceModels"
       ],
@@ -4087,6 +4149,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::InferenceModelsPull",
+      "wire": "inference_models_pull",
       "outputs": [
         "Output::InferenceModelPulled"
       ],
@@ -4152,6 +4215,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::InferenceRank",
+      "wire": "inference_rank",
       "outputs": [
         "Output::InferenceRanking"
       ],
@@ -4213,6 +4277,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::InferenceTokenize",
+      "wire": "inference_tokenize",
       "outputs": [
         "Output::InferenceTokenIds"
       ],
@@ -4274,6 +4339,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::InferenceUnload",
+      "wire": "inference_unload",
       "outputs": [
         "Output::InferenceUnloadResult"
       ],
@@ -4314,6 +4380,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::Info",
+      "wire": "info",
       "outputs": [
         "Output::DatabaseInfo"
       ],
@@ -4359,6 +4426,7 @@
       "pagination": "none",
       "batch": "itemwise",
       "input": "Command::JsonBatchDelete",
+      "wire": "json_batch_delete",
       "outputs": [
         "Output::JsonBatchResults"
       ],
@@ -4427,6 +4495,7 @@
       "pagination": "none",
       "batch": "itemwise",
       "input": "Command::JsonBatchExists",
+      "wire": "json_batch_exists",
       "outputs": [
         "Output::JsonBatchExistsResults"
       ],
@@ -4479,6 +4548,7 @@
       "pagination": "none",
       "batch": "itemwise",
       "input": "Command::JsonBatchGet",
+      "wire": "json_batch_get",
       "outputs": [
         "Output::JsonBatchGetResults"
       ],
@@ -4539,6 +4609,7 @@
       "pagination": "none",
       "batch": "itemwise",
       "input": "Command::JsonBatchSet",
+      "wire": "json_batch_set",
       "outputs": [
         "Output::JsonBatchResults"
       ],
@@ -4624,6 +4695,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::JsonCount",
+      "wire": "json_count",
       "outputs": [
         "Output::Uint"
       ],
@@ -4676,6 +4748,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::JsonDelete",
+      "wire": "json_delete",
       "outputs": [
         "Output::JsonDeleteResult"
       ],
@@ -4737,6 +4810,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::JsonExists",
+      "wire": "json_exists",
       "outputs": [
         "Output::Bool"
       ],
@@ -4789,6 +4863,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::JsonGet",
+      "wire": "json_get",
       "outputs": [
         "Output::JsonValue",
         "Output::JsonVersionedValue"
@@ -4862,6 +4937,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::JsonHistory",
+      "wire": "json_history",
       "outputs": [
         "Output::JsonVersionHistory"
       ],
@@ -4916,6 +4992,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::JsonCreateIndex",
+      "wire": "json_create_index",
       "outputs": [
         "Output::JsonIndexDefinition"
       ],
@@ -4982,6 +5059,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::JsonDropIndex",
+      "wire": "json_drop_index",
       "outputs": [
         "Output::Bool"
       ],
@@ -5039,6 +5117,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::JsonListIndexes",
+      "wire": "json_list_indexes",
       "outputs": [
         "Output::JsonIndexList"
       ],
@@ -5087,6 +5166,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::JsonList",
+      "wire": "json_list",
       "outputs": [
         "Output::JsonListResult"
       ],
@@ -5139,6 +5219,7 @@
       "pagination": "sample",
       "batch": "none",
       "input": "Command::JsonSample",
+      "wire": "json_sample",
       "outputs": [
         "Output::JsonSampleResult"
       ],
@@ -5191,6 +5272,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::JsonScan",
+      "wire": "json_scan",
       "outputs": [
         "Output::JsonScanResult"
       ],
@@ -5243,6 +5325,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::JsonSet",
+      "wire": "json_set",
       "outputs": [
         "Output::JsonWriteResult"
       ],
@@ -5330,6 +5413,7 @@
       "pagination": "none",
       "batch": "itemwise",
       "input": "Command::KvBatchDelete",
+      "wire": "kv_batch_delete",
       "outputs": [
         "Output::BatchResults"
       ],
@@ -5394,6 +5478,7 @@
       "pagination": "none",
       "batch": "itemwise",
       "input": "Command::KvBatchExists",
+      "wire": "kv_batch_exists",
       "outputs": [
         "Output::BatchExistsResults"
       ],
@@ -5450,6 +5535,7 @@
       "pagination": "none",
       "batch": "itemwise",
       "input": "Command::KvBatchGet",
+      "wire": "kv_batch_get",
       "outputs": [
         "Output::BatchGetResults"
       ],
@@ -5506,6 +5592,7 @@
       "pagination": "none",
       "batch": "itemwise",
       "input": "Command::KvBatchPut",
+      "wire": "kv_batch_put",
       "outputs": [
         "Output::BatchResults"
       ],
@@ -5573,6 +5660,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::KvCount",
+      "wire": "kv_count",
       "outputs": [
         "Output::Uint"
       ],
@@ -5625,6 +5713,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::KvDelete",
+      "wire": "kv_delete",
       "outputs": [
         "Output::DeleteResult"
       ],
@@ -5674,6 +5763,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::KvExists",
+      "wire": "kv_exists",
       "outputs": [
         "Output::Bool"
       ],
@@ -5726,6 +5816,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::KvGet",
+      "wire": "kv_get",
       "outputs": [
         "Output::KvVersionedValue"
       ],
@@ -5789,6 +5880,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::KvHistory",
+      "wire": "kv_history",
       "outputs": [
         "Output::VersionHistory"
       ],
@@ -5842,6 +5934,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::KvList",
+      "wire": "kv_list",
       "outputs": [
         "Output::KeysPage"
       ],
@@ -5896,6 +5989,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::KvPut",
+      "wire": "kv_put",
       "outputs": [
         "Output::WriteResult"
       ],
@@ -5951,6 +6045,7 @@
       "pagination": "sample",
       "batch": "none",
       "input": "Command::KvSample",
+      "wire": "kv_sample",
       "outputs": [
         "Output::SampleResult"
       ],
@@ -6003,6 +6098,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::KvScan",
+      "wire": "kv_scan",
       "outputs": [
         "Output::KvScanResult"
       ],
@@ -6056,6 +6152,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::Metrics",
+      "wire": "metrics",
       "outputs": [
         "Output::Metrics"
       ],
@@ -6100,6 +6197,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::Ping",
+      "wire": "ping",
       "outputs": [
         "Output::Pong"
       ],
@@ -6136,6 +6234,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::RemoteGet",
+      "wire": "remote_get",
       "outputs": [
         "Output::RemoteOriginResult"
       ],
@@ -6173,6 +6272,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::SpaceCreate",
+      "wire": "space_create",
       "outputs": [
         "Output::SpaceCreateResult"
       ],
@@ -6222,6 +6322,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::SpaceDelete",
+      "wire": "space_delete",
       "outputs": [
         "Output::SpaceDeleteResult"
       ],
@@ -6292,6 +6393,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::SpaceExists",
+      "wire": "space_exists",
       "outputs": [
         "Output::Bool"
       ],
@@ -6344,6 +6446,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::SpaceList",
+      "wire": "space_list",
       "outputs": [
         "Output::SpaceList"
       ],
@@ -6388,6 +6491,7 @@
       "pagination": "none",
       "batch": "itemwise",
       "input": "Command::VectorBatchDelete",
+      "wire": "vector_batch_delete",
       "outputs": [
         "Output::VectorBatchDeleteResults"
       ],
@@ -6458,6 +6562,7 @@
       "pagination": "none",
       "batch": "itemwise",
       "input": "Command::VectorBatchExists",
+      "wire": "vector_batch_exists",
       "outputs": [
         "Output::VectorBatchExistsResults"
       ],
@@ -6520,6 +6625,7 @@
       "pagination": "none",
       "batch": "itemwise",
       "input": "Command::VectorBatchGet",
+      "wire": "vector_batch_get",
       "outputs": [
         "Output::VectorBatchGetResults"
       ],
@@ -6586,6 +6692,7 @@
       "pagination": "none",
       "batch": "itemwise",
       "input": "Command::VectorBatchUpsert",
+      "wire": "vector_batch_upsert",
       "outputs": [
         "Output::VectorBatchUpsertResults"
       ],
@@ -6667,6 +6774,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::VectorCreateCollection",
+      "wire": "vector_create_collection",
       "outputs": [
         "Output::VectorCollectionList"
       ],
@@ -6739,6 +6847,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::VectorDeleteCollection",
+      "wire": "vector_delete_collection",
       "outputs": [
         "Output::Bool"
       ],
@@ -6800,6 +6909,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::VectorListCollections",
+      "wire": "vector_list_collections",
       "outputs": [
         "Output::VectorCollectionList"
       ],
@@ -6861,6 +6971,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::VectorCollectionStats",
+      "wire": "vector_collection_stats",
       "outputs": [
         "Output::VectorCollectionList"
       ],
@@ -6921,6 +7032,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::VectorCount",
+      "wire": "vector_count",
       "outputs": [
         "Output::Uint"
       ],
@@ -6981,6 +7093,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::VectorDelete",
+      "wire": "vector_delete",
       "outputs": [
         "Output::VectorDeleteResult"
       ],
@@ -7043,6 +7156,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::VectorDeleteAll",
+      "wire": "vector_delete_all",
       "outputs": [
         "Output::VectorBulkDeleteResult"
       ],
@@ -7105,6 +7219,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::VectorDeleteByFilter",
+      "wire": "vector_delete_by_filter",
       "outputs": [
         "Output::VectorBulkDeleteResult"
       ],
@@ -7171,6 +7286,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::VectorExists",
+      "wire": "vector_exists",
       "outputs": [
         "Output::Bool"
       ],
@@ -7233,6 +7349,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::VectorGet",
+      "wire": "vector_get",
       "outputs": [
         "Output::VectorData"
       ],
@@ -7301,6 +7418,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::VectorHistory",
+      "wire": "vector_history",
       "outputs": [
         "Output::VectorVersionHistory"
       ],
@@ -7364,6 +7482,7 @@
       "pagination": "bounded",
       "batch": "none",
       "input": "Command::VectorIndexQuery",
+      "wire": "vector_index_query",
       "outputs": [
         "Output::VectorIndexQuery"
       ],
@@ -7434,6 +7553,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::VectorListKeys",
+      "wire": "vector_list_keys",
       "outputs": [
         "Output::VectorKeyPage"
       ],
@@ -7496,6 +7616,7 @@
       "pagination": "bounded",
       "batch": "none",
       "input": "Command::VectorQuery",
+      "wire": "vector_query",
       "outputs": [
         "Output::VectorMatches"
       ],
@@ -7566,6 +7687,7 @@
       "pagination": "sample",
       "batch": "none",
       "input": "Command::VectorSample",
+      "wire": "vector_sample",
       "outputs": [
         "Output::VectorSampleResult"
       ],
@@ -7628,6 +7750,7 @@
       "pagination": "cursor",
       "batch": "none",
       "input": "Command::VectorScan",
+      "wire": "vector_scan",
       "outputs": [
         "Output::VectorScanResult"
       ],
@@ -7690,6 +7813,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::VectorUpdateMetadata",
+      "wire": "vector_update_metadata",
       "outputs": [
         "Output::VectorMetadataUpdateResult"
       ],
@@ -7756,6 +7880,7 @@
       "pagination": "none",
       "batch": "none",
       "input": "Command::VectorUpsert",
+      "wire": "vector_upsert",
       "outputs": [
         "Output::VectorWriteResult"
       ],

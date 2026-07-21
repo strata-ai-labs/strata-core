@@ -69,6 +69,61 @@ fn command_lookup_supports_ids_and_cli_paths() {
 }
 
 #[test]
+fn catalog_entries_publish_the_executable_wire_name() {
+    let catalog = CliCommandCatalog::embedded().expect("embedded CLI metadata loads");
+
+    // The dotted id (`kv.list`) and the CLI path (`kv list`) are neither the
+    // executable literal a tool serializes into `{"type": ...}`. The entry must
+    // carry that wire name so a catalog reader can construct a call.
+    let list = catalog.command("kv.list").expect("kv.list resolves");
+    assert_eq!(list.wire, "kv_list");
+    assert_ne!(list.wire, list.id);
+    assert_ne!(list.wire, list.path_display);
+
+    let scan = catalog.command("json.scan").expect("json.scan resolves");
+    assert_eq!(scan.wire, "json_scan");
+
+    // Every entry's wire name is the snake_case of its `Command::` variant, is
+    // never dotted, and never carries the `Command::` prefix.
+    for command in catalog.commands() {
+        let variant = command
+            .input
+            .strip_prefix("Command::")
+            .unwrap_or_else(|| panic!("{} input is not a Command variant", command.id));
+        let expected = pascal_to_snake(variant);
+        assert_eq!(
+            command.wire, expected,
+            "{} publishes the wrong wire name",
+            command.id
+        );
+        assert!(
+            command
+                .wire
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+            "{} wire name `{}` is not snake_case",
+            command.id,
+            command.wire
+        );
+    }
+}
+
+fn pascal_to_snake(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for (index, ch) in name.chars().enumerate() {
+        if ch.is_ascii_uppercase() {
+            if index != 0 {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+#[test]
 fn command_listing_is_grouped_and_sorted() {
     let catalog = CliCommandCatalog::embedded().expect("embedded CLI metadata loads");
 
@@ -159,6 +214,21 @@ fn runtime_validation_rejects_command_identity_mismatch() {
         serde_json::from_str(EMBEDDED_CLI_COMMAND_INDEX_JSON).expect("metadata parses as JSON");
     value["commands"][0]["family"] = Value::from("vector");
     assert_parse_invalid(&value, "identity does not match family/op");
+}
+
+#[test]
+fn runtime_validation_rejects_wire_name_that_disagrees_with_input() {
+    // A wire name that is not the snake_case of the command's `input` variant
+    // would send a catalog reader to the wrong (or a nonexistent) command.
+    let mut value: Value =
+        serde_json::from_str(EMBEDDED_CLI_COMMAND_INDEX_JSON).expect("metadata parses as JSON");
+    value["commands"][0]["wire"] = Value::from("not_the_wire_name");
+    assert_parse_invalid(&value, "wire name");
+
+    let mut value: Value =
+        serde_json::from_str(EMBEDDED_CLI_COMMAND_INDEX_JSON).expect("metadata parses as JSON");
+    value["commands"][0]["wire"] = Value::from("");
+    assert_parse_invalid(&value, "wire");
 }
 
 #[test]

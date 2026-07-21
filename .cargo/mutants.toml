@@ -1,0 +1,15 @@
+# cargo-mutants configuration.
+#
+# The CI mutation-on-diff gate builds the executor with DEFAULT features. The
+# `idl_tooling` module is `#[cfg(feature = "idl-tooling")]` (a non-default,
+# build-tooling feature), so under the mutation build it is compiled out
+# entirely. Any mutant cargo-mutants injects there lands in cfg'd-out code: the
+# crate still builds and the default-feature suite still passes, so the mutant
+# is reported as a false MISSED even though the mutated line never runs.
+#
+# The module's correctness is guarded in CI by the `check` / `check-cli` /
+# `check-docs` / `verify-examples` / `verify-fixtures` binary gates (which run
+# under `--features idl-tooling`), not by the default-feature test suite that
+# mutation-on-diff exercises. Exclude it so the gate does not flag
+# unreachable-under-the-harness mutants.
+exclude_globs = ["crates/executor/src/idl_tooling.rs"]
