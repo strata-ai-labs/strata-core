@@ -372,6 +372,9 @@ pub struct CliCommandEntry {
     pub batch: String,
     /// Executor command variant reference.
     pub input: String,
+    /// Executable wire name — the `type` literal a caller serializes to invoke
+    /// this command (e.g. `kv_list`), distinct from the dotted `id` and path.
+    pub wire: String,
     /// All executor output variants this command can produce on the current wire.
     pub outputs: Vec<String>,
     /// Shared response concept.
@@ -1058,6 +1061,7 @@ fn validate_cli_source_index(index: &CommandIndex) -> Result<()> {
 }
 
 fn cli_entry_from_resolved(command: ResolvedCommand) -> Result<CliCommandEntry> {
+    let wire = variant_wire_tag(&command.input, "Command")?;
     let entry = CliCommandEntry {
         id: command.id,
         path_display: cli_path_key(&command.cli.path),
@@ -1076,6 +1080,7 @@ fn cli_entry_from_resolved(command: ResolvedCommand) -> Result<CliCommandEntry> 
         pagination: command.pagination,
         batch: command.batch,
         input: command.input,
+        wire,
         outputs: command.outputs,
         response_model: command.response_model,
         errors: command.errors,
@@ -1110,6 +1115,7 @@ fn validate_cli_entry(entry: &CliCommandEntry) -> Result<()> {
         ("pagination", entry.pagination.as_str()),
         ("batch", entry.batch.as_str()),
         ("input", entry.input.as_str()),
+        ("wire", entry.wire.as_str()),
         ("response_model", entry.response_model.as_str()),
         ("wire_status", entry.wire_status.as_str()),
     ] {

@@ -256,6 +256,9 @@ pub struct CliCommandEntry {
     pub batch: String,
     /// Executor command variant reference.
     pub input: String,
+    /// Executable wire name — the `type` literal a caller serializes to invoke
+    /// this command (e.g. `kv_list`), distinct from the dotted `id` and path.
+    pub wire: String,
     /// All executor output variants this command can produce on the current wire.
     pub outputs: Vec<String>,
     /// Shared response concept.
@@ -430,6 +433,7 @@ fn validate_command(command: &CliCommandEntry) -> CliMetadataResult<()> {
     validate_non_empty("pagination", &command.pagination)?;
     validate_non_empty("batch", &command.batch)?;
     validate_executor_ref("input", &command.input, "Command::")?;
+    validate_wire_name(&command.wire, &command.input, &command.id)?;
     if command.outputs.is_empty() {
         return Err(invalid(format!("command `{}` has no outputs", command.id)));
     }
@@ -605,6 +609,40 @@ fn validate_executor_ref(field: &str, value: &str, prefix: &str) -> CliMetadataR
             "{field} `{value}` has invalid variant name"
         )))
     }
+}
+
+/// Confirms the published wire name is the `snake_case` of the `input` variant,
+/// so a catalog reader can serialize `{"type": wire}` and reach this command.
+fn validate_wire_name(wire: &str, input: &str, command_id: &str) -> CliMetadataResult<()> {
+    validate_non_empty("wire", wire)?;
+    let Some(variant) = input.strip_prefix("Command::") else {
+        return Err(invalid(format!(
+            "command `{command_id}` input `{input}` must start with Command::"
+        )));
+    };
+    let expected = pascal_to_snake(variant);
+    if wire == expected {
+        Ok(())
+    } else {
+        Err(invalid(format!(
+            "command `{command_id}` wire name `{wire}` does not match input `{input}`"
+        )))
+    }
+}
+
+fn pascal_to_snake(name: &str) -> String {
+    let mut output = String::with_capacity(name.len());
+    for (index, ch) in name.chars().enumerate() {
+        if ch.is_ascii_uppercase() {
+            if index != 0 {
+                output.push('_');
+            }
+            output.push(ch.to_ascii_lowercase());
+        } else {
+            output.push(ch);
+        }
+    }
+    output
 }
 
 fn validate_fixture_path(path: &str, prefix: &str) -> CliMetadataResult<()> {
