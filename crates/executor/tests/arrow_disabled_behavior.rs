@@ -25,6 +25,7 @@ fn arrow_commands_return_stable_feature_disabled_errors_without_feature() {
             key_column: None,
             value_column: None,
             collection: None,
+            graph: None,
         })
         .expect_err("feature disabled import fails");
     assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
@@ -67,6 +68,7 @@ fn missing_arrow_import_input_is_reported_before_feature_disabled() {
             key_column: None,
             value_column: None,
             collection: None,
+            graph: None,
         })
         .expect_err("missing input fails");
     assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);

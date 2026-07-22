@@ -33,6 +33,13 @@ pub(crate) fn resolve_mapping(
         ArrowImportTarget::Kv => resolve_kv_value(schema, key_idx, value_column)?,
         ArrowImportTarget::Json => resolve_json_document(schema, key_idx, value_column)?,
         ArrowImportTarget::Vector => resolve_vector_embedding(schema, key_idx, value_column)?,
+        // Graph import reads dedicated node/edge files and never calls
+        // `resolve_mapping`; this arm keeps the match exhaustive defensively.
+        ArrowImportTarget::Graph => {
+            return Err(internal_error(
+                "graph Arrow import does not use single-column mapping",
+            ));
+        }
     };
     // A vector export writes a designated JSON `metadata` column plus an internal
     // `vector_revision`. Treat metadata as a document (parsed by `vector_metadata`,

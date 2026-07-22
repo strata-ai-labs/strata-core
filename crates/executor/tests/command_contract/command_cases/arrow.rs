@@ -11,6 +11,7 @@ pub(super) fn arrow_commands() -> Vec<Command> {
             key_column: None,
             value_column: None,
             collection: None,
+            graph: None,
         },
         Command::ArrowExport {
             branch: None,
@@ -38,6 +39,7 @@ pub(super) fn arrow_round_trip_edge_commands() -> Vec<Command> {
             key_column: Some("id".to_owned()),
             value_column: Some("payload".to_owned()),
             collection: None,
+            graph: None,
         },
         Command::ArrowImport {
             branch: Some("feature".to_owned()),
@@ -48,6 +50,7 @@ pub(super) fn arrow_round_trip_edge_commands() -> Vec<Command> {
             key_column: Some("_id".to_owned()),
             value_column: Some("emb".to_owned()),
             collection: Some("docs".to_owned()),
+            graph: None,
         },
         Command::ArrowExport {
             branch: Some("feature".to_owned()),

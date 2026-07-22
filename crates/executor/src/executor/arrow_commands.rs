@@ -18,6 +18,7 @@ impl Executor {
         key_column: Option<&str>,
         value_column: Option<&str>,
         collection: Option<&str>,
+        graph: Option<&str>,
     ) -> ExecutorResult<Output> {
         crate::arrow::import::import_file(
             self,
@@ -29,6 +30,7 @@ impl Executor {
             key_column,
             value_column,
             collection,
+            graph,
         )
     }
 
@@ -49,6 +51,7 @@ impl Executor {
         _key_column: Option<&str>,
         _value_column: Option<&str>,
         _collection: Option<&str>,
+        _graph: Option<&str>,
     ) -> ExecutorResult<Output> {
         if !std::path::Path::new(&file_path).exists() {
             return Err(ExecutorError::invalid_input(

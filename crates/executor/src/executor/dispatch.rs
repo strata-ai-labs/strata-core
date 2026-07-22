@@ -933,6 +933,7 @@ impl Executor {
                 key_column,
                 value_column,
                 collection,
+                graph,
             } => self.execute_arrow_import(
                 branch.as_deref(),
                 space.as_deref(),
@@ -942,6 +943,7 @@ impl Executor {
                 key_column.as_deref(),
                 value_column.as_deref(),
                 collection.as_deref(),
+                graph.as_deref(),
             ),
             Command::ArrowExport {
                 branch,
