@@ -238,6 +238,17 @@ Phase 4 is also **evidence-directed**, not a blind sweep: the #2686 adversarial
 pass gave us a labelled sample of what our coverage misses, so each generator is
 aimed at a class the codebase has already proven it harbours (see below).
 
+The slice set is additionally grounded in a 2026-07-22 survey of gold-standard
+database test architecture (SQLite TH3/SLT/dbsqlfuzz, the FoundationDB →
+TigerBeetle DST lineage, the SQLancer oracle family, RocksDB/Pebble/ClickHouse
+practice, the Amazon S3 ShardStore lightweight-formal-methods results) —
+`strata-internal:research/testing/gold-standard-database-test-architecture.md`.
+Slices **4.10–4.12** and gate 8 come from that survey; it also supplies the
+negative results this plan deliberately heeds (coarse crash states beat
+exhaustive block-level enumeration; resource-exhaustion testing dies without a
+precise oracle; validation at 0.2× of implementation size achieved deep
+assurance through generated volume — the empirical case for ratio-as-byproduct).
+
 ### What Phase 4 must hunt — the empirical gap classes (#2686 evidence)
 
 The #2686 adversarial pass (19 engine defects, reproduced through the Python SDK
@@ -317,8 +328,14 @@ stands either way.
 3. **Regeneration is deterministic.** Committed corpora regenerate
    byte-identically in CI (a drift guard asserts no diff), so reviewers review
    the *generator and its oracle*, never a million generated lines.
-4. **CI is tiered.** A fast representative subset runs per-PR; the full corpora
-   and soaks run nightly. Volume must not wreck PR latency.
+4. **CI is tiered — four tiers, not two.** A fast representative subset runs
+   per-PR; the full corpora, metamorphic runs, and soaks run nightly; the
+   fuzzers and the randomized crash test run **continuously** (the
+   dbsqlfuzz/RocksDB tier — long-lived scheduled jobs accumulating corpus, not
+   nightly-bounded); and a **pre-release soak** runs the full generated volume
+   — every corpus × the config matrix × the fault schedules — on the release
+   tag (the TH3 248.5-million-test model, wired into `release.yml` beside the
+   format gate). Volume must not wreck PR latency.
 5. **Every bug found → issue → fix → regression test**, immediately (standing
    program rule). Phase 4's deliverable is *bugs found and fixed*; the ratio is
    the receipt.
@@ -330,6 +347,16 @@ stands either way.
    searching that class. The seed's fix is *not* the exit; the lane keeps
    running (nightly) until its mutation-kill on that surface plateaus, because
    the found instances are a sample and the population is unknown.
+8. **Secondary oracles ride every generated lane.** In the NoREC campaign,
+   ~⅔ of the 159 bugs came not from the primary oracle but from cheap checks
+   riding the same generated workload (58 unexpected-error, 27 debug-assert,
+   23 crash/hang); PQS's error-string oracle alone found 34 of its 99 bugs,
+   including corruptions. Every Phase 4 lane therefore asserts, beside its
+   primary oracle: (a) **no unexpected error code** on an operation expected to
+   succeed — the IDL error registry defines "expected" per command; (b) **no
+   debug-assert / internal-invariant trip** — generated lanes run debug builds
+   so assertions fire; (c) **no sanitizer finding** on the sanitizer tiers.
+   Near-zero marginal cost, documented ~2–3× yield multiplier.
 
 ### Phase 4 slices
 
@@ -338,6 +365,13 @@ mutation-gate pattern that every later lane reuses. The seeded class-hunters
 (**4.7–4.9**) are small, each already has a known #2686 bug to validate against,
 and they directly answer *"how many more of these are there?"* — so they run in
 parallel with 4.1/4.2a rather than waiting behind the big differential lanes.
+Of the research-derived slices, **4.10** also starts early — its cheapest
+oracles are the highest documented bug-yield-per-effort instruments in the
+literature and need no new infrastructure; **4.12** pairs with 4.2's
+Strata-only metamorphic generator (the same workloads, recorded as histories);
+**4.11** sequences after the 4.9 fault taxonomy exists, since the simulator's
+seed drives that fault schedule; **4.13** is CI wiring over existing suites
+and can land whenever convenient.
 
 | # | Slice | Scope | Status |
 |---|---|---|---|
@@ -346,10 +380,14 @@ parallel with 4.1/4.2a rather than waiting behind the big differential lanes.
 | 4.3 | **Exhaustive concurrency-schedule exploration** | loom/shuttle over the commit / BS5 write-group / latest-scan interleavings, turning rare CI flakes into deterministic, seed-reproducible findings. #2682 (off-lock torn read) is the seed case. High bug yield for a database; the highest-value non-LOC lever | Planned |
 | 4.4 | **Vendored public conformance suites** | Import battle-tested corpora wholesale: JSONPath Compliance Test Suite, Unicode collation/normalization, float-format edge cases, and analogous KV/vector/graph reference sets. A small runner over large vendored data | Planned |
 | 4.5 | **Golden + combinatorial matrix expansion** | Every record type × canonical/boundary/adversarial vectors across the frozen codec; the full config × capability × operation cross-product (STH-6 extended), generated and result-equality-checked | Planned |
-| 4.6 | **Committed fuzz corpora + surface expansion** | Version the accumulated persistent-corpus interesting-inputs; extend the 30 fuzz targets to the full decoder/API surface — and past crash-only oracles to **round-trip fidelity** (`decode∘encode == id`, `read == write`) so value loss (not just panics) fails a target; commit crash-triage regressions. Seeds: #2688, #2689 | Planned |
+| 4.6 | **Committed fuzz corpora + surface expansion** | Version the accumulated persistent-corpus interesting-inputs; extend the 30 fuzz targets to the full decoder/API surface — and past crash-only oracles to **round-trip fidelity** (`decode∘encode == id`, `read == write`) so value loss (not just panics) fails a target; commit crash-triage regressions. Two generator upgrades from the survey: a **dual-mutation** target in the dbsqlfuzz mold — co-mutate the command stream *and* the on-disk state (WAL segments, table blocks, manifests) in one fuzzer, the design SQLite reports out-yields every other fuzzer — and **corpus recombination** (seed the mutator from the existing test corpus and splice fragments of previously seen inputs; the ClickHouse AST-fuzzer trick, ~700 LOC → 200+ bugs there). Seeds: #2688, #2689 | Planned |
 | 4.7 | **Cross-surface parity harness (internal differential)** | Strata-vs-analogous-Strata: assert parallel surfaces obey one contract — export↔import symmetry, branch↔space lifecycle/resolution, the batch family's failure channels, the range direction × endpoint matrix (reverse ↔ forward walk, `range` ↔ `range_by_time` bounds), the `as_of` × read-command matrix, and catalog-id → wire-name executability (construct a real call from every catalog entry). No external DB; the oracle is Strata's *own other surface*, so it is cheap and needs no service container. Also flags inert features (a surface whose output never differs). Seeds: #2691, #2694, #2695, #2700, #2701, #2702, #2703, #2704 | Planned |
 | 4.8 | **Error-contract correctness harness** | Fixture per (failure condition → expected code / class / retryable / redaction), driven through the fault seam and the bad-input surface, asserting the *mapping* — not mere code presence, which the Phase 3 error-code guard already covers and which #2699 shows is insufficient. Catches transient-vs-permanent and wrong-area misclassification across the open/read/write paths. Seed: #2699 | Planned |
-| 4.9 | **Fault-taxonomy extension + health-vs-truth oracle** | Extend the recovery/fault seam from {corrupt, truncate, io-fail} to **{delete, missing, reorder}** at the segment/artifact level and **{disk-full, allocation failure}** as resource faults, plus a budget-adherence oracle (peak recovery/maintenance memory must respect the configured budget — asserted at a CI-sized scale, with the 1B-key leg in the benchmarks repo's soak). Add an oracle that diffs self-reported health (`verify_chain`, `doctor`, `HEALTHY`) against known ground truth after each fault — a database that lost data must never self-report healthy. Extends the STH-1 recovery oracle from Phase 1. Seeds: #2690, #2567 | Planned |
+| 4.9 | **Fault-taxonomy extension + health-vs-truth oracle** | Extend the recovery/fault seam from {corrupt, truncate, io-fail} to **{delete, missing, reorder}** at the segment/artifact level and **{disk-full, allocation failure}** as resource faults, plus a budget-adherence oracle (peak recovery/maintenance memory must respect the configured budget — asserted at a CI-sized scale, with the 1B-key leg in the benchmarks repo's soak). Add an oracle that diffs self-reported health (`verify_chain`, `doctor`, `HEALTHY`) against known ground truth after each fault — a database that lost data must never self-report healthy. Extends the STH-1 recovery oracle from Phase 1. Granularity note from the ShardStore evidence: coarse component-level crash/fault states found all their crash-consistency bugs; exhaustive block-level enumeration found zero more — start coarse. Also evolves the TCP2.1 scripted process-crash harness toward RocksDB's **continuous randomized crash test**: a randomized full-surface workload, whitebox crash points at filesystem-op boundaries plus blackbox SIGKILL, an expected-state-tracking oracle across crashes, run in the continuous tier under sanitizer builds. Seeds: #2690, #2567 | Planned |
+| 4.10 | **Single-system logic-bug oracles (SQLancer analogs)** | The literature's highest bug-yield-per-effort class, and it needs **no reference engine** — so it covers Strata-only semantics that external differential (4.2) cannot see and is immune to 4.2's shared-bug blindness. Per capability: **pivot-row containment** (PQS analog — plant a row/node/document, synthesize a query guaranteed to match it, absence = bug; `json_scan` paths, graph patterns, KV prefix/range), **de-optimization** (NoREC analog — the same query with and without the accelerating structure: index-backed vs full scan, sealed-segment HNSW vs brute force, cached vs cold; divergence = bug — catches the inert-feature class *by construction*), **predicate partitioning** (TLP analog — result(Q) must equal result(Q∧P) ∪ result(Q∧¬P) ∪ result(Q∧P-absent) for random predicates), **write-path predicate consistency** (DQE analog — a read, update, and delete sharing one predicate must touch the same rows), **compound graph MRs** (GAMERA — pattern fusion/partitioning found 30 of its 39 bugs; elementary single-op relations found 5). Evidence: NoREC <200 LOC → 159 bugs incl. 100+ in post-PQS SQLite; PQS 99 bugs with 65 in the best-tested target; DQE's yield concentrates in young engines — ours is young. Seeds: #2703, #2692 | Planned |
+| 4.11 | **Deterministic whole-DB simulation harness (DST seam)** | Seed-reproducible control of time, I/O, and entropy at the storage L1 backend boundary; one seed derives the generated workload *and* the 4.9 fault schedule; invariant oracles (STH-1, the timeline models, 4.12 histories) checked continuously during the run. The bar is TigerBeetle's: **any failure reproduces from seed + commit** — generated failures become local repros, not flakes. Distinct from 4.3, which explores schedules of small interleavings; this is the FoundationDB/VOPR whole-system harness. Partial determinization is legitimate (the pluggable-vs-hypervisor dichotomy was refuted in the survey's verification pass); we already hold most ingredients — the fault seams, the logical commit clock, in-memory backends from the wasm work. Validation case: the flaky lanes #2720/#2727/#2662 become seed-reproducible findings under the harness | Planned |
+| 4.12 | **History-based isolation + lineage checking (elle analog)** | Record client-observed operation histories from concurrent generated workloads — fault-free *and* faulted (elle found anomalies in 4 of 4 systems tested, some under normal operation) — and check them offline: Adya-style anomaly inference where it applies, plus Strata's own invariants (as-of(v) ≡ state after ops ≤ v; fork isolation; branch-lineage transitivity through middle branches; event-log ordering/monotonicity). Workloads are **co-designed for traceability** (elle's core insight): the event log is naturally traceable (append-only, unique monotonic sequences), and KV runs list-append-shaped values so version order is recoverable from any read. Checking cost is linear in history length (elle: ~10⁵ txn/s) — CI-viable per PR at small scale, nightly at soak scale. Seeds: #2682, #2521 | Planned |
+| 4.13 | **Stress-as-fuzzing + sanitizer breadth** | The survey's cheapest lanes — mostly CI wiring over existing suites. (a) A **stress lane** driving many concurrent sessions of the existing corpora/fixtures in random order against one shared database (ClickHouse's stress mode: interference bugs that isolated per-test databases structurally cannot show; doubles as a light schedule-fuzzer ahead of 4.3). (b) Extend the nightly **TSan lane from storage-only to engine and the executor's threaded paths** (#2682's off-lock territory; ASan+LSAN already covers both). (c) **Debug-assert builds for every generated lane**, making gate 8(b) real rather than aspirational | Planned |
 
 ### 4.2 in detail — differential testing against reference databases
 
@@ -424,9 +462,11 @@ is the constraint.
 plateaus at a high floor, **every gap class in both tables above — the #2686
 retro and the tracker-evidenced additions — has a running lane whose
 mutation-kill on that surface has itself plateaued** (each class
-searched to exhaustion, not just its seed fixed), the differential and fuzz
-soaks run sustained-clean, concurrency-schedule exploration exhausts the
-tractable interleavings, and the ratio has reached ~10× as a byproduct. Only
+searched to exhaustion, not just its seed fixed), the differential, logic-oracle
+(4.10), and fuzz soaks run sustained-clean, the DST harness (4.11) and history
+checker (4.12) soak clean across their seed corpora, concurrency-schedule
+exploration exhausts the tractable interleavings, and the ratio has reached
+~10× as a byproduct. Only
 then does the separate review round decide whether to publish the ratio as an
 external credibility headline.
 
@@ -445,6 +485,7 @@ Recorded so absence is a decision, not an accident:
 | OpenDAL/object backend conformance | Backend is post-V1 | Backend work starts |
 | CLI `--memory-budget` / `--profile` flags and `commands` / `explain` subcommands (cli-next plan items) | The shipped CLI never grew these surfaces; testing them would test nothing | If/when the CLI adds resource-profile flags or the IDL-generated command explorer |
 | Per-branch orphaned-delta fix (durable flushed-branch set + per-branch recovery, lifting the checkpoint guard and the #2624 close defer; multi-branch crash harness extension) | Frozen-format manifest change + two-phase recovery rework, coordinated with post-V1 multi-branch durable maintenance; guard verified airtight across all three publish paths (2.7) | Multi-branch durable-maintenance work starts (plan: `implementation-plans/storage-testing/multi-branch-orphaned-delta-recovery-gap.md`) |
+| Cross-version metamorphic harness (Pebble model: the same seeded op-sequence replayed across the last N released versions + head; output divergence = compatibility bug; doubles as upgrade/compat coverage) | Meaningless before a second tagged release exists on the V1 line — there is only one version to run | Second tagged release ships (then join the 4.2 nightly lane, reusing its generator and corpora) |
 
 ## Tracking
 
