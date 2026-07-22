@@ -354,10 +354,20 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
 
         // #2690: fail closed before recovery can silently resume onto a fresh
         // empty log when a WAL segment was removed out of band. The durable
-        // watermark is authoritative and self-gating — it is absent for a fresh
-        // or crash-during-creation database (nothing verified) and present only
-        // once acknowledged data exists — so the check is unconditional here
-        // rather than heuristically gated on disposition/checkpoint state.
+        // watermark is authoritative and self-gating — absent for a fresh or
+        // crash-during-creation database, present only once acknowledged data
+        // existed.
+        //
+        // KNOWN GAP (surfaced by the fault-simulation sweep, seed 3): a
+        // checkpointed database keeps its committed data in the snapshot and so
+        // legitimately tolerates an absent WAL segment, but this unconditional
+        // check refuses on the absence alone. Gating on the manifest's
+        // checkpoint facts does not fix it, because a crash can drop the very
+        // manifest update that recorded the checkpoint (SplitRename), leaving the
+        // reopened manifest claiming no checkpoint. Resolving this needs a
+        // checkpoint-comparable marker (e.g. a durable highest-committed-version
+        // watermark, design §7 Q7) rather than a bare segment id — parked for
+        // deliberation.
         verify_wal_segment_inventory(&backend).map_err(wal_open_error)?;
 
         let wal = WalService::open(

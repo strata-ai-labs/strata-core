@@ -52,25 +52,25 @@ fn wal_repair_uncertain_is_writer_halted_not_append_uncertain() {
 // service must reject the report without advancing its own offset and dirty
 // facts, because the durable bytes are now ahead of service state.
 struct MisreportingAppendBackend {
-    object: Mutex<Option<(ObjectName, Vec<u8>)>>,
+    // A small multi-object store: the WAL segment under test plus the durable
+    // segment-loss watermark the create path now publishes (#2690).
+    objects: Mutex<std::collections::BTreeMap<ObjectName, Vec<u8>>>,
     fault: AppendReportFault,
 }
 
 impl MisreportingAppendBackend {
     fn new(fault: AppendReportFault) -> Self {
         Self {
-            object: Mutex::new(None),
+            objects: Mutex::new(std::collections::BTreeMap::new()),
             fault,
         }
     }
 
     fn stored_metadata(&self, name: &ObjectName) -> BackendResult<BackendMetadata> {
-        let object = self.object.lock().expect("backend object lock");
-        match object.as_ref() {
-            Some((stored_name, bytes)) if stored_name == name => {
-                Ok(BackendMetadata::new(bytes.len() as u64, None))
-            }
-            _ => Err(BackendError::new(BackendErrorKind::NotFound, "not found")),
+        let objects = self.objects.lock().expect("backend object lock");
+        match objects.get(name) {
+            Some(bytes) => Ok(BackendMetadata::new(bytes.len() as u64, None)),
+            None => Err(BackendError::new(BackendErrorKind::NotFound, "not found")),
         }
     }
 }
@@ -89,10 +89,10 @@ impl Backend for MisreportingAppendBackend {
     }
 
     fn read_object(&self, name: &ObjectName) -> BackendResult<Vec<u8>> {
-        let object = self.object.lock().expect("backend object lock");
-        match object.as_ref() {
-            Some((stored_name, bytes)) if stored_name == name => Ok(bytes.clone()),
-            _ => Err(BackendError::new(BackendErrorKind::NotFound, "not found")),
+        let objects = self.objects.lock().expect("backend object lock");
+        match objects.get(name) {
+            Some(bytes) => Ok(bytes.clone()),
+            None => Err(BackendError::new(BackendErrorKind::NotFound, "not found")),
         }
     }
 
@@ -123,11 +123,12 @@ impl Backend for MisreportingAppendBackend {
     }
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
-        let object = self.object.lock().expect("backend object lock");
-        match object.as_ref() {
-            Some((name, _)) if name.as_str().starts_with(prefix.as_str()) => Ok(vec![name.clone()]),
-            _ => Ok(Vec::new()),
-        }
+        let objects = self.objects.lock().expect("backend object lock");
+        Ok(objects
+            .keys()
+            .filter(|name| name.as_str().starts_with(prefix.as_str()))
+            .cloned()
+            .collect())
     }
 
     fn object_metadata(&self, name: &ObjectName) -> BackendResult<BackendMetadata> {
@@ -142,13 +143,10 @@ impl Backend for MisreportingAppendBackend {
             ));
         }
 
-        let mut object = self.object.lock().expect("backend object lock");
-        let Some((stored_name, stored_bytes)) = object.as_mut() else {
+        let mut objects = self.objects.lock().expect("backend object lock");
+        let Some(stored_bytes) = objects.get_mut(name) else {
             return Err(BackendError::new(BackendErrorKind::NotFound, "not found"));
         };
-        if stored_name != name {
-            return Err(BackendError::new(BackendErrorKind::NotFound, "not found"));
-        }
 
         let start_offset = stored_bytes.len() as u64;
         stored_bytes.extend_from_slice(bytes);
@@ -184,8 +182,8 @@ impl Backend for MisreportingAppendBackend {
         bytes: &[u8],
         _mode: PublishMode,
     ) -> PublishResult<PublishOutcome> {
-        let mut object = self.object.lock().expect("backend object lock");
-        *object = Some((name.clone(), bytes.to_vec()));
+        let mut objects = self.objects.lock().expect("backend object lock");
+        objects.insert(name.clone(), bytes.to_vec());
         Ok(PublishOutcome::new(
             name.clone(),
             BackendMetadata::new(bytes.len() as u64, None),
@@ -319,11 +317,23 @@ fn open_missing_segment_creates_exactly_one_header_object() {
     .expect("open WAL");
 
     assert_eq!(service.active_segment_id(), 1);
-    assert_eq!(backend.publish_count(), 1);
+    // The create publishes exactly two durable objects: the segment header and
+    // the segment-loss watermark (#2690).
+    assert_eq!(backend.publish_count(), 2);
+    // The WAL segment listing has exactly one header object — the watermark
+    // lives outside the `wal/` prefix so it never pollutes segment discovery.
     assert_eq!(backend.listed_objects(), vec![object.clone()]);
     assert_eq!(
         backend.read_object(&object).expect("segment header bytes"),
         encode_wal_segment_header(&WalSegmentHeader::new(1, database_id()))
+    );
+    let watermark = ObjectLayout::wal_watermark().expect("watermark object");
+    assert_eq!(
+        crate::format::decode_wal_watermark(
+            &backend.read_object(&watermark).expect("watermark bytes")
+        )
+        .expect("watermark decodes"),
+        1
     );
 }
 

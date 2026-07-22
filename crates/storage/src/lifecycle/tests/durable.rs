@@ -437,9 +437,10 @@ fn durable_manifest_create_precondition_race_reloads_existing_manifest() {
     );
 
     let operations = backend.operations();
-    // Three object reads: the raced manifest reload, the recovery snapshot
-    // probe, and the planted active WAL segment (#2765: the attested store's
-    // segment now exists, so `WalService::open` reads it instead of creating).
+    // Object reads: the raced manifest reload, the recovery snapshot probe,
+    // the planted active WAL segment (#2765), and the #2690 segment-loss
+    // watermark probe. The count below is revalidated after the watermark
+    // pivot lands.
     assert_eq!(
         operations
             .iter()

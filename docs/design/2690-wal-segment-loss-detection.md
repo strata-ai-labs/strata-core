@@ -123,6 +123,46 @@ Remaining: `format/wal_watermark.rs` + mod wiring + tests; `ObjectLayout::wal_wa
 
 ---
 
+## 6b. Implementation finding — the checkpoint interaction (blocking)
+
+Implementing §4 and running the full storage suite surfaced a crash-consistency
+gap the design did not anticipate. The `fault_simulation_sweep` (seed 3,
+`SplitRename`, Standard) fails:
+
+- `SplitRename` drops one published object at random. That seed also forces a
+  checkpoint, so the committed data is safely in the snapshot. With the watermark
+  now among the published objects, the seed drops a **WAL segment** whose data
+  the snapshot already holds — a legitimate, recoverable state.
+- The unconditional watermark verify refuses on the segment's **absence alone**,
+  not knowing the data is checkpointed → **false positive** (`MissingActiveSegment`,
+  which maps to the generic `RecoveryDegraded` "WAL segment failed to decode").
+
+This contradicts §4's claim that the watermark "replaces the disposition/checkpoint
+gating." A checkpointed database legitimately tolerates an absent segment (§2's
+own observation), so the check must be checkpoint-aware. **But gating on the
+manifest's checkpoint facts does not work either:** `SplitRename` can drop the
+manifest update that recorded the checkpoint, so the reopened manifest claims
+`snapshot_watermark = None` even though the snapshot object survives — the gate
+then runs the verify and false-positives anyway (and gating breaks the sole-
+deletion repro when a clean close records `flushed_through`).
+
+**Root cause:** a bare highest-*segment-id* watermark is not checkpoint-comparable.
+It cannot answer the only question that matters — "did the missing segment hold
+data that is **not** otherwise durable (i.e. above the checkpoint)?" — so it
+cannot separate *segment dropped but data checkpointed (safe)* from *segment
+deleted with un-checkpointed data (loss)*.
+
+**Direction (needs deliberation, ties to §7 Q7):** record a durable **highest
+committed version** (not segment id), and refuse only when a missing segment
+would have held commits **above the durable checkpoint/snapshot watermark**. That
+is checkpoint-comparable and crash-robust (it does not depend on a manifest
+update that a crash can drop). This is a design change, not a test fix.
+
+Current WIP state: the watermark codec/object/write path and the sole-deletion
+detection are implemented and green (engine repro + inventory unit test); the
+`fault_simulation_sweep` fails on exactly this gap. Everything else in the
+storage suite passes (3447/3448).
+
 ## 7. Open questions (for deliberation)
 
 1. **Object vs manifest field.** The WAL-owned object gives clean layering and synchronous-at-rotation writes but adds a durable object + golden. Is the extra format surface worth avoiding the manifest coupling, or is a `highest_wal_segment` manifest field (with the lifecycle owning the write) preferable despite the two-writer coordination?

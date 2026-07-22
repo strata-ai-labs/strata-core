@@ -609,13 +609,15 @@ mod tests {
         };
 
         let dir = tempfile::tempdir().expect("tmp");
-        // Publish #7 is the batched drain's flush manifest publish (the same destructive
-        // position the regression pins); `Once` makes it transient so a later flush heals it.
+        // Publish #8 is the batched drain's flush manifest publish (the same destructive
+        // position the regression pins, shifted by the one #2690 segment-loss watermark
+        // publish the initial segment creation now performs); `Once` makes it transient so
+        // a later flush heals it.
         let backend = StorageBackend::faulting_local_fs(
             dir.path().to_path_buf(),
             FaultScript::new([FaultRule::with_mode(
                 BackendOperation::PublishObject,
-                NonZeroU64::new(7).expect("non-zero"),
+                NonZeroU64::new(8).expect("non-zero"),
                 FaultKind::NoSpace,
                 FaultMode::Once,
             )]),
