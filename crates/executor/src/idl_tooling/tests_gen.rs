@@ -429,14 +429,19 @@ mod tests {
             .expect("generated conformance suite must be fresh");
     }
 
-    /// The divergence probe tells accepted from rejected: a struct-variant
-    /// command rejects an injected top-level key; a unit-variant command
-    /// (#2739) accepts one — the fact the ledger exists to track.
+    /// The divergence probe tells accepted from rejected: a closed command
+    /// object rejects an injected top-level key — including the empty-payload
+    /// commands since #2739's fix — while an open user-payload subtree (a
+    /// JSON document body) legitimately accepts one.
     #[test]
-    fn the_divergence_probe_distinguishes_closed_from_leaky() {
+    fn the_divergence_probe_distinguishes_closed_from_open() {
         let closed = serde_json::json!({"type": "kv_put", "key": "YQ==", "value": "b25l"});
         assert!(!unknown_key_is_accepted(&closed, ""));
-        let leaky = serde_json::json!({"type": "ping"});
-        assert!(unknown_key_is_accepted(&leaky, ""));
+        // The #2739 regression pin: empty-payload commands are closed too.
+        let empty_payload = serde_json::json!({"type": "ping"});
+        assert!(!unknown_key_is_accepted(&empty_payload, ""));
+        let open_payload =
+            serde_json::json!({"type": "json_set", "key": "k", "path": "$", "value": {"a": 1}});
+        assert!(unknown_key_is_accepted(&open_payload, "/value"));
     }
 }

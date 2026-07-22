@@ -19,6 +19,11 @@ fn admin_config_response_wire_roundtrip_is_idempotent() {
 }
 
 #[test]
+fn admin_config_request_rejects_unknown_keys_at_closed_objects() {
+    support::unknown_keys_rejected("requests/v1/admin/config_get.json", &[""]);
+}
+
+#[test]
 fn admin_config_replay_observes_a_declared_output() {
     support::replay_observes_declared(&[], "requests/v1/admin/config_get.json", &["config"], false);
 }
@@ -163,6 +168,11 @@ fn admin_ping_response_wire_roundtrip_is_idempotent() {
 }
 
 #[test]
+fn admin_ping_request_rejects_unknown_keys_at_closed_objects() {
+    support::unknown_keys_rejected("requests/v1/admin/ping.json", &[""]);
+}
+
+#[test]
 fn admin_ping_replay_observes_a_declared_output() {
     support::replay_observes_declared(&[], "requests/v1/admin/ping.json", &["pong"], false);
 }
@@ -177,6 +187,11 @@ fn admin_remote_request_wire_roundtrip_is_idempotent() {
 #[test]
 fn admin_remote_response_wire_roundtrip_is_idempotent() {
     support::response_roundtrip_idempotent("responses/v1/admin/remote_null.json");
+}
+
+#[test]
+fn admin_remote_request_rejects_unknown_keys_at_closed_objects() {
+    support::unknown_keys_rejected("requests/v1/admin/remote_get.json", &[""]);
 }
 
 #[test]
@@ -365,6 +380,11 @@ fn branch_list_request_wire_roundtrip_is_idempotent() {
 #[test]
 fn branch_list_response_wire_roundtrip_is_idempotent() {
     support::response_roundtrip_idempotent("responses/v1/branches/list.json");
+}
+
+#[test]
+fn branch_list_request_rejects_unknown_keys_at_closed_objects() {
+    support::unknown_keys_rejected("requests/v1/branches/list.json", &[""]);
 }
 
 #[test]
@@ -1282,6 +1302,11 @@ fn inference_cache_status_response_wire_roundtrip_is_idempotent() {
 }
 
 #[test]
+fn inference_cache_status_request_rejects_unknown_keys_at_closed_objects() {
+    support::unknown_keys_rejected("requests/v1/inference/cache_status.json", &[""]);
+}
+
+#[test]
 fn inference_cache_status_replay_observes_a_declared_output() {
     support::replay_observes_declared(&[], "requests/v1/inference/cache_status.json", &["inference_cache_status"], true);
 }
@@ -1387,6 +1412,11 @@ fn inference_models_list_response_wire_roundtrip_is_idempotent() {
 }
 
 #[test]
+fn inference_models_list_request_rejects_unknown_keys_at_closed_objects() {
+    support::unknown_keys_rejected("requests/v1/inference/models_list.json", &[""]);
+}
+
+#[test]
 fn inference_models_list_replay_observes_a_declared_output() {
     support::replay_observes_declared(&[], "requests/v1/inference/models_list.json", &["inference_models"], true);
 }
@@ -1401,6 +1431,11 @@ fn inference_models_local_request_wire_roundtrip_is_idempotent() {
 #[test]
 fn inference_models_local_response_wire_roundtrip_is_idempotent() {
     support::response_roundtrip_idempotent("responses/v1/inference/models_local.json");
+}
+
+#[test]
+fn inference_models_local_request_rejects_unknown_keys_at_closed_objects() {
+    support::unknown_keys_rejected("requests/v1/inference/models_local.json", &[""]);
 }
 
 #[test]

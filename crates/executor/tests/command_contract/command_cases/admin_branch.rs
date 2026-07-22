@@ -2,7 +2,7 @@ use crate::support::*;
 
 pub(super) fn admin_space_commands() -> Vec<Command> {
     vec![
-        Command::Ping,
+        Command::Ping {},
         Command::Info { branch: None },
         Command::Health {
             branch: Some("feature".to_owned()),
@@ -11,7 +11,7 @@ pub(super) fn admin_space_commands() -> Vec<Command> {
         Command::Describe {
             branch: Some("feature".to_owned()),
         },
-        Command::ConfigGet,
+        Command::ConfigGet {},
         Command::ConfigureGetKey {
             key: "target".to_owned(),
         },
@@ -50,7 +50,7 @@ pub(super) fn admin_space_round_trip_edge_commands() -> Vec<Command> {
 
 pub(super) fn branch_commands() -> Vec<Command> {
     vec![
-        Command::BranchList,
+        Command::BranchList {},
         Command::BranchGet {
             branch: "main".to_owned(),
         },

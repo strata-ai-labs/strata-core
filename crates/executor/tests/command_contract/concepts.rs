@@ -693,12 +693,12 @@ fn batch_item_successes_serialize_error_null() {
 #[test]
 fn admin_and_space_write_classification_is_explicit() {
     for command in [
-        Command::Ping,
+        Command::Ping {},
         Command::Info { branch: None },
         Command::Health { branch: None },
         Command::Metrics { branch: None },
         Command::Describe { branch: None },
-        Command::ConfigGet,
+        Command::ConfigGet {},
         Command::ConfigureGetKey {
             key: "target".to_owned(),
         },

@@ -213,8 +213,8 @@ pub(crate) fn execute_parsed_command(
         .unwrap_or_else(|| strata_executor::DEFAULT_SPACE.to_owned());
     executor.set_default_space(space)?;
     let output = match command {
-        options::TopCommand::Ping => executor.execute(Command::Ping)?,
-        options::TopCommand::Remote => executor.execute(Command::RemoteGet)?,
+        options::TopCommand::Ping => executor.execute(Command::Ping {})?,
+        options::TopCommand::Remote => executor.execute(Command::RemoteGet {})?,
         options::TopCommand::Clone(_) => {
             unreachable!("clone is dispatched before a session database opens")
         }
@@ -351,7 +351,7 @@ fn top_level_without_database(command: &options::TopCommand) -> Result<TopLevelA
 
 fn config_command(command: ConfigCommand) -> Command {
     match command {
-        ConfigCommand::Get => Command::ConfigGet,
+        ConfigCommand::Get => Command::ConfigGet {},
         ConfigCommand::GetKey { key } => Command::ConfigureGetKey { key },
         // User-config subcommands are handled before a database opens
         // (top_level_without_database); reaching here is a dispatch bug.
@@ -504,7 +504,7 @@ fn user_config_show() -> serde_json::Value {
 
 fn branch_command(command: BranchCommand) -> Result<Command, CliError> {
     Ok(match command {
-        BranchCommand::List => Command::BranchList,
+        BranchCommand::List => Command::BranchList {},
         BranchCommand::Get { branch } => Command::BranchGet { branch },
         BranchCommand::Create { branch } => Command::BranchCreate { branch },
         BranchCommand::Fork {
@@ -1451,8 +1451,8 @@ fn inference_command(command: options::InferenceCommand) -> Result<Command, CliE
     use options::{InferenceCommand as Inf, InferenceModelsCommand as Models};
     Ok(match command {
         Inf::Models(args) => match args.command {
-            Models::List => Command::InferenceModelsList,
-            Models::Local => Command::InferenceModelsLocal,
+            Models::List => Command::InferenceModelsList {},
+            Models::Local => Command::InferenceModelsLocal {},
             Models::Pull { model } => Command::InferenceModelsPull { model },
         },
         Inf::Capability { model } => Command::InferenceModelCapability { model },
@@ -1636,7 +1636,7 @@ fn inference_command(command: options::InferenceCommand) -> Result<Command, CliE
             request: strata_executor::InferenceRankRequest { query, passages },
         },
         Inf::Unload { model } => Command::InferenceUnload { model },
-        Inf::CacheStatus => Command::InferenceCacheStatus,
+        Inf::CacheStatus => Command::InferenceCacheStatus {},
     })
 }
 

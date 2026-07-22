@@ -3,7 +3,7 @@ use super::super::{Command, Executor, ExecutorResult, Output};
 impl Executor {
     /// Executes a branch-list command.
     pub fn branch_list(&mut self) -> ExecutorResult<Output> {
-        self.execute(Command::BranchList)
+        self.execute(Command::BranchList {})
     }
 
     /// Executes a branch-get command.
