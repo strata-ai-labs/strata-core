@@ -375,6 +375,7 @@
       "description": "One graph batch write operation.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "Upserts one node.",
           "properties": {
             "data": {
@@ -398,6 +399,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Deletes one node and incident edges.",
           "properties": {
             "node_id": {
@@ -416,6 +418,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Upserts one edge.",
           "properties": {
             "data": {
@@ -449,6 +452,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Deletes one edge.",
           "properties": {
             "dst": {
