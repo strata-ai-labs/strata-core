@@ -261,7 +261,7 @@ The classes, with confirmed instances and the slice that owns hunting the rest:
 | **Boundary / extreme-value input domain** | #2687 (2⁶³/2⁶⁴), #2689 (subnormals), #2693 (huge norms), #2698 (as_of 0/∞) | Hand-written tests use *typical* values; nothing systematically generates numeric/time boundaries or non-representable inputs | 4.4 (float/edge corpora), 4.5 (boundary vectors) |
 | **Output invariants / cross-algorithm differential** | #2692 (bfs vs sssp), #2693 (cosine ∈ [-1,1]), #2706 (cdlp convergence) | Graph/vector tests pin outputs on small inputs, not invariants that must hold for *all* inputs | 4.2e (exact k-NN), 4.7 |
 | **Error-contract *correctness*** (condition → right code/class/retryable) | #2699 | The error-code guard proves a code is asserted *somewhere*, never that *this condition* yields *that* code. #2699's codes are asserted elsewhere, so the guard stayed green | 4.8 (new) |
-| **Cross-surface parity** (parallel surfaces obey one contract) | #2691, #2695, #2700, #2701, #2702, #2704 | Every surface is tested in isolation; nothing diffs export vs import, branch vs space, the batch family, or as_of across reads | 4.7 (new) |
+| **Cross-surface parity** (parallel surfaces obey one contract) | #2691, #2694, #2695, #2700, #2701, #2702, #2704 | Every surface is tested in isolation; nothing diffs export vs import, branch vs space, the batch family, forward vs reverse range, or as_of across reads | 4.7 (new) |
 | **Adversarial deserialization on nested structs** | #2696, #2705 (batch_write, non-dict metadata, metric aliases) | `deny_unknown_fields` / type-rejection is tested at the top-level `Command`, not recursively on nested option structs | 4.1 (extend to nested) |
 | **Fault breadth: absence/removal + health-vs-truth** | #2690 | The recovery oracle mutates bytes, never *removes* a file, and trusts self-reported health over ground truth | 4.9 (new) |
 | **Inert-feature / dead-surface** | #2703 (indexes do nothing), #2704 (catalog not executable) | We test that `create_index` *succeeds*, not that it changes any observable behaviour | 4.7 (parity), 4.1 (catalog executability) |
@@ -280,6 +280,28 @@ author encode the author's mental model and are blind exactly where it is wrong.
 The cure is structural — the *input choice* and the *correctness verdict* must
 both come from somewhere other than the author: generators, differential
 oracles, round-trip identities, invariants. That is the whole of Phase 4.
+
+### Classes evidenced outside #2686
+
+The older open bugs on the tracker cluster the same way — they are earlier
+samples of classes the #2686 pass did not happen to hit, found by other passes
+(the executor audit, the billion-scale campaign, the retention audit, ad hoc
+use). Same treatment: each class gets a seeded lane and stays open until its
+mutation-kill plateaus.
+
+| Gap class | Confirmed instances | Why the current suite missed it | Owning slice |
+|---|---|---|---|
+| **Resource-bound correctness** (memory budget, disk-full, OOM) | #2567 (1B-key recovery ~56 GB RSS, OOM-killed — recovery memory unbounded by the budget) | The fault seam covers corrupt/truncate/io-fail but never *exhaustion*; the memory budget is a product contract nothing asserts, and correctness-at-scale lives only in the benchmarks repo | 4.9 (taxonomy gains resource faults; budget-adherence oracle) |
+| **Branch-lineage depth + lifecycle cycling** | #2521 (fork-of-a-fork drops the middle branch's inherited state), #2522 (fork as-of pre-fork timestamp fails closed), #2466/#2467 (retention breaks under delete-recreate and clear-with-descendants cycles) | Hand tests fork once from the default branch and never cycle lifecycles; no generator produces deep fork DAGs or delete-recreate churn | 4.2 metamorphic tier (op-sequence generator must emit deep DAGs + lifecycle churn) |
+| **Outer-surface input fidelity** (REPL/CLI/SDK text → command) | #2571 (REPL tokenizer strips quotes from inline JSON, silently storing corrupted values) | Round-trip testing starts at the `Command` layer; the outermost parse path — where users actually type — has no fidelity oracle | 4.1 (extend round-trip to REPL/pipe input) |
+| **Declared-vs-observed schema parity** (the IDL/docs tell the truth) | #2596 (`json_get` emits a second output variant the IDL doesn't declare), #2569 (help text says microseconds; both flags take the logical commit clock) | The IDL guards check *structure and drift*, never that declarations match observed behavior; help text and prose are unguarded entirely | 4.1 (observed output variants ⊆ declared; help-text facts ↔ IDL) |
+
+**Seed caveat.** Unlike the #2686 rows, some of these seeds predate the V1
+promotion (#2521, #2522, #2466, #2467). Gate 7 applies unchanged, with one
+preliminary: each seed is first re-verified against `main`. A seed that still
+reproduces is the lane's re-find target; one that no longer reproduces gets its
+regression test on the spot and the lane runs anyway — the class evidence
+stands either way.
 
 ### Phase 4 gates (how the volume stays honest)
 
@@ -319,15 +341,15 @@ parallel with 4.1/4.2a rather than waiting behind the big differential lanes.
 
 | # | Slice | Scope | Status |
 |---|---|---|---|
-| 4.1 | **IDL conformance generator** | Emit per-command generated test files from the 125-command IDL: request/response round-trip × render mode (json/raw/human), every declared error envelope, schema/boundary conformance, adversarial deserialize. Regenerate on IDL change; drift guard + mutation gate. Highest leverage per effort (monetizes an owned asset) and proves the generation pattern | Planned |
+| 4.1 | **IDL conformance generator** | Emit per-command generated test files from the 125-command IDL: request/response round-trip × render mode (json/raw/human), every declared error envelope, schema/boundary conformance, adversarial deserialize. Two seeded extensions: **outer-surface input fidelity** — the round-trip starts at REPL/pipe *text*, not the `Command` struct, so tokenizer loss fails the oracle (seed #2571) — and **declared-vs-observed parity** — every output variant a replay observes must be declared by the schema, and help-text facts must match the IDL (seeds #2596, #2569). Regenerate on IDL change; drift guard + mutation gate. Highest leverage per effort (monetizes an owned asset) and proves the generation pattern | Planned |
 | 4.2 | **Differential testing vs reference databases (the SLT model)** | The bulk of the 10× and the highest bug yield. StrataDB is *multi-model*, so each capability is diffed against the mature reference implementation of that model — KV vs **RocksDB + Redis**, JSON vs **MongoDB**, graph vs **Neo4j**, etc. — on the *shared* semantic contract, plus in-house metamorphic relations (branches, time-travel) reusing the Phase 1–3 oracles. Seed-pinned op-sequences, committed corpora, divergence = filed bug. **Detailed below; starts with KV (4.2a).** | Planned |
 | 4.3 | **Exhaustive concurrency-schedule exploration** | loom/shuttle over the commit / BS5 write-group / latest-scan interleavings, turning rare CI flakes into deterministic, seed-reproducible findings. #2682 (off-lock torn read) is the seed case. High bug yield for a database; the highest-value non-LOC lever | Planned |
 | 4.4 | **Vendored public conformance suites** | Import battle-tested corpora wholesale: JSONPath Compliance Test Suite, Unicode collation/normalization, float-format edge cases, and analogous KV/vector/graph reference sets. A small runner over large vendored data | Planned |
 | 4.5 | **Golden + combinatorial matrix expansion** | Every record type × canonical/boundary/adversarial vectors across the frozen codec; the full config × capability × operation cross-product (STH-6 extended), generated and result-equality-checked | Planned |
 | 4.6 | **Committed fuzz corpora + surface expansion** | Version the accumulated persistent-corpus interesting-inputs; extend the 30 fuzz targets to the full decoder/API surface — and past crash-only oracles to **round-trip fidelity** (`decode∘encode == id`, `read == write`) so value loss (not just panics) fails a target; commit crash-triage regressions. Seeds: #2688, #2689 | Planned |
-| 4.7 | **Cross-surface parity harness (internal differential)** | Strata-vs-analogous-Strata: assert parallel surfaces obey one contract — export↔import symmetry, branch↔space lifecycle/resolution, the batch family's failure channels, the `as_of` × read-command matrix, and catalog-id → wire-name executability (construct a real call from every catalog entry). No external DB; the oracle is Strata's *own other surface*, so it is cheap and needs no service container. Also flags inert features (a surface whose output never differs). Seeds: #2691, #2695, #2700, #2701, #2702, #2703, #2704 | Planned |
+| 4.7 | **Cross-surface parity harness (internal differential)** | Strata-vs-analogous-Strata: assert parallel surfaces obey one contract — export↔import symmetry, branch↔space lifecycle/resolution, the batch family's failure channels, the range direction × endpoint matrix (reverse ↔ forward walk, `range` ↔ `range_by_time` bounds), the `as_of` × read-command matrix, and catalog-id → wire-name executability (construct a real call from every catalog entry). No external DB; the oracle is Strata's *own other surface*, so it is cheap and needs no service container. Also flags inert features (a surface whose output never differs). Seeds: #2691, #2694, #2695, #2700, #2701, #2702, #2703, #2704 | Planned |
 | 4.8 | **Error-contract correctness harness** | Fixture per (failure condition → expected code / class / retryable / redaction), driven through the fault seam and the bad-input surface, asserting the *mapping* — not mere code presence, which the Phase 3 error-code guard already covers and which #2699 shows is insufficient. Catches transient-vs-permanent and wrong-area misclassification across the open/read/write paths. Seed: #2699 | Planned |
-| 4.9 | **Fault-taxonomy extension + health-vs-truth oracle** | Extend the recovery/fault seam from {corrupt, truncate, io-fail} to **{delete, missing, reorder}** at the segment/artifact level, and add an oracle that diffs self-reported health (`verify_chain`, `doctor`, `HEALTHY`) against known ground truth after each fault — a database that lost data must never self-report healthy. Extends the STH-1 recovery oracle from Phase 1. Seed: #2690 | Planned |
+| 4.9 | **Fault-taxonomy extension + health-vs-truth oracle** | Extend the recovery/fault seam from {corrupt, truncate, io-fail} to **{delete, missing, reorder}** at the segment/artifact level and **{disk-full, allocation failure}** as resource faults, plus a budget-adherence oracle (peak recovery/maintenance memory must respect the configured budget — asserted at a CI-sized scale, with the 1B-key leg in the benchmarks repo's soak). Add an oracle that diffs self-reported health (`verify_chain`, `doctor`, `HEALTHY`) against known ground truth after each fault — a database that lost data must never self-report healthy. Extends the STH-1 recovery oracle from Phase 1. Seeds: #2690, #2567 | Planned |
 
 ### 4.2 in detail — differential testing against reference databases
 
@@ -356,13 +378,18 @@ after the fact. KV is the worked example, in three tiers:
 | A — universal | put / get / delete / exists / overwrite / count / batch | RocksDB + Redis |
 | B — ordered keyspace | `list(prefix)`, `scan_range`, ordered pagination | RocksDB only (Redis is unordered) |
 | C — snapshot / as-of | `get_at_version`, `get_at`, `count_at` | RocksDB only (RocksDB snapshot after op N ↔ Strata as-of N) |
-| Strata-only | branches, spaces, deep history (`get_versions`) | *none* → in-house metamorphic |
+| Strata-only | branches (incl. deep fork DAGs), spaces, lifecycle churn (delete-recreate, clear), deep history (`get_versions`) | *none* → in-house metamorphic |
 
 So 4.2 is a **hybrid** per capability: external differential on the shared
 tiers, plus in-house metamorphic relations on the Strata-specific parts (fork
 isolation, "as-of(v) = the state after ops ≤ v", history monotonicity,
 cache ≡ durable, reopen-preserves-state — reusing the STH-1 oracle,
-config-differential, and timeline models from Phases 1–3).
+config-differential, and timeline models from Phases 1–3). The op-sequence
+generator must emit the shapes hand tests never produce: **deep fork DAGs**
+(fork-of-fork — inheritance is transitive through the middle branch) and
+**lifecycle churn** (delete-recreate cycles, clear with live descendants,
+fork-then-delete-parent), the branch-lineage class seeded by #2521/#2522 and
+#2466/#2467.
 
 **Architecture** (small): a `KvOracle` trait with `StrataKv`/`RocksKv`/`RedisKv`
 adapters; a seed-pinned generator emitting op-sequences over a
@@ -394,8 +421,9 @@ floor must have risen. If marginal generated volume stops finding bugs
 is the constraint.
 
 **Phase 4 exit** = "all findable bugs ironed out," operationalized: mutation-kill
-plateaus at a high floor, **every gap class from the #2686 retro has a running
-lane whose mutation-kill on that surface has itself plateaued** (each class
+plateaus at a high floor, **every gap class in both tables above — the #2686
+retro and the tracker-evidenced additions — has a running lane whose
+mutation-kill on that surface has itself plateaued** (each class
 searched to exhaustion, not just its seed fixed), the differential and fuzz
 soaks run sustained-clean, concurrency-schedule exploration exhausts the
 tractable interleavings, and the ratio has reached ~10× as a byproduct. Only
