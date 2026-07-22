@@ -60,6 +60,7 @@ mod recovery_oracle;
     not(target_arch = "wasm32")
 ))]
 mod recovery_read_faults;
+mod reopen_retry;
 #[cfg(all(
     any(test, feature = "fault-injection"),
     feature = "localfs",

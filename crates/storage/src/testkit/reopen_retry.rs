@@ -1,0 +1,147 @@
+//! Bounded retry for test-harness reopens that race a detached background
+//! worker from the previous runtime.
+//!
+//! Dropping a `StorageRuntime` shuts its background scheduler down with a
+//! bounded (250 ms) quiesce window; a worker that misses the window is
+//! detached, not joined, and keeps the writer-lock file descriptor alive until
+//! it finishes. An immediate same-process reopen then fails with the flock's
+//! `EWOULDBLOCK`/`EAGAIN`, surfaced as `BackendErrorKind::Unavailable`
+//! (issue #2727). Under a loaded parallel test run the window is blown far
+//! more often, which made every unprotected `reopen` in the testkit a flake.
+//!
+//! This is deliberately a **test-harness policy, not a product one**: the
+//! product open path must keep failing fast, because writer-lock contention is
+//! also the legitimate "another live opener holds this database" signal.
+
+use std::error::Error;
+use std::thread;
+use std::time::Duration;
+
+use crate::backend::{BackendError, BackendErrorKind};
+
+/// Retry attempts before the final call. Backoff doubles from 2 ms and caps
+/// at 64 ms; the cumulative sleep (~382 ms) comfortably outlasts the 250 ms
+/// worker-detach window the retry exists to absorb.
+const RETRY_ATTEMPTS: u32 = 10;
+const INITIAL_BACKOFF: Duration = Duration::from_millis(2);
+const MAX_BACKOFF: Duration = Duration::from_millis(64);
+
+/// Runs `open` until it succeeds, retrying **only** failures whose error
+/// chain bottoms out in a transient `BackendErrorKind::Unavailable`. Every
+/// other error — and exhaustion of the retry budget — returns the original
+/// error unchanged, so real failures stay loud.
+pub(crate) fn open_with_retry_on_unavailable<T, E, F>(mut open: F) -> Result<T, E>
+where
+    E: Error + 'static,
+    F: FnMut() -> Result<T, E>,
+{
+    let mut backoff = INITIAL_BACKOFF;
+    for _ in 0..RETRY_ATTEMPTS {
+        match open() {
+            Ok(value) => return Ok(value),
+            Err(err) if is_transient_unavailable(&err) => {
+                thread::sleep(backoff);
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    open()
+}
+
+/// True when the error, or anything on its `source()` chain, is a backend
+/// `Unavailable` — the transient writer-lock/resource-pressure signal. The
+/// check is structural (downcast + `kind()`), never display text.
+fn is_transient_unavailable<E: Error + 'static>(err: &E) -> bool {
+    let mut current: Option<&(dyn Error + 'static)> = Some(err);
+    while let Some(inner) = current {
+        if let Some(backend) = inner.downcast_ref::<BackendError>() {
+            return backend.kind() == BackendErrorKind::Unavailable;
+        }
+        current = inner.source();
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+    use crate::api::{StorageApiError, StorageApiLowerLayer};
+    use crate::lifecycle::{LifecycleError, LifecycleLowerLayer};
+
+    fn unavailable() -> BackendError {
+        BackendError::new(
+            BackendErrorKind::Unavailable,
+            "Resource temporarily unavailable (os error 11)",
+        )
+    }
+
+    #[test]
+    fn transient_unavailable_recovers_after_bounded_retries() {
+        let calls = Cell::new(0_u32);
+        let result: Result<u32, BackendError> = open_with_retry_on_unavailable(|| {
+            calls.set(calls.get() + 1);
+            if calls.get() <= 3 {
+                Err(unavailable())
+            } else {
+                Ok(42)
+            }
+        });
+        assert_eq!(result.expect("recovers"), 42);
+        assert_eq!(calls.get(), 4);
+    }
+
+    #[test]
+    fn persistent_unavailable_gives_up_loudly_after_the_budget() {
+        let calls = Cell::new(0_u32);
+        let result: Result<u32, BackendError> = open_with_retry_on_unavailable(|| {
+            calls.set(calls.get() + 1);
+            Err(unavailable())
+        });
+        let err = result.expect_err("budget exhausted");
+        assert_eq!(err.kind(), BackendErrorKind::Unavailable);
+        assert_eq!(calls.get(), RETRY_ATTEMPTS + 1);
+    }
+
+    #[test]
+    fn non_transient_errors_return_immediately_without_retry() {
+        let calls = Cell::new(0_u32);
+        let result: Result<u32, BackendError> = open_with_retry_on_unavailable(|| {
+            calls.set(calls.get() + 1);
+            Err(BackendError::new(BackendErrorKind::Corruption, "bad bytes"))
+        });
+        let err = result.expect_err("fails fast");
+        assert_eq!(err.kind(), BackendErrorKind::Corruption);
+        assert_eq!(calls.get(), 1);
+    }
+
+    fn api_over_lifecycle_over(backend: BackendError) -> StorageApiError {
+        // The exact shape from #2727: StorageApiError::LowerLayer(Lifecycle)
+        // -> LifecycleError::LowerLayer(Backend) -> BackendError.
+        let lifecycle = LifecycleError::lower_layer_with(
+            LifecycleLowerLayer::Backend,
+            "backend failed",
+            backend,
+        );
+        StorageApiError::LowerLayer {
+            layer: StorageApiLowerLayer::Lifecycle,
+            inner_code: Some("io.lifecycle.backend"),
+            reason: "lifecycle runtime failed",
+            source: Some(std::sync::Arc::new(lifecycle)),
+        }
+    }
+
+    #[test]
+    fn the_real_nested_open_error_chain_is_recognized_as_transient() {
+        assert!(is_transient_unavailable(&api_over_lifecycle_over(
+            unavailable()
+        )));
+
+        // A corruption at the same depth must not read as transient.
+        assert!(!is_transient_unavailable(&api_over_lifecycle_over(
+            BackendError::new(BackendErrorKind::Corruption, "bad")
+        )));
+    }
+}

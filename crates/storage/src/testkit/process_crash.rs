@@ -79,13 +79,17 @@ pub(crate) fn run_child_workload_from_env() -> Result<(), TestkitError> {
     std::fs::create_dir_all(store_dir(&root))
         .map_err(|err| TestkitError::new(format!("child store dir: {err}")))?;
     let backend = StorageBackend::local_fs(store_dir(&root));
-    let mut runtime = StorageRuntime::open_with_backend(
-        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always)
-            .with_maintenance_scheduling_policy(
-                StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
-            ),
-        &backend,
-    )
+    // Retry-on-Unavailable absorbs transient EAGAIN under loaded parallel
+    // runs (#2727); any other failure stays loud.
+    let mut runtime = crate::testkit::reopen_retry::open_with_retry_on_unavailable(|| {
+        StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always)
+                .with_maintenance_scheduling_policy(
+                    StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+                ),
+            &backend,
+        )
+    })
     .map_err(|err| TestkitError::new(format!("child open: {err:?}")))?
     .into_runtime();
 

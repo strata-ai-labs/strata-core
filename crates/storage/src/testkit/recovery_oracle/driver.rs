@@ -93,9 +93,12 @@ fn open_durable(
     root: &Path,
     durability: OracleDurability,
 ) -> Result<StorageRuntime<'static>, TestkitError> {
-    let outcome =
+    // Retry-on-Unavailable absorbs the prior runtime's detached-worker
+    // writer-lock window (#2727); any other failure stays loud.
+    let outcome = crate::testkit::reopen_retry::open_with_retry_on_unavailable(|| {
         StorageRuntime::open_durable_local(root.to_path_buf(), durability_policy(durability))
-            .map_err(|err| TestkitError::new(format!("open durable: {err:?}")))?;
+    })
+    .map_err(|err| TestkitError::new(format!("open durable: {err:?}")))?;
     Ok(outcome.into_runtime())
 }
 
@@ -110,10 +113,14 @@ fn open_durable_lossy(
 ) -> Result<StorageRuntime<'static>, TestkitError> {
     let backend: &'static StorageBackend =
         crate::testkit::leak_static(StorageBackend::local_fs(root.to_path_buf()));
-    let options = StorageOpenOptions::durable_local(durability_policy(durability))
-        .with_strict_recovery(false);
-    let outcome = StorageRuntime::open_with_backend(options, backend)
-        .map_err(|err| TestkitError::new(format!("lossy reopen: {err:?}")))?;
+    // Retry-on-Unavailable absorbs the prior runtime's detached-worker
+    // writer-lock window (#2727); any other failure stays loud.
+    let outcome = crate::testkit::reopen_retry::open_with_retry_on_unavailable(|| {
+        let options = StorageOpenOptions::durable_local(durability_policy(durability))
+            .with_strict_recovery(false);
+        StorageRuntime::open_with_backend(options, backend)
+    })
+    .map_err(|err| TestkitError::new(format!("lossy reopen: {err:?}")))?;
     Ok(outcome.into_runtime())
 }
 
