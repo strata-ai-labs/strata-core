@@ -129,9 +129,30 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-mutants
       - name: Mutants on the PR diff
+        # Partitioned by feature set (#2659): feature names are package-local,
+        # so one global --features list cannot serve the workspace. Run A
+        # covers every package except executor/inference under default
+        # features (.cargo/mutants.toml holds that exclusion and the full
+        # rationale); runs B and C cover those two packages under the same
+        # feature sets the test job uses, so feature-gated code (idl_tooling,
+        # the inference command surface, download) is compiled and its tests
+        # actually run instead of reporting false MISSED. local-gated
+        # inference files stay excluded: no CI lane can build them (cmake +
+        # model artifacts). A run whose slice of the diff has no mutants
+        # exits immediately, so single-crate PRs pay for one run.
         run: |
           git diff "origin/${{ github.base_ref }}"...HEAD > pr.diff
           cargo mutants --in-diff pr.diff --timeout-multiplier 2.5 --minimum-test-timeout 60
+          cargo mutants --no-config --in-diff pr.diff --package strata-executor \
+            --features idl-tooling,inference,testkit \
+            --timeout-multiplier 2.5 --minimum-test-timeout 60
+          cargo mutants --no-config --in-diff pr.diff --package strata-inference \
+            --features download,testkit \
+            --exclude "crates/inference/src/llama/**" \
+            --exclude "crates/inference/src/embed.rs" \
+            --exclude "crates/inference/src/rank.rs" \
+            --exclude "crates/inference/src/provider/local.rs" \
+            --timeout-multiplier 2.5 --minimum-test-timeout 60
       - name: Upload mutants report
         if: failure()
         uses: actions/upload-artifact@v4
