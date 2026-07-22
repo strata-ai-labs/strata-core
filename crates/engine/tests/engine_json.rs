@@ -144,6 +144,49 @@ fn json_invalid_inputs_are_engine_errors() {
 }
 
 #[test]
+fn special_character_keys_are_addressable_by_bracket_notation() {
+    // The issue's repro: keys that dot notation cannot express (emoji, an
+    // embedded dot) are stored and then read back by bracket notation in either
+    // quote style, while dot notation reports a typed, guidance-carrying error.
+    let mut database = open_cache_database().expect("cache open");
+    let mut json = database
+        .json(branch("default"), space("default"))
+        .expect("json opens");
+    let doc = doc_id("special");
+    json.set_or_create(
+        doc.clone(),
+        &root(),
+        json_value(json!({ "k\u{1f389}": "V", "a.b": "W" })),
+    )
+    .expect("write with special-character keys succeeds");
+
+    for path_str in ["$['k\u{1f389}']", "$[\"k\u{1f389}\"]"] {
+        assert_eq!(
+            json.get(&doc, &path(path_str))
+                .expect("read succeeds")
+                .expect("value")
+                .as_inner(),
+            &json!("V"),
+            "{path_str}"
+        );
+    }
+    // A key containing a dot is reachable only through bracket notation.
+    assert_eq!(
+        json.get(&doc, &path("$['a.b']"))
+            .expect("read succeeds")
+            .expect("value")
+            .as_inner(),
+        &json!("W")
+    );
+
+    // Dot notation cannot express the emoji key; it reports the typed path error.
+    let error = "$.k\u{1f389}"
+        .parse::<JsonPath>()
+        .expect_err("dot notation rejects the emoji key");
+    assert_eq!(error.code(), "invalid_argument.engine.json_path");
+}
+
+#[test]
 fn json_serde_construction_preserves_validation() {
     let error = serde_json::from_value::<JsonDocumentId>(json!(""))
         .expect_err("empty document id rejected through serde");

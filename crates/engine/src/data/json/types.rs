@@ -327,7 +327,11 @@ impl FromStr for JsonPath {
                 index += 1;
             }
             if start == index {
-                return Err(path_error("unsupported character in JSON path"));
+                return Err(path_error(
+                    "unsupported character in JSON path; use bracket notation \
+                     (e.g. [\"my.key\"]) to address keys with dots, spaces, or \
+                     other characters outside [A-Za-z0-9_-]",
+                ));
             }
             segments.push(JsonPathSegment::Key(chars[start..index].iter().collect()));
         }
@@ -572,13 +576,17 @@ fn parse_bracket_segment(
     segments: &mut Vec<JsonPathSegment>,
 ) -> EngineResult<()> {
     *index += 1;
-    if *index < chars.len() && chars[*index] == '"' {
+    if *index < chars.len() && (chars[*index] == '"' || chars[*index] == '\'') {
+        // Quoted-key bracket notation addresses arbitrary keys — dots, spaces,
+        // emoji, `$`/`@`, etc. Both quote styles are accepted (standard JSONPath);
+        // `\<quote>` and `\\` are the only escapes.
+        let quote = chars[*index];
         *index += 1;
         let mut key = String::new();
-        while *index < chars.len() && chars[*index] != '"' {
+        while *index < chars.len() && chars[*index] != quote {
             if chars[*index] == '\\' && *index + 1 < chars.len() {
                 let next = chars[*index + 1];
-                if next == '"' || next == '\\' {
+                if next == quote || next == '\\' {
                     key.push(next);
                     *index += 2;
                     continue;
@@ -587,7 +595,7 @@ fn parse_bracket_segment(
             key.push(chars[*index]);
             *index += 1;
         }
-        if *index >= chars.len() || chars[*index] != '"' {
+        if *index >= chars.len() || chars[*index] != quote {
             return Err(path_error("unclosed quoted key in JSON path"));
         }
         *index += 1;
@@ -918,6 +926,56 @@ mod tests {
                 .segments()
                 .len(),
             3
+        );
+    }
+
+    #[test]
+    fn path_parser_accepts_single_quoted_bracket_keys() {
+        // Single-quote bracket notation addresses arbitrary keys just like the
+        // double-quote form, matching standard JSONPath. A key that dot notation
+        // cannot express (emoji, dot, embedded double quote) round-trips.
+        for (path, key) in [
+            ("$['k\u{1f389}']", "k\u{1f389}"),
+            ("$['a.b']", "a.b"),
+            ("$['has \"double\"']", "has \"double\""),
+            ("$['esc\\'aped']", "esc'aped"),
+            // A backslash before a non-escape character is preserved literally
+            // (only `\'` and `\\` are escapes), not consumed with the next char.
+            ("$['a\\b']", "a\\b"),
+        ] {
+            let parsed = path
+                .parse::<JsonPath>()
+                .expect("single-quoted bracket path parses");
+            assert_eq!(
+                parsed.segments(),
+                &[JsonPathSegment::Key(key.to_owned())],
+                "{path}"
+            );
+        }
+        // An unterminated single-quoted key is rejected like the double-quote form.
+        assert_eq!(
+            "$['open"
+                .parse::<JsonPath>()
+                .expect_err("unterminated")
+                .code(),
+            "invalid_argument.engine.json_path"
+        );
+        // A trailing backslash at the end of input must not read past the buffer
+        // while looking for the escaped character; it is an unterminated key.
+        assert_eq!(
+            "$['a\\"
+                .parse::<JsonPath>()
+                .expect_err("trailing backslash is unterminated")
+                .code(),
+            "invalid_argument.engine.json_path"
+        );
+        // An opening bracket at the very end of input is an unclosed bracket, not
+        // a read past the buffer while probing for a quote.
+        assert_eq!(
+            "$[".parse::<JsonPath>()
+                .expect_err("bracket at end is unclosed")
+                .code(),
+            "invalid_argument.engine.json_path"
         );
     }
 
