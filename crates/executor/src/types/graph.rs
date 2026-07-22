@@ -207,7 +207,7 @@ impl GraphEdgeData {
 /// One graph batch write operation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case", tag = "type")]
+#[serde(rename_all = "snake_case", tag = "type", deny_unknown_fields)]
 pub enum GraphBatchOperation {
     /// Upserts one node.
     UpsertNode {

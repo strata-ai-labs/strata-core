@@ -13,6 +13,38 @@ use strata_executor::{
 use tempfile::TempDir;
 
 #[test]
+fn graph_batch_operation_rejects_unknown_keys_instead_of_dropping_data() {
+    // A misspelled or extraneous key on a batch operation must be rejected, not
+    // silently dropped: dropping it applies the operation without the intended
+    // payload (or with a default) and returns no error, so the caller believes
+    // a field took effect that never did.
+    let error = serde_json::from_str::<Command>(
+        r#"{"type":"graph_batch_write","graph":"g","operations":[{"type":"delete_node","node_id":"a","cascade":true}]}"#,
+    )
+    .expect_err("an unknown operation key is rejected");
+    assert!(
+        error.to_string().contains("cascade"),
+        "the rejection names the unknown key: {error}"
+    );
+
+    // A misspelled payload key on an upsert is rejected too.
+    let upsert_error = serde_json::from_str::<Command>(
+        r#"{"type":"graph_batch_write","graph":"g","operations":[{"type":"upsert_node","node_id":"a","dat":{}}]}"#,
+    )
+    .expect_err("an unknown upsert key is rejected");
+    assert!(
+        upsert_error.to_string().contains("dat"),
+        "the rejection names the unknown key: {upsert_error}"
+    );
+
+    // Correctly-shaped operations still deserialize.
+    serde_json::from_str::<Command>(
+        r#"{"type":"graph_batch_write","graph":"g","operations":[{"type":"delete_node","node_id":"a"}]}"#,
+    )
+    .expect("a valid batch operation deserializes");
+}
+
+#[test]
 fn graph_core_command_suite_runs_in_cache_and_durable_modes() {
     run_graph_modes(run_graph_core_command_suite);
 }
