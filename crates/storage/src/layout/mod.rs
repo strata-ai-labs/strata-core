@@ -278,6 +278,15 @@ impl ObjectLayout {
         ])
     }
 
+    /// The durable WAL segment-loss watermark: a single object recording the
+    /// highest WAL segment id ever created (#2690). It lives in the `meta`
+    /// family as a fixed singleton (`meta/wal-watermark`), deliberately outside
+    /// the `wal/` and `meta/wal/` prefixes so segment/sidecar listings never
+    /// mistake it for a segment.
+    pub(crate) fn wal_watermark() -> LayoutResult<ObjectName> {
+        object_name(&[ObjectFamily::Meta.as_str(), "wal-watermark"])
+    }
+
     pub(crate) fn table_prefix() -> LayoutResult<ObjectPrefix> {
         Self::family_prefix(ObjectFamily::Tables)
     }

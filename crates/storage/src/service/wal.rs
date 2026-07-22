@@ -16,9 +16,9 @@ use crate::backend::{
 use crate::config::mode::DurabilityPolicy;
 use crate::format::{
     decode_wal_record, decode_wal_record_envelope, decode_wal_segment_header,
-    encode_wal_record_envelope_bytes_into, encode_wal_record_into_reusing,
-    encode_wal_segment_header, FormatError, SegmentMetadata, WalRecord, WalSegmentHeader,
-    WAL_SEGMENT_HEADER_SIZE,
+    decode_wal_watermark, encode_wal_record_envelope_bytes_into, encode_wal_record_into_reusing,
+    encode_wal_segment_header, encode_wal_watermark, FormatError, SegmentMetadata, WalRecord,
+    WalSegmentHeader, WAL_SEGMENT_HEADER_SIZE,
 };
 use crate::layout::{LayoutError, ObjectLayout, WalObjectClassification};
 use crate::object::ObjectName;
@@ -1997,6 +1997,10 @@ fn create_segment(
         bytes.len() as u64,
         &outcome,
     )?;
+    // #2690: record the durable segment-loss watermark AFTER the segment is
+    // created and synced. This is the only durable evidence that segment N ever
+    // existed, and ordering it after the segment keeps it a safe lower bound.
+    update_wal_watermark(backend, segment_id)?;
     Ok((
         object,
         outcome.metadata().size_bytes(),
@@ -2112,25 +2116,32 @@ pub(crate) fn resolve_resume_segment(
     Ok(resolved)
 }
 
-/// Verify the on-disk WAL segment inventory before opening, so a removed
-/// segment surfaces as permanent data loss instead of silently resolving to a
-/// fresh empty log (the [`resolve_resume_segment`] +
+/// Verify the on-disk WAL segment inventory against the durable watermark
+/// before opening, so a removed segment surfaces as permanent data loss instead
+/// of silently resolving to a fresh empty log (the [`resolve_resume_segment`] +
 /// [`open_or_create_segment`] path would otherwise recreate the absent segment
-/// and discard every record it held).
+/// and discard every record it held — #2690).
 ///
-/// The caller invokes this only when the WAL is the database's sole durable
-/// store — an existing database with no checkpoint or snapshot — so every
-/// committed record lives in the log and a missing segment is unrecoverable.
-/// `manifest_active_segment` is the manifest's recorded active segment (the
-/// resume seed).
-pub(crate) fn verify_wal_segment_inventory(
-    backend: &dyn Backend,
-    manifest_active_segment: u64,
-) -> WalServiceResult<()> {
+/// The watermark records the highest segment id ever created (written at
+/// creation, before any commit — see [`update_wal_watermark`]). It is the only
+/// durable evidence that acknowledged data existed, so the check is authoritative
+/// on it:
+/// - **absent** — a fresh database, a crash before the first watermark sync, or
+///   a corrupt/torn watermark (which degrades to non-detection so a recoverable
+///   database is never refused on a bad marker). Nothing to verify.
+/// - **present `= W`** — the present segments must be contiguous (retention only
+///   ever trims a contiguous prefix), and the watermark segment `W` must itself
+///   be present. Segments *above* `W` are tolerated: a crash between creating a
+///   segment and syncing the watermark leaves a higher on-disk segment the
+///   marker does not yet cover, and recovery resumes at it. An interior hole is
+///   a [`WalServiceError::SegmentInventoryGap`]; an absent watermark segment —
+///   including no segments at all, the sole-deletion case — is a
+///   [`WalServiceError::MissingActiveSegment`].
+pub(crate) fn verify_wal_segment_inventory(backend: &dyn Backend) -> WalServiceResult<()> {
+    let Some(watermark) = read_wal_watermark(backend)? else {
+        return Ok(());
+    };
     let segments = list_segments(backend)?;
-    // Retention only ever trims a contiguous prefix of sealed segments, so a
-    // hole between the lowest and highest present id means a segment was
-    // removed out of band.
     for window in segments.windows(2) {
         let (lower, _) = &window[0];
         let (upper, _) = &window[1];
@@ -2140,21 +2151,70 @@ pub(crate) fn verify_wal_segment_inventory(
             });
         }
     }
-    // The segment recovery resumes from must be present: with no checkpoint, it
-    // holds committed data that a fresh segment would silently discard.
-    let on_disk_max = segments.last().map(|(segment_id, _)| *segment_id);
-    let resolved = on_disk_max.map_or(manifest_active_segment, |max| {
-        max.max(manifest_active_segment)
-    });
-    let present = segments
+    // The watermark segment must be present. It is the highest segment the marker
+    // knows was created and retention never trims it, so its absence means the
+    // tail (or the sole segment) was removed out of band. A segment *above* the
+    // watermark is not loss — it is the create-before-watermark-sync window.
+    let watermark_present = segments
         .iter()
-        .any(|(segment_id, _)| *segment_id == resolved);
-    if !present {
+        .any(|(segment_id, _)| *segment_id == watermark);
+    if !watermark_present {
         return Err(WalServiceError::MissingActiveSegment {
-            segment_id: resolved,
+            segment_id: watermark,
         });
     }
     Ok(())
+}
+
+/// Reads the durable WAL watermark. A missing object (fresh database or a crash
+/// before the first watermark sync) and an unreadable object (torn/corrupt
+/// write) both return `None`: a corrupt marker degrades detection to a warning
+/// rather than refusing a database that may be perfectly recoverable. Only a
+/// genuine backend IO failure propagates.
+fn read_wal_watermark(backend: &dyn Backend) -> WalServiceResult<Option<u64>> {
+    let object = ObjectLayout::wal_watermark().map_err(|source| WalServiceError::Layout { source })?;
+    match backend.read_object(&object) {
+        Ok(bytes) => match decode_wal_watermark(&bytes) {
+            Ok(watermark) => Ok(Some(watermark)),
+            Err(source) => {
+                tracing::warn!(
+                    %object,
+                    ?source,
+                    "WAL segment-loss watermark is unreadable; deletion detection degraded to non-detection for this open"
+                );
+                Ok(None)
+            }
+        },
+        Err(error) if error.kind() == BackendErrorKind::NotFound => Ok(None),
+        Err(source) => Err(WalServiceError::Backend {
+            operation: WalOperation::Open,
+            object,
+            source,
+        }),
+    }
+}
+
+/// Records the durable watermark after a segment is created and synced.
+/// [`create_segment`] only ever creates a strictly higher segment, so the value
+/// is monotonic and an unconditional durable overwrite is correct — it also
+/// repairs any previously torn watermark. Writing this *after* the segment (and
+/// never before) keeps the marker a safe lower bound: a crash before this leaves
+/// it below the true highest, and recovery resumes at the higher on-disk segment
+/// — the watermark never over-claims a segment that was never created.
+fn update_wal_watermark(backend: &dyn Backend, segment_id: u64) -> WalServiceResult<()> {
+    let object = ObjectLayout::wal_watermark().map_err(|source| WalServiceError::Layout { source })?;
+    let bytes = encode_wal_watermark(segment_id).map_err(|source| WalServiceError::Format {
+        operation: WalOperation::CreateSegment,
+        object: object.clone(),
+        source,
+    })?;
+    let outcome = ObjectPublisher::new(backend)
+        .publish_durable_replace(&object, &bytes)
+        .map_err(|source| WalServiceError::Publish {
+            operation: WalOperation::CreateSegment,
+            source,
+        })?;
+    validate_wal_publish_outcome(WalOperation::CreateSegment, &object, bytes.len() as u64, &outcome)
 }
 
 fn list_segments(backend: &dyn Backend) -> WalServiceResult<Vec<WalSegmentObject>> {

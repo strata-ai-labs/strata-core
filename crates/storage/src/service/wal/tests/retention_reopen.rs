@@ -1174,37 +1174,79 @@ fn reopen_with_stale_seed_keeps_retention_boundary_at_the_true_tail() {
 }
 
 #[test]
-fn segment_inventory_check_catches_removed_and_gapped_segments() {
+fn segment_inventory_check_verifies_against_the_durable_watermark() {
     use super::super::verify_wal_segment_inventory;
+    use crate::format::encode_wal_watermark;
 
-    // An existing, un-checkpointed database whose only segment was removed must
+    fn seed_watermark(backend: &StoredWalBackend, highest: u64) {
+        backend
+            .write_object(
+                &ObjectLayout::wal_watermark().expect("watermark object"),
+                &encode_wal_watermark(highest).expect("encode watermark"),
+            )
+            .expect("seed watermark");
+    }
+
+    // No durable watermark: a fresh database, or a crash before the first
+    // watermark sync — there is no evidence any segment existed, so nothing is
+    // verified.
+    let fresh = StoredWalBackend::new();
+    verify_wal_segment_inventory(&fresh).expect("an absent watermark verifies as fresh");
+
+    // The sole segment was removed, but the watermark records that it existed:
     // fail closed instead of resolving back to a fresh empty log.
     let erased = StoredWalBackend::new();
+    seed_watermark(&erased, 1);
     assert!(matches!(
-        verify_wal_segment_inventory(&erased, 1),
+        verify_wal_segment_inventory(&erased),
         Err(WalServiceError::MissingActiveSegment { segment_id: 1 })
     ));
 
-    // A contiguous, present inventory opens cleanly.
+    // A contiguous, present inventory up to the watermark opens cleanly.
     let healthy = StoredWalBackend::new();
     seed_segment(&healthy, 1, &[record(1, b"a".to_vec())]);
     seed_segment(&healthy, 2, &[record(2, b"b".to_vec())]);
-    verify_wal_segment_inventory(&healthy, 1).expect("contiguous present inventory is valid");
+    seed_watermark(&healthy, 2);
+    verify_wal_segment_inventory(&healthy).expect("contiguous present inventory is valid");
 
-    // Retention trims a contiguous prefix, leaving a higher-based run — this is
-    // legitimate and must not be flagged as loss.
+    // Retention trims a contiguous prefix, leaving a higher-based run up to the
+    // watermark — legitimate, not loss.
     let retained = StoredWalBackend::new();
     seed_segment(&retained, 2, &[record(2, b"b".to_vec())]);
     seed_segment(&retained, 3, &[record(3, b"c".to_vec())]);
-    verify_wal_segment_inventory(&retained, 2)
+    seed_watermark(&retained, 3);
+    verify_wal_segment_inventory(&retained)
         .expect("a contiguous run above a retention floor is valid");
+
+    // The tail segment was removed: the highest present id (2) is below the
+    // watermark (3), so the active segment is gone.
+    let tail_removed = StoredWalBackend::new();
+    seed_segment(&tail_removed, 1, &[record(1, b"a".to_vec())]);
+    seed_segment(&tail_removed, 2, &[record(2, b"b".to_vec())]);
+    seed_watermark(&tail_removed, 3);
+    assert!(matches!(
+        verify_wal_segment_inventory(&tail_removed),
+        Err(WalServiceError::MissingActiveSegment { segment_id: 3 })
+    ));
 
     // A hole in the middle means a segment was removed out of band.
     let gapped = StoredWalBackend::new();
     seed_segment(&gapped, 1, &[record(1, b"a".to_vec())]);
     seed_segment(&gapped, 3, &[record(3, b"c".to_vec())]);
+    seed_watermark(&gapped, 3);
     assert!(matches!(
-        verify_wal_segment_inventory(&gapped, 1),
+        verify_wal_segment_inventory(&gapped),
         Err(WalServiceError::SegmentInventoryGap { missing_segment: 2 })
     ));
+
+    // A corrupt/torn watermark degrades to non-detection rather than refusing a
+    // database that may be perfectly recoverable.
+    let corrupt = StoredWalBackend::new();
+    corrupt
+        .write_object(
+            &ObjectLayout::wal_watermark().expect("watermark object"),
+            b"not a valid watermark",
+        )
+        .expect("seed corrupt watermark");
+    verify_wal_segment_inventory(&corrupt).expect("a corrupt watermark degrades, not refuses");
 }

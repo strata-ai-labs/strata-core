@@ -352,20 +352,13 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             ));
         }
 
-        // When the WAL is the database's sole durable store — an existing
-        // database with no checkpoint or snapshot — every committed record
-        // lives in the log, so a removed segment is unrecoverable data loss.
-        // Fail closed before recovery can silently resume onto a fresh empty
-        // log. A just-created database (no segment yet) and a checkpointed
-        // database (data safely in the snapshot) both legitimately tolerate an
-        // absent segment, so they are not checked here.
-        if disposition == StorageOpenDisposition::OpenedExisting
-            && manifest.flushed_through_commit_id().is_none()
-            && manifest.snapshot_watermark().is_none()
-        {
-            verify_wal_segment_inventory(&backend, manifest.active_wal_segment())
-                .map_err(wal_open_error)?;
-        }
+        // #2690: fail closed before recovery can silently resume onto a fresh
+        // empty log when a WAL segment was removed out of band. The durable
+        // watermark is authoritative and self-gating — it is absent for a fresh
+        // or crash-during-creation database (nothing verified) and present only
+        // once acknowledged data exists — so the check is unconditional here
+        // rather than heuristically gated on disposition/checkpoint state.
+        verify_wal_segment_inventory(&backend).map_err(wal_open_error)?;
 
         let wal = WalService::open(
             backend.clone(),
