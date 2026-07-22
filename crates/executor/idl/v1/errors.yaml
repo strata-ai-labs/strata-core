@@ -90,6 +90,7 @@ errors:
   - invalid_argument.executor.arrow_base64
   - invalid_argument.executor.arrow_empty_export
   - invalid_argument.executor.arrow_vector_key
+  - invalid_argument.executor.arrow_event
   - invalid_argument.executor.arrow_graph
   - unavailable.executor.arrow_io
   - internal.executor.arrow

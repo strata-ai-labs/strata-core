@@ -546,6 +546,10 @@
           "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_vector_key"
         },
         {
+          "code": "invalid_argument.executor.arrow_event",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_event"
+        },
+        {
           "code": "invalid_argument.executor.arrow_graph",
           "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_graph"
         },

@@ -1427,6 +1427,8 @@ pub(crate) enum CliArrowImportTarget {
     Vector,
     /// Graph primitive.
     Graph,
+    /// Event primitive.
+    Event,
 }
 
 impl From<CliArrowImportTarget> for strata_executor::ArrowImportTarget {
@@ -1436,6 +1438,7 @@ impl From<CliArrowImportTarget> for strata_executor::ArrowImportTarget {
             CliArrowImportTarget::Json => Self::Json,
             CliArrowImportTarget::Vector => Self::Vector,
             CliArrowImportTarget::Graph => Self::Graph,
+            CliArrowImportTarget::Event => Self::Event,
         }
     }
 }

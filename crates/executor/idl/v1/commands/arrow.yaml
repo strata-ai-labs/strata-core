@@ -43,6 +43,7 @@ commands:
       - invalid_argument.executor.arrow_empty_export
       - invalid_argument.executor.arrow_value_column
       - invalid_argument.executor.arrow_vector_key
+      - invalid_argument.executor.arrow_event
       - invalid_argument.executor.arrow_graph
       - invalid_argument.executor.arrow_collection
       - unavailable.executor.arrow_io

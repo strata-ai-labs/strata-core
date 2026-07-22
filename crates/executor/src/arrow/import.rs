@@ -10,8 +10,9 @@ use serde_json::Value;
 use crate::error::ExecutorResult;
 use crate::output::Output;
 use crate::types::{
-    ArrowFileFormat, ArrowImportResult, ArrowImportTarget, BatchJsonEntry, BatchKvEntry,
-    BatchVectorEntry, Bytes, GraphBatchOperation, GraphEdgeData, GraphEntityBinding, GraphNodeData,
+    ArrowFileFormat, ArrowImportResult, ArrowImportTarget, BatchEventEntry, BatchJsonEntry,
+    BatchKvEntry, BatchVectorEntry, Bytes, GraphBatchOperation, GraphEdgeData, GraphEntityBinding,
+    GraphNodeData,
 };
 use crate::{Command, Executor};
 
@@ -56,6 +57,23 @@ pub(crate) fn import_file(
     }
 
     let (schema, batches) = read_file(&path, format)?;
+
+    // Event import reads a single file with a fixed event schema (not the
+    // key/value column mapping kv/json/vector share), and replays each row as an
+    // ordinary append — Arrow is an analytics interchange, so the log is
+    // re-derived (fresh sequence/timestamp/hash); clone artifacts are the
+    // lossless backup path.
+    if let ArrowImportTarget::Event = target {
+        let result = import_event(executor, branch, space, &schema, &batches)?;
+        return Ok(Output::ArrowImportResult(ArrowImportResult::new(
+            target,
+            file_path,
+            result.rows_imported,
+            result.rows_skipped,
+            result.batches_processed,
+        )));
+    }
+
     let mapping = resolve_mapping(&schema, target, key_column, value_column)?;
 
     let result = match target {
@@ -69,11 +87,16 @@ pub(crate) fn import_file(
             )?;
             import_vector(executor, branch, space, collection, &batches, &mapping)?
         }
-        // Graph returned above, before the column-mapping path; this arm keeps
-        // the match exhaustive without a panicking `unreachable!()`.
+        // Graph and Event return above, before the column-mapping path; these
+        // arms keep the match exhaustive without a panicking `unreachable!()`.
         ArrowImportTarget::Graph => {
             return Err(internal_error(
                 "graph Arrow import is handled before column mapping",
+            ));
+        }
+        ArrowImportTarget::Event => {
+            return Err(internal_error(
+                "event Arrow import is handled before column mapping",
             ));
         }
     };
@@ -355,6 +378,77 @@ fn import_graph(
 
 /// Resolves a required graph-file column by name, failing with a stable code when
 /// the exported schema is missing it.
+/// Replays exported events into the target branch as ordinary appends. Only the
+/// event `type` and `payload` are restored; the append reassigns
+/// sequence/timestamp/hash (Arrow is analytics interchange, not a backup).
+fn import_event(
+    executor: &mut Executor,
+    branch: Option<&str>,
+    space: Option<&str>,
+    schema: &Schema,
+    batches: &[RecordBatch],
+) -> ExecutorResult<ImportCounts> {
+    let event_type_idx = event_column_index(schema, "event_type")?;
+    let payload_idx = event_column_index(schema, "payload")?;
+
+    let mut entries = Vec::new();
+    let mut rows = 0_usize;
+    for batch in batches {
+        for row in 0..batch.num_rows() {
+            let event_type = event_string_cell(batch, event_type_idx, row)?;
+            let payload_text = event_string_cell(batch, payload_idx, row)?;
+            let payload = serde_json::from_str(&payload_text).map_err(|error| {
+                invalid_input(
+                    "invalid_argument.executor.arrow_event",
+                    format!("event import payload cell is not valid JSON: {error}"),
+                )
+            })?;
+            entries.push(BatchEventEntry::new(event_type, payload));
+            rows += 1;
+        }
+    }
+
+    if !entries.is_empty() {
+        let output = executor.execute(Command::EventBatchAppend {
+            branch: branch.map(str::to_owned),
+            space: space.map(str::to_owned),
+            entries,
+        })?;
+        let Output::EventBatchAppendResults(_) = output else {
+            return Err(unexpected_output("event_batch_append"));
+        };
+    }
+
+    Ok(ImportCounts {
+        rows_imported: rows as u64,
+        rows_skipped: 0,
+        batches_processed: batches.len() as u64,
+    })
+}
+
+fn event_column_index(schema: &Schema, name: &str) -> ExecutorResult<usize> {
+    schema.index_of(name).map_err(|_| {
+        invalid_input(
+            "invalid_argument.executor.arrow_event",
+            format!("event import file is missing the `{name}` column"),
+        )
+    })
+}
+
+fn event_string_cell(batch: &RecordBatch, index: usize, row: usize) -> ExecutorResult<String> {
+    batch
+        .column(index)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .map(|array| array.value(row).to_owned())
+        .ok_or_else(|| {
+            invalid_input(
+                "invalid_argument.executor.arrow_event",
+                format!("event import expects a string column at index {index}"),
+            )
+        })
+}
+
 fn graph_column_index(schema: &Schema, name: &str) -> ExecutorResult<usize> {
     schema.index_of(name).map_err(|_| {
         invalid_input(

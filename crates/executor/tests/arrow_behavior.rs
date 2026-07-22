@@ -12,9 +12,9 @@ use arrow::record_batch::RecordBatch;
 use serde_json::{json, Value};
 use strata_executor::{
     ArrowExportPrimitive, ArrowExportResult, ArrowFileFormat, ArrowImportResult, ArrowImportTarget,
-    BatchEventEntry, Bytes, Command, Executor, ExecutorErrorClass, GraphBindingPrimitive,
-    GraphBindingTarget, GraphDirection, GraphEntityBinding, Output, VectorDistanceMetric,
-    DEFAULT_BRANCH,
+    BatchEventEntry, Bytes, Command, EventRangeDirection, Executor, ExecutorErrorClass,
+    GraphBindingPrimitive, GraphBindingTarget, GraphDirection, GraphEntityBinding, Output,
+    VectorDistanceMetric, DEFAULT_BRANCH,
 };
 use tempfile::TempDir;
 
@@ -540,6 +540,117 @@ fn event_export_writes_filtered_jsonl_without_mutating_log() {
     assert!(exported.contains("\"event_type\":\"audit.created\""));
     assert!(!exported.contains("\"event_type\":\"audit.updated\""));
     assert_eq!(event_count(&mut executor), 2);
+}
+
+#[test]
+fn event_export_import_round_trip_restores_payloads_and_types() {
+    let dir = TempDir::new().expect("temp dir");
+    let export_path = dir.path().join("events.parquet");
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    // Source events on the default branch.
+    executor
+        .execute(Command::EventBatchAppend {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchEventEntry::new("audit.created", json!({"id": 1})),
+                BatchEventEntry::new("audit.updated", json!({"id": 2})),
+            ],
+        })
+        .expect("event batch append succeeds");
+
+    executor
+        .execute(Command::ArrowExport {
+            branch: None,
+            space: None,
+            primitive: ArrowExportPrimitive::Event,
+            format: ArrowFileFormat::Parquet,
+            path: export_path.to_string_lossy().into_owned(),
+            prefix: None,
+            limit: None,
+            collection: None,
+            graph: None,
+            event_type: None,
+        })
+        .expect("event export succeeds");
+
+    // Import into a fresh, empty branch. Arrow is an analytics interchange
+    // (clone artifacts are the lossless backup path), so the log is re-derived:
+    // event type and payload round-trip, while sequence/timestamp/hash are
+    // reassigned by the ordinary append.
+    executor
+        .execute(Command::BranchCreate {
+            branch: "restore".to_owned(),
+        })
+        .expect("branch create succeeds");
+    let output = executor
+        .execute(Command::ArrowImport {
+            branch: Some("restore".to_owned()),
+            space: None,
+            file_path: export_path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Parquet),
+            target: ArrowImportTarget::Event,
+            key_column: None,
+            value_column: None,
+            collection: None,
+            graph: None,
+        })
+        .expect("event import succeeds");
+    let Output::ArrowImportResult(result) = output else {
+        panic!("unexpected import output");
+    };
+    assert_eq!(result.rows_imported(), 2);
+
+    // The restored branch carries both events with their original type + payload.
+    let range = executor
+        .execute(Command::EventRange {
+            branch: Some("restore".to_owned()),
+            space: None,
+            start_seq: 0,
+            end_seq: None,
+            limit: None,
+            direction: EventRangeDirection::Forward,
+            event_type: None,
+        })
+        .expect("event range read succeeds");
+    let Output::EventRangeResult { items, .. } = range else {
+        panic!("unexpected range output");
+    };
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].event().event_type(), "audit.created");
+    assert_eq!(items[0].event().payload(), &json!({"id": 1}));
+    assert_eq!(items[1].event().event_type(), "audit.updated");
+    assert_eq!(items[1].event().payload(), &json!({"id": 2}));
+
+    // The source branch is untouched by the import.
+    assert_eq!(event_count(&mut executor), 2);
+}
+
+#[test]
+fn event_import_rejects_a_file_missing_event_columns() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = dir.path().join("vectors.parquet");
+    write_vector_parquet(&path);
+
+    // A file without the `event_type`/`payload` columns is rejected with the
+    // event-import code rather than panicking on a missing column.
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let error = executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Parquet),
+            target: ArrowImportTarget::Event,
+            key_column: None,
+            value_column: None,
+            collection: None,
+            graph: None,
+        })
+        .expect_err("a non-event file is rejected");
+    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+    assert_eq!(error.code(), "invalid_argument.executor.arrow_event");
 }
 
 #[test]
