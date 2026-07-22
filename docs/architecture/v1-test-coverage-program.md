@@ -234,14 +234,64 @@ SLT — **differential testing each capability against a reference database**
 (KV vs RocksDB/Redis, JSON vs Mongo, graph vs Neo4j), since a database built by
 other people is a stronger oracle than any model we could write ourselves.
 
+Phase 4 is also **evidence-directed**, not a blind sweep: the #2686 adversarial
+pass gave us a labelled sample of what our coverage misses, so each generator is
+aimed at a class the codebase has already proven it harbours (see below).
+
+### What Phase 4 must hunt — the empirical gap classes (#2686 evidence)
+
+The #2686 adversarial pass (19 engine defects, reproduced through the Python SDK
+torture suite) is a **labelled sample of the bugs a ~1.9× suite and a green
+error-code guard let through**. The root-cause retro shows they are not 19
+unrelated mistakes — they cluster into a small set of *coverage classes*, and
+the operative fact is this:
+
+> **Each found bug is a sample of a class, not a singleton.** We fixed 19; the
+> codebase has now *proven* it harbours these kinds of defect, so the remaining
+> population is almost certainly larger. Phase 4's generators are therefore
+> aimed at the *class*, and each is seeded with a real #2686 instance it must
+> re-find before we trust it to find new ones. Fixing the seed does not close
+> the class — the lane stays until its mutation-kill on that surface plateaus.
+
+The classes, with confirmed instances and the slice that owns hunting the rest:
+
+| Gap class | Confirmed #2686 instances | Why the current suite missed it | Owning slice |
+|---|---|---|---|
+| **Round-trip / inverse-pair fidelity** (`read == write`, `import∘export == id`) | #2687, #2688, #2689 | We assert an op returns a plausible *shape*, never value-equality. Golden vectors pin the *encoding*, so loss *before* the codec (int→f64) round-trips cleanly and looks healthy | 4.2 (diff), 4.5 (matrix), 4.6 (fidelity oracle, not just crash) |
+| **Boundary / extreme-value input domain** | #2687 (2⁶³/2⁶⁴), #2689 (subnormals), #2693 (huge norms), #2698 (as_of 0/∞) | Hand-written tests use *typical* values; nothing systematically generates numeric/time boundaries or non-representable inputs | 4.4 (float/edge corpora), 4.5 (boundary vectors) |
+| **Output invariants / cross-algorithm differential** | #2692 (bfs vs sssp), #2693 (cosine ∈ [-1,1]), #2706 (cdlp convergence) | Graph/vector tests pin outputs on small inputs, not invariants that must hold for *all* inputs | 4.2e (exact k-NN), 4.7 |
+| **Error-contract *correctness*** (condition → right code/class/retryable) | #2699 | The error-code guard proves a code is asserted *somewhere*, never that *this condition* yields *that* code. #2699's codes are asserted elsewhere, so the guard stayed green | 4.8 (new) |
+| **Cross-surface parity** (parallel surfaces obey one contract) | #2691, #2695, #2700, #2701, #2702, #2704 | Every surface is tested in isolation; nothing diffs export vs import, branch vs space, the batch family, or as_of across reads | 4.7 (new) |
+| **Adversarial deserialization on nested structs** | #2696, #2705 (batch_write, non-dict metadata, metric aliases) | `deny_unknown_fields` / type-rejection is tested at the top-level `Command`, not recursively on nested option structs | 4.1 (extend to nested) |
+| **Fault breadth: absence/removal + health-vs-truth** | #2690 | The recovery oracle mutates bytes, never *removes* a file, and trusts self-reported health over ground truth | 4.9 (new) |
+| **Inert-feature / dead-surface** | #2703 (indexes do nothing), #2704 (catalog not executable) | We test that `create_index` *succeeds*, not that it changes any observable behaviour | 4.7 (parity), 4.1 (catalog executability) |
+
+**Two instruments actively misled us, and Phase 4 corrects both.** The
+error-code assertion guard and the test:code ratio both measure *breadth of
+touch*, not *depth of correctness* — a green guard and a rising ratio were fully
+consistent with all 19 bugs. This is the concrete case for the program's
+standing rule that **mutation-kill, not ratio, is the gate**: every bug in the
+table is one a mutation test or an oracle-checked round-trip would kill.
+
+**Root cause of the blind spot.** Every one of these bugs lives in a branch the
+author did not picture (the else-arm of a finiteness check on the wrong type, a
+second `strip_prefix`, an import enum never extended). Tests written by the
+author encode the author's mental model and are blind exactly where it is wrong.
+The cure is structural — the *input choice* and the *correctness verdict* must
+both come from somewhere other than the author: generators, differential
+oracles, round-trip identities, invariants. That is the whole of Phase 4.
+
 ### Phase 4 gates (how the volume stays honest)
 
 1. **Mutation-kill is the primary ratchet** (only ratchets up). A generation
    lane that adds LOC but does not raise the workspace mutation-kill rate is
    cut. This single rule is the entire defense against LOC-farming.
 2. **Every generated case is oracle-checked** — differential, metamorphic,
-   property, or golden-pinned. No shallow (`is_some`/status-only) assertions in
-   a generator template.
+   round-trip identity, output invariant, property, or golden-pinned. The
+   verdict must judge *correctness*, not existence: existence/shape-only
+   assertions (`is_some`, status-only, "op succeeded", "returned a vector")
+   are banned in a generator template, because the #2686 class of bug passes
+   every one of them.
 3. **Regeneration is deterministic.** Committed corpora regenerate
    byte-identically in CI (a drift guard asserts no diff), so reviewers review
    the *generator and its oracle*, never a million generated lines.
@@ -252,11 +302,20 @@ other people is a stronger oracle than any model we could write ourselves.
    the receipt.
 6. **The ratio is a thermometer, never a gate** — consistent with the program's
    coverage-over-line-count principle. Coverage and mutation-kill are the gates.
+7. **Every gap class carries a seed, and a class is never "done".** Each
+   class-hunting lane must first reproduce its known #2686 instance (the seed) —
+   a generator that cannot re-find the bug we already know is there is not
+   searching that class. The seed's fix is *not* the exit; the lane keeps
+   running (nightly) until its mutation-kill on that surface plateaus, because
+   the found instances are a sample and the population is unknown.
 
 ### Phase 4 slices
 
 Sequenced foundation-first: 4.1 establishes the generate → drift-guard →
-mutation-gate pattern that every later lane reuses.
+mutation-gate pattern that every later lane reuses. The seeded class-hunters
+(**4.7–4.9**) are small, each already has a known #2686 bug to validate against,
+and they directly answer *"how many more of these are there?"* — so they run in
+parallel with 4.1/4.2a rather than waiting behind the big differential lanes.
 
 | # | Slice | Scope | Status |
 |---|---|---|---|
@@ -265,7 +324,10 @@ mutation-gate pattern that every later lane reuses.
 | 4.3 | **Exhaustive concurrency-schedule exploration** | loom/shuttle over the commit / BS5 write-group / latest-scan interleavings, turning rare CI flakes into deterministic, seed-reproducible findings. #2682 (off-lock torn read) is the seed case. High bug yield for a database; the highest-value non-LOC lever | Planned |
 | 4.4 | **Vendored public conformance suites** | Import battle-tested corpora wholesale: JSONPath Compliance Test Suite, Unicode collation/normalization, float-format edge cases, and analogous KV/vector/graph reference sets. A small runner over large vendored data | Planned |
 | 4.5 | **Golden + combinatorial matrix expansion** | Every record type × canonical/boundary/adversarial vectors across the frozen codec; the full config × capability × operation cross-product (STH-6 extended), generated and result-equality-checked | Planned |
-| 4.6 | **Committed fuzz corpora + surface expansion** | Version the accumulated persistent-corpus interesting-inputs; extend the 30 fuzz targets to the full decoder/API surface; commit crash-triage regressions | Planned |
+| 4.6 | **Committed fuzz corpora + surface expansion** | Version the accumulated persistent-corpus interesting-inputs; extend the 30 fuzz targets to the full decoder/API surface — and past crash-only oracles to **round-trip fidelity** (`decode∘encode == id`, `read == write`) so value loss (not just panics) fails a target; commit crash-triage regressions. Seeds: #2688, #2689 | Planned |
+| 4.7 | **Cross-surface parity harness (internal differential)** | Strata-vs-analogous-Strata: assert parallel surfaces obey one contract — export↔import symmetry, branch↔space lifecycle/resolution, the batch family's failure channels, the `as_of` × read-command matrix, and catalog-id → wire-name executability (construct a real call from every catalog entry). No external DB; the oracle is Strata's *own other surface*, so it is cheap and needs no service container. Also flags inert features (a surface whose output never differs). Seeds: #2691, #2695, #2700, #2701, #2702, #2703, #2704 | Planned |
+| 4.8 | **Error-contract correctness harness** | Fixture per (failure condition → expected code / class / retryable / redaction), driven through the fault seam and the bad-input surface, asserting the *mapping* — not mere code presence, which the Phase 3 error-code guard already covers and which #2699 shows is insufficient. Catches transient-vs-permanent and wrong-area misclassification across the open/read/write paths. Seed: #2699 | Planned |
+| 4.9 | **Fault-taxonomy extension + health-vs-truth oracle** | Extend the recovery/fault seam from {corrupt, truncate, io-fail} to **{delete, missing, reorder}** at the segment/artifact level, and add an oracle that diffs self-reported health (`verify_chain`, `doctor`, `HEALTHY`) against known ground truth after each fault — a database that lost data must never self-report healthy. Extends the STH-1 recovery oracle from Phase 1. Seed: #2690 | Planned |
 
 ### 4.2 in detail — differential testing against reference databases
 
@@ -332,10 +394,13 @@ floor must have risen. If marginal generated volume stops finding bugs
 is the constraint.
 
 **Phase 4 exit** = "all findable bugs ironed out," operationalized: mutation-kill
-plateaus at a high floor, the differential and fuzz soaks run sustained-clean,
-concurrency-schedule exploration exhausts the tractable interleavings, and the
-ratio has reached ~10× as a byproduct. Only then does the separate review round
-decide whether to publish the ratio as an external credibility headline.
+plateaus at a high floor, **every gap class from the #2686 retro has a running
+lane whose mutation-kill on that surface has itself plateaued** (each class
+searched to exhaustion, not just its seed fixed), the differential and fuzz
+soaks run sustained-clean, concurrency-schedule exploration exhausts the
+tractable interleavings, and the ratio has reached ~10× as a byproduct. Only
+then does the separate review round decide whether to publish the ratio as an
+external credibility headline.
 
 ## Deferred register
 
