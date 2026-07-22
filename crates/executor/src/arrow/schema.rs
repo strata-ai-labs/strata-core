@@ -33,11 +33,16 @@ pub(crate) fn resolve_mapping(
         ArrowImportTarget::Kv => resolve_kv_value(schema, key_idx, value_column)?,
         ArrowImportTarget::Json => resolve_json_document(schema, key_idx, value_column)?,
         ArrowImportTarget::Vector => resolve_vector_embedding(schema, key_idx, value_column)?,
-        // Graph import reads dedicated node/edge files and never calls
-        // `resolve_mapping`; this arm keeps the match exhaustive defensively.
+        // Graph and Event import use dedicated schemas and never call
+        // `resolve_mapping`; these arms keep the match exhaustive defensively.
         ArrowImportTarget::Graph => {
             return Err(internal_error(
                 "graph Arrow import does not use single-column mapping",
+            ));
+        }
+        ArrowImportTarget::Event => {
+            return Err(internal_error(
+                "event Arrow import does not use single-column mapping",
             ));
         }
     };

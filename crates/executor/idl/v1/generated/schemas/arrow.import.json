@@ -76,6 +76,11 @@
           "const": "graph",
           "description": "Import nodes and edges into a graph (from the `_nodes`/`_edges` files).",
           "type": "string"
+        },
+        {
+          "const": "event",
+          "description": "Import events into the branch event log (payload + type; the log is\nre-derived, so sequence/timestamp/hash are reassigned by the append).",
+          "type": "string"
         }
       ]
     }

@@ -27,6 +27,9 @@ pub enum ArrowImportTarget {
     Vector,
     /// Import nodes and edges into a graph (from the `_nodes`/`_edges` files).
     Graph,
+    /// Import events into the branch event log (payload + type; the log is
+    /// re-derived, so sequence/timestamp/hash are reassigned by the append).
+    Event,
 }
 
 /// Product primitive selected by Arrow export.

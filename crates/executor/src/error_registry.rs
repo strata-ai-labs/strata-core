@@ -125,6 +125,15 @@ const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
         ARROW_SCHEMA,
     ),
     entry(
+        "invalid_argument.executor.arrow_event",
+        ErrorClass::InvalidArgument,
+        RetryPolicy::Never,
+        CommitOutcomeStatus::NotStarted,
+        "The Arrow event import file is invalid.",
+        "Import an event Arrow file with `event_type` and JSON `payload` columns.",
+        ARROW_SCHEMA,
+    ),
+    entry(
         "invalid_argument.executor.arrow_graph",
         ErrorClass::InvalidArgument,
         RetryPolicy::Never,
