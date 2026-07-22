@@ -41,12 +41,20 @@ where
             Ok(value) => return Ok(value),
             Err(err) if is_transient_unavailable(&err) => {
                 thread::sleep(backoff);
-                backoff = (backoff * 2).min(MAX_BACKOFF);
+                backoff = next_backoff(backoff);
             }
             Err(err) => return Err(err),
         }
     }
     open()
+}
+
+/// The doubling-capped backoff schedule. Pure so its shape is assertable: the
+/// cumulative sleep across `RETRY_ATTEMPTS` must outlast the 250 ms
+/// detach window, which a shrinking or non-growing schedule would silently
+/// break while every retry-count assertion still passed.
+fn next_backoff(backoff: Duration) -> Duration {
+    (backoff * 2).min(MAX_BACKOFF)
 }
 
 /// True when the error, or anything on its `source()` chain, is a backend
@@ -103,6 +111,35 @@ mod tests {
         let err = result.expect_err("budget exhausted");
         assert_eq!(err.kind(), BackendErrorKind::Unavailable);
         assert_eq!(calls.get(), RETRY_ATTEMPTS + 1);
+    }
+
+    #[test]
+    fn the_backoff_schedule_doubles_capped_and_outlasts_the_detach_window() {
+        // Pin the exact schedule (catches a *->/ or cap regression) ...
+        assert_eq!(
+            next_backoff(Duration::from_millis(2)),
+            Duration::from_millis(4)
+        );
+        assert_eq!(
+            next_backoff(Duration::from_millis(32)),
+            Duration::from_millis(64)
+        );
+        assert_eq!(
+            next_backoff(Duration::from_millis(64)),
+            Duration::from_millis(64)
+        );
+        // ... and the property the schedule exists for: cumulative sleep across
+        // the retry budget outlasts the 250 ms worker-detach window.
+        let mut backoff = INITIAL_BACKOFF;
+        let mut total = Duration::ZERO;
+        for _ in 0..RETRY_ATTEMPTS {
+            total += backoff;
+            backoff = next_backoff(backoff);
+        }
+        assert!(
+            total > Duration::from_millis(250),
+            "cumulative backoff {total:?} must outlast the 250ms detach window"
+        );
     }
 
     #[test]
