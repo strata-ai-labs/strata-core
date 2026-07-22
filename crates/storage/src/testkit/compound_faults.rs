@@ -304,10 +304,15 @@ fn verify_recovered_and_resume(
     context: &str,
 ) -> Result<(), TestkitError> {
     let backend = StorageBackend::local_fs(root.to_path_buf());
-    let runtime = StorageRuntime::open_with_backend(
-        durable_options(StorageDurabilityPolicy::Standard),
-        &backend,
-    )
+    // Retry-on-Unavailable absorbs the prior runtime's detached-worker
+    // writer-lock window (#2720 — the resume leg reopens the same copied
+    // store its healing runtime just dropped); any other failure stays loud.
+    let runtime = crate::testkit::reopen_retry::open_with_retry_on_unavailable(|| {
+        StorageRuntime::open_with_backend(
+            durable_options(StorageDurabilityPolicy::Standard),
+            &backend,
+        )
+    })
     .map_err(|err| testkit_err(&format!("{context}: clean reopen must succeed"), err))?
     .into_runtime();
     let recovered = scan_recovered(

@@ -235,10 +235,15 @@ fn run_one_fault(
     // write is left behind — the recovered state must be a clean prefix.
     let violation = {
         let backend = StorageBackend::local_fs(root.to_path_buf());
-        let runtime = StorageRuntime::open_with_backend(
-            durable_borrowed_options(StorageDurabilityPolicy::Standard),
-            &backend,
-        )
+        // Retry-on-Unavailable absorbs the prior runtime's detached-worker
+        // writer-lock window (#2720, reproduced at this site under load);
+        // any other failure stays loud.
+        let runtime = crate::testkit::reopen_retry::open_with_retry_on_unavailable(|| {
+            StorageRuntime::open_with_backend(
+                durable_borrowed_options(StorageDurabilityPolicy::Standard),
+                &backend,
+            )
+        })
         .map_err(|err| TestkitError::new(format!("verify reopen: {err:?}")))?
         .into_runtime();
         let recovered = scan_recovered(
@@ -329,13 +334,17 @@ fn run_budget_exhaustion_case(root: &Path, seed: u64) -> Result<bool, TestkitErr
     }
     // Reopen clean — every acknowledged commit must recover.
     let backend = StorageBackend::local_fs(root.to_path_buf());
-    let runtime = StorageRuntime::open_with_backend(
-        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
-            .with_maintenance_scheduling_policy(
-                StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
-            ),
-        &backend,
-    )
+    // Retry-on-Unavailable absorbs the prior runtime's detached-worker
+    // writer-lock window (#2720); any other failure stays loud.
+    let runtime = crate::testkit::reopen_retry::open_with_retry_on_unavailable(|| {
+        StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+                .with_maintenance_scheduling_policy(
+                    StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+                ),
+            &backend,
+        )
+    })
     .map_err(|err| TestkitError::new(format!("budget verify reopen: {err:?}")))?
     .into_runtime();
     let recovered = scan_recovered(
