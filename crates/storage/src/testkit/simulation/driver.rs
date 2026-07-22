@@ -137,13 +137,17 @@ impl<'a> SimRun<'a> {
         seed: u64,
         step_budget: usize,
     ) -> Result<Self, TestkitError> {
-        let runtime = StorageRuntime::open_with_backend(
-            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
-                .with_maintenance_scheduling_policy(
-                    StorageMaintenanceSchedulingPolicy::DeterministicInline,
-                ),
-            backend,
-        )
+        // Retry-on-Unavailable absorbs the prior runtime's detached-worker
+        // writer-lock window (#2727); any other failure stays loud.
+        let runtime = crate::testkit::reopen_retry::open_with_retry_on_unavailable(|| {
+            StorageRuntime::open_with_backend(
+                StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+                    .with_maintenance_scheduling_policy(
+                        StorageMaintenanceSchedulingPolicy::DeterministicInline,
+                    ),
+                backend,
+            )
+        })
         .map_err(|err| TestkitError::new(format!("[seed={seed}] sim open: {err:?}")))?
         .into_runtime();
 

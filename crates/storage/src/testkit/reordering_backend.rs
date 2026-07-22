@@ -316,14 +316,18 @@ mod tests {
     /// Reopen on a plain backend (lossy) and count the recovered live keys.
     fn recovered_count(root: &std::path::Path) -> usize {
         let backend = StorageBackend::local_fs(root.to_path_buf());
-        let runtime = StorageRuntime::open_with_backend(
-            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
-                .with_strict_recovery(false)
-                .with_maintenance_scheduling_policy(
-                    StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
-                ),
-            &backend,
-        )
+        // Retry-on-Unavailable absorbs the prior runtime's detached-worker
+        // writer-lock window (#2727); any other failure stays loud.
+        let runtime = crate::testkit::reopen_retry::open_with_retry_on_unavailable(|| {
+            StorageRuntime::open_with_backend(
+                StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+                    .with_strict_recovery(false)
+                    .with_maintenance_scheduling_policy(
+                        StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+                    ),
+                &backend,
+            )
+        })
         .expect("reopen")
         .into_runtime();
         scan_recovered(
