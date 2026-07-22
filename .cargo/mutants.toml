@@ -1,15 +1,24 @@
-# cargo-mutants configuration.
+# cargo-mutants configuration for the DEFAULT run (run A of the
+# mutation-on-diff CI gate in .github/workflows/ci.yml).
 #
-# The CI mutation-on-diff gate builds the executor with DEFAULT features. The
-# `idl_tooling` module is `#[cfg(feature = "idl-tooling")]` (a non-default,
-# build-tooling feature), so under the mutation build it is compiled out
-# entirely. Any mutant cargo-mutants injects there lands in cfg'd-out code: the
-# crate still builds and the default-feature suite still passes, so the mutant
-# is reported as a false MISSED even though the mutated line never runs.
+# cargo-mutants forwards `--features` to the per-package `cargo test` it runs
+# for each mutant, and feature names are package-local — one global feature
+# list cannot serve the workspace (`--features idl-tooling` is a hard error
+# when the mutant under test is in strata-storage). The gate is therefore
+# PARTITIONED (issue #2659):
 #
-# The module's correctness is guarded in CI by the `check` / `check-cli` /
-# `check-docs` / `verify-examples` / `verify-fixtures` binary gates (which run
-# under `--features idl-tooling`), not by the default-feature test suite that
-# mutation-on-diff exercises. Exclude it so the gate does not flag
-# unreachable-under-the-harness mutants.
-exclude_globs = ["crates/executor/src/idl_tooling.rs"]
+#   run A (this config): every package EXCEPT executor and inference, built
+#         with default features.
+#   run B (ci.yml, --no-config): strata-executor under
+#         `--features idl-tooling,inference,testkit` — the same set the test
+#         job's IDL gates use — so feature-gated code (idl_tooling, the
+#         inference command surface) is compiled and its tests run instead of
+#         every mutant reporting a false MISSED.
+#   run C (ci.yml, --no-config): strata-inference under
+#         `--features download,testkit`, excluding `local`-gated files (they
+#         need cmake + model artifacts no CI lane has, so mutants there are
+#         untestable by construction).
+#
+# Keep this partition and the three run definitions in ci.yml in sync: a
+# package added here must gain a featured run there, and vice versa.
+exclude_globs = ["crates/executor/**", "crates/inference/**"]
