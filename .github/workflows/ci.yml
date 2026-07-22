@@ -91,10 +91,11 @@ jobs:
       - name: Feature powerset check
         # Excluded: `local`/`inference-local` (llama.cpp cmake build),
         # `ingest` (cross-repo executor pin, covered by hub-ingest),
-        # `python` (pyo3 link).
+        # `python` (pyo3 link), `differential` (RocksDB C++ build; its
+        # lane runs nightly).
         run: >
           cargo hack --locked --feature-powerset --depth 2
-          --exclude-features local,inference-local,ingest,python
+          --exclude-features local,inference-local,ingest,python,differential
           check --workspace
 
   hub-ingest:

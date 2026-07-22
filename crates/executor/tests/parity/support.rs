@@ -23,6 +23,68 @@ pub(crate) fn executor() -> Executor {
     Executor::open_cache().expect("open scratch cache executor")
 }
 
+/// Standard base64 for `Bytes` wire fields.
+pub(crate) fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        out.push(TABLE[(n >> 18) as usize & 0x3f] as char);
+        out.push(TABLE[(n >> 12) as usize & 0x3f] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[(n >> 6) as usize & 0x3f] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[n as usize & 0x3f] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// Inverse of [`base64_encode`]; panics on malformed input (test-only).
+// Byte extraction from the 24-bit accumulator truncates by design, and the
+// padding count is over a <=4-byte chunk.
+#[allow(clippy::cast_possible_truncation, clippy::naive_bytecount)]
+pub(crate) fn base64_decode(text: &str) -> Vec<u8> {
+    fn value(c: u8) -> u32 {
+        match c {
+            b'A'..=b'Z' => u32::from(c - b'A'),
+            b'a'..=b'z' => u32::from(c - b'a') + 26,
+            b'0'..=b'9' => u32::from(c - b'0') + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => panic!("malformed base64 byte {c}"),
+        }
+    }
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    for chunk in bytes.chunks(4) {
+        let pad = chunk.iter().filter(|&&c| c == b'=').count();
+        let n = chunk
+            .iter()
+            .take(4 - pad)
+            .fold(0_u32, |acc, &c| (acc << 6) | value(c))
+            << (6 * pad);
+        out.push((n >> 16) as u8);
+        if pad < 2 {
+            out.push((n >> 8) as u8);
+        }
+        if pad < 1 {
+            out.push(n as u8);
+        }
+    }
+    out
+}
+
 fn command(wire: &Value) -> Command {
     serde_json::from_value(wire.clone())
         .unwrap_or_else(|err| panic!("wire JSON must parse as Command ({wire}): {err}"))
