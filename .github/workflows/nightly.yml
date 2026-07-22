@@ -239,11 +239,17 @@ jobs:
         run: cargo test --locked --release --workspace
 
   kv-differential:
-    # TCP4.2a: Strata KV vs in-process RocksDB on the shared semantic tiers
-    # (the SQL Logic Test model). Heavy C++ oracle build, so nightly only;
-    # seeds/ops scale via env without a code change.
+    # TCP4.2a: Strata KV vs in-process RocksDB (Tiers A/B + snapshot<->as_of
+    # Tier C) and vs Redis (Tier A diversity oracle — architecturally unlike,
+    # so it catches design-family blind spots an LSM-vs-LSM diff cannot).
+    # Heavy C++ oracle build, so nightly only; seeds/ops scale via env.
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
     steps:
       - uses: actions/checkout@v4
       - name: Authorize private git dependencies
@@ -256,4 +262,5 @@ jobs:
         env:
           STRATA_KV_DIFF_SEEDS: "32"
           STRATA_KV_DIFF_OPS: "600"
+          STRATA_REDIS_URL: 127.0.0.1:6379
         run: cargo test --locked -p strata-executor --features differential --test differential_kv -- --nocapture
