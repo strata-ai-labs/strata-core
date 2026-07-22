@@ -443,6 +443,23 @@ mod tests {
     }
 
     #[test]
+    fn the_budget_case_fails_loud_on_an_unopenable_root() {
+        // Sabotage: the budget case's error channel must be live — a no-op
+        // (`Ok(true)`) satisfies the sweep's `budget_pressure_cases > 0`
+        // assertion without doing any work and would only be caught here.
+        let dir = tempfile::tempdir().expect("tmp");
+        let file_as_root = dir.path().join("not-a-directory");
+        std::fs::write(&file_as_root, b"occupied").expect("write file");
+        let err = run_budget_exhaustion_case(&file_as_root, 3)
+            .expect_err("a root that is a regular file must fail the budget open");
+        let message = format!("{err:?}");
+        assert!(
+            message.contains("budget open"),
+            "expected the budget-open failure channel, got: {message}"
+        );
+    }
+
+    #[test]
     fn fault_mode_once_fires_then_disarms() {
         let backend = FaultingBackend::new(
             (),

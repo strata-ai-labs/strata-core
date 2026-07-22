@@ -714,6 +714,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_resume_verifier_detects_a_fabricated_lost_ack() {
+        // Sabotage: the verifier must actually verify. An empty (validly
+        // created) store checked against a model claiming an acknowledged
+        // commit must fail with an oracle violation — a no-op verifier
+        // (`Ok(())`) passes every counter assertion in this suite and would
+        // only be caught here.
+        let dir = tempfile::tempdir().expect("tmp");
+        let branch = default_branch();
+        {
+            let backend = StorageBackend::local_fs(dir.path().to_path_buf());
+            let _runtime = StorageRuntime::open_with_backend(
+                durable_options(StorageDurabilityPolicy::Standard),
+                &backend,
+            )
+            .expect("create store")
+            .into_runtime();
+        }
+        let mut model = ExpectedState::new(OracleDurability::Always);
+        model.record_ack(
+            branch,
+            strata_core::CommitVersion::new(1),
+            generate_workload(99, 1)[0].clone(),
+        );
+        let err = verify_recovered_and_resume(dir.path(), branch, &model, "sabotage")
+            .expect_err("a phantom acked commit must be detected");
+        let message = format!("{err:?}");
+        assert!(
+            message.contains("recovery oracle violation"),
+            "expected an oracle violation, got: {message}"
+        );
+    }
+
+    #[test]
     fn staged_crash_recovers_oracle_valid_without_a_second_fault() {
         let dir = tempfile::tempdir().expect("tmp");
         let crashed = case_dir(dir.path(), "crashed").expect("dir");
