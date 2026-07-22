@@ -33,6 +33,32 @@ fn vector_metadata_too_large_is_rejected() {
     );
 }
 
+/// Vector metadata that is not a JSON object (list, scalar, bool, null) is
+/// rejected. Filters match on object fields, so a non-object row would be
+/// stored verbatim and then silently unfilterable.
+#[test]
+fn vector_metadata_must_be_a_json_object() {
+    for value in [
+        json!([1, 2, 3]),
+        json!("scalar"),
+        json!(7),
+        json!(true),
+        json!(null),
+    ] {
+        let error =
+            VectorMetadata::new(value.clone()).expect_err("non-object metadata must reject");
+        assert_eq!(
+            error.code(),
+            "invalid_argument.engine.vector_metadata",
+            "value {value} must reject as non-object"
+        );
+    }
+
+    // An object — including an empty one — is accepted.
+    VectorMetadata::new(json!({})).expect("empty object metadata is valid");
+    VectorMetadata::new(json!({ "kind": "doc" })).expect("object metadata is valid");
+}
+
 /// A JSON batch-delete carrying the same document id twice is rejected — the
 /// duplicate-id refusal reached through the public `batch_delete` API.
 #[test]

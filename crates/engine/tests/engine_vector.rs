@@ -202,14 +202,6 @@ fn exercise_vector_metadata_patch_contract(database: &mut Database) {
             Some(metadata(json!({"kind": "doc", "rank": 1}))),
         )
         .expect("object metadata upsert succeeds");
-    vectors
-        .upsert(
-            docs.clone(),
-            vector_key("scalar"),
-            embedding([0.5, 0.5]),
-            Some(metadata(json!("scalar"))),
-        )
-        .expect("scalar metadata upsert succeeds");
 
     let empty_patch = vectors
         .update_metadata(&docs, vector_key("empty"), &patch(json!({"added": true})))
@@ -243,25 +235,6 @@ fn exercise_vector_metadata_patch_contract(database: &mut Database) {
     assert_eq!(
         patched.metadata().expect("metadata").as_inner(),
         &json!({"kind": "doc", "rank": 2, "nullable": null})
-    );
-
-    let error = vectors
-        .update_metadata(&docs, vector_key("scalar"), &patch(json!({"x": 1})))
-        .expect_err("non-object metadata patch rejected");
-    assert_eq!(error.class(), EngineErrorClass::InvalidInput);
-    assert_eq!(
-        error.code(),
-        "invalid_argument.engine.vector_metadata_patch"
-    );
-    assert_eq!(
-        vectors
-            .get(&docs, &vector_key("scalar"))
-            .expect("read succeeds")
-            .expect("entry exists")
-            .metadata()
-            .expect("metadata")
-            .as_inner(),
-        &json!("scalar")
     );
 
     let missing = vectors

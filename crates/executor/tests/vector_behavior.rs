@@ -71,6 +71,55 @@ fn vector_upsert_rejects_a_subnormal_embedding_instead_of_storing_zeros() {
 }
 
 #[test]
+fn vector_upsert_rejects_non_object_metadata_instead_of_storing_it_unfilterable() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    executor
+        .execute(Command::VectorCreateCollection {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            dimension: 2,
+            metric: VectorDistanceMetric::Cosine,
+        })
+        .expect("collection create succeeds");
+
+    // Metadata that is not a JSON object (list, scalar, number) can never match
+    // a filter, so the engine must reject it at ingest rather than store an
+    // unfilterable row and report the upsert as applied.
+    for body in [
+        r#"{"type":"vector_upsert","collection":"docs","key":"a","vector":[1.0,0.0],"metadata":["tag"]}"#,
+        r#"{"type":"vector_upsert","collection":"docs","key":"a","vector":[1.0,0.0],"metadata":"scalar"}"#,
+        r#"{"type":"vector_upsert","collection":"docs","key":"a","vector":[1.0,0.0],"metadata":7}"#,
+    ] {
+        let command: Command = serde_json::from_str(body).expect("command deserializes");
+        let error = executor
+            .execute(command)
+            .expect_err("non-object metadata is rejected");
+        assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+        assert_eq!(error.code(), "invalid_argument.engine.vector_metadata");
+    }
+
+    // Object metadata still upserts, and nothing from the rejected calls stuck.
+    let ok: Command = serde_json::from_str(
+        r#"{"type":"vector_upsert","collection":"docs","key":"a","vector":[1.0,0.0],"metadata":{"kind":"doc"}}"#,
+    )
+    .expect("command deserializes");
+    executor.execute(ok).expect("object metadata upserts");
+    let Output::Uint(count) = executor
+        .execute(Command::VectorCount {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            as_of: None,
+        })
+        .expect("count succeeds")
+    else {
+        panic!("unexpected vector count output");
+    };
+    assert_eq!(count, 1);
+}
+
+#[test]
 fn vector_query_rejects_a_subnormal_query_vector_instead_of_searching_zeros() {
     let mut executor = Executor::open_cache().expect("cache executor opens");
     executor
