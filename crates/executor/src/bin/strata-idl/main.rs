@@ -21,6 +21,8 @@ fn main() -> ExitCode {
         "check-cli" => strata_executor::idl_tooling::check_cli(&root),
         "generate-docs" => strata_executor::idl_tooling::generate_docs(&root),
         "check-docs" => strata_executor::idl_tooling::check_docs(&root),
+        "generate-tests" => strata_executor::idl_tooling::generate_tests(&root),
+        "check-tests" => strata_executor::idl_tooling::check_tests(&root),
         "verify-examples" => strata_executor::idl_tooling::verify_examples(&root),
         "verify-fixtures" => {
             let update = env::args().nth(2).is_some_and(|flag| flag == "--update");
