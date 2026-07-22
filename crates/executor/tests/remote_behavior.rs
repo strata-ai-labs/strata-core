@@ -9,7 +9,7 @@ use strata_executor::{Command, Executor, Output};
 fn remote_get_reads_none_before_any_clone() {
     let mut executor = Executor::open_cache().expect("cache executor opens");
     let output = executor
-        .execute(Command::RemoteGet)
+        .execute(Command::RemoteGet {})
         .expect("remote get succeeds");
     let Output::RemoteOriginResult { origin } = output else {
         panic!("unexpected output: {output:?}");
@@ -42,7 +42,7 @@ fn remote_get_surfaces_the_recorded_origin() {
 
     let mut executor = Executor::open_durable_local(dir.path()).expect("durable executor opens");
     let output = executor
-        .execute(Command::RemoteGet)
+        .execute(Command::RemoteGet {})
         .expect("remote get succeeds");
     let Output::RemoteOriginResult { origin } = output else {
         panic!("unexpected output: {output:?}");

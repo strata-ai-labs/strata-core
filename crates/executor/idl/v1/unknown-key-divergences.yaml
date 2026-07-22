@@ -9,27 +9,7 @@
 # New entries require a filed issue; this list is a ledger of wire-contract
 # bugs, not an escape hatch.
 #
-# All current entries: #2739 — internally-tagged unit variants bypass
-# `deny_unknown_fields`, so empty-payload commands accept top-level junk
-# their schema forbids.
-- command: admin.ping
-  site: ""
-  issue: 2739
-- command: admin.config
-  site: ""
-  issue: 2739
-- command: admin.remote
-  site: ""
-  issue: 2739
-- command: branch.list
-  site: ""
-  issue: 2739
-- command: inference.models.list
-  site: ""
-  issue: 2739
-- command: inference.models.local
-  site: ""
-  issue: 2739
-- command: inference.cache_status
-  site: ""
-  issue: 2739
+# Currently EMPTY: the original seven #2739 entries (empty-payload commands
+# whose internally-tagged unit variants bypassed `deny_unknown_fields`) were
+# deleted when #2739's fix landed — every schema-closed site now rejects.
+[]

@@ -46,7 +46,7 @@ fn get(executor: &mut Executor, branch: Option<&str>, key: &str) -> Option<Bytes
 
 fn branch_names(executor: &mut Executor) -> Vec<String> {
     match executor
-        .execute(Command::BranchList)
+        .execute(Command::BranchList {})
         .expect("list succeeds")
     {
         Output::Branches { items, .. } => items.iter().map(|item| item.name().to_owned()).collect(),
@@ -200,7 +200,7 @@ fn branch_facade_matches_explicit_commands() {
             branch: "feature".to_owned(),
         }
     );
-    same!(facade.branch_list(), Command::BranchList);
+    same!(facade.branch_list(), Command::BranchList {});
     same!(
         facade.branch_get("feature"),
         Command::BranchGet {

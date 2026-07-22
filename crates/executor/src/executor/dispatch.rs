@@ -6,13 +6,13 @@ impl Executor {
     /// Executes one serialized command.
     pub fn execute(&mut self, command: Command) -> ExecutorResult<Output> {
         match command {
-            Command::Ping => self.execute_ping(),
+            Command::Ping {} => self.execute_ping(),
             Command::Info { branch } => self.execute_info(branch.as_deref()),
             Command::Health { branch } => self.execute_health(branch.as_deref()),
             Command::Metrics { branch } => self.execute_metrics(branch.as_deref()),
             Command::Describe { branch } => self.execute_describe(branch.as_deref()),
-            Command::ConfigGet => self.execute_config_get(),
-            Command::RemoteGet => self.execute_remote_get(),
+            Command::ConfigGet {} => self.execute_config_get(),
+            Command::RemoteGet {} => self.execute_remote_get(),
             Command::HubClone {
                 dataset,
                 branch,
@@ -32,7 +32,7 @@ impl Executor {
                 space,
                 force,
             } => self.execute_space_delete(branch.as_deref(), &space, force),
-            Command::BranchList => self.execute_branch_list(),
+            Command::BranchList {} => self.execute_branch_list(),
             Command::BranchGet { branch } => self.execute_branch_get(&branch),
             Command::BranchCreate { branch } => self.execute_branch_create(&branch),
             Command::BranchForkCurrent { source, branch } => {
@@ -969,12 +969,12 @@ impl Executor {
                 event_type,
             ),
             #[cfg(feature = "inference")]
-            Command::InferenceModelsList => Ok(Output::InferenceModels {
+            Command::InferenceModelsList {} => Ok(Output::InferenceModels {
                 items: self.inference.list_models(),
                 page: PageInfo::terminal(),
             }),
             #[cfg(feature = "inference")]
-            Command::InferenceModelsLocal => Ok(Output::InferenceModels {
+            Command::InferenceModelsLocal {} => Ok(Output::InferenceModels {
                 items: self.inference.list_local_models(),
                 page: PageInfo::terminal(),
             }),
@@ -1031,7 +1031,7 @@ impl Executor {
                 .map(|unloaded| Output::InferenceUnloadResult { unloaded })
                 .map_err(ExecutorError::from),
             #[cfg(feature = "inference")]
-            Command::InferenceCacheStatus => self
+            Command::InferenceCacheStatus {} => self
                 .inference
                 .cache_status()
                 .map(Output::InferenceCacheStatus)

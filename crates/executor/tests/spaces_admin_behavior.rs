@@ -305,7 +305,8 @@ fn admin_commands_report_sanitized_database_facts() {
     let mut executor = Executor::open_cache().expect("cache executor opens");
     populate_rebuilt_primitives_in_space(&mut executor, "default");
 
-    let Output::Pong { version } = executor.execute(Command::Ping).expect("ping succeeds") else {
+    let Output::Pong { version } = executor.execute(Command::Ping {}).expect("ping succeeds")
+    else {
         panic!("unexpected ping output");
     };
     assert!(!version.is_empty());
@@ -362,7 +363,7 @@ fn admin_commands_report_sanitized_database_facts() {
     assert!(describe.capabilities.graph_core);
 
     let Output::Config(config) = executor
-        .execute(Command::ConfigGet)
+        .execute(Command::ConfigGet {})
         .expect("config get succeeds")
     else {
         panic!("unexpected config output");
@@ -406,12 +407,12 @@ fn admin_read_commands_do_not_mutate_catalog_state() {
     let spaces_before = space_list(&mut executor, None);
 
     for command in [
-        Command::Ping,
+        Command::Ping {},
         Command::Info { branch: None },
         Command::Health { branch: None },
         Command::Metrics { branch: None },
         Command::Describe { branch: None },
-        Command::ConfigGet,
+        Command::ConfigGet {},
         Command::ConfigureGetKey {
             key: "target".to_owned(),
         },
@@ -466,7 +467,7 @@ fn branch_names(executor: &mut Executor) -> Vec<String> {
     let Output::Branches {
         items: branches, ..
     } = executor
-        .execute(Command::BranchList)
+        .execute(Command::BranchList {})
         .expect("branch list succeeds")
     else {
         panic!("unexpected branch list output");

@@ -23,8 +23,8 @@ fn output_round_trip(value: &Output) -> Output {
 #[test]
 fn inference_commands_round_trip_through_json() {
     let cases = vec![
-        Command::InferenceModelsList,
-        Command::InferenceModelsLocal,
+        Command::InferenceModelsList {},
+        Command::InferenceModelsLocal {},
         Command::InferenceModelsPull {
             model: "miniLM".to_owned(),
         },
@@ -78,7 +78,7 @@ fn inference_commands_round_trip_through_json() {
         Command::InferenceUnload {
             model: Some("local:gpt2".to_owned()),
         },
-        Command::InferenceCacheStatus,
+        Command::InferenceCacheStatus {},
     ];
 
     for command in cases {
@@ -230,7 +230,7 @@ fn inference_error_retry_policies_match_v1_contract() {
 fn model_list_and_capability_execute_with_default_cloud_providers() {
     let mut executor = Executor::open_cache().expect("executor opens");
     let output = executor
-        .execute(Command::InferenceModelsList)
+        .execute(Command::InferenceModelsList {})
         .expect("model list succeeds");
     let Output::InferenceModels { items: models, .. } = output else {
         panic!("expected inference model output");

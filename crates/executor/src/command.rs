@@ -27,7 +27,7 @@ const fn is_false(value: &bool) -> bool {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     /// Lightweight admin liveness check.
-    Ping,
+    Ping {},
     /// Returns database identity and catalog summary.
     Info {
         /// Branch whose space catalog should be summarized. Defaults to the executor handle branch.
@@ -53,10 +53,10 @@ pub enum Command {
         branch: Option<String>,
     },
     /// Returns sanitized configuration facts.
-    ConfigGet,
+    ConfigGet {},
     /// Reads where this database was cloned from (its remote origin),
     /// when clone recorded one.
-    RemoteGet,
+    RemoteGet {},
     /// Clones a dataset from a hub into a new local database directory.
     ///
     /// Orchestration (resolution, download, verification, reconstitution,
@@ -125,7 +125,7 @@ pub enum Command {
         force: bool,
     },
     /// Lists active branches.
-    BranchList,
+    BranchList {},
     /// Reads one branch summary.
     BranchGet {
         /// Branch name.
@@ -1668,10 +1668,10 @@ pub enum Command {
     },
     /// Lists catalog models known to the inference runtime.
     #[cfg(feature = "inference")]
-    InferenceModelsList,
+    InferenceModelsList {},
     /// Lists locally available inference models.
     #[cfg(feature = "inference")]
-    InferenceModelsLocal,
+    InferenceModelsLocal {},
     /// Pulls an inference model into the local model directory.
     #[cfg(feature = "inference")]
     InferenceModelsPull {
@@ -1736,27 +1736,27 @@ pub enum Command {
     },
     /// Returns inference runtime cache diagnostics.
     #[cfg(feature = "inference")]
-    InferenceCacheStatus,
+    InferenceCacheStatus {},
 }
 
 impl Command {
     /// Returns the stable command name.
     pub const fn name(&self) -> &'static str {
         match self {
-            Self::Ping => "ping",
+            Self::Ping {} => "ping",
             Self::Info { .. } => "info",
             Self::Health { .. } => "health",
             Self::Metrics { .. } => "metrics",
             Self::Describe { .. } => "describe",
-            Self::ConfigGet => "config_get",
-            Self::RemoteGet => "remote_get",
+            Self::ConfigGet {} => "config_get",
+            Self::RemoteGet {} => "remote_get",
             Self::HubClone { .. } => "hub_clone",
             Self::ConfigureGetKey { .. } => "configure_get_key",
             Self::SpaceList { .. } => "space_list",
             Self::SpaceCreate { .. } => "space_create",
             Self::SpaceExists { .. } => "space_exists",
             Self::SpaceDelete { .. } => "space_delete",
-            Self::BranchList => "branch_list",
+            Self::BranchList {} => "branch_list",
             Self::BranchGet { .. } => "branch_get",
             Self::BranchCreate { .. } => "branch_create",
             Self::BranchForkCurrent { .. } => "branch_fork_current",
@@ -1858,9 +1858,9 @@ impl Command {
             Self::ArrowImport { .. } => "arrow_import",
             Self::ArrowExport { .. } => "arrow_export",
             #[cfg(feature = "inference")]
-            Self::InferenceModelsList => "inference_models_list",
+            Self::InferenceModelsList {} => "inference_models_list",
             #[cfg(feature = "inference")]
-            Self::InferenceModelsLocal => "inference_models_local",
+            Self::InferenceModelsLocal {} => "inference_models_local",
             #[cfg(feature = "inference")]
             Self::InferenceModelsPull { .. } => "inference_models_pull",
             #[cfg(feature = "inference")]
@@ -1878,7 +1878,7 @@ impl Command {
             #[cfg(feature = "inference")]
             Self::InferenceUnload { .. } => "inference_unload",
             #[cfg(feature = "inference")]
-            Self::InferenceCacheStatus => "inference_cache_status",
+            Self::InferenceCacheStatus {} => "inference_cache_status",
         }
     }
 

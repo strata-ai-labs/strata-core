@@ -292,7 +292,7 @@ fn branch_commands_delegate_to_engine_branch_service() {
     );
 
     let listed = executor
-        .execute(Command::BranchList)
+        .execute(Command::BranchList {})
         .expect("branch list succeeds");
     let Output::Branches {
         items: branches, ..

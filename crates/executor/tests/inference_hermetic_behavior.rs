@@ -25,7 +25,7 @@ fn executor() -> Executor {
 fn models_list_returns_the_fake_catalog() {
     let mut executor = executor();
     let Output::InferenceModels { items, .. } = executor
-        .execute(Command::InferenceModelsList)
+        .execute(Command::InferenceModelsList {})
         .expect("models list")
     else {
         panic!("unexpected output");
@@ -39,7 +39,7 @@ fn models_list_returns_the_fake_catalog() {
 fn models_local_is_empty() {
     let mut executor = executor();
     let Output::InferenceModels { items, .. } = executor
-        .execute(Command::InferenceModelsLocal)
+        .execute(Command::InferenceModelsLocal {})
         .expect("models local")
     else {
         panic!("unexpected output");
@@ -193,7 +193,7 @@ fn unload_and_cache_status_report_an_empty_fake_cache() {
     assert!(!unloaded);
 
     let Output::InferenceCacheStatus(status) = executor
-        .execute(Command::InferenceCacheStatus)
+        .execute(Command::InferenceCacheStatus {})
         .expect("cache status")
     else {
         panic!("unexpected output");

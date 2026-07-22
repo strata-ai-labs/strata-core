@@ -130,7 +130,7 @@ fn hub_clone_reconstitutes_a_queryable_database_with_origin() {
     // The clone answers reads and `remote_get` reports its origin.
     let mut clone_executor = Executor::open_durable_local(&dest).expect("clone opens");
     let origin = clone_executor
-        .execute(Command::RemoteGet)
+        .execute(Command::RemoteGet {})
         .expect("remote get");
     let Output::RemoteOriginResult { origin } = origin else {
         panic!("unexpected output");
