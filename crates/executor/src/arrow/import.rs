@@ -1,12 +1,17 @@
 //! Arrow file import through executor commands.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use arrow::array::{Array, Float64Array, StringArray};
+use arrow::datatypes::Schema;
+use arrow::record_batch::RecordBatch;
+use serde_json::Value;
 
 use crate::error::ExecutorResult;
 use crate::output::Output;
 use crate::types::{
     ArrowFileFormat, ArrowImportResult, ArrowImportTarget, BatchJsonEntry, BatchKvEntry,
-    BatchVectorEntry, Bytes,
+    BatchVectorEntry, Bytes, GraphBatchOperation, GraphEdgeData, GraphEntityBinding, GraphNodeData,
 };
 use crate::{Command, Executor};
 
@@ -15,7 +20,7 @@ use super::reader::read_file;
 use super::schema::{
     json_document, key_bytes, resolve_mapping, value_bytes, vector_embedding, vector_metadata,
 };
-use super::{invalid_input, not_found, required_option, unexpected_output};
+use super::{internal_error, invalid_input, not_found, required_option, unexpected_output};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn import_file(
@@ -28,12 +33,28 @@ pub(crate) fn import_file(
     key_column: Option<&str>,
     value_column: Option<&str>,
     collection: Option<&str>,
+    graph: Option<&str>,
 ) -> ExecutorResult<Output> {
     let path = PathBuf::from(&file_path);
     let format = match format {
         Some(format) => format,
         None => detect_format(&path)?,
     };
+
+    // Graph import reads two files (nodes + edges) with dedicated schemas, so it
+    // bypasses the generic single-file `read_file`/`resolve_mapping` path that
+    // kv/json/vector share.
+    if let ArrowImportTarget::Graph = target {
+        let result = import_graph(executor, branch, space, graph, &path, format)?;
+        return Ok(Output::ArrowImportResult(ArrowImportResult::new(
+            target,
+            file_path,
+            result.rows_imported,
+            result.rows_skipped,
+            result.batches_processed,
+        )));
+    }
+
     let (schema, batches) = read_file(&path, format)?;
     let mapping = resolve_mapping(&schema, target, key_column, value_column)?;
 
@@ -47,6 +68,13 @@ pub(crate) fn import_file(
                 "vector Arrow import requires a collection",
             )?;
             import_vector(executor, branch, space, collection, &batches, &mapping)?
+        }
+        // Graph returned above, before the column-mapping path; this arm keeps
+        // the match exhaustive without a panicking `unreachable!()`.
+        ArrowImportTarget::Graph => {
+            return Err(internal_error(
+                "graph Arrow import is handled before column mapping",
+            ));
         }
     };
 
@@ -238,4 +266,190 @@ fn collection_exists(
         return Err(unexpected_output("vector_list_collections"));
     };
     Ok(collections.iter().any(|entry| entry.name() == collection))
+}
+
+/// Imports a graph from the `_nodes`/`_edges` files that `arrow export graph`
+/// writes, replaying every node and edge through one `GraphBatchWrite`. Nodes
+/// are applied before edges so an edge always resolves its endpoints.
+fn import_graph(
+    executor: &mut Executor,
+    branch: Option<&str>,
+    space: Option<&str>,
+    graph: Option<&str>,
+    base_path: &Path,
+    format: ArrowFileFormat,
+) -> ExecutorResult<ImportCounts> {
+    let graph_name = required_option(
+        graph,
+        "invalid_argument.executor.arrow_graph",
+        "graph Arrow import requires a graph",
+    )?;
+    // Derive the two concrete files exactly as export does, so an exported graph
+    // round-trips without the caller restating the node/edge paths.
+    let (node_path, edge_path) = super::export::graph_paths(base_path, format);
+    let (node_schema, node_batches) = read_file(&node_path, format)?;
+    let (edge_schema, edge_batches) = read_file(&edge_path, format)?;
+
+    let mut operations = Vec::new();
+
+    let node_id_idx = graph_column_index(&node_schema, "node_id")?;
+    let node_properties_idx = node_schema.index_of("properties").ok();
+    let binding_idx = node_schema.index_of("binding").ok();
+    let mut node_rows = 0_usize;
+    for batch in &node_batches {
+        for row in 0..batch.num_rows() {
+            let node_id = graph_string_cell(batch, node_id_idx, row)?;
+            let properties = graph_optional_json(batch, node_properties_idx, row)?;
+            let binding = graph_optional_binding(batch, binding_idx, row)?;
+            operations.push(GraphBatchOperation::UpsertNode {
+                node_id,
+                data: GraphNodeData::new(properties, binding),
+            });
+            node_rows += 1;
+        }
+    }
+
+    let src_idx = graph_column_index(&edge_schema, "src")?;
+    let edge_type_idx = graph_column_index(&edge_schema, "edge_type")?;
+    let dst_idx = graph_column_index(&edge_schema, "dst")?;
+    let weight_idx = graph_column_index(&edge_schema, "weight")?;
+    let edge_properties_idx = edge_schema.index_of("properties").ok();
+    let mut edge_rows = 0_usize;
+    for batch in &edge_batches {
+        for row in 0..batch.num_rows() {
+            let src = graph_string_cell(batch, src_idx, row)?;
+            let edge_type = graph_string_cell(batch, edge_type_idx, row)?;
+            let dst = graph_string_cell(batch, dst_idx, row)?;
+            let weight = graph_f64_cell(batch, weight_idx, row)?;
+            let properties = graph_optional_json(batch, edge_properties_idx, row)?;
+            operations.push(GraphBatchOperation::UpsertEdge {
+                src,
+                edge_type,
+                dst,
+                data: GraphEdgeData::new(Some(weight), properties),
+            });
+            edge_rows += 1;
+        }
+    }
+
+    if !operations.is_empty() {
+        let output = executor.execute(Command::GraphBatchWrite {
+            branch: branch.map(str::to_owned),
+            space: space.map(str::to_owned),
+            graph: graph_name.to_owned(),
+            operations,
+        })?;
+        // Confirm the engine acknowledged the batch; every submitted operation is
+        // an upsert, so all node/edge rows count as imported.
+        let Output::GraphBatchWriteResult { .. } = output else {
+            return Err(unexpected_output("graph_batch_write"));
+        };
+    }
+
+    Ok(ImportCounts {
+        rows_imported: (node_rows + edge_rows) as u64,
+        rows_skipped: 0,
+        batches_processed: (node_batches.len() + edge_batches.len()) as u64,
+    })
+}
+
+/// Resolves a required graph-file column by name, failing with a stable code when
+/// the exported schema is missing it.
+fn graph_column_index(schema: &Schema, name: &str) -> ExecutorResult<usize> {
+    schema.index_of(name).map_err(|_| {
+        invalid_input(
+            "invalid_argument.executor.arrow_graph",
+            format!("graph import file is missing the `{name}` column"),
+        )
+    })
+}
+
+/// Reads a required Utf8 cell (node id, edge endpoint, or edge type).
+fn graph_string_cell(batch: &RecordBatch, index: usize, row: usize) -> ExecutorResult<String> {
+    batch
+        .column(index)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .map(|array| array.value(row).to_owned())
+        .ok_or_else(|| {
+            invalid_input(
+                "invalid_argument.executor.arrow_graph",
+                format!("graph import expects a string column at index {index}"),
+            )
+        })
+}
+
+/// Reads a required Float64 edge weight cell.
+fn graph_f64_cell(batch: &RecordBatch, index: usize, row: usize) -> ExecutorResult<f64> {
+    batch
+        .column(index)
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .map(|array| array.value(row))
+        .ok_or_else(|| {
+            invalid_input(
+                "invalid_argument.executor.arrow_graph",
+                format!("graph import expects a float64 weight column at index {index}"),
+            )
+        })
+}
+
+/// Reads the raw text of an optional Utf8 cell; a missing column or null cell is
+/// `None`.
+fn graph_optional_string(
+    batch: &RecordBatch,
+    index: Option<usize>,
+    row: usize,
+) -> ExecutorResult<Option<String>> {
+    let Some(index) = index else {
+        return Ok(None);
+    };
+    let column = batch.column(index);
+    if column.is_null(row) {
+        return Ok(None);
+    }
+    column
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .map(|array| Some(array.value(row).to_owned()))
+        .ok_or_else(|| {
+            invalid_input(
+                "invalid_argument.executor.arrow_graph",
+                format!("graph import expects a JSON string column at index {index}"),
+            )
+        })
+}
+
+/// Parses an optional `properties` cell (a JSON string) back into a value.
+fn graph_optional_json(
+    batch: &RecordBatch,
+    index: Option<usize>,
+    row: usize,
+) -> ExecutorResult<Option<Value>> {
+    let Some(text) = graph_optional_string(batch, index, row)? else {
+        return Ok(None);
+    };
+    serde_json::from_str(&text).map(Some).map_err(|error| {
+        invalid_input(
+            "invalid_argument.executor.arrow_graph",
+            format!("graph import properties cell is not valid JSON: {error}"),
+        )
+    })
+}
+
+/// Parses an optional `binding` cell (a JSON string) back into a binding.
+fn graph_optional_binding(
+    batch: &RecordBatch,
+    index: Option<usize>,
+    row: usize,
+) -> ExecutorResult<Option<GraphEntityBinding>> {
+    let Some(text) = graph_optional_string(batch, index, row)? else {
+        return Ok(None);
+    };
+    serde_json::from_str(&text).map(Some).map_err(|error| {
+        invalid_input(
+            "invalid_argument.executor.arrow_graph",
+            format!("graph import binding cell is not valid JSON: {error}"),
+        )
+    })
 }

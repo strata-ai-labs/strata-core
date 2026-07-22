@@ -40,6 +40,7 @@ $ strata kv get greeting
 | `collection` | `string` | no | Target vector collection for vector imports. |
 | `file_path` | `string` | yes | Input file path. |
 | `format` | `ArrowFileFormat` | no | Input file format. Defaults to extension detection. |
+| `graph` | `string` | no | Target graph for graph imports. |
 | `key_column` | `string` | no | Optional key column override. |
 | `target` | `ArrowImportTarget` | yes | Product primitive to import into. |
 | `value_column` | `string` | no | Optional value, document, or embedding column override. |

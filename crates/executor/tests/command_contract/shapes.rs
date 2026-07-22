@@ -314,6 +314,7 @@ fn arrow_command_json_uses_stable_tags_and_field_shape() {
         key_column: Some("_id".to_owned()),
         value_column: Some("embedding".to_owned()),
         collection: Some("docs".to_owned()),
+        graph: None,
     };
     let encoded = serde_json::to_value(&import).expect("command serializes");
     assert_eq!(encoded["type"], "arrow_import");

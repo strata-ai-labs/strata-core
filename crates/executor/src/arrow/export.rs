@@ -797,7 +797,7 @@ fn json_to_string(value: &Value) -> ExecutorResult<String> {
         .map_err(|error| internal_error(format!("failed to serialize JSON value: {error}")))
 }
 
-fn graph_paths(path: &Path, format: ArrowFileFormat) -> (PathBuf, PathBuf) {
+pub(super) fn graph_paths(path: &Path, format: ArrowFileFormat) -> (PathBuf, PathBuf) {
     let extension = path
         .extension()
         .and_then(|extension| extension.to_str())

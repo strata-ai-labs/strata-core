@@ -1404,6 +1404,7 @@ fn arrow_command(command: ArrowCommand, scope: &Scope) -> Command {
             key_column,
             value_column,
             collection,
+            graph,
         } => Command::ArrowImport {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
@@ -1413,6 +1414,7 @@ fn arrow_command(command: ArrowCommand, scope: &Scope) -> Command {
             key_column,
             value_column,
             collection,
+            graph,
         },
         ArrowCommand::Export {
             primitive,

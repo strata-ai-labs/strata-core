@@ -25,6 +25,8 @@ pub enum ArrowImportTarget {
     Json,
     /// Import rows into a vector collection.
     Vector,
+    /// Import nodes and edges into a graph (from the `_nodes`/`_edges` files).
+    Graph,
 }
 
 /// Product primitive selected by Arrow export.

@@ -1632,6 +1632,9 @@ pub enum Command {
         /// Target vector collection for vector imports.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         collection: Option<String>,
+        /// Target graph for graph imports.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        graph: Option<String>,
     },
     /// Exports a product primitive to an Arrow-compatible file.
     ArrowExport {

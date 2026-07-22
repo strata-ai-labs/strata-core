@@ -1363,6 +1363,9 @@ pub(crate) enum ArrowCommand {
         /// Target vector collection for vector imports.
         #[arg(long)]
         collection: Option<String>,
+        /// Target graph for graph imports.
+        #[arg(long)]
+        graph: Option<String>,
     },
     /// Export a primitive to an Arrow-compatible file.
     Export {
@@ -1422,6 +1425,8 @@ pub(crate) enum CliArrowImportTarget {
     Json,
     /// Vector primitive.
     Vector,
+    /// Graph primitive.
+    Graph,
 }
 
 impl From<CliArrowImportTarget> for strata_executor::ArrowImportTarget {
@@ -1430,6 +1435,7 @@ impl From<CliArrowImportTarget> for strata_executor::ArrowImportTarget {
             CliArrowImportTarget::Kv => Self::Kv,
             CliArrowImportTarget::Json => Self::Json,
             CliArrowImportTarget::Vector => Self::Vector,
+            CliArrowImportTarget::Graph => Self::Graph,
         }
     }
 }

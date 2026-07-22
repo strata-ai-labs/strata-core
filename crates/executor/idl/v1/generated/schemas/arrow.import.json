@@ -71,6 +71,11 @@
           "const": "vector",
           "description": "Import rows into a vector collection.",
           "type": "string"
+        },
+        {
+          "const": "graph",
+          "description": "Import nodes and edges into a graph (from the `_nodes`/`_edges` files).",
+          "type": "string"
         }
       ]
     }
@@ -110,6 +115,13 @@
           }
         ],
         "description": "Input file format. Defaults to extension detection."
+      },
+      "graph": {
+        "description": "Target graph for graph imports.",
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "key_column": {
         "description": "Optional key column override.",

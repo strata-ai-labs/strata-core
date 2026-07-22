@@ -13,7 +13,8 @@ use serde_json::{json, Value};
 use strata_executor::{
     ArrowExportPrimitive, ArrowExportResult, ArrowFileFormat, ArrowImportResult, ArrowImportTarget,
     BatchEventEntry, Bytes, Command, Executor, ExecutorErrorClass, GraphBindingPrimitive,
-    GraphBindingTarget, GraphEntityBinding, Output, VectorDistanceMetric, DEFAULT_BRANCH,
+    GraphBindingTarget, GraphDirection, GraphEntityBinding, Output, VectorDistanceMetric,
+    DEFAULT_BRANCH,
 };
 use tempfile::TempDir;
 
@@ -28,6 +29,7 @@ fn arrow_commands_round_trip_through_json() {
         key_column: Some("id".to_owned()),
         value_column: Some("document".to_owned()),
         collection: None,
+        graph: None,
     };
     let encoded = serde_json::to_value(&import).expect("command serializes");
     assert_eq!(encoded["type"], "arrow_import");
@@ -73,6 +75,7 @@ fn csv_kv_import_and_jsonl_export_round_trip_bytes() {
             key_column: None,
             value_column: None,
             collection: None,
+            graph: None,
         })
         .expect("kv import succeeds");
     let Output::ArrowImportResult(result) = output else {
@@ -141,6 +144,7 @@ fn csv_json_import_and_jsonl_export_preserve_documents() {
             key_column: Some("id".to_owned()),
             value_column: Some("document".to_owned()),
             collection: None,
+            graph: None,
         })
         .expect("json import succeeds");
     let Output::ArrowImportResult(result) = output else {
@@ -191,6 +195,7 @@ fn parquet_vector_import_and_export_uses_batch_commands() {
             key_column: None,
             value_column: None,
             collection: Some("docs".to_owned()),
+            graph: None,
         })
         .expect("vector import succeeds");
     let Output::ArrowImportResult(result) = output else {
@@ -245,6 +250,7 @@ fn vector_export_import_round_trip_preserves_metadata_without_leaking_internals(
             key_column: None,
             value_column: None,
             collection: Some("docs".to_owned()),
+            graph: None,
         })
         .expect("seed import succeeds");
 
@@ -284,6 +290,7 @@ fn vector_export_import_round_trip_preserves_metadata_without_leaking_internals(
             key_column: None,
             value_column: None,
             collection: Some("docs_roundtrip".to_owned()),
+            graph: None,
         })
         .expect("round-trip import succeeds");
 
@@ -319,6 +326,7 @@ fn vector_import_into_missing_collection_fails_instead_of_defaulting_a_metric() 
             key_column: None,
             value_column: None,
             collection: Some("missing".to_owned()),
+            graph: None,
         })
         .expect_err("import into a missing vector collection is rejected");
     assert_eq!(error.code(), "not_found.engine.vector_collection");
@@ -349,6 +357,7 @@ fn arrow_import_export_respects_branch_and_space_isolation() {
             key_column: Some("key".to_owned()),
             value_column: Some("value".to_owned()),
             collection: None,
+            graph: None,
         })
         .expect("scoped import succeeds");
     let Output::ArrowImportResult(result) = output else {
@@ -422,6 +431,7 @@ fn durable_arrow_import_survives_reopen_and_exports() {
                 key_column: Some("key".to_owned()),
                 value_column: Some("value".to_owned()),
                 collection: None,
+                graph: None,
             })
             .expect("kv import succeeds");
         executor
@@ -434,6 +444,7 @@ fn durable_arrow_import_survives_reopen_and_exports() {
                 key_column: Some("id".to_owned()),
                 value_column: Some("document".to_owned()),
                 collection: None,
+                graph: None,
             })
             .expect("json import succeeds");
         create_docs_collection(&mut executor);
@@ -447,6 +458,7 @@ fn durable_arrow_import_survives_reopen_and_exports() {
                 key_column: None,
                 value_column: None,
                 collection: Some("docs".to_owned()),
+                graph: None,
             })
             .expect("vector import succeeds");
         executor.close().expect("close succeeds");
@@ -579,6 +591,121 @@ fn graph_export_writes_node_and_edge_tables() {
 }
 
 #[test]
+fn graph_export_import_round_trip_restores_nodes_and_edges() {
+    let dir = TempDir::new().expect("temp dir");
+    let export_path = dir.path().join("g.parquet");
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    // Source graph `g`: three propertied nodes and two weighted edges.
+    executor
+        .execute(Command::GraphCreate {
+            branch: None,
+            space: None,
+            graph: "g".to_owned(),
+        })
+        .expect("graph create succeeds");
+    for (node_id, kind) in [("n1", "person"), ("n2", "person"), ("n3", "org")] {
+        executor
+            .execute(Command::GraphAddNode {
+                object_type: None,
+                branch: None,
+                space: None,
+                graph: "g".to_owned(),
+                node_id: node_id.to_owned(),
+                properties: Some(json!({"kind": kind})),
+                binding: None,
+            })
+            .expect("node add succeeds");
+    }
+    for (src, edge_type, dst, weight) in [
+        ("n1", "knows", "n2", 1.5_f64),
+        ("n1", "works_at", "n3", 2.0),
+    ] {
+        executor
+            .execute(Command::GraphAddEdge {
+                branch: None,
+                space: None,
+                graph: "g".to_owned(),
+                src: src.to_owned(),
+                edge_type: edge_type.to_owned(),
+                dst: dst.to_owned(),
+                weight: Some(weight),
+                properties: None,
+            })
+            .expect("edge add succeeds");
+    }
+
+    // Export `g`: writes g_nodes.parquet + g_edges.parquet under the stem.
+    executor
+        .execute(Command::ArrowExport {
+            branch: None,
+            space: None,
+            primitive: ArrowExportPrimitive::Graph,
+            format: ArrowFileFormat::Parquet,
+            path: export_path.to_string_lossy().into_owned(),
+            prefix: None,
+            limit: None,
+            collection: None,
+            graph: Some("g".to_owned()),
+            event_type: None,
+        })
+        .expect("graph export succeeds");
+
+    // Import the exported stem into a fresh graph `g2`; import re-derives the
+    // node/edge paths from the stem exactly as export wrote them.
+    executor
+        .execute(Command::GraphCreate {
+            branch: None,
+            space: None,
+            graph: "g2".to_owned(),
+        })
+        .expect("second graph create succeeds");
+    let output = executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: export_path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Parquet),
+            target: ArrowImportTarget::Graph,
+            key_column: None,
+            value_column: None,
+            collection: None,
+            graph: Some("g2".to_owned()),
+        })
+        .expect("graph import succeeds");
+    let Output::ArrowImportResult(result) = output else {
+        panic!("unexpected import output");
+    };
+    // Three nodes + two edges imported across one node batch and one edge batch.
+    assert_import_result(&result, ArrowImportTarget::Graph, 5, 0, 2);
+
+    // Nodes round-trip with identical properties.
+    let nodes = graph_node_properties(&mut executor, "g2");
+    assert_eq!(nodes.len(), 3);
+    assert_eq!(
+        nodes.get("n1").cloned().flatten(),
+        Some(json!({"kind": "person"}))
+    );
+    assert_eq!(
+        nodes.get("n3").cloned().flatten(),
+        Some(json!({"kind": "org"}))
+    );
+
+    // Edges round-trip with preserved type, endpoints, and weight.
+    let mut edges = graph_outgoing_edges(&mut executor, "g2", "n1");
+    edges.sort_by(|a, b| a.1.cmp(&b.1));
+    assert_eq!(edges.len(), 2);
+    assert_eq!(
+        edges[0],
+        ("n1".to_owned(), "knows".to_owned(), "n2".to_owned(), 1.5)
+    );
+    assert_eq!(
+        edges[1],
+        ("n1".to_owned(), "works_at".to_owned(), "n3".to_owned(), 2.0)
+    );
+}
+
+#[test]
 fn arrow_export_rejects_missing_primitive_options() {
     let dir = TempDir::new().expect("temp dir");
     let mut executor = Executor::open_cache().expect("cache executor opens");
@@ -646,6 +773,7 @@ fn arrow_import_rejects_unknown_format_before_storage_mutation() {
             key_column: None,
             value_column: None,
             collection: None,
+            graph: None,
         })
         .expect_err("unknown format fails");
     assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
@@ -666,6 +794,7 @@ fn missing_input_is_reported_before_arrow_feature_work() {
             key_column: None,
             value_column: None,
             collection: None,
+            graph: None,
         })
         .expect_err("missing input fails");
     assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
@@ -805,6 +934,83 @@ fn vector_get_metadata(executor: &mut Executor, collection: &str, key: &str) -> 
         .metadata()
         .cloned()
         .expect("metadata")
+}
+
+fn graph_node_properties(
+    executor: &mut Executor,
+    graph: &str,
+) -> std::collections::BTreeMap<String, Option<Value>> {
+    let mut properties = std::collections::BTreeMap::new();
+    let mut cursor = None;
+    loop {
+        let output = executor
+            .execute(Command::GraphListNodes {
+                branch: None,
+                space: None,
+                graph: graph.to_owned(),
+                prefix: None,
+                cursor,
+                limit: Some(100),
+                as_of: None,
+            })
+            .expect("graph list nodes succeeds");
+        let Output::GraphNodePage { items, page } = output else {
+            panic!("unexpected graph list nodes output");
+        };
+        let has_more = page.has_more();
+        let next_cursor = page.cursor().cloned();
+        for node in &items {
+            properties.insert(node.node_id().to_owned(), node.properties().cloned());
+        }
+        if !has_more {
+            break;
+        }
+        cursor = next_cursor;
+    }
+    properties
+}
+
+fn graph_outgoing_edges(
+    executor: &mut Executor,
+    graph: &str,
+    node_id: &str,
+) -> Vec<(String, String, String, f64)> {
+    let mut edges = Vec::new();
+    let mut cursor = None;
+    loop {
+        let output = executor
+            .execute(Command::GraphNeighbors {
+                branch: None,
+                space: None,
+                graph: graph.to_owned(),
+                node_id: node_id.to_owned(),
+                direction: GraphDirection::Outgoing,
+                edge_type: None,
+                cursor,
+                limit: Some(100),
+                as_of: None,
+            })
+            .expect("graph neighbors succeeds");
+        let Output::GraphNeighborPage { items, page } = output else {
+            panic!("unexpected graph neighbors output");
+        };
+        let has_more = page.has_more();
+        let next_cursor = page.cursor().cloned();
+        for hit in &items {
+            let edge = hit.edge();
+            edges.push((
+                edge.src().to_owned(),
+                edge.edge_type().to_owned(),
+                edge.dst().to_owned(),
+                edge.weight(),
+            ));
+        }
+        if !has_more {
+            break;
+        }
+        cursor = next_cursor;
+    }
+    edges
 }
 
 fn create_docs_collection(executor: &mut Executor) {
