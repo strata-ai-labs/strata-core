@@ -86,11 +86,17 @@ fn oracle_durability(durability: StorageDurabilityPolicy) -> OracleDurability {
     }
 }
 
-/// A reordering backend holds a `Mutex` and has no owned handle, so it opens via the
-/// borrowed (evaluate-and-enqueue) path, with maintenance driven manually.
-fn borrowed_options(durability: StorageDurabilityPolicy) -> StorageOpenOptions {
+/// Deterministic-inline maintenance: the inline executor owns the queue and spawns
+/// no worker threads, so there is nothing to detach on drop and nothing to race the
+/// crash-state snapshot or the immediate same-dir reopen (#2662 — under load,
+/// `EvaluateAndEnqueue`'s threaded workers could miss the bounded 250 ms shutdown
+/// quiesce, be detached still holding the writer lock, and fail the verify reopen
+/// with a spurious `Unavailable`). Same pattern as `testkit::simulation`.
+/// (This helper's old name/comment claimed a "borrowed" open path; post-BS4.4i
+/// durable runtimes are uniformly owned, reordering backends included.)
+fn inline_options(durability: StorageDurabilityPolicy) -> StorageOpenOptions {
     StorageOpenOptions::durable_local(durability)
-        .with_maintenance_scheduling_policy(StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue)
+        .with_maintenance_scheduling_policy(StorageMaintenanceSchedulingPolicy::DeterministicInline)
 }
 
 fn case_dir(root: &Path, label: &str) -> Result<PathBuf, TestkitError> {
@@ -167,7 +173,7 @@ fn run_one_fs_model(
         let backend = StorageBackend::reordering_local_fs(root.to_path_buf());
         {
             let mut runtime =
-                StorageRuntime::open_with_backend(borrowed_options(durability), &backend)
+                StorageRuntime::open_with_backend(inline_options(durability), &backend)
                     .map_err(|err| TestkitError::new(format!("reordering open: {err:?}")))?
                     .into_runtime();
             drive(&mut runtime, branch, seed, crash_index, model, &mut state)?;
@@ -191,7 +197,7 @@ fn run_one_fs_model(
         // Bind the open result so it drops before `backend` (reverse declaration
         // order), rather than as a tail-expression temporary that outlives it.
         let opened = StorageRuntime::open_with_backend(
-            borrowed_options(StorageDurabilityPolicy::Standard).with_strict_recovery(false),
+            inline_options(StorageDurabilityPolicy::Standard).with_strict_recovery(false),
             &backend,
         );
         match opened {
@@ -216,9 +222,13 @@ fn run_one_fs_model(
                 (true, None)
             }
             Err(error) => {
+                // The op trace makes the failure self-describing without
+                // re-deriving the workload from the seed (#2662 diagnostics).
                 return Err(TestkitError::new(format!(
                     "{model:?} reopen failed (expected lossy recovery) \
-                     [seed={seed} durability={durability:?} crash_index={crash_index}]: {error:?}"
+                     [seed={seed} durability={durability:?} crash_index={crash_index}]: {error:?} \
+                     workload={:?}",
+                    generate_workload(seed, FS_OP_COUNT)
                 )));
             }
         }
@@ -238,9 +248,12 @@ fn fs_violation(
     crash_index: usize,
     violation: &RecoveryOracleViolation,
 ) -> TestkitError {
+    // The op trace makes the failure self-describing without re-deriving the
+    // workload from the seed (#2662 diagnostics).
     TestkitError::new(format!(
         "fs-model violation [seed={seed} model={model:?} durability={durability:?} \
-         crash_index={crash_index}]: {violation:?}"
+         crash_index={crash_index}]: {violation:?} workload={:?}",
+        generate_workload(seed, FS_OP_COUNT)
     ))
 }
 
