@@ -27,6 +27,7 @@ allowlist may *only shrink*. If you skip a step, a guard tells you which one.
 | `examples/<id>.yaml` | Optional canonical example (drives docs + SDK doctests). |
 | `manifest.yaml` | Schema + generator version stamps. |
 | `*uncovered*.yaml`, `missing-examples.yaml` | Shrink-only coverage allowlists. |
+| `unknown-key-divergences.yaml` | Shrink-only ledger of schema-closed sites the deserializer wrongly accepts (each entry cites its issue; re-verified every generation). |
 | `generated/` | **Generated — never hand-edit.** Index, schemas, docs, `llms.txt`. |
 
 A command's final facts are resolved by layering **defaults → family → kind →
@@ -141,9 +142,11 @@ R="cargo run --locked -p strata-executor $F --bin strata-idl --"
 $R generate         # command-index.json + generated/schemas/
 $R generate-cli     # cli-command-index.json
 $R generate-docs    # generated/docs/** + llms.txt
+$R generate-tests   # crates/executor/tests/generated/conformance_cases.rs (TCP4.1)
 $R check            # all of the above are fresh (CI gate)
 $R check-cli
 $R check-docs
+$R check-tests
 $R verify-fixtures  # every fixture validates + replays  (add --update to bless)
 $R verify-examples  # every example validates, covers, and replays
 ```
@@ -171,7 +174,9 @@ Data-plane commands flow into the SDK automatically once the IDL is vendored;
 
 | Guard | Enforces |
 |---|---|
-| `check` / `check-cli` / `check-docs` | `generated/` is fresh (regenerate + diff). |
+| `check` / `check-cli` / `check-docs` / `check-tests` | `generated/` and the generated conformance suite are fresh (regenerate + diff). |
+| `generated_conformance` test target | per-command wire round-trip idempotence, nested unknown-key rejection at schema-closed sites, error-envelope replay, observed-⊆-declared output tags. |
+| `unknown-key-divergences.yaml` | every entry must still be a live schema/deserializer divergence (fixed ⇒ delete the entry). |
 | `verify-fixtures` | fixtures validate against the schema and replay to their response. |
 | `verify-examples` | examples validate, cover the catalog, and replay. |
 | `uncovered-commands.yaml` | every `Command` variant is covered by an IDL entry or listed. |

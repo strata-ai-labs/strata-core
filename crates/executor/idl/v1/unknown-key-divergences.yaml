@@ -1,0 +1,35 @@
+# Known divergences between a request's published JSON Schema (which declares
+# the object CLOSED, `additionalProperties: false`) and the deserializer
+# (which ACCEPTS unknown keys at that site). The TCP4.1 generated unknown-key
+# tests skip exactly these (command, site) pairs.
+#
+# SHRINK-ONLY: `generate-tests`/`check-tests` verify each entry is still a
+# real divergence — the moment the deserializer rejects the site (i.e. the
+# issue below is fixed), the stale entry fails the build until it is deleted.
+# New entries require a filed issue; this list is a ledger of wire-contract
+# bugs, not an escape hatch.
+#
+# All current entries: #2739 — internally-tagged unit variants bypass
+# `deny_unknown_fields`, so empty-payload commands accept top-level junk
+# their schema forbids.
+- command: admin.ping
+  site: ""
+  issue: 2739
+- command: admin.config
+  site: ""
+  issue: 2739
+- command: admin.remote
+  site: ""
+  issue: 2739
+- command: branch.list
+  site: ""
+  issue: 2739
+- command: inference.models.list
+  site: ""
+  issue: 2739
+- command: inference.models.local
+  site: ""
+  issue: 2739
+- command: inference.cache_status
+  site: ""
+  issue: 2739

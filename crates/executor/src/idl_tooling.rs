@@ -14,7 +14,10 @@ use crate::{public_error_code_entries, Command, Output};
 mod docs;
 mod examples;
 mod schemas;
+mod tests_gen;
 mod verify;
+
+pub use tests_gen::{check_tests, generate_tests};
 
 const IDL_DIR: &str = "crates/executor/idl/v1";
 const FIXTURE_ROOT: &str = "crates/executor/tests/fixtures";
@@ -667,6 +670,12 @@ impl ResolvedLayer {
 /// Returns the repository root inferred from this crate's manifest directory.
 #[must_use]
 pub fn default_repo_root() -> PathBuf {
+    // Test-only escape hatch: lets the bin-dispatch test drive `strata-idl`
+    // against a hermetic scratch copy of the IDL tree instead of the real
+    // repository (never set in CI invocations of the real gates).
+    if let Ok(root) = std::env::var("STRATA_IDL_REPO_ROOT") {
+        return PathBuf::from(root);
+    }
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
