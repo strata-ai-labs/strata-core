@@ -40,3 +40,36 @@
     branch names reject whitespace-only and control characters; space names
     accept both (only NUL and newline bytes are rejected)
   issue: 2700
+- axis: batch_invalid_item_channel
+  surfaces: [graph_batch_write, kv/json/event batch writes]
+  behavior: >-
+    kv, json, and event report one invalid item itemwise (typed per-item
+    error, valid items commit) but graph aborts the whole batch with the
+    item's error at the top level
+  issue: 2701
+- axis: batch_limits
+  surfaces: [kv_batch_put, sdk-side caps]
+  behavior: >-
+    the engine enforces no item-count cap on any batch command (a 3000-item
+    batch is accepted); the caps #2701 documents are SDK-side only
+  issue: 2701
+- axis: as_of_coverage
+  surfaces: [kv_get/event_list (have as_of), kv_exists/event_range/event_verify_chain (lack it)]
+  behavior: >-
+    as_of is accepted by most reads but rejected as an unknown field by
+    kv_exists, event_range, and event_verify_chain; event_range's omission is
+    a recorded deliberate skip pending a contract decision
+  issue: 2702
+- axis: json_scan_addressing
+  surfaces: [json_scan, json_count/json_list prefix]
+  behavior: >-
+    json_scan treats start as an inclusive seek lower bound over the whole
+    space (returns keys past the prefix) while sibling json_count filters by
+    real prefix
+  issue: 2704
+- axis: catalog_id_not_wire_name
+  surfaces: [command-index ids, wire type tags]
+  behavior: >-
+    no catalog id (dotted, e.g. kv.list) is executable as a wire type tag
+    (snake_case, e.g. kv_list); the executable name appears in no catalog field
+  issue: 2704

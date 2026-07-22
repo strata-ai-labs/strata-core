@@ -108,7 +108,6 @@ const ALLOWED_UNASSERTED: &[(&str, &str)] = &[
     ("invalid_argument.executor.graph_analytics_budget", "asserted by TCP3.8 error-envelope replay fixtures"),
     ("invalid_argument.executor.hub_branch", "asserted by TCP3.8 error-envelope replay fixtures"),
     ("invalid_argument.executor.hub_dataset", "asserted by TCP3.8 error-envelope replay fixtures"),
-    ("invalid_argument.executor.kv_batch_duplicate_key", "asserted by TCP3.8 error-envelope replay fixtures"),
     ("invalid_argument.executor.limit", "asserted by TCP3.8 error-envelope replay fixtures"),
     ("invalid_argument.executor.vector_limit", "asserted by TCP3.8 error-envelope replay fixtures"),
 ];
