@@ -201,6 +201,12 @@ pub struct VectorMetadata(Value);
 impl VectorMetadata {
     /// Creates validated vector metadata.
     pub fn new(value: Value) -> EngineResult<Self> {
+        if !value.is_object() {
+            return Err(EngineError::invalid_input(
+                "invalid_argument.engine.vector_metadata",
+                "vector metadata must be a JSON object",
+            ));
+        }
         let size = serde_json::to_vec(&value)
             .map_err(|error| {
                 EngineError::invalid_input(

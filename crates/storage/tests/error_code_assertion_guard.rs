@@ -100,7 +100,6 @@ const ALLOWED_UNASSERTED: &[(&str, &str)] = &[
     ("invalid_argument.engine.vector_artifact", "defensive encode-error arm (serde_json::to_vec of artifact metadata); unreachable (#2651)"),
     ("invalid_argument.engine.vector_batch", "internal invariant: the public empty batch short-circuits to success (#2651)"),
     ("invalid_argument.engine.vector_index_manifest", "defensive encode-error arm; unreachable with a valid manifest (#2651)"),
-    ("invalid_argument.engine.vector_metadata", "defensive serde_json::to_vec encode arm (never fails on a valid Value); the reachable size check emits vector_metadata_too_large (#2651)"),
     ("invalid_argument.engine.vector_record", "defensive encode-error arm; unreachable with a valid record (#2651)"),
     ("invalid_argument.executor.arrow_base64", "asserted by TCP3.8 error-envelope replay fixtures"),
     ("invalid_argument.executor.arrow_json_key", "asserted by TCP3.8 error-envelope replay fixtures"),
