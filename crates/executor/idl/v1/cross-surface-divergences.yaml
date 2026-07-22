@@ -1,0 +1,42 @@
+# TCP4.7 cross-surface divergence ledger: places where two parallel Strata
+# surfaces that should obey one contract observably disagree. Each entry is a
+# filed bug (or an explicitly-deferred contract decision), and the parity
+# harness (crates/executor/tests/parity_*.rs) carries a PIN test per entry
+# asserting today's divergent behavior exactly.
+#
+# SHRINK-ONLY: when a fix lands, the pin test breaks, forcing the entry's
+# deletion and the flip to the real parity assertion. A pin test with no entry
+# — or an entry with no pin test — fails the harness's ledger guard. New
+# entries require a filed issue; this is a bug ledger, not an escape hatch.
+- axis: event_range_direction
+  surfaces: [event_range forward, event_range reverse]
+  behavior: >-
+    reverse anchors start_seq as the inclusive UPPER bound and walks down, so
+    reverse from start_seq=0 returns exactly one event (sequence 0) instead of
+    walking the same window backwards
+  issue: 2694
+- axis: event_range_endpoint
+  surfaces: [event_range, event_range_by_time]
+  behavior: >-
+    event_range treats end_seq as exclusive while event_range_by_time treats
+    end_ts as inclusive
+  issue: 2695
+- axis: branch_space_lifecycle
+  surfaces: [space_create/space_delete, branch_create/branch_delete]
+  behavior: >-
+    duplicate space create succeeds idempotently while duplicate branch create
+    raises already_exists.engine.branch; deleting a missing space succeeds
+    while deleting a missing branch raises not_found.engine.branch
+  issue: 2700
+- axis: branch_space_resolution
+  surfaces: [write with unknown space, write with unknown branch]
+  behavior: >-
+    a write naming a nonexistent space silently auto-creates it; a write
+    naming a nonexistent branch raises not_found.engine.branch
+  issue: 2700
+- axis: branch_space_naming
+  surfaces: [space name validation, branch name validation]
+  behavior: >-
+    branch names reject whitespace-only and control characters; space names
+    accept both (only NUL and newline bytes are rejected)
+  issue: 2700
