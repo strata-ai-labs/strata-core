@@ -304,10 +304,15 @@ fn verify_recovered_and_resume(
     context: &str,
 ) -> Result<(), TestkitError> {
     let backend = StorageBackend::local_fs(root.to_path_buf());
-    let runtime = StorageRuntime::open_with_backend(
-        durable_options(StorageDurabilityPolicy::Standard),
-        &backend,
-    )
+    // Retry-on-Unavailable absorbs the prior runtime's detached-worker
+    // writer-lock window (#2720 — the resume leg reopens the same copied
+    // store its healing runtime just dropped); any other failure stays loud.
+    let runtime = crate::testkit::reopen_retry::open_with_retry_on_unavailable(|| {
+        StorageRuntime::open_with_backend(
+            durable_options(StorageDurabilityPolicy::Standard),
+            &backend,
+        )
+    })
     .map_err(|err| testkit_err(&format!("{context}: clean reopen must succeed"), err))?
     .into_runtime();
     let recovered = scan_recovered(
@@ -707,6 +712,39 @@ pub fn run_compound_fault_maintenance_cases(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_resume_verifier_detects_a_fabricated_lost_ack() {
+        // Sabotage: the verifier must actually verify. An empty (validly
+        // created) store checked against a model claiming an acknowledged
+        // commit must fail with an oracle violation — a no-op verifier
+        // (`Ok(())`) passes every counter assertion in this suite and would
+        // only be caught here.
+        let dir = tempfile::tempdir().expect("tmp");
+        let branch = default_branch();
+        {
+            let backend = StorageBackend::local_fs(dir.path().to_path_buf());
+            let _runtime = StorageRuntime::open_with_backend(
+                durable_options(StorageDurabilityPolicy::Standard),
+                &backend,
+            )
+            .expect("create store")
+            .into_runtime();
+        }
+        let mut model = ExpectedState::new(OracleDurability::Always);
+        model.record_ack(
+            branch,
+            strata_core::CommitVersion::new(1),
+            generate_workload(99, 1)[0].clone(),
+        );
+        let err = verify_recovered_and_resume(dir.path(), branch, &model, "sabotage")
+            .expect_err("a phantom acked commit must be detected");
+        let message = format!("{err:?}");
+        assert!(
+            message.contains("recovery oracle violation"),
+            "expected an oracle violation, got: {message}"
+        );
+    }
 
     #[test]
     fn staged_crash_recovers_oracle_valid_without_a_second_fault() {
