@@ -80,8 +80,26 @@ where
     }
 }
 
+/// The MCP server owns the process: the caller opens the target (explicit
+/// path / `STRATA_DB` / `--cache`; refusal otherwise, like any one-shot
+/// command); this applies the session scope and serves stdio until the
+/// client closes stdin.
+fn serve_mcp(mut executor: Executor, context: &CommandContext) -> Result<i32, CliError> {
+    let scope = context.scope_with_overrides(None, None);
+    if let Some(branch) = scope.branch.as_deref() {
+        executor = executor.with_default_branch(branch)?;
+    }
+    if let Some(space) = scope.space.as_deref() {
+        executor.set_default_space(space.to_owned())?;
+    }
+    let exit = mcp::serve(&mut executor)?;
+    executor.close()?;
+    Ok(exit)
+}
+
 fn execute(cli: Cli) -> Result<i32, CliError> {
     let format = cli.output_format();
+    let durability = cli.durability.map(options::DurabilityArg::mode);
     let command = cli.command;
     let mut context = CommandContext::new(cli.branch, cli.space);
 
@@ -106,28 +124,14 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
                 command: options::McpCommand::Serve,
             })
         ) {
-            // The MCP server owns the process: it opens the target (explicit
-            // path / STRATA_DB / --cache; refusal otherwise, like any
-            // one-shot command), applies the session scope, and serves stdio
-            // until the client closes stdin.
             let opened = open::open_executor(
                 cli.cache,
                 cli.db,
                 cli.db_path,
-                cli.durability.map(crate::options::DurabilityArg::mode),
+                durability,
                 open::OpenIntent::OneShot,
             )?;
-            let mut executor = opened.executor;
-            let scope = context.scope_with_overrides(None, None);
-            if let Some(branch) = scope.branch.as_deref() {
-                executor = executor.with_default_branch(branch)?;
-            }
-            if let Some(space) = scope.space.as_deref() {
-                executor.set_default_space(space.to_owned())?;
-            }
-            let exit = mcp::serve(&mut executor)?;
-            executor.close()?;
-            return Ok(exit);
+            return serve_mcp(opened.executor, &context);
         }
         if let TopLevelAction::NoDatabase(value) = top_level_without_database(&command)? {
             render_value(&value, format)?;
@@ -156,7 +160,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             cli.cache,
             cli.db,
             cli.db_path,
-            cli.durability.map(crate::options::DurabilityArg::mode),
+            durability,
             open::OpenIntent::OneShot,
         )?;
         let mut executor = opened.executor;
@@ -176,13 +180,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
     } else {
         open::OpenIntent::Pipe
     };
-    let opened = open::open_executor(
-        cli.cache,
-        cli.db,
-        cli.db_path,
-        cli.durability.map(crate::options::DurabilityArg::mode),
-        intent,
-    )?;
+    let opened = open::open_executor(cli.cache, cli.db, cli.db_path, durability, intent)?;
     if opened.implicit_cache {
         // Bare interactive invocation: an ephemeral session, stated plainly
         // so nobody discovers volatility after typing data in (first-run D2).
