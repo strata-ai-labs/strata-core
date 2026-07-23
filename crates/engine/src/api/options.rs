@@ -60,6 +60,23 @@ pub enum CachePreheat {
     Disabled,
 }
 
+/// Commit durability policy for a durable-local database.
+///
+/// `Standard` (the default) acknowledges commits from a buffered WAL and
+/// syncs at close, threshold, and rotation points — highest throughput,
+/// with a documented crash-loss window for unsynced acknowledgements.
+/// `Always` syncs every commit before acknowledging it — every receipt
+/// attests `always`, and acknowledged commits survive process kill.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DurabilityMode {
+    /// Buffered WAL; commits become durable at the next sync point.
+    #[default]
+    Standard,
+    /// Every commit is synced before acknowledgement.
+    Always,
+}
+
 /// Options for explicit durable-local database open.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DurableLocalOpenOptions {
@@ -67,6 +84,7 @@ pub struct DurableLocalOpenOptions {
     memory_budget_bytes: Option<u64>,
     data_block_bytes: Option<u32>,
     cache_preheat: CachePreheat,
+    durability: DurabilityMode,
 }
 
 #[allow(clippy::new_without_default)]
@@ -79,7 +97,20 @@ impl DurableLocalOpenOptions {
             memory_budget_bytes: None,
             data_block_bytes: None,
             cache_preheat: CachePreheat::WhenIdle,
+            durability: DurabilityMode::Standard,
         }
+    }
+
+    /// Selects the commit durability policy (#2756: `Always` makes every
+    /// acknowledgement a survival guarantee).
+    #[must_use]
+    pub const fn with_durability(mut self, durability: DurabilityMode) -> Self {
+        self.durability = durability;
+        self
+    }
+
+    pub(crate) const fn durability(&self) -> DurabilityMode {
+        self.durability
     }
 
     /// Selects the default branch for a newly-created database.

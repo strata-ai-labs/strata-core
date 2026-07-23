@@ -1,5 +1,30 @@
 {
   "$defs": {
+    "CommitDurability": {
+      "description": "Per-commit durability, as storage attested it at acknowledgement time.\n\n`standard` is an admission fact, not a survival guarantee: the commit\nbecomes durable at the next sync point (close, threshold, rotation) and\ncan be lost to process kill until then. Only `always` attests the commit\nwas synced before acknowledgement. `uncertain` means storage could not\nattest either way (#2756: the former `durable` boolean reported\n`standard` commits as durable, so SDK callers treated unsynced\nacknowledgements as crash-safe).",
+      "oneOf": [
+        {
+          "const": "not_durable",
+          "description": "Volatile commit (cache mode): gone when the process exits.",
+          "type": "string"
+        },
+        {
+          "const": "standard",
+          "description": "Durable after the next sync point; lost with the process until then.",
+          "type": "string"
+        },
+        {
+          "const": "always",
+          "description": "Synced to durable storage before acknowledgement.",
+          "type": "string"
+        },
+        {
+          "const": "uncertain",
+          "description": "Storage could not attest this commit's durability.",
+          "type": "string"
+        }
+      ]
+    },
     "CommitReceipt": {
       "description": "Commit facts returned by mutating operations.",
       "properties": {
@@ -8,8 +33,8 @@
           "minimum": 0,
           "type": "integer"
         },
-        "durable": {
-          "type": "boolean"
+        "durability": {
+          "$ref": "#/$defs/CommitDurability"
         },
         "put_count": {
           "format": "uint64",
@@ -30,7 +55,7 @@
       "required": [
         "version",
         "timestamp",
-        "durable",
+        "durability",
         "put_count",
         "delete_count"
       ],

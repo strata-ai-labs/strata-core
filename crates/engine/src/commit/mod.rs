@@ -2,6 +2,28 @@
 
 use strata_core::{CommitVersion, Timestamp};
 
+/// Per-commit durability, as storage attested it at acknowledgement time.
+///
+/// `Standard` is an admission fact, not a survival guarantee: the commit
+/// rides the standard durability policy (synced by close, threshold, or
+/// rotation) and can be lost to process kill or power failure until then.
+/// Only `Always` attests the commit was synced before acknowledgement
+/// (#2756: folding `Standard` into a `durable` boolean told SDK callers
+/// their unsynced commits would survive a crash).
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommitDurability {
+    /// Volatile commit (cache mode): gone when the process exits.
+    NotDurable,
+    /// Admitted under the standard policy: durable after the next sync
+    /// point, lost with the process until then.
+    Standard,
+    /// Synced to durable storage before acknowledgement.
+    Always,
+    /// Storage could not attest this commit's durability.
+    Uncertain,
+}
+
 /// Summary returned by a committed engine write.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CommitOutcome {
@@ -9,7 +31,7 @@ pub struct CommitOutcome {
     timestamp: Timestamp,
     put_count: usize,
     delete_count: usize,
-    durable: bool,
+    durability: CommitDurability,
 }
 
 impl CommitOutcome {
@@ -18,14 +40,14 @@ impl CommitOutcome {
         timestamp: Timestamp,
         put_count: usize,
         delete_count: usize,
-        durable: bool,
+        durability: CommitDurability,
     ) -> Self {
         Self {
             version,
             timestamp,
             put_count,
             delete_count,
-            durable,
+            durability,
         }
     }
 
@@ -35,7 +57,7 @@ impl CommitOutcome {
             timestamp: self.timestamp,
             put_count,
             delete_count,
-            durable: self.durable,
+            durability: self.durability,
         }
     }
 
@@ -64,8 +86,8 @@ impl CommitOutcome {
     }
 
     #[must_use]
-    /// Returns true when storage reported a durable commit.
-    pub const fn durable(self) -> bool {
-        self.durable
+    /// Returns the durability storage attested for this commit.
+    pub const fn durability(self) -> CommitDurability {
+        self.durability
     }
 }

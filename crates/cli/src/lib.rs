@@ -110,8 +110,13 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             // path / STRATA_DB / --cache; refusal otherwise, like any
             // one-shot command), applies the session scope, and serves stdio
             // until the client closes stdin.
-            let opened =
-                open::open_executor(cli.cache, cli.db, cli.db_path, open::OpenIntent::OneShot)?;
+            let opened = open::open_executor(
+                cli.cache,
+                cli.db,
+                cli.db_path,
+                cli.durability.map(crate::options::DurabilityArg::mode),
+                open::OpenIntent::OneShot,
+            )?;
             let mut executor = opened.executor;
             let scope = context.scope_with_overrides(None, None);
             if let Some(branch) = scope.branch.as_deref() {
@@ -147,8 +152,13 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             return Ok(0);
         }
 
-        let opened =
-            open::open_executor(cli.cache, cli.db, cli.db_path, open::OpenIntent::OneShot)?;
+        let opened = open::open_executor(
+            cli.cache,
+            cli.db,
+            cli.db_path,
+            cli.durability.map(crate::options::DurabilityArg::mode),
+            open::OpenIntent::OneShot,
+        )?;
         let mut executor = opened.executor;
         if let Some(branch) = context.scope_with_overrides(None, None).branch.as_deref() {
             executor = executor.with_default_branch(branch)?;
@@ -166,7 +176,13 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
     } else {
         open::OpenIntent::Pipe
     };
-    let opened = open::open_executor(cli.cache, cli.db, cli.db_path, intent)?;
+    let opened = open::open_executor(
+        cli.cache,
+        cli.db,
+        cli.db_path,
+        cli.durability.map(crate::options::DurabilityArg::mode),
+        intent,
+    )?;
     if opened.implicit_cache {
         // Bare interactive invocation: an ephemeral session, stated plainly
         // so nobody discovers volatility after typing data in (first-run D2).

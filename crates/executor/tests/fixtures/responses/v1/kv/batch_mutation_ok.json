@@ -3,7 +3,7 @@
     "applied": true,
     "commit": {
       "delete_count": 0,
-      "durable": false,
+      "durability": "not_durable",
       "put_count": 1,
       "timestamp": 3,
       "version": 3
@@ -13,7 +13,7 @@
         "applied": true,
         "commit": {
           "delete_count": 0,
-          "durable": false,
+          "durability": "not_durable",
           "put_count": 1,
           "timestamp": 3,
           "version": 3

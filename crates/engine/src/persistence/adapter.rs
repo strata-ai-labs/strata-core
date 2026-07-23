@@ -35,7 +35,7 @@ use super::{CommitPlan, ReadSelector, RowAddress, RowClass, RowMutation};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PersistenceOpenTarget {
     Cache,
-    DurableLocal(PathBuf),
+    DurableLocal(PathBuf, crate::api::DurabilityMode),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -315,9 +315,13 @@ impl StoragePersistence {
                 let (runtime, summary) = outcome.into_parts();
                 (runtime, summary, false)
             }
-            PersistenceOpenTarget::DurableLocal(path) => {
+            PersistenceOpenTarget::DurableLocal(path, durability) => {
+                let policy = match durability {
+                    crate::api::DurabilityMode::Standard => StorageDurabilityPolicy::Standard,
+                    crate::api::DurabilityMode::Always => StorageDurabilityPolicy::Always,
+                };
                 let mut options = apply_memory_budget(
-                    StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+                    StorageOpenOptions::durable_local(policy),
                     memory_budget_bytes,
                 )?;
                 if let Some(bytes) = data_block_bytes {
@@ -555,7 +559,7 @@ impl StoragePersistence {
             summary.commit_timestamp(),
             summary.put_count(),
             summary.delete_count(),
-            durable_commit_summary(summary.durability()),
+            commit_durability(summary.durability()),
         ))
     }
 
@@ -968,11 +972,16 @@ fn read_limit(limit: Option<usize>) -> EngineResult<Option<ReadLimit>> {
     }
 }
 
-const fn durable_commit_summary(summary: CommitDurabilitySummary) -> bool {
-    matches!(
-        summary,
-        CommitDurabilitySummary::Standard | CommitDurabilitySummary::Always
-    )
+/// Faithful per-commit durability mapping. #2756: the old fold to a bool
+/// (`Standard | Always => true`) attested unsynced Standard-mode commits as
+/// durable; each storage state now reaches the caller unchanged.
+const fn commit_durability(summary: CommitDurabilitySummary) -> crate::commit::CommitDurability {
+    match summary {
+        CommitDurabilitySummary::NotDurable => crate::commit::CommitDurability::NotDurable,
+        CommitDurabilitySummary::Standard => crate::commit::CommitDurability::Standard,
+        CommitDurabilitySummary::Always => crate::commit::CommitDurability::Always,
+        _ => crate::commit::CommitDurability::Uncertain,
+    }
 }
 
 fn apply_memory_budget(

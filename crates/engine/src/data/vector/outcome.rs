@@ -608,7 +608,7 @@ mod tests {
         VectorHistory, VectorHistoryRow, VectorKeyPage, VectorMetadataUpdateOutcome,
         VectorSearchMatch, VectorSearchResult, VectorVersionedEntry, VectorWriteOutcome,
     };
-    use crate::commit::CommitOutcome;
+    use crate::commit::{CommitDurability, CommitOutcome};
     use crate::data::vector::{
         VectorCollectionName, VectorConfig, VectorDistanceMetric, VectorEmbedding, VectorKey,
         VectorMetadata,
@@ -738,7 +738,7 @@ mod tests {
             Timestamp::from_micros(timestamp),
             puts,
             deletes,
-            true,
+            CommitDurability::Standard,
         )
     }
 

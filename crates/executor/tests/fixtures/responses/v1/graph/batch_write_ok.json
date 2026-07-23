@@ -3,7 +3,7 @@
     "applied": true,
     "commit": {
       "delete_count": 0,
-      "durable": false,
+      "durability": "not_durable",
       "put_count": 3,
       "timestamp": 4,
       "version": 4
@@ -14,7 +14,7 @@
         "applied": true,
         "commit": {
           "delete_count": 0,
-          "durable": false,
+          "durability": "not_durable",
           "put_count": 3,
           "timestamp": 4,
           "version": 4
@@ -38,7 +38,7 @@
         "applied": true,
         "commit": {
           "delete_count": 0,
-          "durable": false,
+          "durability": "not_durable",
           "put_count": 3,
           "timestamp": 4,
           "version": 4
@@ -62,7 +62,7 @@
         "applied": true,
         "commit": {
           "delete_count": 0,
-          "durable": false,
+          "durability": "not_durable",
           "put_count": 3,
           "timestamp": 4,
           "version": 4
