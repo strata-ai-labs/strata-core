@@ -2148,6 +2148,19 @@ mod tests {
         assert_eq!(run(["strata", "--cache", "search"]), 2);
     }
 
+    /// The MCP entry applies the session scope before it ever touches
+    /// stdio: a reserved session branch must fail the serve loudly (and a
+    /// stubbed exit code would sail past this expectation).
+    #[test]
+    fn serve_mcp_rejects_a_reserved_session_branch_before_serving() {
+        let executor = Executor::open_cache().expect("cache executor opens");
+        let context = CommandContext::new(Some("_reserved".to_owned()), None);
+        assert!(
+            serve_mcp(executor, &context).is_err(),
+            "a reserved session branch must refuse the MCP serve"
+        );
+    }
+
     #[test]
     fn run_executes_durable_kv_round_trip() {
         let temp = tempfile::tempdir().expect("create temp dir");
