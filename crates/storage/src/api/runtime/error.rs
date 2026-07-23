@@ -332,6 +332,16 @@ pub(super) fn map_lifecycle_error(error: LifecycleError) -> StorageApiError {
             reason,
         },
         other => {
+            // #2766: a WAL failure that means the durable log itself is lost
+            // or corrupt (e.g. the active object vanished under a live
+            // writer) is permanent no matter which lifecycle route wrapped it
+            // — close, maintenance, growth. Surfacing it as a generic
+            // lower-layer failure invites retries that can never succeed.
+            if wal_durable_corruption_in_chain(&other) {
+                return StorageApiError::RecoveryDegraded {
+                    reason: "WAL durable state is lost or corrupt",
+                };
+            }
             let code = other.code();
             StorageApiError::lower_layer_coded(
                 StorageApiLowerLayer::Lifecycle,
@@ -341,6 +351,20 @@ pub(super) fn map_lifecycle_error(error: LifecycleError) -> StorageApiError {
             )
         }
     }
+}
+
+/// #2766: walks the lifecycle error's source chain for a WAL service error
+/// classified as durable corruption (vanished active object, undecodable
+/// segment, inventory gap) — permanent loss regardless of the wrapping route.
+fn wal_durable_corruption_in_chain(error: &LifecycleError) -> bool {
+    let mut source = std::error::Error::source(error);
+    while let Some(current) = source {
+        if let Some(wal) = current.downcast_ref::<crate::service::WalServiceError>() {
+            return wal.is_durable_corruption();
+        }
+        source = std::error::Error::source(current);
+    }
+    false
 }
 
 pub(super) fn default_branch_generation() -> StorageApiResult<CommitBranchGeneration> {

@@ -415,11 +415,7 @@ fn always_append_visible_durability_unconfirmed_after_sync_failure() {
 
 #[test]
 fn sync_backend_error_kind_is_preserved_for_required_routing_cases() {
-    for kind in [
-        BackendErrorKind::NotFound,
-        BackendErrorKind::Interrupted,
-        BackendErrorKind::Unavailable,
-    ] {
+    for kind in [BackendErrorKind::Interrupted, BackendErrorKind::Unavailable] {
         let backend = SyncFaultBackend::new([kind]);
         let mut service = WalService::open(
             &backend,
@@ -437,6 +433,27 @@ fn sync_backend_error_kind_is_preserved_for_required_routing_cases() {
 
         assert_sync_error(error, &segment_one, kind);
     }
+
+    // `NotFound` is deliberately NOT preserved (#2766): a sync point that
+    // cannot find the active object it owns means the log vanished under
+    // the live writer — permanent loss, classified and latched rather than
+    // routed as a possibly-transient backend kind.
+    let backend = SyncFaultBackend::new([BackendErrorKind::NotFound]);
+    let mut service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Always,
+        WalServiceConfig::default(),
+    )
+    .expect("open WAL");
+    let error = service
+        .append(&record(1, b"sync kind NotFound".to_vec()))
+        .expect_err("a vanished active object fails the sync");
+    assert!(matches!(
+        error,
+        WalServiceError::ActiveObjectLost { segment_id: 1 }
+    ));
 }
 
 #[test]
@@ -547,4 +564,43 @@ fn group_sync_ticket_failure_surfaces_typed_sync_error_and_preserves_dirty() {
     // (the durability-uncertain window), same as a failed force_durable.
     assert_eq!(service.dirty_bytes(), dirty_before);
     assert_eq!(service.dirty_records(), 1);
+}
+
+#[test]
+fn a_vanished_active_object_halts_the_writer_at_the_next_sync_point() {
+    // #2766: appends against an unlinked active object still succeed at the
+    // byte level (an fd survives the unlink, and fsync on the dead inode
+    // reports success), so the loss is first observable at a name-based sync
+    // point. That observation must latch the writer: admitting more appends
+    // against a log no sync can ever cover again would turn into false
+    // standard-mode acknowledgments.
+    let backend = SyncFaultBackend::new([BackendErrorKind::NotFound]);
+    let mut service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("open WAL");
+    service
+        .append(&record(1, b"acked".to_vec()))
+        .expect("append before the loss");
+
+    let sync_error = service
+        .force_durable()
+        .expect_err("the sync point observes the vanished object");
+    assert!(matches!(
+        sync_error,
+        WalServiceError::ActiveObjectLost { segment_id: 1 }
+    ));
+    assert!(sync_error.is_durable_corruption());
+
+    let append_error = service
+        .append(&record(2, b"after-loss".to_vec()))
+        .expect_err("the halted writer refuses further appends");
+    assert!(matches!(
+        append_error,
+        WalServiceError::ActiveObjectLost { segment_id: 1 }
+    ));
 }

@@ -348,6 +348,12 @@ pub(crate) enum WalServiceError {
     SegmentInventoryGap {
         missing_segment: u64,
     },
+    /// The active WAL object vanished under a live writer (#2766: unlinked
+    /// out of band). No future sync point can cover the log, so the writer
+    /// is halted: reopen is the only remedy, and reopen classifies the loss.
+    ActiveObjectLost {
+        segment_id: u64,
+    },
 }
 
 impl fmt::Display for WalServiceError {
@@ -444,6 +450,10 @@ impl fmt::Display for WalServiceError {
                 formatter,
                 "WAL segment {missing_segment} is missing from an otherwise contiguous log"
             ),
+            Self::ActiveObjectLost { segment_id } => write!(
+                formatter,
+                "active WAL segment {segment_id} vanished under a live writer; the log cannot be synced again"
+            ),
         }
     }
 }
@@ -467,14 +477,33 @@ impl std::error::Error for WalServiceError {
             | Self::UnexpectedAppendOffset { .. }
             | Self::UnexpectedAppendLength { .. }
             | Self::UnexpectedObjectSize { .. }
-            | Self::SegmentInventoryGap { .. } => None,
+            | Self::SegmentInventoryGap { .. }
+            | Self::ActiveObjectLost { .. } => None,
         }
     }
 }
 
 impl WalServiceError {
     pub(crate) const fn is_writer_halted_append_failure(&self) -> bool {
-        matches!(self, Self::RepairUncertain { .. })
+        matches!(
+            self,
+            Self::RepairUncertain { .. } | Self::ActiveObjectLost { .. }
+        )
+    }
+
+    /// #2766: a sync/flush that failed because the active object no longer
+    /// exists — the ticket path constructs a plain [`Self::Backend`] error
+    /// off-lock, so the redeeming caller uses this probe to latch the writer.
+    pub(crate) fn is_active_object_missing(&self) -> bool {
+        match self {
+            Self::ActiveObjectLost { .. } => true,
+            Self::Backend {
+                operation: WalOperation::Append | WalOperation::Sync | WalOperation::Flush,
+                source,
+                ..
+            } => source.kind() == BackendErrorKind::NotFound,
+            _ => false,
+        }
     }
 
     pub(crate) const fn is_durability_uncertain_append_failure(&self) -> bool {
@@ -500,7 +529,10 @@ impl WalServiceError {
     pub(crate) const fn is_durable_corruption(&self) -> bool {
         matches!(
             self,
-            Self::Format { .. } | Self::DatabaseMismatch { .. } | Self::SegmentInventoryGap { .. }
+            Self::Format { .. }
+                | Self::DatabaseMismatch { .. }
+                | Self::SegmentInventoryGap { .. }
+                | Self::ActiveObjectLost { .. }
         )
     }
 }
@@ -947,6 +979,9 @@ pub(crate) struct WalService<'a> {
     // as last read from / published to the durable watermark object. `None`
     // until acknowledged data reaches a seal point (rotation or close).
     durable_commit_watermark: Option<u64>,
+    // #2766: latched when a sync point observed the active object missing.
+    // A halted writer refuses every subsequent append until reopen.
+    active_object_lost: bool,
     repair_uncertain: bool,
     // Cached retention totals for sealed (non-active) segments. `None` means the
     // totals must be refreshed from a backend scan on the next read; the scan is
@@ -1045,6 +1080,7 @@ impl<'a> WalService<'a> {
             dirty_records: 0,
             active_metadata,
             durable_commit_watermark,
+            active_object_lost: false,
             repair_uncertain: false,
             sealed_retention: Cell::new(None),
             active_append: None,
@@ -1091,6 +1127,7 @@ impl<'a> WalService<'a> {
             dirty_records: 0,
             active_metadata: self.active_metadata.clone(),
             durable_commit_watermark: self.durable_commit_watermark,
+            active_object_lost: self.active_object_lost,
             repair_uncertain: self.repair_uncertain,
             // The background retention clone serves no growth-facts reads; it
             // refreshes lazily if ever asked. Its deletions invalidate the
@@ -1121,6 +1158,7 @@ impl<'a> WalService<'a> {
 
     pub(crate) fn append(&mut self, record: &WalRecord) -> WalServiceResult<WalAppend> {
         self.append_with_durability(record, WalAppendDurability::PolicyDriven)
+            .map_err(|error| self.observe_active_object_loss(error))
     }
 
     /// Append without the `Always` policy's inline fsync (BS5.1 write groups): the record
@@ -1134,6 +1172,7 @@ impl<'a> WalService<'a> {
         record: &WalRecord,
     ) -> WalServiceResult<WalAppend> {
         self.append_with_durability(record, WalAppendDurability::DeferredToGroup)
+            .map_err(|error| self.observe_active_object_loss(error))
     }
 
     fn append_with_durability(
@@ -1141,6 +1180,11 @@ impl<'a> WalService<'a> {
         record: &WalRecord,
         durability: WalAppendDurability,
     ) -> WalServiceResult<WalAppend> {
+        if self.active_object_lost {
+            return Err(WalServiceError::ActiveObjectLost {
+                segment_id: self.active_segment_id,
+            });
+        }
         if self.repair_uncertain {
             return Err(WalServiceError::RepairUncertain {
                 segment_id: self.active_segment_id,
@@ -1379,6 +1423,16 @@ impl<'a> WalService<'a> {
     /// failure the buffer is kept intact (the bytes belong to accepted
     /// commits) and the held descriptor is dropped so the retry re-validates
     /// the tail — a partial write then surfaces as `UnexpectedAppendOffset`.
+    /// #2766: `flush_pending` with active-object-loss observation, for
+    /// callers outside `force_durable`'s wrap (the group-sync capture).
+    fn flush_pending_observing_loss(
+        &mut self,
+        trigger: WalBufferFlushTrigger,
+    ) -> WalServiceResult<()> {
+        self.flush_pending(trigger)
+            .map_err(|error| self.observe_active_object_loss(error))
+    }
+
     fn flush_pending(&mut self, trigger: WalBufferFlushTrigger) -> WalServiceResult<()> {
         if self.pending.is_empty() {
             return Ok(());
@@ -1392,14 +1446,10 @@ impl<'a> WalService<'a> {
         let pending = std::mem::take(&mut self.pending);
         let append = match self.append_frame(&pending) {
             Ok(append) => append,
-            Err(WalServiceError::Backend { object, source, .. }) => {
+            Err(WalServiceError::Backend { source, .. }) => {
                 self.pending = pending;
                 self.active_append = None;
-                return Err(WalServiceError::Backend {
-                    operation: WalOperation::Flush,
-                    object,
-                    source,
-                });
+                return Err(self.classify_sync_failure(WalOperation::Flush, source));
             }
             Err(error) => {
                 self.pending = pending;
@@ -1450,20 +1500,63 @@ impl<'a> WalService<'a> {
         Ok(())
     }
 
+    /// #2766: classifies a failed sync-point backend error. `NotFound` means
+    /// the active object vanished under the live writer (we hold the writer
+    /// lock, so nothing legitimate removes it): latch the writer halted and
+    /// surface the permanent loss. Everything else stays a plain backend
+    /// failure (possibly transient).
+    fn classify_sync_failure(
+        &mut self,
+        operation: WalOperation,
+        source: BackendError,
+    ) -> WalServiceError {
+        if source.kind() == BackendErrorKind::NotFound {
+            self.active_object_lost = true;
+            return WalServiceError::ActiveObjectLost {
+                segment_id: self.active_segment_id,
+            };
+        }
+        WalServiceError::Backend {
+            operation,
+            object: self.active_object.clone(),
+            source,
+        }
+    }
+
+    /// #2766: canonicalizes any active-object-missing failure observed at a
+    /// write/sync boundary — latches the writer halted and rewrites the error
+    /// to [`WalServiceError::ActiveObjectLost`] so every consumer classifies
+    /// the loss as permanent. Non-loss errors pass through untouched.
+    fn observe_active_object_loss(&mut self, error: WalServiceError) -> WalServiceError {
+        if error.is_active_object_missing() {
+            self.active_object_lost = true;
+            return WalServiceError::ActiveObjectLost {
+                segment_id: self.active_segment_id,
+            };
+        }
+        error
+    }
+
+    /// #2766: latches the writer halted after an off-lock sync (the group
+    /// ticket path) observed the active object missing. Called by the group
+    /// finish path when it redeems such a failure under the runtime lock.
+    pub(crate) fn record_active_object_lost(&mut self) {
+        self.active_object_lost = true;
+    }
+
     pub(crate) fn force_durable(&mut self) -> WalServiceResult<()> {
         // Buffered frames must reach the backend before the barrier can cover
         // them; a flush failure here is durability-uncertain, same class as a
         // failed fsync.
-        self.flush_pending(WalBufferFlushTrigger::Durability)?;
+        self.flush_pending(WalBufferFlushTrigger::Durability)
+            .map_err(|error| self.observe_active_object_loss(error))?;
         let result = match self.active_append.as_mut() {
             Some(handle) => handle.sync(),
             None => self.backend.sync_object(&self.active_object),
         };
-        result.map_err(|source| WalServiceError::Backend {
-            operation: WalOperation::Sync,
-            object: self.active_object.clone(),
-            source,
-        })?;
+        if let Err(source) = result {
+            return Err(self.classify_sync_failure(WalOperation::Sync, source));
+        }
         self.dirty_bytes = 0;
         self.dirty_records = 0;
         // Everything appended so far is now durable.
@@ -1492,7 +1585,7 @@ impl<'a> WalService<'a> {
         // coalescing: an Always group's N member appends become one write. A
         // flush failure means the capture's appends cannot be covered; the
         // caller maps it to its sync-failure handling.
-        self.flush_pending(WalBufferFlushTrigger::Capture)?;
+        self.flush_pending_observing_loss(WalBufferFlushTrigger::Capture)?;
         Ok(WalGroupSyncTicket {
             backend: self.backend.clone(),
             object: self.active_object.clone(),
