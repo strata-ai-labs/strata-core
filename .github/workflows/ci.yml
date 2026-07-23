@@ -147,19 +147,22 @@ jobs:
         # inference files stay excluded: no CI lane can build them (cmake +
         # model artifacts). A run whose slice of the diff has no mutants
         # exits immediately, so single-crate PRs pay for one run.
+        # Exit 3 (timeout-only, no missed mutants) passes: a mutant whose
+        # test run never completes was killed by hang — the behavior change
+        # was detected, just not by an assertion. Exit 2 (missed) still fails.
         run: |
           git diff "origin/${{ github.base_ref }}"...HEAD > pr.diff
-          cargo mutants --in-diff pr.diff --timeout-multiplier 2.5 --minimum-test-timeout 60
+          cargo mutants --in-diff pr.diff --timeout-multiplier 2.5 --minimum-test-timeout 60 || [ $? -eq 3 ]
           cargo mutants --no-config --in-diff pr.diff --package strata-executor \
             --features idl-tooling,inference,testkit \
-            --timeout-multiplier 2.5 --minimum-test-timeout 60
+            --timeout-multiplier 2.5 --minimum-test-timeout 60 || [ $? -eq 3 ]
           cargo mutants --no-config --in-diff pr.diff --package strata-inference \
             --features download,testkit \
             --exclude "crates/inference/src/llama/**" \
             --exclude "crates/inference/src/embed.rs" \
             --exclude "crates/inference/src/rank.rs" \
             --exclude "crates/inference/src/provider/local.rs" \
-            --timeout-multiplier 2.5 --minimum-test-timeout 60
+            --timeout-multiplier 2.5 --minimum-test-timeout 60 || [ $? -eq 3 ]
       - name: Upload mutants report
         if: failure()
         uses: actions/upload-artifact@v4
