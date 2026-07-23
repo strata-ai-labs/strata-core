@@ -15,11 +15,14 @@
 //! self-report healthy — a fault must either leave the truth intact, or
 //! refuse/degrade loudly with a permanent, non-retryable classification.
 //!
-//! Seed (gate 7): #2690 is re-found by this lane — the sole-segment deletion
-//! and whole-directory variants both silently wipe while reporting healthy.
-//! Both are pinned shrink-only (`pin_2690_*`): the pins assert today's broken
-//! behavior exactly, so the watermark fix breaks them and forces their
-//! deletion. First-run catch: #2754 (missing current-manifest / snapshot
+//! Seed (gate 7): #2690 was re-found by this lane on day one — the
+//! sole-segment deletion and whole-directory variants silently wiped while
+//! reporting healthy, pinned shrink-only until #2765's fix landed: a
+//! checkpoint-attested manifest with zero WAL segments now refuses open as
+//! permanent corruption, and the former pins are permanent contracts below.
+//! (#2690 stays open for partial absence — one of several segments — which
+//! needs the version watermark.) First-run catch: #2754 (missing
+//! current-manifest / snapshot
 //! objects refuse open as retryable `unavailable` — permanent damage with
 //! retry-forever advice, the #2699 classification pattern on the absence
 //! axis), pinned the same way. Positive controls: an unfaulted copy and a
@@ -293,49 +296,26 @@ fn deleting_the_writer_lock_is_benign() {
 }
 
 // ---------------------------------------------------------------------------
-// The #2690 pins: absence of the WAL is invisible (shrink-only)
+// WAL absence on an attested store refuses loudly (#2765; was the #2690 pin)
 // ---------------------------------------------------------------------------
 
-/// Asserts today's #2690 behavior exactly: the database opens, every health
-/// surface reports green, and the entire ground truth is gone. This IS the
-/// health-vs-truth violation the oracle exists to forbid — pinned until the
-/// version-watermark fix lands, at which point this pin breaks (the open
-/// must refuse, or health must degrade) and must be deleted.
-fn assert_pinned_silent_wipe(root: &Path, label: &str) {
-    let mut executor = Executor::open_durable_local(root)
-        .unwrap_or_else(|error| panic!("#2690 pin ({label}): today the open succeeds: {error}"));
-    let truth = read_truth(&mut executor);
-    assert_eq!(truth.kv_count, 0, "#2690 pin ({label}): total kv wipe");
-    assert!(
-        !truth.first_key_intact && !truth.last_key_intact,
-        "#2690 pin ({label}): no key survives"
-    );
-    assert_eq!(truth.event_count, 0, "#2690 pin ({label}): event log wiped");
-    assert_eq!(
-        truth.branch_count, 1,
-        "#2690 pin ({label}): the side branch is gone too"
-    );
-    assert!(
-        health_is_all_green(&health(&mut executor)),
-        "#2690 pin ({label}): the wipe self-reports healthy — the violation this \
-         lane exists to catch. If health now degrades, the fix landed: delete this pin"
-    );
-}
-
+/// A checkpoint-attested database whose sole WAL segment is gone must refuse
+/// to open as permanent corruption — never reopen as a healthy empty store.
 #[test]
-fn pin_2690_deleting_the_sole_wal_segment_silently_wipes_while_healthy() {
+fn deleting_the_sole_wal_segment_refuses_open_as_permanent_corruption() {
     let mut stage = Stage::new();
     let copy = stage.copy();
     std::fs::remove_file(sole_wal_segment(&copy)).expect("delete wal segment");
-    assert_pinned_silent_wipe(&copy, "sole segment deleted");
+    assert_permanent_refusal(&copy, "sole wal segment deleted");
 }
 
+/// The whole-directory variant of the same absence refuses identically.
 #[test]
-fn pin_2690_missing_wal_directory_silently_wipes_while_healthy() {
+fn missing_wal_directory_refuses_open_as_permanent_corruption() {
     let mut stage = Stage::new();
     let copy = stage.copy();
     std::fs::remove_dir_all(copy.join("wal")).expect("remove wal dir");
-    assert_pinned_silent_wipe(&copy, "wal directory missing");
+    assert_permanent_refusal(&copy, "wal directory missing");
 }
 
 // ---------------------------------------------------------------------------

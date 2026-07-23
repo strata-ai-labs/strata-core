@@ -2058,6 +2058,15 @@ type WalSegmentObject = (u64, ObjectName);
 /// or the highest segment on disk, whichever is greater. An empty directory
 /// (fresh store) resumes at the seed; a seed above the directory max (external
 /// restore/tamper) is honored and created, matching fresh-store semantics.
+/// Reports whether any WAL segment object exists on disk. Recovery uses this
+/// to distinguish a fresh database from a gutted one: `open_or_create_segment`
+/// recreates a missing active segment, so without this check an existing
+/// database whose segments were all removed would silently reopen empty
+/// (#2765).
+pub(crate) fn wal_segments_present(backend: &dyn Backend) -> WalServiceResult<bool> {
+    Ok(!list_segments(backend)?.is_empty())
+}
+
 pub(crate) fn resolve_resume_segment(
     backend: &dyn Backend,
     requested: u64,

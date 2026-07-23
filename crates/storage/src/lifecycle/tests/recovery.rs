@@ -3327,6 +3327,20 @@ fn write_manifest(backend: &'static RecoveryTestBackend, manifest: &DatabaseMani
         ObjectLayout::database_manifest().expect("database root object"),
         encode_manifest(manifest).expect("database root bytes"),
     );
+    // A checkpoint-attested manifest implies a WAL exists (#2765: assembly
+    // refuses attested stores with no segments). Plant a header-only active
+    // segment when the fixture has not staged one; deliberate plants (before
+    // or after) are never clobbered.
+    if manifest.snapshot_watermark().is_some() {
+        let segment =
+            ObjectLayout::wal_segment(manifest.active_wal_segment()).expect("segment object");
+        if backend.object_metadata(&segment).is_err() {
+            backend.write_raw(
+                segment,
+                wal_segment_bytes(manifest.active_wal_segment(), &[]),
+            );
+        }
+    }
 }
 
 fn wal_segment_bytes(segment_id: u64, records: &[WalRecord]) -> Vec<u8> {
