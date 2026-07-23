@@ -609,8 +609,15 @@ mod tests {
         };
 
         let dir = tempfile::tempdir().expect("tmp");
-        // Publish #7 is the batched drain's flush manifest publish (the same destructive
-        // position the regression pins); `Once` makes it transient so a later flush heals it.
+        // Publish #8 is the batched drain's flush manifest publish (the same destructive
+        // position the regression pins, shifted by the one #2690 segment-loss watermark
+        // publish the initial segment creation now performs); `Once` makes it transient so
+        // a later flush heals it.
+        // The 7th publish is the flush's manifest publish (creation manifest,
+        // segment 1, checkpoint snapshot, checkpoint manifest, the #2690
+        // commit watermark at the post-checkpoint roll, segment 2, then the
+        // flush's manifest update). Verified by sweep: only this index makes
+        // the flush fault into recoverable debt so the checkpoint defers.
         let backend = StorageBackend::faulting_local_fs(
             dir.path().to_path_buf(),
             FaultScript::new([FaultRule::with_mode(

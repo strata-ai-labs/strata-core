@@ -51,6 +51,8 @@ pub enum DiagnosticsRecoveryFaultKind {
     QuarantineInventoryMismatch,
     TimelineMismatch,
     WalTailRepairFailed,
+    /// Committed WAL data attested by the durable watermark is unrecoverable.
+    WalCommittedSuffixMissing,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

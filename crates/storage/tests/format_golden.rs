@@ -25,6 +25,7 @@ fn format_golden_harness_has_storage_format_directory() {
         "quarantine-inventory-empty.hex",
         "quarantine-inventory-multi-entry.hex",
         "segment-metadata-sidecar.hex",
+        "wal-commit-watermark.hex",
         "snapshot-container-single-section.hex",
         "snapshot-header-identity.hex",
         "snapshot-section-empty.hex",

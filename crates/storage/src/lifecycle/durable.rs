@@ -24,10 +24,11 @@ use crate::format::DatabaseManifest;
 use crate::layout::{LayoutError, ObjectLayout};
 use crate::object::ObjectName;
 use crate::service::{
-    wal_segments_present, BranchCatalogManifestService, CheckpointService, DatabaseManifestService,
-    ManifestServiceError, PendingReleasesManifestService, QuarantineService, SnapshotService,
-    TableManifestService, TableObjectReaderService, TableObjectService,
-    WalSegmentMetadataSidecarService, WalService, WalServiceConfig, WalServiceError,
+    verify_wal_segment_inventory, wal_segments_present, BranchCatalogManifestService,
+    CheckpointService, DatabaseManifestService, ManifestServiceError,
+    PendingReleasesManifestService, QuarantineService, SnapshotService, TableManifestService,
+    TableObjectReaderService, TableObjectService, WalSegmentMetadataSidecarService, WalService,
+    WalServiceConfig, WalServiceError,
 };
 use std::fmt;
 use strata_core::{BranchId, CommitVersion};
@@ -350,6 +351,24 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
                 "database manifest attests a checkpoint but no WAL segment objects exist",
             ));
         }
+
+        // #2690: fail closed before recovery can silently resume onto a fresh
+        // empty log when a WAL segment was removed out of band. The durable
+        // watermark is authoritative and self-gating — absent for a fresh or
+        // crash-during-creation database, present only once acknowledged data
+        // existed.
+        //
+        // KNOWN GAP (surfaced by the fault-simulation sweep, seed 3): a
+        // checkpointed database keeps its committed data in the snapshot and so
+        // legitimately tolerates an absent WAL segment, but this unconditional
+        // check refuses on the absence alone. Gating on the manifest's
+        // checkpoint facts does not fix it, because a crash can drop the very
+        // manifest update that recorded the checkpoint (SplitRename), leaving the
+        // reopened manifest claiming no checkpoint. Resolving this needs a
+        // checkpoint-comparable marker (e.g. a durable highest-committed-version
+        // watermark, design §7 Q7) rather than a bare segment id — parked for
+        // deliberation.
+        verify_wal_segment_inventory(&backend).map_err(wal_open_error)?;
 
         let wal = WalService::open(
             backend.clone(),

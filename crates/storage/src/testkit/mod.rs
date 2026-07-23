@@ -76,6 +76,7 @@ mod service_fuzz;
 ))]
 mod simulation;
 mod table_runtime;
+mod wal_segment_loss;
 #[cfg(all(
     any(test, feature = "fault-injection"),
     feature = "localfs",

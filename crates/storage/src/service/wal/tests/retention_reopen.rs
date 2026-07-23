@@ -1172,3 +1172,105 @@ fn reopen_with_stale_seed_keeps_retention_boundary_at_the_true_tail() {
     assert_segment_missing(&backend, &three);
     assert_segment_present(&backend, &four);
 }
+
+#[test]
+fn segment_inventory_check_rejects_interior_gaps_only() {
+    use super::super::verify_wal_segment_inventory;
+
+    // Empty directory: nothing to verify at this layer. Whether emptiness is
+    // loss is judged by the durable commit watermark at recovery (and by the
+    // manifest attestation guard, #2765) — not by the id inventory.
+    let fresh = StoredWalBackend::new();
+    verify_wal_segment_inventory(&fresh).expect("an empty inventory has no interior gaps");
+
+    // A contiguous run is valid wherever it starts: retention trims a
+    // contiguous prefix, so a higher-based run is a legitimate shape.
+    let healthy = StoredWalBackend::new();
+    seed_segment(&healthy, 1, &[record(1, b"a".to_vec())]);
+    seed_segment(&healthy, 2, &[record(2, b"b".to_vec())]);
+    verify_wal_segment_inventory(&healthy).expect("contiguous inventory is valid");
+
+    let retained = StoredWalBackend::new();
+    seed_segment(&retained, 2, &[record(2, b"b".to_vec())]);
+    seed_segment(&retained, 3, &[record(3, b"c".to_vec())]);
+    verify_wal_segment_inventory(&retained)
+        .expect("a contiguous run above a retention floor is valid");
+
+    // An interior hole can never be produced by retention or rotation: a
+    // segment — and every committed record it held — was removed out of band.
+    let gapped = StoredWalBackend::new();
+    seed_segment(&gapped, 1, &[record(1, b"a".to_vec())]);
+    seed_segment(&gapped, 3, &[record(3, b"c".to_vec())]);
+    assert!(matches!(
+        verify_wal_segment_inventory(&gapped),
+        Err(WalServiceError::SegmentInventoryGap { missing_segment: 2 })
+    ));
+}
+
+#[test]
+fn commit_watermark_publishes_at_seal_points_and_is_monotonic() {
+    use crate::format::decode_wal_watermark;
+
+    let backend = StoredWalBackend::new();
+    let mut service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("open");
+    assert_eq!(service.durable_commit_watermark(), None);
+
+    // Appends alone never publish the watermark — only a seal point does,
+    // strictly after the sync that made the records durable.
+    service
+        .append(&record(1, b"one".to_vec()))
+        .expect("append one");
+    service
+        .append(&record(2, b"two".to_vec()))
+        .expect("append two");
+    let watermark_object = ObjectLayout::wal_watermark().expect("watermark object");
+    assert!(
+        backend.read_object(&watermark_object).is_err(),
+        "no watermark before the first seal point"
+    );
+
+    // Close seals the active segment durable and attests its highest commit.
+    service.close().expect("close");
+    let attested = decode_wal_watermark(
+        &backend
+            .read_object(&watermark_object)
+            .expect("watermark published at close"),
+    )
+    .expect("watermark decodes");
+    assert_eq!(attested, 2, "close attests the synced maximum");
+
+    // Reopen reads the marker back; an empty re-close never regresses it.
+    let mut reopened = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("reopen");
+    assert_eq!(reopened.durable_commit_watermark(), Some(2));
+    let publishes_before_reclose = backend.publish_count();
+    reopened.close().expect("idempotent close");
+    let attested = decode_wal_watermark(
+        &backend
+            .read_object(&watermark_object)
+            .expect("watermark still present"),
+    )
+    .expect("watermark decodes");
+    assert_eq!(
+        attested, 2,
+        "an empty close never moves the marker backward"
+    );
+    assert_eq!(
+        backend.publish_count(),
+        publishes_before_reclose,
+        "a marker at or above the sealed maximum must not republish"
+    );
+}

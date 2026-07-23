@@ -284,3 +284,54 @@ fn unattested_store_with_missing_wal_still_opens_fresh() {
         .into_runtime();
     drop(runtime);
 }
+
+/// #2690: after acknowledged commits and a clean close, the close-time durable
+/// commit watermark attests the log even when NO checkpoint exists — deleting
+/// every WAL segment must refuse, not reopen as fresh. (This is the store the
+/// #2765 manifest-attestation guard cannot see: its manifest never recorded a
+/// checkpoint, so the WAL was the sole durable record.)
+#[test]
+fn unattested_store_with_commits_refuses_open_when_wal_is_deleted() {
+    let root = temp_root("watermark-sole");
+    {
+        let mut runtime =
+            StorageRuntime::open_durable_local(&root, StorageDurabilityPolicy::Standard)
+                .expect("durable open")
+                .into_runtime();
+        let branch = default_branch();
+        let space = StorageSpaceId::new(vec![0x20]).expect("engine space");
+        for index in 0u32..4 {
+            let key = StorageKey::new(format!("acked-{index:04}").into_bytes()).expect("key");
+            let batch = CommitBatch::new(
+                branch,
+                vec![CommitMutation::Put {
+                    storage_space: space.clone(),
+                    key,
+                    value: StorageValue::new(vec![b'v'; 32]),
+                    ttl: None,
+                }],
+                CommitOptions::default(),
+            )
+            .expect("commit batch");
+            runtime.commit(&batch).expect("durable commit");
+        }
+        runtime
+            .close()
+            .expect("clean close publishes the commit watermark");
+    }
+    delete_all_wal_segments(&root);
+
+    let error = StorageRuntime::open_durable_local(&root, StorageDurabilityPolicy::Standard)
+        .expect_err("the commit watermark attests data the log can no longer provide");
+    assert_eq!(
+        error.class(),
+        StorageApiErrorClass::FailedPrecondition,
+        "watermark-attested loss is permanent corruption; got code {}",
+        error.code()
+    );
+    assert_eq!(
+        error.code(),
+        "failed_precondition.storage_api.recovery_degraded",
+        "watermark-attested loss surfaces the recovery-degraded code"
+    );
+}

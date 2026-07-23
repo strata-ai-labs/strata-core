@@ -175,6 +175,7 @@ quarantine/<branch-id>/manifest
 locks/writer
 
 meta/database
+meta/wal-watermark
 ```
 
 Object names MUST be database-relative. They MUST NOT contain absolute paths,

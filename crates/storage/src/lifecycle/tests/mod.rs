@@ -495,8 +495,9 @@ fn recovery_health_requires_degraded_faults() {
         RecoveryFaultKind::QuarantineInventoryMismatch,
         RecoveryFaultKind::TimelineMismatch,
         RecoveryFaultKind::WalTailRepairFailed,
+        RecoveryFaultKind::WalCommittedSuffixMissing,
     ];
-    assert_eq!(fault_kinds.len(), 12);
+    assert_eq!(fault_kinds.len(), 13);
 
     let fault =
         RecoveryFault::new(RecoveryFaultKind::CorruptWal, "crc mismatch").expect("recovery fault");

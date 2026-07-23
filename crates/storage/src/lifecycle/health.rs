@@ -53,6 +53,10 @@ pub(crate) enum RecoveryFaultKind {
     QuarantineInventoryMismatch,
     TimelineMismatch,
     WalTailRepairFailed,
+    /// #2690: the durable commit watermark attests sealed-durable commits that
+    /// no recovery source (checkpoint, table manifest, surviving WAL records)
+    /// can reproduce — WAL segments holding committed data were removed.
+    WalCommittedSuffixMissing,
 }
 
 impl RecoveryHealth {

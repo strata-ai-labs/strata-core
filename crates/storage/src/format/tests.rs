@@ -90,6 +90,8 @@ const SNAPSHOT_SECTION_EMPTY: &str =
     include_str!("../../testdata/goldens/storage-format-v1/snapshot-section-empty.hex");
 const SNAPSHOT_CONTAINER_SINGLE_SECTION: &str =
     include_str!("../../testdata/goldens/storage-format-v1/snapshot-container-single-section.hex");
+const WAL_COMMIT_WATERMARK: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/wal-commit-watermark.hex");
 const SEGMENT_METADATA_SIDECAR: &str =
     include_str!("../../testdata/goldens/storage-format-v1/segment-metadata-sidecar.hex");
 const WAL_SEGMENT_HEADER: &str =
@@ -411,6 +413,17 @@ fn snapshot_watermark_empty_matches_golden_vector() {
         decode_snapshot_watermark(&golden),
         Ok(SnapshotWatermark::Empty)
     );
+}
+
+#[test]
+fn wal_commit_watermark_matches_golden_vector() {
+    let golden = parse_hex(WAL_COMMIT_WATERMARK);
+
+    assert_eq!(
+        super::encode_wal_watermark(42).expect("encode watermark"),
+        golden
+    );
+    assert_eq!(super::decode_wal_watermark(&golden), Ok(42));
 }
 
 #[test]
