@@ -137,6 +137,11 @@ fn durable_assembly_loads_existing_manifest_and_preserves_recovery_facts() {
         ObjectLayout::database_manifest().expect("manifest object"),
         encode_manifest(&manifest).expect("manifest bytes"),
     );
+    // #2765: the attested manifest requires its active segment on disk.
+    backend.write_raw(
+        ObjectLayout::wal_segment(7).expect("segment object"),
+        encode_wal_segment_header(&WalSegmentHeader::new(7, DATABASE_ID)),
+    );
 
     let shell = assemble_shell(StorageMode::DurableLocalAlways, branch_id(0x11), backend)
         .expect("durable shell");
@@ -412,6 +417,11 @@ fn durable_manifest_create_precondition_race_reloads_existing_manifest() {
         .expect("recovery facts");
     let backend: &'static DurableTestBackend =
         crate::testkit::leak_static(DurableTestBackend::with_create_race(race_manifest));
+    // #2765: the raced-in attested manifest requires its active segment on disk.
+    backend.write_raw(
+        ObjectLayout::wal_segment(9).expect("segment object"),
+        encode_wal_segment_header(&WalSegmentHeader::new(9, DATABASE_ID)),
+    );
 
     let shell = assemble_shell(StorageMode::DurableLocalStandard, branch_id(0x18), backend)
         .expect("durable shell");
@@ -427,12 +437,15 @@ fn durable_manifest_create_precondition_race_reloads_existing_manifest() {
     );
 
     let operations = backend.operations();
+    // Three object reads: the raced manifest reload, the recovery snapshot
+    // probe, and the planted active WAL segment (#2765: the attested store's
+    // segment now exists, so `WalService::open` reads it instead of creating).
     assert_eq!(
         operations
             .iter()
             .filter(|operation| matches!(operation, Operation::ReadObject(_)))
             .count(),
-        2
+        3
     );
     assert!(operations
         .iter()

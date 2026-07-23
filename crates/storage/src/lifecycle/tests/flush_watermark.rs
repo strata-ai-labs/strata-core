@@ -9,10 +9,10 @@ use crate::commit::{
     CommitTimelineRows,
 };
 use crate::format::{
-    encode_manifest, table_row_split_extension_section, DatabaseManifest, TableManifest,
-    TableManifestLevel, TableManifestTableBounds, TableManifestTableFacts,
-    TableManifestTableProvenance, TableManifestTableRef, TableRowSplit, WalCommitPayload,
-    WalRecord,
+    encode_manifest, encode_wal_segment_header, table_row_split_extension_section,
+    DatabaseManifest, TableManifest, TableManifestLevel, TableManifestTableBounds,
+    TableManifestTableFacts, TableManifestTableProvenance, TableManifestTableRef, TableRowSplit,
+    WalCommitPayload, WalRecord, WalSegmentHeader,
 };
 use crate::layout::ObjectLayout;
 use crate::lifecycle::encode_checkpoint_row_section;
@@ -863,6 +863,17 @@ fn seed_database_manifest(
             &bytes,
         )
         .expect("write database manifest");
+    // #2765: an attested manifest requires a WAL segment on disk; plant a
+    // header-only active segment when the fixture has not staged one.
+    if manifest.snapshot_watermark().is_some() {
+        let segment = ObjectLayout::wal_segment(1).expect("segment object");
+        if backend.object_metadata(&segment).is_err() {
+            let header = encode_wal_segment_header(&WalSegmentHeader::new(1, DATABASE_ID));
+            backend
+                .write_object(&segment, &header)
+                .expect("write empty wal segment");
+        }
+    }
 }
 
 fn seed_checkpoint_snapshot(

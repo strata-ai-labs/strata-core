@@ -24,10 +24,10 @@ use crate::format::DatabaseManifest;
 use crate::layout::{LayoutError, ObjectLayout};
 use crate::object::ObjectName;
 use crate::service::{
-    BranchCatalogManifestService, CheckpointService, DatabaseManifestService, ManifestServiceError,
-    PendingReleasesManifestService, QuarantineService, SnapshotService, TableManifestService,
-    TableObjectReaderService, TableObjectService, WalSegmentMetadataSidecarService, WalService,
-    WalServiceConfig, WalServiceError,
+    wal_segments_present, BranchCatalogManifestService, CheckpointService, DatabaseManifestService,
+    ManifestServiceError, PendingReleasesManifestService, QuarantineService, SnapshotService,
+    TableManifestService, TableObjectReaderService, TableObjectService,
+    WalSegmentMetadataSidecarService, WalService, WalServiceConfig, WalServiceError,
 };
 use std::fmt;
 use strata_core::{BranchId, CommitVersion};
@@ -333,6 +333,23 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
         let manifest_service = DatabaseManifestService::new(backend.clone());
         let (manifest, disposition) = load_or_create_manifest(&manifest_service, &request)?;
         validate_manifest_identity(&manifest, &request)?;
+
+        // #2765: a manifest that attests a published checkpoint proves durable
+        // history existed, so the WAL chain through that watermark must be on
+        // disk. With zero segment objects, `WalService::open` would recreate a
+        // fresh empty log and recovery would present a gutted store as a
+        // healthy empty database — refuse instead. A manifest with no
+        // checkpoint attestation (a first creation torn before its log or
+        // creation checkpoint landed) is still allowed to recreate: nothing
+        // acknowledged can exist yet.
+        if disposition == StorageOpenDisposition::OpenedExisting
+            && manifest.snapshot_watermark().is_some()
+            && !wal_segments_present(backend.as_backend()).map_err(wal_open_error)?
+        {
+            return Err(LifecycleError::recovery_corruption(
+                "database manifest attests a checkpoint but no WAL segment objects exist",
+            ));
+        }
 
         let wal = WalService::open(
             backend.clone(),

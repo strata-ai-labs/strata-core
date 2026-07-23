@@ -69,8 +69,8 @@ pub(crate) use table::{
     )
 )]
 pub(crate) use wal::{
-    WalAppend, WalDeleteReport, WalGroupSyncTicket, WalGrowthFacts, WalRepair, WalRetentionProof,
-    WalRetentionProofSource, WalSegmentDeleteFailure, WalSegmentDeleteOutcome, WalService,
-    WalServiceConfig, WalServiceError, WalSidecarDeleteOutcome, WalTruncation,
-    DEFAULT_WAL_APPEND_BUFFER_BYTES,
+    wal_segments_present, WalAppend, WalDeleteReport, WalGroupSyncTicket, WalGrowthFacts,
+    WalRepair, WalRetentionProof, WalRetentionProofSource, WalSegmentDeleteFailure,
+    WalSegmentDeleteOutcome, WalService, WalServiceConfig, WalServiceError,
+    WalSidecarDeleteOutcome, WalTruncation, DEFAULT_WAL_APPEND_BUFFER_BYTES,
 };
