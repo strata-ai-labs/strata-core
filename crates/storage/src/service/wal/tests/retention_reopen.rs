@@ -1256,6 +1256,7 @@ fn commit_watermark_publishes_at_seal_points_and_is_monotonic() {
     )
     .expect("reopen");
     assert_eq!(reopened.durable_commit_watermark(), Some(2));
+    let publishes_before_reclose = backend.publish_count();
     reopened.close().expect("idempotent close");
     let attested = decode_wal_watermark(
         &backend
@@ -1266,5 +1267,10 @@ fn commit_watermark_publishes_at_seal_points_and_is_monotonic() {
     assert_eq!(
         attested, 2,
         "an empty close never moves the marker backward"
+    );
+    assert_eq!(
+        backend.publish_count(),
+        publishes_before_reclose,
+        "a marker at or above the sealed maximum must not republish"
     );
 }

@@ -598,3 +598,30 @@ mod fault_windows;
 mod localfs;
 mod read;
 mod retention_reopen;
+
+#[test]
+fn wal_service_error_rendering_and_sources_survive() {
+    // Reachability for diagnostics: a stubbed Display or a dropped source
+    // chain would blind the consumers that render or chain-walk these errors
+    // (the API lifecycle mapping downcasts sources to classify permanence).
+    let gap = WalServiceError::SegmentInventoryGap { missing_segment: 2 };
+    assert!(gap.to_string().contains('2'), "gap diagnosis lost: {gap}");
+    assert!(std::error::Error::source(&gap).is_none());
+
+    let backend_error = WalServiceError::Backend {
+        operation: super::WalOperation::Sync,
+        object: ObjectLayout::wal_segment(1).expect("segment object"),
+        source: crate::backend::BackendError::new(
+            crate::backend::BackendErrorKind::Unavailable,
+            "probe",
+        ),
+    };
+    assert!(
+        !backend_error.to_string().is_empty(),
+        "backend diagnosis lost"
+    );
+    assert!(
+        std::error::Error::source(&backend_error).is_some(),
+        "backend failures must retain their source for chain-walking consumers"
+    );
+}

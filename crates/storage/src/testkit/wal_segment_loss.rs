@@ -131,6 +131,44 @@ mod tests {
         );
     }
 
+    /// Lossy recovery (`with_strict_recovery(false)`) records the loss as a
+    /// degradation instead of refusing: the operator explicitly chose
+    /// salvage-what-remains, and the health surface must say what was lost.
+    #[test]
+    fn lossy_recovery_degrades_instead_of_refusing_on_watermark_loss() {
+        let root = temp_root("lossy");
+        {
+            let mut runtime = StorageRuntime::open_durable_local_with_options(&root, options())
+                .expect("durable open")
+                .into_runtime();
+            for index in 0u32..4 {
+                put(&mut runtime, index);
+            }
+            checkpoint(&mut runtime);
+            for index in 4u32..8 {
+                put(&mut runtime, index);
+            }
+            runtime
+                .close()
+                .expect("clean close publishes the commit watermark");
+        }
+
+        let segments = wal_segment_paths(&root);
+        assert!(segments.len() >= 2, "the stage must have rolled the log");
+        std::fs::remove_file(segments.last().expect("tail segment")).expect("delete tail segment");
+
+        let outcome = StorageRuntime::open_durable_local_with_options(
+            &root,
+            options().with_strict_recovery(false),
+        )
+        .expect("lossy recovery salvages the surviving prefix");
+        assert_eq!(
+            outcome.summary().recovery_health(),
+            crate::api::RecoveryHealthSummary::Degraded,
+            "the salvage must be reported as degraded, never healthy"
+        );
+    }
+
     /// The falsifier inverse: a segment whose data the checkpoint fully
     /// covers may legitimately vanish (retention would have trimmed it) —
     /// reopen succeeds with every row intact. This exact state

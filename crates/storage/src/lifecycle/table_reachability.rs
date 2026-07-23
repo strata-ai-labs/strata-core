@@ -755,3 +755,37 @@ pub(crate) fn table_object_retention_health_debt(
         | LifecycleRetentionStatus::DeferredUnsupportedScope => Ok(None),
     }
 }
+
+#[cfg(test)]
+mod fault_tag_tests {
+    use super::recovery_fault_kind_tag;
+    use crate::lifecycle::RecoveryFaultKind;
+
+    /// Reachability hashes fold fault kinds by tag: every kind must map to a
+    /// distinct, nonzero tag or two different faults hash identically.
+    #[test]
+    fn recovery_fault_kind_tags_are_distinct_and_nonzero() {
+        let kinds = [
+            RecoveryFaultKind::CorruptManifest,
+            RecoveryFaultKind::CorruptSnapshot,
+            RecoveryFaultKind::CorruptWal,
+            RecoveryFaultKind::MissingManifestObject,
+            RecoveryFaultKind::MissingSnapshotObject,
+            RecoveryFaultKind::MissingTableObject,
+            RecoveryFaultKind::MissingTableManifestBase,
+            RecoveryFaultKind::InheritedLayerLoss,
+            RecoveryFaultKind::NoManifestFallback,
+            RecoveryFaultKind::IoFailure,
+            RecoveryFaultKind::QuarantineInventoryMismatch,
+            RecoveryFaultKind::TimelineMismatch,
+            RecoveryFaultKind::WalTailRepairFailed,
+            RecoveryFaultKind::WalCommittedSuffixMissing,
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for kind in kinds {
+            let tag = recovery_fault_kind_tag(kind);
+            assert_ne!(tag, 0, "{kind:?} must have a nonzero tag");
+            assert!(seen.insert(tag), "{kind:?} tag {tag:#04x} collides");
+        }
+    }
+}
