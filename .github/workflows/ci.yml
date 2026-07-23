@@ -60,6 +60,7 @@ jobs:
         run: |
           cargo test --locked -p strata-storage --test format_golden
           cargo test --locked -p strata-engine --test capability_conformance
+          cargo test --locked -p strata-executor --features testkit --test error_contract
       - name: Executor IDL drift gates
         run: |
           cargo run --locked -p strata-executor --features idl-tooling,inference,testkit --bin strata-idl -- check
