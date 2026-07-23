@@ -187,6 +187,22 @@ mod tests {
             runtime.close().expect("clean close");
         }
 
+        // A decoy that only a broken name filter would classify as a segment:
+        // 16 characters but not hex (kills the &&/|| filter mutation). It is
+        // removed again before reopen — the production listing is stricter
+        // still and refuses unparseable names under wal/ outright.
+        let decoy = root.join("wal").join("zzzzzzzzzzzzzzzz.object@");
+        std::fs::write(&decoy, b"junk").expect("write decoy");
+        let filtered = wal_segment_paths(&root);
+        assert!(
+            filtered.iter().all(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| !name.starts_with('z'))
+            }),
+            "the decoy must never be classified as a WAL segment"
+        );
+        std::fs::remove_file(&decoy).expect("remove decoy");
         let segments = wal_segment_paths(&root);
         assert!(
             segments.len() >= 2,
