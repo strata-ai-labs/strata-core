@@ -32,7 +32,8 @@ pub use error_registry::{public_error_code_entries, public_error_code_entry};
 pub use executor::Executor;
 pub use output::{Output, RemoteOriginFrontierInfo, RemoteOriginInfo};
 pub use strata_engine::{
-    CommitOutcomeStatus, ErrorClass, ErrorCodeRegistryEntry, ErrorDetail, RetryPolicy,
+    CommitOutcomeStatus, DurabilityMode, DurableLocalOpenOptions, ErrorClass,
+    ErrorCodeRegistryEntry, ErrorDetail, RetryPolicy,
 };
 #[cfg(feature = "inference")]
 pub use strata_inference::{
@@ -64,8 +65,8 @@ pub use types::{
     BatchExistsPresence, BatchGetItemResult, BatchItem, BatchItemResult, BatchItemStatus,
     BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry, BatchMode, BatchResult,
     BatchStatus, BatchVectorEntry, BranchCleanupItem, BranchItem, BranchParentItem, BranchStatus,
-    Bytes, CommitReceipt, EventBatchAppendItemResult, EventChainVerification, EventData,
-    EventRangeDirection, EventVersionedData, GraphAnalyticsBudget, GraphBatchItemResult,
+    Bytes, CommitDurability, CommitReceipt, EventBatchAppendItemResult, EventChainVerification,
+    EventData, EventRangeDirection, EventVersionedData, GraphAnalyticsBudget, GraphBatchItemResult,
     GraphBatchOperation, GraphBfsData, GraphBfsEdgeData, GraphBindingHit, GraphBindingPrimitive,
     GraphBindingTarget, GraphBulkEdge, GraphBulkNode, GraphCdlpData, GraphDeletePolicy,
     GraphDirection, GraphEdgeData, GraphEdgeDataOutput, GraphEntityBinding, GraphInfoData,

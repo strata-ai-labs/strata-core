@@ -849,6 +849,8 @@ impl GraphBatchWriteOutcome {
 mod tests {
     use strata_core::{CommitVersion, Timestamp};
 
+    use crate::commit::CommitDurability;
+
     use super::{
         CommitOutcome, GraphBatchOpOutcome, GraphBatchWriteOutcome, GraphBinding, GraphBindingPage,
         GraphDeleteOutcome, GraphDirection, GraphEdge, GraphEdgeData, GraphEdgeType,
@@ -862,7 +864,7 @@ mod tests {
             Timestamp::from_micros(11),
             2,
             1,
-            true,
+            CommitDurability::Standard,
         )
     }
 

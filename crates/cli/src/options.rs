@@ -18,6 +18,11 @@ pub(crate) struct Cli {
     /// Use an in-memory cache database for this process.
     #[arg(long)]
     pub(crate) cache: bool,
+    /// Commit durability for a durable database: `standard` (default)
+    /// acknowledges from a buffered WAL and syncs at close/threshold;
+    /// `always` syncs every commit before acknowledging it.
+    #[arg(long, value_enum, value_name = "MODE", conflicts_with = "cache")]
+    pub(crate) durability: Option<DurabilityArg>,
     /// Default branch for commands that accept a branch.
     #[arg(long, global = true)]
     pub(crate) branch: Option<String>,
@@ -36,6 +41,24 @@ pub(crate) struct Cli {
     /// Command to run.
     #[command(subcommand)]
     pub(crate) command: Option<TopCommand>,
+}
+
+/// Commit durability mode flag values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum DurabilityArg {
+    /// Buffered WAL; commits become durable at the next sync point.
+    Standard,
+    /// Every commit is synced before acknowledgement.
+    Always,
+}
+
+impl DurabilityArg {
+    pub(crate) const fn mode(self) -> strata_executor::DurabilityMode {
+        match self {
+            Self::Standard => strata_executor::DurabilityMode::Standard,
+            Self::Always => strata_executor::DurabilityMode::Always,
+        }
+    }
 }
 
 /// Output format.

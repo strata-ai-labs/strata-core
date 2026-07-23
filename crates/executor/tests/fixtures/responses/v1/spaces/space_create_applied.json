@@ -11,7 +11,7 @@
     "commit": {
       "version": 2,
       "timestamp": 20,
-      "durable": true,
+      "durability": "standard",
       "put_count": 1,
       "delete_count": 0
     }

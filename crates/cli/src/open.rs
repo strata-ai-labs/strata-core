@@ -36,6 +36,7 @@ pub(crate) fn open_executor(
     cache: bool,
     db_flag: Option<PathBuf>,
     db_path: Option<PathBuf>,
+    durability: Option<strata_executor::DurabilityMode>,
     intent: OpenIntent,
 ) -> Result<OpenedExecutor, CliError> {
     if cache {
@@ -61,10 +62,20 @@ pub(crate) fn open_executor(
     };
 
     if let Some(path) = path {
+        let mut options = strata_executor::DurableLocalOpenOptions::new();
+        if let Some(mode) = durability {
+            options = options.with_durability(mode);
+        }
         return Ok(OpenedExecutor {
-            executor: Executor::open_durable_local(path)?,
+            executor: Executor::open_durable_local_with_options(path, options)?,
             implicit_cache: false,
         });
+    }
+
+    if durability.is_some() {
+        return Err(CliError::usage(
+            "`--durability` requires a durable database (a path or STRATA_DB)",
+        ));
     }
 
     match intent {

@@ -167,7 +167,7 @@ impl Database {
         let data_block_bytes = options.data_block_bytes();
         let cache_preheat = options.cache_preheat();
         Self::open(
-            PersistenceOpenTarget::DurableLocal(path.into()),
+            PersistenceOpenTarget::DurableLocal(path.into(), options.durability()),
             DatabaseOpenTarget::DurableLocal,
             options.into_default_branch(),
             memory_budget_bytes,
@@ -579,7 +579,7 @@ impl Database {
 fn vector_artifact_store_for_target(target: &PersistenceOpenTarget) -> VectorArtifactStore {
     match target {
         PersistenceOpenTarget::Cache => VectorArtifactStore::memory(),
-        PersistenceOpenTarget::DurableLocal(path) => {
+        PersistenceOpenTarget::DurableLocal(path, _) => {
             VectorArtifactStore::durable_local(path.join("engine-artifacts").join("vector"))
         }
     }

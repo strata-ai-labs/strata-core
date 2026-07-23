@@ -709,7 +709,8 @@ fn human_error_line(value: &Value) -> String {
 mod tests {
     use serde_json::json;
     use strata_executor::{
-        Bytes, CommitReceipt, Maybe, MutationEffect, Output, PageInfo, ScanItem, VersionedValue,
+        Bytes, CommitDurability, CommitReceipt, Maybe, MutationEffect, Output, PageInfo, ScanItem,
+        VersionedValue,
     };
 
     use super::humanize_kv_bytes;
@@ -842,7 +843,7 @@ mod tests {
         let output = Output::WriteResult {
             key: bytes("user"),
             effect: MutationEffect::created(),
-            commit: CommitReceipt::new(1, 10, true, 1, 0),
+            commit: CommitReceipt::new(1, 10, CommitDurability::Standard, 1, 0),
         };
         let mut value = serde_json::to_value(&output).expect("output serializes");
         humanize_kv_bytes(&output, &mut value);

@@ -408,7 +408,7 @@ mod tests {
         JsonHistory, JsonHistoryRow, JsonListPage, JsonSample, JsonSampleRow, JsonVersionedValue,
         JsonWriteOutcome,
     };
-    use crate::commit::CommitOutcome;
+    use crate::commit::{CommitDurability, CommitOutcome};
     use crate::data::json::{JsonDocumentId, JsonValue};
 
     #[test]
@@ -546,7 +546,7 @@ mod tests {
             Timestamp::from_micros(version * 10),
             1,
             0,
-            true,
+            CommitDurability::Standard,
         )
     }
 

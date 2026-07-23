@@ -8,13 +8,14 @@ pub(super) use strata_executor::{
     BatchExistsPresence, BatchGetItemResult, BatchItem, BatchItemResult, BatchItemStatus,
     BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry, BatchMode, BatchResult,
     BatchStatus, BatchVectorEntry, BranchCleanupItem, BranchItem, BranchParentItem, BranchStatus,
-    Bytes, Command, CommitReceipt, ErrorStatus, EventBatchAppendItemResult, EventChainVerification,
-    EventData, EventRangeDirection, EventVersionedData, GraphAnalyticsBudget, GraphBatchItemResult,
-    GraphBatchOperation, GraphBfsData, GraphBfsEdgeData, GraphBindingHit, GraphBindingPrimitive,
-    GraphBindingTarget, GraphBulkEdge, GraphBulkNode, GraphCdlpData, GraphDeletePolicy,
-    GraphDirection, GraphEdgeData, GraphEdgeDataOutput, GraphEntityBinding, GraphInfoData,
-    GraphLccData, GraphLinkTypeDefData, GraphLinkTypeSummaryData, GraphNeighborHit, GraphNodeData,
-    GraphNodeDataOutput, GraphObjectTypeDefData, GraphObjectTypeSummaryData, GraphOntologyData,
+    Bytes, Command, CommitDurability, CommitReceipt, ErrorStatus, EventBatchAppendItemResult,
+    EventChainVerification, EventData, EventRangeDirection, EventVersionedData,
+    GraphAnalyticsBudget, GraphBatchItemResult, GraphBatchOperation, GraphBfsData,
+    GraphBfsEdgeData, GraphBindingHit, GraphBindingPrimitive, GraphBindingTarget, GraphBulkEdge,
+    GraphBulkNode, GraphCdlpData, GraphDeletePolicy, GraphDirection, GraphEdgeData,
+    GraphEdgeDataOutput, GraphEntityBinding, GraphInfoData, GraphLccData, GraphLinkTypeDefData,
+    GraphLinkTypeSummaryData, GraphNeighborHit, GraphNodeData, GraphNodeDataOutput,
+    GraphObjectTypeDefData, GraphObjectTypeSummaryData, GraphOntologyData,
     GraphOntologySummaryData, GraphPagerankData, GraphPropertyDef, GraphSsspData, GraphWccData,
     HistoryItem, HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
     JsonIndexDefinition, JsonIndexType, JsonSampleItem, JsonVersionedValue, Maybe, MaybeJsonValue,
@@ -194,7 +195,13 @@ pub(super) fn commit_receipt(
     put_count: u64,
     delete_count: u64,
 ) -> CommitReceipt {
-    CommitReceipt::new(version, timestamp, true, put_count, delete_count)
+    CommitReceipt::new(
+        version,
+        timestamp,
+        CommitDurability::Standard,
+        put_count,
+        delete_count,
+    )
 }
 
 pub(super) fn unchanged_effect() -> MutationEffect {

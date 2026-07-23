@@ -601,13 +601,36 @@ fn shared_batch_commit<T>(items: &[BatchItem<T>]) -> Option<CommitReceipt> {
     shared
 }
 
+/// Per-commit durability, as storage attested it at acknowledgement time.
+///
+/// `standard` is an admission fact, not a survival guarantee: the commit
+/// becomes durable at the next sync point (close, threshold, rotation) and
+/// can be lost to process kill until then. Only `always` attests the commit
+/// was synced before acknowledgement. `uncertain` means storage could not
+/// attest either way (#2756: the former `durable` boolean reported
+/// `standard` commits as durable, so SDK callers treated unsynced
+/// acknowledgements as crash-safe).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum CommitDurability {
+    /// Volatile commit (cache mode): gone when the process exits.
+    NotDurable,
+    /// Durable after the next sync point; lost with the process until then.
+    Standard,
+    /// Synced to durable storage before acknowledgement.
+    Always,
+    /// Storage could not attest this commit's durability.
+    Uncertain,
+}
+
 /// Commit facts returned by mutating operations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct CommitReceipt {
     version: u64,
     timestamp: u64,
-    durable: bool,
+    durability: CommitDurability,
     put_count: u64,
     delete_count: u64,
 }
@@ -617,14 +640,14 @@ impl CommitReceipt {
     pub const fn new(
         version: u64,
         timestamp: u64,
-        durable: bool,
+        durability: CommitDurability,
         put_count: u64,
         delete_count: u64,
     ) -> Self {
         Self {
             version,
             timestamp,
-            durable,
+            durability,
             put_count,
             delete_count,
         }
@@ -640,9 +663,9 @@ impl CommitReceipt {
         self.timestamp
     }
 
-    /// Returns true when the commit reached durable storage.
-    pub const fn durable(&self) -> bool {
-        self.durable
+    /// Returns the durability storage attested for this commit.
+    pub const fn durability(&self) -> CommitDurability {
+        self.durability
     }
 
     /// Returns the number of put rows in the commit.

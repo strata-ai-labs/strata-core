@@ -2,7 +2,7 @@
   "data": {
     "commit": {
       "delete_count": 0,
-      "durable": false,
+      "durability": "not_durable",
       "put_count": 2,
       "timestamp": 5,
       "version": 5

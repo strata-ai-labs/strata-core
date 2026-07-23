@@ -1,7 +1,7 @@
 {
   "version": 7,
   "timestamp": 70,
-  "durable": true,
+  "durability": "standard",
   "put_count": 1,
   "delete_count": 0
 }

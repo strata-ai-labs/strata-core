@@ -342,7 +342,7 @@ mod tests {
         KvBatchPutOutcome, KvHistory, KvHistoryRow, KvListPage, KvSample, KvScanRow,
         KvVersionedValue, KvWriteOutcome,
     };
-    use crate::commit::CommitOutcome;
+    use crate::commit::{CommitDurability, CommitOutcome};
     use crate::data::kv::{KvKey, KvValue};
 
     #[test]
@@ -352,7 +352,7 @@ mod tests {
             Timestamp::from_micros(110),
             2,
             0,
-            true,
+            CommitDurability::Standard,
         );
 
         let created = KvWriteOutcome::new(commit, true);

@@ -1,13 +1,13 @@
 use super::{
     output_json_index_type, BatchExistsItemResult, BatchGetItemResult, BatchItem, BatchItemResult,
     BranchCleanupItem, BranchCleanupSummary, BranchItem, BranchParentItem, BranchStatus,
-    BranchSummary, Bytes, CommitOutcome, CommitReceipt, CommitVersion, EngineBranchStatus,
-    EngineJsonIndexDefinition, EngineJsonSample, EngineJsonValue, EngineJsonVersionedValue,
-    ExecutorError, HistoryItem, HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult,
-    JsonHistory, JsonHistoryItem, JsonHistoryRow, JsonIndexDefinition, JsonListPage,
-    JsonSampleItem, JsonSampleRow, KvHistory, KvHistoryRow, KvKey, KvSample, KvScanRow,
-    KvVersionedValue, MutationEffect, MutationEffectKind, Output, OutputJsonVersionedValue,
-    PageInfo, SampleItem, ScanItem, Timestamp, VersionedValue,
+    BranchSummary, Bytes, CommitDurability, CommitOutcome, CommitReceipt, CommitVersion,
+    EngineBranchStatus, EngineJsonIndexDefinition, EngineJsonSample, EngineJsonValue,
+    EngineJsonVersionedValue, ExecutorError, HistoryItem, HistoryResult, JsonBatchGetItemResult,
+    JsonBatchItemResult, JsonHistory, JsonHistoryItem, JsonHistoryRow, JsonIndexDefinition,
+    JsonListPage, JsonSampleItem, JsonSampleRow, KvHistory, KvHistoryRow, KvKey, KvSample,
+    KvScanRow, KvVersionedValue, MutationEffect, MutationEffectKind, Output,
+    OutputJsonVersionedValue, PageInfo, SampleItem, ScanItem, Timestamp, VersionedValue,
 };
 
 pub(super) fn bytes_from_key(key: &KvKey) -> Bytes {
@@ -61,10 +61,19 @@ pub(super) fn commit_receipt(outcome: CommitOutcome) -> CommitReceipt {
     CommitReceipt::new(
         outcome.version().as_u64(),
         outcome.timestamp().as_micros(),
-        outcome.durable(),
+        commit_durability(outcome.durability()),
         usize_to_u64(outcome.put_count()),
         usize_to_u64(outcome.delete_count()),
     )
+}
+
+const fn commit_durability(durability: strata_engine::CommitDurability) -> CommitDurability {
+    match durability {
+        strata_engine::CommitDurability::NotDurable => CommitDurability::NotDurable,
+        strata_engine::CommitDurability::Standard => CommitDurability::Standard,
+        strata_engine::CommitDurability::Always => CommitDurability::Always,
+        _ => CommitDurability::Uncertain,
+    }
 }
 
 pub(super) fn upsert_effect(existed: bool) -> MutationEffect {

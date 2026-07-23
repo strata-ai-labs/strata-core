@@ -2,32 +2,49 @@ use super::support::*;
 
 #[test]
 fn commit_receipt_serializes_all_required_fields() {
-    let durable = CommitReceipt::new(7, 70, true, 2, 1);
-    let encoded = serde_json::to_value(durable).expect("commit receipt serializes");
+    let receipt = CommitReceipt::new(7, 70, CommitDurability::Standard, 2, 1);
+    let encoded = serde_json::to_value(receipt).expect("commit receipt serializes");
 
     assert_eq!(
         encoded,
         json!({
             "version": 7,
             "timestamp": 70,
-            "durable": true,
+            "durability": "standard",
             "put_count": 2,
             "delete_count": 1,
         })
     );
     assert_eq!(
         serde_json::from_value::<CommitReceipt>(encoded).expect("commit receipt deserializes"),
-        durable
+        receipt
     );
+
+    // Every durability state has a stable wire string (#2756: the enum
+    // replaced a boolean that attested unsynced commits as durable).
+    for (durability, wire) in [
+        (CommitDurability::NotDurable, "not_durable"),
+        (CommitDurability::Standard, "standard"),
+        (CommitDurability::Always, "always"),
+        (CommitDurability::Uncertain, "uncertain"),
+    ] {
+        let receipt = CommitReceipt::new(1, 10, durability, 1, 0);
+        let encoded = serde_json::to_value(receipt).expect("serializes");
+        assert_eq!(encoded["durability"], json!(wire));
+        assert_eq!(
+            serde_json::from_value::<CommitReceipt>(encoded).expect("round-trips"),
+            receipt
+        );
+    }
 
     for missing_field in [
         "version",
         "timestamp",
-        "durable",
+        "durability",
         "put_count",
         "delete_count",
     ] {
-        let mut incomplete = serde_json::to_value(durable)
+        let mut incomplete = serde_json::to_value(receipt)
             .expect("commit receipt serializes")
             .as_object()
             .expect("commit receipt is an object")
@@ -522,7 +539,7 @@ fn write_outputs_use_commit_receipt_and_mutation_effect() {
                 "commit": {
                     "version": 7,
                     "timestamp": 70,
-                    "durable": true,
+                    "durability": "standard",
                     "put_count": 1,
                     "delete_count": 0,
                 },

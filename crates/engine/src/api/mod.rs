@@ -56,7 +56,7 @@ pub use kv::{
     KvListPage, KvSample, KvScanRow, KvService, KvValue, KvVersionedValue, KvWriteOutcome,
     ProductSpace,
 };
-pub use options::{CacheOpenOptions, CachePreheat, DurableLocalOpenOptions};
+pub use options::{CacheOpenOptions, CachePreheat, DurabilityMode, DurableLocalOpenOptions};
 pub use space::{SpaceCreateOutcome, SpaceDeleteOutcome, SpaceService, SpaceUsageSummary};
 pub use vector::{
     VectorArtifactSourceDiagnostic, VectorBatchDeleteOutcome, VectorBatchGetOutcome,
@@ -69,7 +69,7 @@ pub use vector::{
 };
 
 pub use crate::branch::{BranchName, BranchService};
-pub use crate::commit::CommitOutcome;
+pub use crate::commit::{CommitDurability, CommitOutcome};
 pub use crate::diagnostics::{
     error_code_registry_entries, error_code_registry_entry, CommitOutcomeStatus, EngineError,
     EngineErrorClass, EngineErrorStatus, EngineResult, ErrorClass, ErrorCodeRegistryEntry,

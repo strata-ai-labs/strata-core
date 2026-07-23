@@ -3,8 +3,8 @@ use super::support::*;
 
 #[test]
 fn shared_concept_goldens_match_public_json() {
-    let durable_commit = CommitReceipt::new(7, 70, true, 1, 0);
-    let cache_commit = CommitReceipt::new(8, 80, false, 1, 0);
+    let durable_commit = CommitReceipt::new(7, 70, CommitDurability::Standard, 1, 0);
+    let cache_commit = CommitReceipt::new(8, 80, CommitDurability::NotDurable, 1, 0);
     assert_json_fixture(
         &durable_commit,
         include_str!("../fixtures/responses/v1/shared/commit_receipt_durable.json"),
@@ -89,7 +89,7 @@ fn public_response_family_goldens_match_public_json() {
                 // Mirrors the blessed cache-replay fixture: logical commit
                 // clock 3, durable false (fixtures reproduce from a scratch
                 // cache executor via `strata-idl verify-fixtures`).
-                commit: CommitReceipt::new(3, 3, false, 1, 0),
+                commit: CommitReceipt::new(3, 3, CommitDurability::NotDurable, 1, 0),
             },
             include_str!("../fixtures/responses/v1/kv/write_applied.json"),
         ),
@@ -121,7 +121,7 @@ fn public_response_family_goldens_match_public_json() {
                 collection: "docs".to_owned(),
                 key: "doc-a".to_owned(),
                 effect: MutationEffect::created(),
-                commit: CommitReceipt::new(4, 4, false, 1, 0),
+                commit: CommitReceipt::new(4, 4, CommitDurability::NotDurable, 1, 0),
                 vector_revision: 1,
             },
             include_str!("../fixtures/responses/v1/vector/upsert_applied.json"),
@@ -144,7 +144,7 @@ fn public_response_family_goldens_match_public_json() {
                 effect: MutationEffect::created(),
                 // Mirrors the blessed cache-replay fixture (event row +
                 // type-index row + log metadata row in one commit).
-                commit: CommitReceipt::new(3, 3, false, 3, 0),
+                commit: CommitReceipt::new(3, 3, CommitDurability::NotDurable, 3, 0),
             },
             include_str!("../fixtures/responses/v1/event/append_applied.json"),
         ),

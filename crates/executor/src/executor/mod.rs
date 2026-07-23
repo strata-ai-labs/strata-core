@@ -91,7 +91,7 @@ use crate::types::{
     BatchExistsItemResult, BatchExistsPresence, BatchGetItemResult, BatchItem, BatchItemResult,
     BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry, BatchMode, BatchResult,
     BatchVectorEntry, BranchCleanupItem, BranchItem, BranchParentItem, BranchStatus, Bytes,
-    CommitReceipt, EventBatchAppendItemResult,
+    CommitDurability, CommitReceipt, EventBatchAppendItemResult,
     EventChainVerification as OutputEventChainVerification, EventData, EventRangeDirection,
     EventVersionedData, GraphAnalyticsBudget, GraphBatchItemResult, GraphBatchOperation,
     GraphBfsData, GraphBfsEdgeData, GraphBindingHit, GraphBindingPrimitive, GraphBindingTarget,
@@ -214,7 +214,16 @@ impl Executor {
 
     /// Opens a durable-local executor handle at the selected path.
     pub fn open_durable_local(path: impl Into<PathBuf>) -> ExecutorResult<Self> {
-        let outcome = Database::open_local(path, DurableLocalOpenOptions::new())?;
+        Self::open_durable_local_with_options(path, DurableLocalOpenOptions::new())
+    }
+
+    /// Opens a durable-local executor handle with explicit open options
+    /// (durability mode, memory budget, default branch).
+    pub fn open_durable_local_with_options(
+        path: impl Into<PathBuf>,
+        options: DurableLocalOpenOptions,
+    ) -> ExecutorResult<Self> {
+        let outcome = Database::open_local(path, options)?;
         Ok(Self::from_database(outcome.into_database()))
     }
 
