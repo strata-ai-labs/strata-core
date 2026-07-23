@@ -173,6 +173,14 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
             trusted_replay_start(checkpoint.trusted_watermark(), trusted_flush_watermark)
         };
         let wal = self.recover_wal(request, replay_start, orphaned_delta, &mut faults)?;
+        self.verify_commit_watermark_recoverable(
+            request,
+            &checkpoint,
+            trusted_flush_watermark,
+            replay_start,
+            &wal,
+            &mut faults,
+        )?;
         let health = recovery_health_from_faults(request, faults)?;
         match (recovered_branch, table_manifest_stage) {
             (Some(recovered_branch), Some(stage)) => {
@@ -334,6 +342,59 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
             },
             recovered_branch,
         ))
+    }
+
+    /// #2690: the durable commit watermark attests the highest commit version
+    /// whose WAL record was sealed durable. Every attested commit must be
+    /// reproducible from SOME recovery source — the checkpoint, the durable
+    /// table manifest, or the surviving WAL records. If none reaches the
+    /// watermark, WAL segments holding committed data were removed out of
+    /// band; without this check recovery would silently reopen the store
+    /// without them. The comparison is checkpoint-aware by construction (a
+    /// dropped segment whose data the snapshot covers satisfies it), which is
+    /// what the earlier segment-id marker could not express.
+    fn verify_commit_watermark_recoverable(
+        &mut self,
+        request: &LifecycleRecoveryRequest,
+        checkpoint: &LifecycleRecoveredCheckpoint,
+        trusted_flush_watermark: Option<CommitVersion>,
+        replay_start: CommitVersion,
+        wal: &LifecycleRecoveredWal,
+        faults: &mut Vec<RecoveryFault>,
+    ) -> LifecycleResult<()> {
+        let Some(attested) = self.shell.services().wal().durable_commit_watermark() else {
+            return Ok(());
+        };
+        let wal_max = wal
+            .records
+            .iter()
+            .map(|record| record.commit_version().as_u64())
+            .max()
+            .unwrap_or(0);
+        let recoverable = [
+            Some(replay_start.as_u64()),
+            checkpoint.trusted_watermark().map(CommitVersion::as_u64),
+            trusted_flush_watermark.map(CommitVersion::as_u64),
+            Some(wal_max),
+        ]
+        .into_iter()
+        .flatten()
+        .max()
+        .unwrap_or(0);
+        if attested > recoverable {
+            if request.strictness() == RecoveryStrictness::Strict {
+                return Err(LifecycleError::recovery_corruption(
+                    "durable WAL commit watermark attests commits above every recoverable source",
+                ));
+            }
+            push_fault(
+                faults,
+                request.max_faults(),
+                RecoveryFaultKind::WalCommittedSuffixMissing,
+                "durable WAL commit watermark attests unrecoverable commits",
+            )?;
+        }
+        Ok(())
     }
 
     fn recover_wal(

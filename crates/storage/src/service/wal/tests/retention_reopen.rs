@@ -1174,79 +1174,97 @@ fn reopen_with_stale_seed_keeps_retention_boundary_at_the_true_tail() {
 }
 
 #[test]
-fn segment_inventory_check_verifies_against_the_durable_watermark() {
+fn segment_inventory_check_rejects_interior_gaps_only() {
     use super::super::verify_wal_segment_inventory;
-    use crate::format::encode_wal_watermark;
 
-    fn seed_watermark(backend: &StoredWalBackend, highest: u64) {
-        backend
-            .write_object(
-                &ObjectLayout::wal_watermark().expect("watermark object"),
-                &encode_wal_watermark(highest).expect("encode watermark"),
-            )
-            .expect("seed watermark");
-    }
-
-    // No durable watermark: a fresh database, or a crash before the first
-    // watermark sync — there is no evidence any segment existed, so nothing is
-    // verified.
+    // Empty directory: nothing to verify at this layer. Whether emptiness is
+    // loss is judged by the durable commit watermark at recovery (and by the
+    // manifest attestation guard, #2765) — not by the id inventory.
     let fresh = StoredWalBackend::new();
-    verify_wal_segment_inventory(&fresh).expect("an absent watermark verifies as fresh");
+    verify_wal_segment_inventory(&fresh).expect("an empty inventory has no interior gaps");
 
-    // The sole segment was removed, but the watermark records that it existed:
-    // fail closed instead of resolving back to a fresh empty log.
-    let erased = StoredWalBackend::new();
-    seed_watermark(&erased, 1);
-    assert!(matches!(
-        verify_wal_segment_inventory(&erased),
-        Err(WalServiceError::MissingActiveSegment { segment_id: 1 })
-    ));
-
-    // A contiguous, present inventory up to the watermark opens cleanly.
+    // A contiguous run is valid wherever it starts: retention trims a
+    // contiguous prefix, so a higher-based run is a legitimate shape.
     let healthy = StoredWalBackend::new();
     seed_segment(&healthy, 1, &[record(1, b"a".to_vec())]);
     seed_segment(&healthy, 2, &[record(2, b"b".to_vec())]);
-    seed_watermark(&healthy, 2);
-    verify_wal_segment_inventory(&healthy).expect("contiguous present inventory is valid");
+    verify_wal_segment_inventory(&healthy).expect("contiguous inventory is valid");
 
-    // Retention trims a contiguous prefix, leaving a higher-based run up to the
-    // watermark — legitimate, not loss.
     let retained = StoredWalBackend::new();
     seed_segment(&retained, 2, &[record(2, b"b".to_vec())]);
     seed_segment(&retained, 3, &[record(3, b"c".to_vec())]);
-    seed_watermark(&retained, 3);
     verify_wal_segment_inventory(&retained)
         .expect("a contiguous run above a retention floor is valid");
 
-    // The tail segment was removed: the highest present id (2) is below the
-    // watermark (3), so the active segment is gone.
-    let tail_removed = StoredWalBackend::new();
-    seed_segment(&tail_removed, 1, &[record(1, b"a".to_vec())]);
-    seed_segment(&tail_removed, 2, &[record(2, b"b".to_vec())]);
-    seed_watermark(&tail_removed, 3);
-    assert!(matches!(
-        verify_wal_segment_inventory(&tail_removed),
-        Err(WalServiceError::MissingActiveSegment { segment_id: 3 })
-    ));
-
-    // A hole in the middle means a segment was removed out of band.
+    // An interior hole can never be produced by retention or rotation: a
+    // segment — and every committed record it held — was removed out of band.
     let gapped = StoredWalBackend::new();
     seed_segment(&gapped, 1, &[record(1, b"a".to_vec())]);
     seed_segment(&gapped, 3, &[record(3, b"c".to_vec())]);
-    seed_watermark(&gapped, 3);
     assert!(matches!(
         verify_wal_segment_inventory(&gapped),
         Err(WalServiceError::SegmentInventoryGap { missing_segment: 2 })
     ));
+}
 
-    // A corrupt/torn watermark degrades to non-detection rather than refusing a
-    // database that may be perfectly recoverable.
-    let corrupt = StoredWalBackend::new();
-    corrupt
-        .write_object(
-            &ObjectLayout::wal_watermark().expect("watermark object"),
-            b"not a valid watermark",
-        )
-        .expect("seed corrupt watermark");
-    verify_wal_segment_inventory(&corrupt).expect("a corrupt watermark degrades, not refuses");
+#[test]
+fn commit_watermark_publishes_at_seal_points_and_is_monotonic() {
+    use crate::format::decode_wal_watermark;
+
+    let backend = StoredWalBackend::new();
+    let mut service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("open");
+    assert_eq!(service.durable_commit_watermark(), None);
+
+    // Appends alone never publish the watermark — only a seal point does,
+    // strictly after the sync that made the records durable.
+    service
+        .append(&record(1, b"one".to_vec()))
+        .expect("append one");
+    service
+        .append(&record(2, b"two".to_vec()))
+        .expect("append two");
+    let watermark_object = ObjectLayout::wal_watermark().expect("watermark object");
+    assert!(
+        backend.read_object(&watermark_object).is_err(),
+        "no watermark before the first seal point"
+    );
+
+    // Close seals the active segment durable and attests its highest commit.
+    service.close().expect("close");
+    let attested = decode_wal_watermark(
+        &backend
+            .read_object(&watermark_object)
+            .expect("watermark published at close"),
+    )
+    .expect("watermark decodes");
+    assert_eq!(attested, 2, "close attests the synced maximum");
+
+    // Reopen reads the marker back; an empty re-close never regresses it.
+    let mut reopened = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("reopen");
+    assert_eq!(reopened.durable_commit_watermark(), Some(2));
+    reopened.close().expect("idempotent close");
+    let attested = decode_wal_watermark(
+        &backend
+            .read_object(&watermark_object)
+            .expect("watermark still present"),
+    )
+    .expect("watermark decodes");
+    assert_eq!(
+        attested, 2,
+        "an empty close never moves the marker backward"
+    );
 }

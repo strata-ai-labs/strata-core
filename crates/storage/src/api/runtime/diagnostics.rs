@@ -154,9 +154,9 @@ pub(super) const fn map_failed_diagnostics_recovery_class(
     kind: RecoveryFaultKind,
 ) -> DiagnosticsRecoveryClass {
     match kind {
-        RecoveryFaultKind::IoFailure | RecoveryFaultKind::WalTailRepairFailed => {
-            DiagnosticsRecoveryClass::Io
-        }
+        RecoveryFaultKind::IoFailure
+        | RecoveryFaultKind::WalTailRepairFailed
+        | RecoveryFaultKind::WalCommittedSuffixMissing => DiagnosticsRecoveryClass::Io,
         RecoveryFaultKind::NoManifestFallback => DiagnosticsRecoveryClass::Policy,
         RecoveryFaultKind::CorruptManifest
         | RecoveryFaultKind::CorruptSnapshot
@@ -207,6 +207,9 @@ pub(super) const fn map_diagnostics_recovery_fault_kind(
         }
         RecoveryFaultKind::TimelineMismatch => DiagnosticsRecoveryFaultKind::TimelineMismatch,
         RecoveryFaultKind::WalTailRepairFailed => DiagnosticsRecoveryFaultKind::WalTailRepairFailed,
+        RecoveryFaultKind::WalCommittedSuffixMissing => {
+            DiagnosticsRecoveryFaultKind::WalCommittedSuffixMissing
+        }
     }
 }
 

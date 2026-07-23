@@ -2,32 +2,40 @@ use super::{ByteReader, FormatError, WAL_WATERMARK_FORMAT_VERSION};
 
 const FORMAT: &str = "wal_watermark";
 const MAGIC: [u8; 4] = *b"STWW";
-// magic(4) + version(4) + highest_segment(8) + crc(4).
+// magic(4) + version(4) + highest_commit_version(8) + crc(4).
 const ENCODED_LEN: usize = 20;
 
-/// Encodes the durable WAL watermark: the highest WAL segment id that has ever
-/// been created. The object is CRC-guarded because it drives a data-loss
-/// refuse-to-open decision, so a torn write must be detectable rather than
-/// silently trusted.
-pub(crate) fn encode_wal_watermark(highest_segment: u64) -> Result<Vec<u8>, FormatError> {
-    if highest_segment == 0 {
-        // Segment ids are 1-based; zero is never a valid watermark.
+/// Encodes the durable WAL commit watermark: the highest commit version whose
+/// WAL record has been sealed durable (written at segment rotation and close,
+/// strictly after the bytes it attests are synced — a safe lower bound). The
+/// object is CRC-guarded because it drives a data-loss refuse-to-open
+/// decision, so a torn write must be detectable rather than silently trusted.
+///
+/// #2690 design note: an earlier revision recorded the highest *segment id*,
+/// which is not checkpoint-comparable — it refused databases whose dropped
+/// segment was safely covered by a snapshot (the fault-simulation sweep caught
+/// it). The commit version is comparable against every recovery source.
+pub(crate) fn encode_wal_watermark(highest_commit_version: u64) -> Result<Vec<u8>, FormatError> {
+    if highest_commit_version == 0 {
+        // Commit versions are 1-based; zero means "nothing committed", which
+        // is expressed by the object's absence, never by a zero payload.
         return Err(FormatError::InvalidValue {
-            field: "highest_segment",
+            field: "highest_commit_version",
         });
     }
     let mut bytes = Vec::with_capacity(ENCODED_LEN);
     bytes.extend_from_slice(&MAGIC);
     bytes.extend_from_slice(&WAL_WATERMARK_FORMAT_VERSION.to_le_bytes());
-    bytes.extend_from_slice(&highest_segment.to_le_bytes());
+    bytes.extend_from_slice(&highest_commit_version.to_le_bytes());
     let crc = crc32fast::hash(&bytes);
     bytes.extend_from_slice(&crc.to_le_bytes());
     Ok(bytes)
 }
 
-/// Decodes a durable WAL watermark, verifying magic, version, and CRC. A decode
-/// failure means the watermark is malformed or torn; the caller degrades to
-/// non-detection rather than treating a corrupt value as authoritative.
+/// Decodes a durable WAL commit watermark, verifying magic, version, and CRC.
+/// A decode failure means the watermark is malformed or torn; the caller
+/// degrades to non-detection rather than treating a corrupt value as
+/// authoritative.
 pub(crate) fn decode_wal_watermark(bytes: &[u8]) -> Result<u64, FormatError> {
     if bytes.len() != ENCODED_LEN {
         return Err(FormatError::InsufficientBytes {
@@ -68,14 +76,14 @@ pub(crate) fn decode_wal_watermark(bytes: &[u8]) -> Result<u64, FormatError> {
         });
     }
 
-    let highest_segment = reader.read_u64_le()?;
+    let highest_commit_version = reader.read_u64_le()?;
     reader.finish()?;
-    if highest_segment == 0 {
+    if highest_commit_version == 0 {
         return Err(FormatError::InvalidValue {
-            field: "highest_segment",
+            field: "highest_commit_version",
         });
     }
-    Ok(highest_segment)
+    Ok(highest_commit_version)
 }
 
 #[cfg(test)]
@@ -84,15 +92,19 @@ mod tests {
     use crate::format::FormatError;
 
     #[test]
-    fn watermark_round_trips_every_segment_id() {
-        for segment in [1u64, 2, 7, 1_000_000, u64::MAX] {
-            let encoded = encode_wal_watermark(segment).expect("encode");
-            assert_eq!(decode_wal_watermark(&encoded), Ok(segment), "segment {segment}");
+    fn watermark_round_trips_every_commit_version() {
+        for version in [1u64, 2, 7, 1_000_000, u64::MAX] {
+            let encoded = encode_wal_watermark(version).expect("encode");
+            assert_eq!(
+                decode_wal_watermark(&encoded),
+                Ok(version),
+                "version {version}"
+            );
         }
     }
 
     #[test]
-    fn zero_segment_is_rejected_on_encode_and_decode() {
+    fn zero_version_is_rejected_on_encode_and_decode() {
         assert!(matches!(
             encode_wal_watermark(0),
             Err(FormatError::InvalidValue { .. })

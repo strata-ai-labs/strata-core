@@ -27,8 +27,8 @@ use crate::service::{
     verify_wal_segment_inventory, wal_segments_present, BranchCatalogManifestService,
     CheckpointService, DatabaseManifestService, ManifestServiceError,
     PendingReleasesManifestService, QuarantineService, SnapshotService, TableManifestService,
-    TableObjectReaderService, TableObjectService,
-    WalSegmentMetadataSidecarService, WalService, WalServiceConfig, WalServiceError,
+    TableObjectReaderService, TableObjectService, WalSegmentMetadataSidecarService, WalService,
+    WalServiceConfig, WalServiceError,
 };
 use std::fmt;
 use strata_core::{BranchId, CommitVersion};

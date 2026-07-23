@@ -680,6 +680,7 @@ const fn recovery_fault_kind_tag(kind: RecoveryFaultKind) -> u8 {
         RecoveryFaultKind::TimelineMismatch => 0x0b,
         RecoveryFaultKind::WalTailRepairFailed => 0x0c,
         RecoveryFaultKind::MissingTableManifestBase => 0x0d,
+        RecoveryFaultKind::WalCommittedSuffixMissing => 0x0e,
     }
 }
 

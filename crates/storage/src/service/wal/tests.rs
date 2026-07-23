@@ -317,9 +317,10 @@ fn open_missing_segment_creates_exactly_one_header_object() {
     .expect("open WAL");
 
     assert_eq!(service.active_segment_id(), 1);
-    // The create publishes exactly two durable objects: the segment header and
-    // the segment-loss watermark (#2690).
-    assert_eq!(backend.publish_count(), 2);
+    // The create publishes exactly one durable object: the segment header.
+    // The #2690 commit watermark publishes at seal points (rotation, close),
+    // never at creation — a fresh segment attests nothing yet.
+    assert_eq!(backend.publish_count(), 1);
     // The WAL segment listing has exactly one header object — the watermark
     // lives outside the `wal/` prefix so it never pollutes segment discovery.
     assert_eq!(backend.listed_objects(), vec![object.clone()]);
@@ -327,13 +328,12 @@ fn open_missing_segment_creates_exactly_one_header_object() {
         backend.read_object(&object).expect("segment header bytes"),
         encode_wal_segment_header(&WalSegmentHeader::new(1, database_id()))
     );
+    // No commit watermark exists yet: creation attests nothing (#2690 —
+    // the watermark publishes only at seal points, after records are durable).
     let watermark = ObjectLayout::wal_watermark().expect("watermark object");
-    assert_eq!(
-        crate::format::decode_wal_watermark(
-            &backend.read_object(&watermark).expect("watermark bytes")
-        )
-        .expect("watermark decodes"),
-        1
+    assert!(
+        backend.read_object(&watermark).is_err(),
+        "a freshly created segment must not publish a commit watermark"
     );
 }
 

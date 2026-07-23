@@ -107,8 +107,8 @@ fn durable_assembly_creates_manifest_opens_wal_and_remains_recovering() {
     assert!(operations
         .iter()
         .any(|operation| matches!(operation, Operation::ObjectMetadata(object) if object == &ObjectLayout::wal_segment(1).expect("segment object"))));
-    // Assembly's only listing is the WAL-prefix scan that reconciles the
-    // writer's resume segment against the on-disk tail (#2555).
+    // Assembly lists the WAL prefix twice: the #2690 segment-inventory
+    // contiguity check, then the resume-segment reconciliation (#2555).
     let listed: Vec<_> = operations
         .iter()
         .filter_map(|operation| match operation {
@@ -118,7 +118,10 @@ fn durable_assembly_creates_manifest_opens_wal_and_remains_recovering() {
         .collect();
     assert_eq!(
         listed,
-        vec![ObjectLayout::wal_prefix().expect("wal prefix")]
+        vec![
+            ObjectLayout::wal_prefix().expect("wal prefix"),
+            ObjectLayout::wal_prefix().expect("wal prefix"),
+        ]
     );
     assert!(backend.lock_is_held());
     drop(shell);
@@ -438,15 +441,14 @@ fn durable_manifest_create_precondition_race_reloads_existing_manifest() {
 
     let operations = backend.operations();
     // Object reads: the raced manifest reload, the recovery snapshot probe,
-    // the planted active WAL segment (#2765), and the #2690 segment-loss
-    // watermark probe. The count below is revalidated after the watermark
-    // pivot lands.
+    // the planted active WAL segment (#2765), and the #2690 durable commit
+    // watermark read at open.
     assert_eq!(
         operations
             .iter()
             .filter(|operation| matches!(operation, Operation::ReadObject(_)))
             .count(),
-        3
+        4
     );
     assert!(operations
         .iter()
@@ -879,9 +881,13 @@ fn durable_close_does_not_truncate_wal_prune_snapshots_or_purge_quarantine_impli
     assert!(!close_operations
         .iter()
         .any(|operation| matches!(operation, Operation::ListPrefix(_))));
-    assert!(!close_operations
-        .iter()
-        .any(|operation| matches!(operation, Operation::Publish(_, _))));
+    // The only close-time publish is the #2690 durable commit watermark
+    // attesting the synced log; close never rewrites checkpoints, manifests,
+    // snapshots, or quarantine state.
+    let watermark = ObjectLayout::wal_watermark().expect("watermark object");
+    assert!(!close_operations.iter().any(|operation| {
+        matches!(operation, Operation::Publish(object, _) if object != &watermark)
+    }));
 }
 
 #[test]
@@ -1177,9 +1183,12 @@ fn durable_close_after_checkpoint_does_not_rewrite_checkpoint_without_dirty_fact
     runtime.close().expect("durable close");
     let close_operations = backend.operations()[operations_before_close..].to_vec();
 
-    assert!(!close_operations
-        .iter()
-        .any(|operation| matches!(operation, Operation::Publish(_, _))));
+    // The #2690 commit watermark is the only close-time publish; the
+    // checkpoint itself is never rewritten without a dirty fact.
+    let watermark = ObjectLayout::wal_watermark().expect("watermark object");
+    assert!(!close_operations.iter().any(|operation| {
+        matches!(operation, Operation::Publish(object, _) if object != &watermark)
+    }));
 }
 
 #[test]
@@ -1206,9 +1215,15 @@ fn durable_close_after_flush_does_not_advance_flush_watermark_unless_checkpointe
     runtime.close().expect("durable close");
     let close_operations = backend.operations()[operations_before_close..].to_vec();
 
-    assert!(!close_operations
-        .iter()
-        .any(|operation| matches!(operation, Operation::Publish(_, PublishMode::Replace))));
+    // The #2690 commit watermark replace is close's only publish; the flush
+    // watermark itself must not advance without a checkpoint.
+    let watermark = ObjectLayout::wal_watermark().expect("watermark object");
+    assert!(!close_operations.iter().any(|operation| {
+        matches!(
+            operation,
+            Operation::Publish(object, PublishMode::Replace) if object != &watermark
+        )
+    }));
 }
 
 #[test]

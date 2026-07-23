@@ -123,7 +123,41 @@ Remaining: `format/wal_watermark.rs` + mod wiring + tests; `ObjectLayout::wal_wa
 
 ---
 
-## 6b. Implementation finding — the checkpoint interaction (blocking)
+## 6b. Implementation finding — the checkpoint interaction (RESOLVED by the commit-version pivot)
+
+**Resolution (implemented):** the watermark now records the durable **highest
+committed version** (`meta/wal-watermark`, STWW, CRC-guarded), published at
+seal points only — segment rotation and close, strictly AFTER the sync that
+made the attested records durable — and monotonic. Recovery compares it
+against every recoverable source: `max(checkpoint watermark, table-manifest
+flush watermark, replay start, max surviving WAL record version)`. Strict
+recovery refuses (`RecoveryCorruption` → `corruption.engine.persistence_recovery`,
+non-retryable) when the marker exceeds all of them; lossy recovery records a
+`WalCommittedSuffixMissing` fault and continues. The segment-id inventory
+check is retained for interior holes only (id-contiguity — checkpoint-free by
+construction, since retention only trims a contiguous prefix).
+
+The fault-simulation seed that falsified the segment-id design now passes: a
+dropped segment whose data the snapshot covers satisfies the comparison, and
+`deleting_checkpoint_covered_segment_still_opens_with_all_data` pins that
+inverse permanently.
+
+**Accepted limitations (documented, follow-up filed):**
+1. **The active-tail window** (§4, unchanged): commits appended after the last
+   seal point are not yet attested; deleting the active segment loses them
+   undetected. Bounded by the rotation/close cadence.
+2. **Prefix deletion of uncheckpointed data**: a sealed *lowest* segment whose
+   versions sit above the checkpoint can be deleted without tripping the
+   marker (later segments carry higher versions) or the contiguity check (the
+   suffix stays contiguous). Detecting it needs a lowest-recoverable bound
+   (min-present WAL version vs replay start), which is sound only if failed
+   commits never burn version numbers — the allocator question is open.
+   Reaching this state requires a size-threshold rotation without an
+   intervening checkpoint.
+
+The original finding is preserved below for the design record.
+
+### Original finding (historical)
 
 Implementing §4 and running the full storage suite surfaced a crash-consistency
 gap the design did not anticipate. The `fault_simulation_sweep` (seed 3,
