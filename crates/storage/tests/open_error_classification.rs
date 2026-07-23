@@ -335,3 +335,131 @@ fn unattested_store_with_commits_refuses_open_when_wal_is_deleted() {
         "watermark-attested loss surfaces the recovery-degraded code"
     );
 }
+
+/// #2766: unlinking the active WAL segment while the handle is live makes the
+/// final close sync fail against a vanished object — permanently. The close
+/// must classify as corruption (`retryable: false` at the engine boundary),
+/// never as a retryable outage: the inode is gone and no retry can bring the
+/// acknowledged bytes back. Reopen then refuses per the #2765 guard rather
+/// than presenting a healthy empty store.
+#[test]
+fn unlinking_active_wal_makes_close_report_permanent_corruption() {
+    let root = temp_root("live-unlink-close");
+    let mut runtime = StorageRuntime::open_durable_local(&root, StorageDurabilityPolicy::Standard)
+        .expect("durable open")
+        .into_runtime();
+    let branch = default_branch();
+    let space = StorageSpaceId::new(vec![0x20]).expect("engine space");
+    for index in 0u32..8 {
+        let key = StorageKey::new(format!("acked-{index:04}").into_bytes()).expect("key");
+        let batch = CommitBatch::new(
+            branch,
+            vec![CommitMutation::Put {
+                storage_space: space.clone(),
+                key,
+                value: StorageValue::new(vec![b'v'; 32]),
+                ttl: None,
+            }],
+            CommitOptions::default(),
+        )
+        .expect("commit batch");
+        runtime.commit(&batch).expect("durable commit");
+    }
+    // Publish a checkpoint so the manifest attests history (as every
+    // engine-level database does from creation), making the reopen half of
+    // the defect observable through the #2765 guard.
+    let summary = runtime
+        .maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Checkpoint,
+            MaintenanceScope::Global,
+        ))
+        .expect("checkpoint request");
+    assert_eq!(summary.status(), MaintenanceSummaryStatus::Completed);
+
+    delete_all_wal_segments(&root);
+
+    let error = runtime
+        .close()
+        .expect_err("closing over a vanished WAL object cannot succeed");
+    assert_eq!(
+        error.class(),
+        StorageApiErrorClass::FailedPrecondition,
+        "a vanished WAL object is permanent loss, not a retryable outage; got code {}",
+        error.code()
+    );
+    assert_eq!(
+        error.code(),
+        "failed_precondition.storage_api.recovery_degraded",
+        "the close failure must carry the recovery-degraded code so the engine maps it to \
+         non-retryable corruption"
+    );
+    drop(runtime);
+
+    let reopen = StorageRuntime::open_durable_local(&root, StorageDurabilityPolicy::Standard)
+        .expect_err("reopen after the loss must refuse, never present a healthy empty store");
+    assert_eq!(
+        reopen.code(),
+        "failed_precondition.storage_api.recovery_degraded"
+    );
+}
+
+/// #2766: after the WAL writer observes a permanent sync failure (the active
+/// object vanished), subsequent writes must be refused — never admitted and
+/// acknowledged against a log that no sync point can ever cover again.
+#[test]
+fn writes_after_a_lost_wal_are_refused() {
+    let root = temp_root("live-unlink-writes");
+    let mut runtime = StorageRuntime::open_durable_local(&root, StorageDurabilityPolicy::Always)
+        .expect("durable open")
+        .into_runtime();
+    let branch = default_branch();
+    let space = StorageSpaceId::new(vec![0x20]).expect("engine space");
+    let put = |runtime: &mut StorageRuntime<'_>, name: &str| {
+        let key = StorageKey::new(name.as_bytes().to_vec()).expect("key");
+        let batch = CommitBatch::new(
+            branch,
+            vec![CommitMutation::Put {
+                storage_space: space.clone(),
+                key,
+                value: StorageValue::new(vec![b'v'; 32]),
+                ttl: None,
+            }],
+            CommitOptions::default(),
+        )
+        .expect("commit batch");
+        runtime.commit(&batch).map(|_| ())
+    };
+    put(&mut runtime, "pre-unlink").expect("acked before the unlink");
+
+    delete_all_wal_segments(&root);
+
+    // The first post-unlink commit hits the covering sync and cannot attest
+    // durability: ambiguous, never acknowledged.
+    let first = put(&mut runtime, "post-unlink-first")
+        .expect_err("the sync against a vanished object cannot attest durability");
+    assert_eq!(
+        first.code(),
+        "ambiguous_commit.storage_api.durable_uncertain",
+        "the first failing sync is durability-uncertain; got code {}",
+        first.code()
+    );
+
+    // Every later write must be refused, never acknowledged: the unresolved
+    // durable fact recorded by the failed group blocks admission until the
+    // database is reopened (and reopen classifies the loss).
+    let second = put(&mut runtime, "post-unlink-second")
+        .expect_err("writes after an unresolved durable failure must be refused");
+    assert_eq!(
+        second.code(),
+        "ambiguous_commit.storage_api.durable_uncertain",
+        "admission is blocked on the unresolved durable fact; got code {}",
+        second.code()
+    );
+
+    // Close after the unresolved durable failure refuses on the unresolved
+    // fact (its own established contract — reopen is the resolution path);
+    // the standard-mode sibling test owns the close-time loss classification.
+    runtime
+        .close()
+        .expect_err("closing with an unresolved durable commit cannot succeed");
+}

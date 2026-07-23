@@ -2092,6 +2092,12 @@ where
                     self.services.wal.complete_group_sync(ticket);
                 }
                 (Some(ticket), Some(Err(error))) => {
+                    // #2766: an off-lock sync that found the active object
+                    // missing is permanent — latch the writer halted so no
+                    // further appends are admitted against the dead log.
+                    if error.is_active_object_missing() {
+                        self.services.wal.record_active_object_lost();
+                    }
                     fatal = self.record_group_sync_failure(&group, ticket, &error);
                 }
                 // `(Some(_), None)`: the caller proved coverage by a later
