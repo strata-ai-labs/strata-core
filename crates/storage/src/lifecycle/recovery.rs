@@ -172,6 +172,19 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
         } else {
             trusted_replay_start(checkpoint.trusted_watermark(), trusted_flush_watermark)
         };
+        if self.shell.assembly_facts().wal_chain_missing_at_open() {
+            // #2777: lossy assembly proceeded past a checkpoint-attested store
+            // whose WAL chain was gone (strict refuses at assemble). Whatever
+            // the log held above the checkpoint is unrecoverable — the loss is
+            // recorded loudly rather than presenting a degraded store as
+            // healthy.
+            push_fault(
+                &mut faults,
+                request.max_faults(),
+                RecoveryFaultKind::WalCommittedSuffixMissing,
+                "checkpoint-attested WAL chain missing at open; recovering from checkpoint alone",
+            )?;
+        }
         let wal = self.recover_wal(
             request,
             replay_start,
@@ -1232,6 +1245,7 @@ fn degradation_class_for_faults(faults: &[RecoveryFault]) -> RecoveryDegradation
                 | RecoveryFaultKind::InheritedLayerLoss
                 | RecoveryFaultKind::NoManifestFallback
                 | RecoveryFaultKind::WalTailRepairFailed
+                | RecoveryFaultKind::WalCommittedSuffixMissing
         )
     }) {
         RecoveryDegradationClass::DataLoss

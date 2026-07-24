@@ -5,8 +5,8 @@ use super::{
     table_block_cache_from_storage_budget, validate_backend_capabilities_for_open,
     LifecycleCapabilityOutcome, LifecycleDurableTableCatalog, LifecycleError, LifecycleLowerLayer,
     LifecycleOperationKind, LifecycleResult, LifecycleState, LifecycleStateMachine,
-    LifecycleTableManifestRecoveryStage, LifecycleTransitionTrigger, StorageBudgetLedger,
-    StorageMode, StorageOpenDisposition, StorageOpenPlan,
+    LifecycleTableManifestRecoveryStage, LifecycleTransitionTrigger, RecoveryStrictness,
+    StorageBudgetLedger, StorageMode, StorageOpenDisposition, StorageOpenPlan,
 };
 use crate::backend::{
     Backend, BackendError, BackendErrorKind, BackendHandle, BackendWriterGuard, PublishFailureKind,
@@ -72,6 +72,9 @@ pub(crate) struct LifecycleDurableAssemblyFacts {
     manifest_snapshot_watermark: Option<u64>,
     manifest_snapshot_id: Option<u64>,
     manifest_flush_watermark: Option<CommitVersion>,
+    /// #2777: the checkpoint-attested WAL chain was absent at open and lossy
+    /// assembly recreated a fresh log — recovery must record the loss.
+    wal_chain_missing_at_open: bool,
 }
 
 pub(crate) struct LifecycleDurableLocalServices<'a> {
@@ -180,6 +183,7 @@ impl LifecycleDurableAssemblyFacts {
         manifest: &DatabaseManifest,
         durability_policy: DurabilityPolicy,
         writer_lock_object: ObjectName,
+        wal_chain_missing_at_open: bool,
     ) -> Self {
         Self {
             mode,
@@ -196,7 +200,12 @@ impl LifecycleDurableAssemblyFacts {
             manifest_snapshot_watermark: manifest.snapshot_watermark(),
             manifest_snapshot_id: manifest.snapshot_id(),
             manifest_flush_watermark: manifest.flushed_through_commit_id(),
+            wal_chain_missing_at_open,
         }
+    }
+
+    pub(crate) const fn wal_chain_missing_at_open(&self) -> bool {
+        self.wal_chain_missing_at_open
     }
 
     pub(crate) const fn mode(&self) -> StorageMode {
@@ -339,13 +348,18 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
         // history existed, so the WAL chain through that watermark must be on
         // disk. With zero segment objects, `WalService::open` would recreate a
         // fresh empty log and recovery would present a gutted store as a
-        // healthy empty database — refuse instead. A manifest with no
+        // healthy empty database — strict mode refuses. Explicit lossy
+        // recovery is the operator's informed reopen path for exactly this
+        // damage (a torn rename can drop the segment legally, #2777): it
+        // proceeds, recovers what the checkpoint holds, and records the
+        // missing chain as a data-loss recovery fault. A manifest with no
         // checkpoint attestation (a first creation torn before its log or
         // creation checkpoint landed) is still allowed to recreate: nothing
         // acknowledged can exist yet.
-        if disposition == StorageOpenDisposition::OpenedExisting
-            && manifest.snapshot_watermark().is_some()
-            && !wal_segments_present(backend.as_backend()).map_err(wal_open_error)?
+        let wal_chain_missing_at_open =
+            checkpoint_attested_wal_chain_missing(disposition, &manifest, &backend)?;
+        if wal_chain_missing_at_open
+            && request.plan().recovery_policy() == RecoveryStrictness::Strict
         {
             return Err(LifecycleError::recovery_corruption(
                 "database manifest attests a checkpoint but no WAL segment objects exist",
@@ -408,6 +422,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             &manifest,
             durability_policy,
             writer_lock_object,
+            wal_chain_missing_at_open,
         );
 
         let services = LifecycleDurableLocalServices {
@@ -667,6 +682,16 @@ fn writer_lock_open_error(error: BackendError) -> LifecycleError {
         },
         _ => backend_error(error),
     }
+}
+
+fn checkpoint_attested_wal_chain_missing(
+    disposition: StorageOpenDisposition,
+    manifest: &DatabaseManifest,
+    backend: &BackendHandle<'static>,
+) -> LifecycleResult<bool> {
+    Ok(disposition == StorageOpenDisposition::OpenedExisting
+        && manifest.snapshot_watermark().is_some()
+        && !wal_segments_present(backend.as_backend()).map_err(wal_open_error)?)
 }
 
 fn layout_error(error: LayoutError) -> LifecycleError {
