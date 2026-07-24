@@ -172,13 +172,12 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
         } else {
             trusted_replay_start(checkpoint.trusted_watermark(), trusted_flush_watermark)
         };
-        let wal = self.recover_wal(request, replay_start, orphaned_delta, &mut faults)?;
-        self.verify_commit_watermark_recoverable(
+        let wal = self.recover_wal(
             request,
+            replay_start,
+            orphaned_delta,
             &checkpoint,
             trusted_flush_watermark,
-            replay_start,
-            &wal,
             &mut faults,
         )?;
         let health = recovery_health_from_faults(request, faults)?;
@@ -359,14 +358,13 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
         checkpoint: &LifecycleRecoveredCheckpoint,
         trusted_flush_watermark: Option<CommitVersion>,
         replay_start: CommitVersion,
-        wal: &LifecycleRecoveredWal,
+        records: &[WalRecord],
         faults: &mut Vec<RecoveryFault>,
     ) -> LifecycleResult<()> {
         let Some(attested) = self.shell.services().wal().durable_commit_watermark() else {
             return Ok(());
         };
-        let wal_max = wal
-            .records
+        let wal_max = records
             .iter()
             .map(|record| record.commit_version().as_u64())
             .max()
@@ -402,6 +400,8 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
         request: &LifecycleRecoveryRequest,
         replay_start: CommitVersion,
         require_contiguous: bool,
+        checkpoint: &LifecycleRecoveredCheckpoint,
+        trusted_flush_watermark: Option<CommitVersion>,
         faults: &mut Vec<RecoveryFault>,
     ) -> LifecycleResult<LifecycleRecoveredWal> {
         let read = self
@@ -411,29 +411,6 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
             .read_after_commit_version(replay_start)
             .map_err(wal_recovery_error)?;
         let truncation = read.truncation().cloned();
-        let repair = match truncation.as_ref() {
-            Some(truncation) => {
-                if request.strictness() == RecoveryStrictness::Strict {
-                    return Err(LifecycleError::WalTailRepairRejected {
-                        reason: "strict recovery cannot repair partial WAL tail",
-                    });
-                }
-                push_fault(
-                    faults,
-                    request.max_faults(),
-                    RecoveryFaultKind::WalTailRepairFailed,
-                    "partial WAL tail repaired with data loss",
-                )?;
-                Some(
-                    self.shell
-                        .services_mut()
-                        .wal_mut()
-                        .repair_latest_tail(truncation)
-                        .map_err(wal_repair_error)?,
-                )
-            }
-            None => None,
-        };
 
         let mut records = read.records().to_vec();
         if require_contiguous {
@@ -454,6 +431,49 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
             }
             records.retain(|record| record.commit_version().as_u64() <= upper);
         }
+
+        // The attestation backstop runs BEFORE any repair touches the tail: a
+        // refusal must leave the torn bytes on disk for forensics, and the
+        // surviving record set is identical before and after the repair (a
+        // torn suffix never parses as a record).
+        self.verify_commit_watermark_recoverable(
+            request,
+            checkpoint,
+            trusted_flush_watermark,
+            replay_start,
+            &records,
+            faults,
+        )?;
+
+        let repair = match truncation.as_ref() {
+            Some(truncation) => {
+                // A torn FINAL record is the mid-append crash artifact: its
+                // write never completed, so its covering sync never ran and no
+                // ack was issued — the write-ordering contract keeps every
+                // durable reference behind synced WAL bytes. Repairing it
+                // loses nothing promised, so strict mode repairs it too and
+                // records no fault; the commit-watermark verification that
+                // follows recovery refuses (strict) if the repair dropped
+                // anything attested. Lossy mode keeps its data-loss fault:
+                // its damage simulations can tear acknowledged bytes.
+                if request.strictness() != RecoveryStrictness::Strict {
+                    push_fault(
+                        faults,
+                        request.max_faults(),
+                        RecoveryFaultKind::WalTailRepairFailed,
+                        "partial WAL tail repaired with data loss",
+                    )?;
+                }
+                Some(
+                    self.shell
+                        .services_mut()
+                        .wal_mut()
+                        .repair_latest_tail(truncation)
+                        .map_err(wal_repair_error)?,
+                )
+            }
+            None => None,
+        };
 
         Ok(LifecycleRecoveredWal {
             replay_start,
