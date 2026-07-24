@@ -1193,6 +1193,12 @@ impl<S> LifecycleCacheRuntime<S> {
         self.maintenance.status()
     }
 
+    pub(crate) fn recent_maintenance_failures(
+        &self,
+    ) -> Vec<crate::lifecycle::MaintenanceFailureRecord> {
+        self.maintenance.recent_failures()
+    }
+
     #[cfg(test)]
     pub(crate) fn set_active_maintenance_for_test(&mut self, task: MaintenanceTask) {
         self.maintenance.set_active_for_test(task);

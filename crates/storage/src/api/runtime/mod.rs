@@ -498,30 +498,38 @@ impl StorageRuntime<'static> {
         self.require_open("maintenance enqueue requires an open runtime")?;
         match &mut self.inner {
             StorageRuntimeInner::Cache(slot) => {
-                let status = {
+                let (status, failures) = {
                     let mut runtime = slot.lock();
                     runtime
                         .enqueue_maintenance(task)
                         .map_err(map_lifecycle_error)?;
-                    runtime.maintenance_status()
+                    (
+                        runtime.maintenance_status(),
+                        runtime.recent_maintenance_failures(),
+                    )
                 };
                 slot.notify_background_drain(background_priority_for_task_request(task));
                 Ok(map_maintenance_queue_summary(
                     status,
+                    failures,
                     slot.background_stats(),
                 ))
             }
             StorageRuntimeInner::DurableOwned(slot) => {
-                let status = {
+                let (status, failures) = {
                     let mut runtime = slot.lock();
                     runtime
                         .enqueue_maintenance(task)
                         .map_err(map_lifecycle_error)?;
-                    runtime.maintenance_status()
+                    (
+                        runtime.maintenance_status(),
+                        runtime.recent_maintenance_failures(),
+                    )
                 };
                 slot.notify_background_drain(background_priority_for_task_request(task));
                 Ok(map_maintenance_queue_summary(
                     status,
+                    failures,
                     slot.background_stats(),
                 ))
             }
@@ -936,6 +944,7 @@ impl<'a> StorageRuntime<'a> {
                 let runtime = slot.lock();
                 Ok(map_maintenance_queue_summary(
                     runtime.maintenance_status(),
+                    runtime.recent_maintenance_failures(),
                     slot.background_stats(),
                 ))
             }
@@ -943,6 +952,7 @@ impl<'a> StorageRuntime<'a> {
                 let runtime = slot.lock();
                 Ok(map_maintenance_queue_summary(
                     runtime.maintenance_status(),
+                    runtime.recent_maintenance_failures(),
                     slot.background_stats(),
                 ))
             }
@@ -1004,6 +1014,7 @@ impl<'a> StorageRuntime<'a> {
             map_diagnostics_recovery(runtime.open_outcome().recovery_health()),
             Some(map_maintenance_queue_summary(
                 runtime.maintenance_status(),
+                runtime.recent_maintenance_failures(),
                 slot.background_stats(),
             )),
             map_budget_report(
@@ -1056,6 +1067,7 @@ impl<'a> StorageRuntime<'a> {
             map_diagnostics_recovery(runtime.current_recovery_health()),
             Some(map_maintenance_queue_summary(
                 runtime.maintenance_status(),
+                runtime.recent_maintenance_failures(),
                 slot.background_stats(),
             )),
             map_budget_report(
@@ -1101,30 +1113,38 @@ impl<'a> StorageRuntime<'a> {
         let task = map_maintenance_task_request(self, request)?;
         match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
-                let status = {
+                let (status, failures) = {
                     let mut runtime = slot.lock();
                     runtime
                         .enqueue_maintenance(task)
                         .map_err(map_lifecycle_error)?;
-                    runtime.maintenance_status()
+                    (
+                        runtime.maintenance_status(),
+                        runtime.recent_maintenance_failures(),
+                    )
                 };
                 slot.notify_background_drain(background_priority_for_task_request(task));
                 Ok(map_maintenance_queue_summary(
                     status,
+                    failures,
                     slot.background_stats(),
                 ))
             }
             StorageRuntimeInner::DurableOwned(slot) => {
-                let status = {
+                let (status, failures) = {
                     let mut runtime = slot.lock();
                     runtime
                         .enqueue_maintenance(task)
                         .map_err(map_lifecycle_error)?;
-                    runtime.maintenance_status()
+                    (
+                        runtime.maintenance_status(),
+                        runtime.recent_maintenance_failures(),
+                    )
                 };
                 slot.notify_background_drain(background_priority_for_task_request(task));
                 Ok(map_maintenance_queue_summary(
                     status,
+                    failures,
                     slot.background_stats(),
                 ))
             }

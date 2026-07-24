@@ -1283,6 +1283,44 @@ fn maintenance_executor_records_drain_fault_without_removing_pending_task() {
     assert_eq!(executor.status().active_task(), None);
     assert_eq!(executor.stats().failed(), 1);
     assert_eq!(executor.stats().drained(), 0);
+    let failures = executor.recent_failures();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(
+        failures[0].task_kind(),
+        MaintenanceTaskKind::HealthCollection
+    );
+    assert_eq!(
+        failures[0].source_error_code(),
+        Some("failed_precondition.lifecycle.maintenance")
+    );
+}
+
+#[test]
+fn active_task_failure_during_close_drain_records_kind_and_error_code() {
+    let open = open_state();
+    let closing = closing_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");
+    executor
+        .enqueue(open, MaintenanceTaskRequest::flush(branch_id(0x63)))
+        .expect("enqueue flush");
+    executor
+        .start_next_matching(open, |task| task.kind() == MaintenanceTaskKind::Flush)
+        .expect("start ok")
+        .expect("flush starts");
+
+    let mut runner = FailsAfterCompletions::new(0);
+    executor
+        .drain_active_for_close(closing, &mut runner)
+        .expect_err("active drain fails");
+
+    assert_eq!(executor.stats().failed(), 1);
+    let failures = executor.recent_failures();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].task_kind(), MaintenanceTaskKind::Flush);
+    assert_eq!(
+        failures[0].source_error_code(),
+        Some("io.lifecycle.backend")
+    );
 }
 
 #[test]
@@ -1445,6 +1483,119 @@ impl std::fmt::Display for DrainFailureSource {
 }
 
 impl std::error::Error for DrainFailureSource {}
+
+struct FailedOutcomeRunner;
+
+impl MaintenanceTaskRunner for FailedOutcomeRunner {
+    fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        Ok(
+            MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                .with_reason("scripted runner failure")
+                .with_source_error(LifecycleError::lower_layer(
+                    LifecycleLowerLayer::Backend,
+                    "scripted backend failure",
+                )),
+        )
+    }
+}
+
+#[test]
+fn runner_error_records_the_failed_task_kind_and_error_code() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(8).expect("executor");
+    executor
+        .enqueue(open, MaintenanceTaskRequest::flush(branch_id(0x61)))
+        .expect("enqueue flush");
+    let mut runner = FailsAfterCompletions::new(0);
+    assert!(executor.run_next(open, &mut runner).is_err());
+
+    let status = executor.status();
+    assert_eq!(status.stats().failed(), 1);
+    let failures = executor.recent_failures();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].task_kind(), MaintenanceTaskKind::Flush);
+    assert_eq!(failures[0].reason(), None);
+    assert_eq!(
+        failures[0].source_error_code(),
+        Some("io.lifecycle.backend")
+    );
+}
+
+#[test]
+fn failed_outcome_records_kind_reason_and_source_error_code() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(8).expect("executor");
+    executor
+        .enqueue(open, MaintenanceTaskRequest::checkpoint())
+        .expect("enqueue checkpoint");
+    let mut runner = FailedOutcomeRunner;
+    let outcome = executor
+        .run_next(open, &mut runner)
+        .expect("run reports the failed outcome")
+        .expect("a task ran");
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Failed);
+
+    let status = executor.status();
+    assert_eq!(status.stats().failed(), 1);
+    let failures = executor.recent_failures();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].task_kind(), MaintenanceTaskKind::Checkpoint);
+    assert_eq!(failures[0].reason(), Some("scripted runner failure"));
+    assert_eq!(
+        failures[0].source_error_code(),
+        Some("io.lifecycle.backend")
+    );
+}
+
+#[test]
+fn failure_records_are_bounded_and_keep_the_newest() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(8).expect("executor");
+    let ordered_kinds = [
+        MaintenanceTaskKind::Flush,
+        MaintenanceTaskKind::Checkpoint,
+        MaintenanceTaskKind::WalTruncation,
+        MaintenanceTaskKind::Quarantine,
+        MaintenanceTaskKind::Compaction,
+    ];
+    executor
+        .enqueue(open, MaintenanceTaskRequest::flush(branch_id(0x62)))
+        .expect("enqueue flush");
+    executor
+        .enqueue(open, MaintenanceTaskRequest::checkpoint())
+        .expect("enqueue checkpoint");
+    executor
+        .enqueue(open, MaintenanceTaskRequest::wal_truncation())
+        .expect("enqueue wal truncation");
+    executor
+        .enqueue(open, MaintenanceTaskRequest::quarantine())
+        .expect("enqueue quarantine");
+    executor
+        .enqueue(open, MaintenanceTaskRequest::compaction(branch_id(0x62), 0))
+        .expect("enqueue compaction");
+    let mut runner = FailsAfterCompletions::new(0);
+    for kind in ordered_kinds {
+        assert!(executor
+            .run_next_matching(open, &mut runner, |task| task.kind() == kind)
+            .is_err());
+    }
+
+    let status = executor.status();
+    assert_eq!(status.stats().failed(), ordered_kinds.len());
+    let failures = executor.recent_failures();
+    assert_eq!(failures.len(), 4, "failure records are bounded");
+    let recorded_kinds: Vec<_> = failures.iter().map(|record| record.task_kind()).collect();
+    assert_eq!(
+        recorded_kinds,
+        vec![
+            MaintenanceTaskKind::Checkpoint,
+            MaintenanceTaskKind::WalTruncation,
+            MaintenanceTaskKind::Quarantine,
+            MaintenanceTaskKind::Compaction,
+        ],
+        "oldest record is evicted; survivors keep failure order"
+    );
+}
 
 #[test]
 fn rewrite_lane_cap_admits_up_to_the_cap() {

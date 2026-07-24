@@ -109,6 +109,47 @@ pub struct MaintenanceSummary {
     wal_growth: Option<MaintenanceWalGrowthSummary>,
 }
 
+/// Detail for one recorded maintenance failure: the exact task class that
+/// failed (finer-grained than [`MaintenanceTask`] — e.g. `"flush_watermark"`
+/// and `"wal_truncation"` are distinct) plus the failure's reason and error
+/// code. Without this, `failed` counts are unclassifiable after the fact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MaintenanceFailureSummary {
+    task_kind: &'static str,
+    reason: Option<&'static str>,
+    source_error_code: Option<&'static str>,
+}
+
+impl MaintenanceFailureSummary {
+    #[must_use]
+    pub(crate) const fn new(
+        task_kind: &'static str,
+        reason: Option<&'static str>,
+        source_error_code: Option<&'static str>,
+    ) -> Self {
+        Self {
+            task_kind,
+            reason,
+            source_error_code,
+        }
+    }
+
+    #[must_use]
+    pub const fn task_kind(self) -> &'static str {
+        self.task_kind
+    }
+
+    #[must_use]
+    pub const fn reason(self) -> Option<&'static str> {
+        self.reason
+    }
+
+    #[must_use]
+    pub const fn source_error_code(self) -> Option<&'static str> {
+        self.source_error_code
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MaintenanceQueueSummary {
     pending_tasks: usize,
@@ -127,6 +168,8 @@ pub struct MaintenanceQueueSummary {
     background_queue_depth: usize,
     background_active_tasks: usize,
     background_tasks_completed: u64,
+    recent_failures:
+        [Option<MaintenanceFailureSummary>; crate::lifecycle::MAINTENANCE_FAILURE_RECORD_CAPACITY],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -396,7 +439,18 @@ impl MaintenanceQueueSummary {
             background_queue_depth,
             background_active_tasks,
             background_tasks_completed,
+            recent_failures: [None; crate::lifecycle::MAINTENANCE_FAILURE_RECORD_CAPACITY],
         }
+    }
+
+    #[must_use]
+    pub(crate) const fn with_recent_failures(
+        mut self,
+        recent_failures: [Option<MaintenanceFailureSummary>;
+            crate::lifecycle::MAINTENANCE_FAILURE_RECORD_CAPACITY],
+    ) -> Self {
+        self.recent_failures = recent_failures;
+        self
     }
 
     #[must_use]
@@ -478,9 +532,20 @@ impl MaintenanceQueueSummary {
     pub const fn background_tasks_completed(self) -> u64 {
         self.background_tasks_completed
     }
+
+    /// The newest recorded maintenance failures, oldest first. Empty unless
+    /// `failed() > 0`; bounded, so only the most recent failures survive.
+    #[must_use]
+    pub fn recent_failures(&self) -> Vec<MaintenanceFailureSummary> {
+        self.recent_failures.iter().flatten().copied().collect()
+    }
 }
 
 impl MaintenanceDrainSummary {
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "constructor stores the queue summary; callers move it in"
+    )]
     #[must_use]
     pub(crate) fn new(
         drained_tasks: usize,

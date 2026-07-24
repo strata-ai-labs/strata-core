@@ -1178,6 +1178,10 @@ impl DiagnosticsOutcome {
         clippy::too_many_arguments,
         reason = "diagnostics outcome is a flat API snapshot"
     )]
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "constructor stores the maintenance summary; callers move it in"
+    )]
     #[must_use]
     pub(crate) fn new(
         scope: DiagnosticsScope,

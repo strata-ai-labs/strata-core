@@ -1391,6 +1391,12 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         self.maintenance.status()
     }
 
+    pub(crate) fn recent_maintenance_failures(
+        &self,
+    ) -> Vec<crate::lifecycle::MaintenanceFailureRecord> {
+        self.maintenance.recent_failures()
+    }
+
     #[cfg(test)]
     pub(crate) fn pending_flush_watermark_candidate_for_test(&self) -> Option<CommitVersion> {
         self.maintenance.pending_flush_watermark_candidate()

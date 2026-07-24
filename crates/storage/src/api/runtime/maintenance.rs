@@ -176,6 +176,7 @@ pub(super) const fn map_wal_growth_trigger(
 
 pub(super) fn map_maintenance_queue_summary(
     executor_status: MaintenanceExecutorStatus,
+    failure_records: Vec<crate::lifecycle::MaintenanceFailureRecord>,
     background_stats: Option<MaintenanceExecutorStats>,
 ) -> MaintenanceQueueSummary {
     let stats = executor_status.stats();
@@ -192,6 +193,14 @@ pub(super) fn map_maintenance_queue_summary(
             stats.tasks_completed,
         )
     });
+    let mut recent_failures = [None; crate::lifecycle::MAINTENANCE_FAILURE_RECORD_CAPACITY];
+    for (slot, record) in recent_failures.iter_mut().zip(failure_records) {
+        *slot = Some(crate::api::MaintenanceFailureSummary::new(
+            record.task_kind().as_static_str(),
+            record.reason(),
+            record.source_error_code(),
+        ));
+    }
     MaintenanceQueueSummary::new(
         executor_status.pending_tasks(),
         executor_status
@@ -212,6 +221,7 @@ pub(super) fn map_maintenance_queue_summary(
         background_active_tasks,
         background_tasks_completed,
     )
+    .with_recent_failures(recent_failures)
 }
 
 pub(super) fn unsupported_maintenance_summary(
@@ -983,5 +993,66 @@ pub(super) fn drain_durable_background_round(
         tasks_completed,
         pending_tasks,
         made_progress,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::map_maintenance_queue_summary;
+    use crate::lifecycle::{
+        LifecycleError, LifecycleLowerLayer, LifecycleMaintenanceExecutor, LifecycleResult,
+        LifecycleStateMachine, LifecycleTransitionTrigger, MaintenanceOutcome,
+        MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind, MaintenanceTaskRequest,
+        MaintenanceTaskRunner,
+    };
+
+    struct ScriptedFailureRunner;
+
+    impl MaintenanceTaskRunner for ScriptedFailureRunner {
+        fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+            Ok(
+                MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                    .with_reason("scripted runner failure")
+                    .with_source_error(LifecycleError::lower_layer(
+                        LifecycleLowerLayer::Backend,
+                        "scripted backend failure",
+                    )),
+            )
+        }
+    }
+
+    #[test]
+    fn queue_summary_surfaces_recent_failure_records() {
+        let mut state = LifecycleStateMachine::new();
+        state
+            .transition(LifecycleTransitionTrigger::OpenRequested)
+            .expect("open requested");
+        state
+            .transition(LifecycleTransitionTrigger::CacheOpenReady)
+            .expect("cache open ready");
+        let mut executor = LifecycleMaintenanceExecutor::new(8).expect("executor");
+        executor
+            .enqueue(state, MaintenanceTaskRequest::checkpoint())
+            .expect("enqueue checkpoint");
+        let mut runner = ScriptedFailureRunner;
+        executor
+            .run_next(state, &mut runner)
+            .expect("run reports the failed outcome")
+            .expect("a task ran");
+
+        let summary =
+            map_maintenance_queue_summary(executor.status(), executor.recent_failures(), None);
+        assert_eq!(summary.failed(), 1);
+        let failures = summary.recent_failures();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(
+            failures[0].task_kind(),
+            MaintenanceTaskKind::Checkpoint.as_static_str()
+        );
+        assert_eq!(failures[0].reason(), Some("scripted runner failure"));
+        assert_eq!(
+            failures[0].source_error_code(),
+            Some("io.lifecycle.backend")
+        );
     }
 }

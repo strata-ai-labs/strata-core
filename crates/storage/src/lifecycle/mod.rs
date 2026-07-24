@@ -188,9 +188,10 @@ pub(crate) use maintenance::{
     LifecyclePostCommitMaintenanceStatus, LifecycleWriteAdmissionOutcome,
     LifecycleWriteAdmissionStatus, MaintenanceCancelOutcome, MaintenanceCheckpointOptions,
     MaintenanceClosePolicy, MaintenanceCoalesceKey, MaintenanceEnqueueOutcome,
-    MaintenanceExecutorStatus, MaintenanceFaultHook, MaintenanceFaultPoint,
-    MaintenanceRetentionOptions, MaintenanceTask, MaintenanceTaskId, MaintenanceTaskPolicy,
-    MaintenanceTaskPriority, MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope,
+    MaintenanceExecutorStatus, MaintenanceFailureRecord, MaintenanceFaultHook,
+    MaintenanceFaultPoint, MaintenanceRetentionOptions, MaintenanceTask, MaintenanceTaskId,
+    MaintenanceTaskPolicy, MaintenanceTaskPriority, MaintenanceTaskRequest, MaintenanceTaskRunner,
+    MaintenanceTaskScope, MAINTENANCE_FAILURE_RECORD_CAPACITY,
 };
 #[allow(
     unused_imports,
