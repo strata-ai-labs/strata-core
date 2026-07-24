@@ -648,7 +648,17 @@ impl FlushDrainOutcome {
     }
 
     fn record_error(&mut self, error: LifecycleError) {
-        self.failed_flushes = self.failed_flushes.saturating_add(1);
+        // #2553's third site (#2778): a flush output racing the table-object
+        // sweep is a benign scheduling race — the frozen input stays queued
+        // and the retried drain publishes fresh bytes. Count it as a
+        // deferral, exactly like the locked-publish and compaction-install
+        // arms, never as a task failure. The error stays attached for
+        // diagnostics.
+        if error.is_rewrite_output_sweep_race() {
+            self.deferred_flushes = self.deferred_flushes.saturating_add(1);
+        } else {
+            self.failed_flushes = self.failed_flushes.saturating_add(1);
+        }
         self.retryable = true;
         self.source_error.get_or_insert(error);
     }

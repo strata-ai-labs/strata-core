@@ -412,22 +412,9 @@ fn concurrent_random_sessions_stay_exact_on_one_shared_database() {
     let status = runtime
         .maintenance_status()
         .expect("final maintenance status");
-    // Open-issue allowance (shrink-only — the fix removes its arm; the
-    // #2776 retention arm was removed when its fix landed):
-    // - #2778: flush records the transient rewrite-output sweep race as a
-    //   Failed outcome (`unavailable.lifecycle.rewrite_output_sweep_race`);
-    //   reached under sanitizer/coverage slowdown.
-    // The lane found and classified this on its first nightly; every OTHER
-    // failure class stays fatal, and a failure storm still trips the bound.
-    let unexpected: Vec<_> = status
-        .recent_failures()
-        .into_iter()
-        .filter(|record| {
-            !(record.task_kind() == "flush"
-                && record.source_error_code()
-                    == Some("unavailable.lifecycle.rewrite_output_sweep_race"))
-        })
-        .collect();
+    // Allowance-free since the #2776/#2778 fixes landed: EVERY recorded
+    // failure class is fatal (transient races defer instead of failing).
+    let unexpected = status.recent_failures();
     assert!(
         unexpected.is_empty(),
         "background maintenance recorded unexpected failures under stress: {unexpected:?}"
