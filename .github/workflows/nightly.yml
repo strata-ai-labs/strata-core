@@ -267,11 +267,14 @@ jobs:
       - name: Workspace tests (release)
         run: cargo test --locked --release --workspace
 
-  kv-differential:
-    # TCP4.2a: Strata KV vs in-process RocksDB (Tiers A/B + snapshot<->as_of
+  differential:
+    # TCP4.2a/b: Strata KV vs in-process RocksDB (Tiers A/B + snapshot<->as_of
     # Tier C) and vs Redis (Tier A diversity oracle — architecturally unlike,
-    # so it catches design-family blind spots an LSM-vs-LSM diff cannot).
-    # Heavy C++ oracle build, so nightly only; seeds/ops scale via env.
+    # so it catches design-family blind spots an LSM-vs-LSM diff cannot);
+    # Strata JSON vs MongoDB on the shared document tiers (TCP4.2b). Heavy
+    # C++ oracle build, so nightly only; seeds/ops scale via env. The
+    # committed corpora these lanes validate at record time replay in the
+    # plain per-PR workspace suite (corpus_replay.rs) without any service.
     runs-on: ubuntu-latest
     timeout-minutes: 45
     services:
@@ -279,6 +282,10 @@ jobs:
         image: redis:7
         ports:
           - 6379:6379
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
     steps:
       - uses: actions/checkout@v4
       - name: Authorize private git dependencies
@@ -293,3 +300,9 @@ jobs:
           STRATA_KV_DIFF_OPS: "600"
           STRATA_REDIS_URL: 127.0.0.1:6379
         run: cargo test --locked -p strata-executor --features differential --test differential_kv -- --nocapture
+      - name: JSON differential soak vs MongoDB
+        env:
+          STRATA_JSON_DIFF_SEEDS: "24"
+          STRATA_JSON_DIFF_OPS: "500"
+          STRATA_MONGO_URL: 127.0.0.1:27017
+        run: cargo test --locked -p strata-executor --features differential --test differential_json -- --nocapture

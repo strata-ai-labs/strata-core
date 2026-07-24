@@ -18,7 +18,7 @@ arrow = ["dep:arrow", "dep:parquet"]
 hub = ["dep:strata-hub"]
 # TCP4.2a differential-testing lane: pulls the in-process RocksDB oracle.
 # Heavy C++ build — nightly CI only; excluded from the feature powerset.
-differential = ["dep:rocksdb"]
+differential = ["dep:rocksdb", "dep:bson"]
 idl-tooling = ["dep:serde_yaml", "dep:sha2", "dep:schemars", "dep:jsonschema", "dep:tempfile", "strata-engine/wire-schemas", "strata-inference?/wire-schemas"]
 inference = ["dep:strata-inference"]
 inference-anthropic = ["inference"]
@@ -44,6 +44,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true, optional = true }
 rocksdb = { version = "0.24", optional = true, default-features = false }
+# TCP4.2b: BSON codec for the minimal MongoDB wire client (no full driver).
+bson = { version = "2", optional = true }
 serde_yaml = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
@@ -66,6 +68,10 @@ required-features = ["idl-tooling"]
 
 [[test]]
 name = "differential_kv"
+required-features = ["differential"]
+
+[[test]]
+name = "differential_json"
 required-features = ["differential"]
 
 [dev-dependencies]
