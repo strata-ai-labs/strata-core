@@ -1,8 +1,8 @@
 //! Durable immutable-table object publication service.
 
 use crate::backend::{
-    Backend, BackendCapability, BackendError, BackendHandle, BackendRange, PublishError,
-    PublishFailureKind,
+    Backend, BackendCapability, BackendError, BackendErrorKind, BackendHandle, BackendRange,
+    PublishError, PublishFailureKind,
 };
 use crate::format::{decode_immutable_table, FormatError, ImmutableTable, TableManifestTableRef};
 use crate::layout::{LayoutError, ObjectLayout};
@@ -679,14 +679,18 @@ impl<'a> TableObjectService<'a> {
         objects.sort();
         objects
             .into_iter()
-            .map(|object| {
-                let metadata = self.backend.object_metadata(&object).map_err(|source| {
-                    TableObjectServiceError::Metadata {
-                        object: object.clone(),
-                        source,
-                    }
-                })?;
-                Ok((object, metadata.size_bytes()))
+            .filter_map(|object| match self.backend.object_metadata(&object) {
+                Ok(metadata) => Some(Ok((object, metadata.size_bytes()))),
+                // The retention mark runs while sweeps, purges, and rewrite
+                // publications delete table objects (#2524); an object listed
+                // at the start of the pass may legitimately be gone by the
+                // time its size is read. Absence is the reclaim machinery
+                // working — skip the entry; the next mark sees the truth.
+                Err(source) if source.kind() == BackendErrorKind::NotFound => None,
+                Err(source) => Some(Err(TableObjectServiceError::Metadata {
+                    object: object.clone(),
+                    source,
+                })),
             })
             .collect()
     }
@@ -938,6 +942,10 @@ mod tests {
         long_read: bool,
         metadata_size_override: Option<u64>,
         outcome_object_override: Option<ObjectName>,
+        // Simulates the list-then-stat race: a name the listing returns whose
+        // object no longer exists when its metadata is read.
+        stale_listed_object: Option<ObjectName>,
+        metadata_failure: Option<(ObjectName, BackendError)>,
         durability_override: Option<PublishDurability>,
     }
 
@@ -960,6 +968,8 @@ mod tests {
                 metadata_size_override: None,
                 outcome_object_override: None,
                 durability_override: None,
+                stale_listed_object: None,
+                metadata_failure: None,
             }
         }
 
@@ -970,6 +980,16 @@ mod tests {
 
         fn with_metadata_size_override(mut self, size: u64) -> Self {
             self.metadata_size_override = Some(size);
+            self
+        }
+
+        fn with_stale_listed_object(mut self, object: ObjectName) -> Self {
+            self.stale_listed_object = Some(object);
+            self
+        }
+
+        fn with_metadata_failure(mut self, object: ObjectName, error: BackendError) -> Self {
+            self.metadata_failure = Some((object, error));
             self
         }
 
@@ -1136,12 +1156,22 @@ mod tests {
                 .filter(|object| object.as_str().starts_with(prefix.as_str()))
                 .cloned()
                 .collect::<Vec<_>>();
+            if let Some(stale) = &self.stale_listed_object {
+                if stale.as_str().starts_with(prefix.as_str()) {
+                    objects.push(stale.clone());
+                }
+            }
             objects.sort();
             Ok(objects)
         }
 
         fn object_metadata(&self, name: &ObjectName) -> BackendResult<BackendMetadata> {
             *self.metadata_calls.lock().expect("metadata calls lock") += 1;
+            if let Some((target, error)) = &self.metadata_failure {
+                if target == name {
+                    return Err(error.clone());
+                }
+            }
             self.objects
                 .lock()
                 .expect("objects lock")
@@ -3276,5 +3306,60 @@ mod tests {
 
     fn branch_id() -> BranchId {
         BranchId::from_bytes([0x77; BranchId::BYTE_LEN])
+    }
+
+    /// The retention mark deliberately runs while sweeps, purges, and rewrite
+    /// publications delete table objects (#2524), so an object listed at the
+    /// start of an inventory pass can be gone by the time its size is read.
+    /// A vanished object is the reclaim machinery working — the inventory
+    /// must skip it, not fail the whole retention pass.
+    #[test]
+    fn list_inventory_skips_objects_deleted_between_listing_and_stat() {
+        let branch = branch_id().to_string();
+        let survivor = ObjectLayout::table_object(&branch, 0, "table-alive").expect("table object");
+        let vanished = ObjectLayout::table_object(&branch, 0, "table-swept").expect("table object");
+        let backend = RecordingBackend::durable().with_stale_listed_object(vanished.clone());
+        backend
+            .write_object(&survivor, b"table-bytes")
+            .expect("seed survivor");
+
+        let service = TableObjectService::new(&backend);
+        let inventory = service
+            .list_inventory()
+            .expect("a concurrently-deleted object must not fail the inventory listing");
+
+        assert_eq!(
+            inventory,
+            vec![(survivor, b"table-bytes".len() as u64)],
+            "the vanished object is omitted; the survivor keeps its size"
+        );
+    }
+
+    /// Direction control: only absence is tolerated. A metadata failure that
+    /// is not `NotFound` still fails the listing loudly.
+    #[test]
+    fn list_inventory_still_fails_when_metadata_errors_are_not_absence() {
+        let branch = branch_id().to_string();
+        let broken = ObjectLayout::table_object(&branch, 0, "table-broken").expect("table object");
+        let backend = RecordingBackend::durable().with_metadata_failure(
+            broken.clone(),
+            BackendError::new(BackendErrorKind::PermissionDenied, "stat denied"),
+        );
+        backend
+            .write_object(&broken, b"table-bytes")
+            .expect("seed object");
+
+        let service = TableObjectService::new(&backend);
+        let error = service
+            .list_inventory()
+            .expect_err("non-absence metadata failures must propagate");
+        assert!(
+            matches!(
+                error,
+                TableObjectServiceError::Metadata { ref object, ref source }
+                    if *object == broken && source.kind() == BackendErrorKind::PermissionDenied
+            ),
+            "unexpected error shape: {error:?}"
+        );
     }
 }
