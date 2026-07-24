@@ -151,6 +151,62 @@ fn every_charter_evidence_anchor_exists() {
     );
 }
 
+/// Gate 8(b): generated and soak lanes run debug-assert builds so
+/// internal-invariant trips fire as findings (TCP4.13c). The one deliberate
+/// exception is the nightly `release-mode-tests` job — the release leg of the
+/// 3-way suite run, whose entire purpose is the no-assert build. Every other
+/// `cargo test`/`cargo llvm-cov` invocation in the test workflows must stay
+/// on the default (debug-assertions) profile; a lane quietly switched to
+/// `--release` for soak speed would silently drop the secondary oracle.
+#[test]
+fn test_lanes_outside_the_release_leg_keep_debug_assertions() {
+    const RELEASE_LEG_JOB: &str = "release-mode-tests:";
+    let root = repo_root();
+    let workflows = [
+        ".github/workflows/ci.yml",
+        ".github/workflows/nightly.yml",
+        ".github/workflows/release.yml",
+    ];
+    let mut violations = Vec::new();
+    let mut checked = 0usize;
+
+    for workflow in workflows {
+        let path = root.join(workflow);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("workflow {workflow} unreadable: {err}"));
+        let mut in_release_leg = false;
+        for (index, line) in text.lines().enumerate() {
+            let trimmed = line.trim();
+            // Job headers sit at four-space indentation under `jobs:`.
+            if line.starts_with("  ") && !line.starts_with("   ") && trimmed.ends_with(':') {
+                in_release_leg = trimmed == RELEASE_LEG_JOB;
+            }
+            let is_test_invocation = (trimmed.contains("cargo test")
+                || trimmed.contains("cargo llvm-cov"))
+                && !trimmed.starts_with('#');
+            if !is_test_invocation || in_release_leg {
+                continue;
+            }
+            checked += 1;
+            if trimmed.contains("--release") || trimmed.contains("--profile") {
+                violations.push(format!("  {workflow}:{}: {trimmed}", index + 1));
+            }
+        }
+    }
+
+    assert!(
+        checked > 15,
+        "the guard saw only {checked} test invocations; the workflows moved or the \
+         parser regressed — the debug-assert lane guard is vacuous"
+    );
+    assert!(
+        violations.is_empty(),
+        "test lanes outside the release-mode-tests job must run debug-assert builds \
+         (gate 8(b)); move the lane into release-mode-tests or drop the flag:\n{}",
+        violations.join("\n")
+    );
+}
+
 /// The STH program's slice ledger and the coverage program's phase ledger
 /// must never claim an implemented slice whose primary artifact is gone.
 #[test]

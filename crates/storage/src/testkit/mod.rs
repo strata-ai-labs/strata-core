@@ -67,7 +67,7 @@ mod reopen_retry;
     not(target_arch = "wasm32")
 ))]
 mod reordering_backend;
-mod rng;
+pub(crate) mod rng;
 mod service_fuzz;
 #[cfg(all(
     any(test, feature = "fault-injection"),
