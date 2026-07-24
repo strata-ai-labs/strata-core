@@ -1719,13 +1719,25 @@ impl<'a> WalService<'a> {
             if *segment_id == self.active_segment_id {
                 continue;
             }
-            let metadata = self.backend.object_metadata(object).map_err(|source| {
-                WalServiceError::Backend {
-                    operation: WalOperation::List,
-                    object: object.clone(),
-                    source,
+            let metadata = match self.backend.object_metadata(object) {
+                Ok(metadata) => metadata,
+                // Background truncation deletes covered segments on an
+                // off-lock retention clone; a segment listed at the start of
+                // this scan can legitimately be gone by the stat. Its bytes
+                // are already reclaimed — skipping it makes the sample MORE
+                // accurate, and the truncation publish step invalidates the
+                // cache so the next sample sees the settled state. Recovery's
+                // strict inventory checks are a separate path and keep their
+                // contiguity semantics.
+                Err(source) if source.kind() == BackendErrorKind::NotFound => continue,
+                Err(source) => {
+                    return Err(WalServiceError::Backend {
+                        operation: WalOperation::List,
+                        object: object.clone(),
+                        source,
+                    });
                 }
-            })?;
+            };
             sealed.segments = sealed.segments.saturating_add(1);
             sealed.bytes = sealed.bytes.checked_add(metadata.size_bytes()).ok_or(
                 WalServiceError::UnexpectedObjectSize {
