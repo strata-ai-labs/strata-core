@@ -3741,3 +3741,75 @@ fn strict_recovery_still_refuses_a_torn_tail_the_commit_watermark_attests() {
         "a refused recovery must not mutate the torn tail — the bytes are forensic evidence"
     );
 }
+
+/// The #2765 forbidden state (checkpoint-attested manifest, zero WAL
+/// segments) reached through legal torn-rename crash semantics: strict mode
+/// refuses (pinned below and at the wire), but explicit lossy recovery is
+/// the operator's informed reopen path — it must degrade with a recorded
+/// data-loss fault and recover what the checkpoint holds, not refuse.
+#[test]
+fn lossy_recovery_degrades_when_checkpoint_attested_wal_chain_is_missing() {
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
+    let branch = branch_id(0x45);
+    // Raw manifest write: `write_manifest` deliberately plants a header-only
+    // segment for attested manifests (#2765 fixtures); the forbidden state
+    // needs the attestation WITHOUT any segment object.
+    backend.write_raw(
+        ObjectLayout::database_manifest().expect("database root object"),
+        encode_manifest(
+            &DatabaseManifest::new(DATABASE_ID, "identity")
+                .expect("database root")
+                .with_recovery_facts(1, Some(9), Some(7), None)
+                .expect("database root facts"),
+        )
+        .expect("database root bytes"),
+    );
+
+    let mut shell = assemble_shell(lossy_open_plan(), branch, backend)
+        .expect("lossy assembly proceeds past the missing WAL chain");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("lossy recovery degrades instead of refusing");
+
+    assert!(
+        matches!(
+            outcome.health(),
+            RecoveryHealth::Degraded {
+                class: RecoveryDegradationClass::DataLoss,
+                faults
+            } if faults
+                .iter()
+                .any(|fault| fault.kind() == RecoveryFaultKind::WalCommittedSuffixMissing)
+        ),
+        "the missing WAL chain must surface as a data-loss fault: {:?}",
+        outcome.health()
+    );
+}
+
+/// Direction control: the strict arm of the #2765 guard is unchanged — a
+/// checkpoint-attested store with no WAL segments still refuses to open.
+#[test]
+fn strict_open_still_refuses_a_checkpoint_attested_store_with_no_wal() {
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
+    let branch = branch_id(0x46);
+    backend.write_raw(
+        ObjectLayout::database_manifest().expect("database root object"),
+        encode_manifest(
+            &DatabaseManifest::new(DATABASE_ID, "identity")
+                .expect("database root")
+                .with_recovery_facts(1, Some(9), Some(7), None)
+                .expect("database root facts"),
+        )
+        .expect("database root bytes"),
+    );
+
+    let Err(error) = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend) else {
+        panic!("strict assembly must refuse the gutted store");
+    };
+    assert_eq!(error.code(), "corruption.lifecycle.recovery_corruption");
+}
