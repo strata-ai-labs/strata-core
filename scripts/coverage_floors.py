@@ -21,6 +21,8 @@ import sys
 
 # Floors set 2026-07-17 from the Phase 3 baseline measurement, ~0.5-1.5pt
 # below measured to absorb refactor noise. Measured values in comments.
+# Floors gate the NIGHTLY RUNNER's measurement — baselines must come from a
+# runner (or runner-equivalent) environment, not a dev machine.
 FLOORS = {
     "core": 94.0,       # 94.7
     "inference": 91.0,  # 92.0
@@ -28,7 +30,13 @@ FLOORS = {
     "executor": 85.0,   # 85.8
     "engine": 82.0,     # 82.9
     "hub": 70.0,        # 70.6
-    "gpu-cache": 58.0,  # 59.4 (CPU-side paths; CUDA paths are hardware-gated)
+    # 54.8 on the GPU-less nightly runner, stable across every night since
+    # the gate first ran. The original 58.0 floor (from a 59.4 measurement)
+    # was taken on a GPU-equipped dev box where dlopen("libcuda.so.1")
+    # succeeds, so ~140 driver-load/context lines counted as covered that
+    # are structurally unreachable on runners — the gate never once passed.
+    # Corrected 2026-07-23 (#2764): a baseline fix, not a ratchet-down.
+    "gpu-cache": 54.0,  # 54.8 (host-sim + CPU paths; driver/CUDA paths are hardware-gated)
     "cli": 46.5,        # 47.3
 }
 
