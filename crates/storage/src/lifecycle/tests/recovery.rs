@@ -903,7 +903,7 @@ fn recovery_does_not_install_checkpoint_when_later_wal_read_fails() {
 }
 
 #[test]
-fn recovery_repairs_latest_partial_log_tail_only_when_explicitly_lossy() {
+fn recovery_repairs_latest_partial_log_tail_with_data_loss_fault_when_lossy() {
     let backend: &'static RecoveryTestBackend =
         crate::testkit::leak_static(RecoveryTestBackend::new());
     let branch = branch_id(0x40);
@@ -952,41 +952,6 @@ fn recovery_repairs_latest_partial_log_tail_only_when_explicitly_lossy() {
             faults
         } if faults.iter().any(|fault| fault.kind() == RecoveryFaultKind::WalTailRepairFailed)
     ));
-}
-
-#[test]
-fn recovery_rejects_latest_partial_log_tail_in_strict_mode() {
-    let backend: &'static RecoveryTestBackend =
-        crate::testkit::leak_static(RecoveryTestBackend::new());
-    let branch = branch_id(0x41);
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
-        .expect("durable shell");
-    let record = wal_record(branch, 2, b"valid", b"value");
-    shell
-        .services_mut()
-        .wal_mut()
-        .append(&record)
-        .expect("append valid record");
-    let wal_object = ObjectLayout::wal_segment(1).expect("active log object");
-    backend.append_raw(wal_object.clone(), b"partial");
-    let before = backend.object_bytes(&wal_object).expect("WAL bytes before");
-    let request =
-        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
-
-    assert_eq!(
-        LifecycleRecoveryRuntime::new(&mut shell)
-            .recover(&request)
-            .expect_err("strict partial tail rejects"),
-        LifecycleError::WalTailRepairRejected {
-            reason: "strict recovery cannot repair partial WAL tail",
-        }
-    );
-    assert_eq!(
-        backend.object_bytes(&wal_object).expect("WAL bytes after"),
-        before,
-        "strict recovery must not mutate an unrepaired WAL tail"
-    );
-    assert!(shell.branch_state().is_empty());
 }
 
 #[test]
@@ -3681,4 +3646,98 @@ impl MaintenanceTaskRunner for MaintenanceTestRunner {
             MaintenanceOutcomeStatus::Completed,
         ))
     }
+}
+
+/// A torn FINAL record is the mid-append crash artifact: its write never
+/// completed, so its group sync never ran and no ack was issued — the
+/// write-ordering contract keeps every durable reference behind synced WAL.
+/// Strict recovery therefore repairs it without recording data loss; the
+/// commit-watermark verification below stays the attestation backstop.
+#[test]
+fn recovery_repairs_latest_partial_log_tail_in_strict_mode_without_faults() {
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
+    let branch = branch_id(0x43);
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
+        .expect("durable shell");
+    let record = wal_record(branch, 2, b"valid", b"value");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&record)
+        .expect("append valid record");
+    let wal_object = ObjectLayout::wal_segment(1).expect("active log object");
+    let valid_end = backend
+        .object_bytes(&wal_object)
+        .expect("intact WAL bytes")
+        .len() as u64;
+    backend.append_raw(wal_object.clone(), b"partial");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("strict recovery repairs the torn unacknowledged tail");
+
+    let repair = outcome.wal().repair().expect("repair is recorded");
+    assert_eq!(repair.removed_bytes(), b"partial".len() as u64);
+    assert_eq!(
+        backend
+            .object_bytes(&wal_object)
+            .expect("repaired WAL bytes")
+            .len() as u64,
+        valid_end,
+        "repair removes exactly the torn suffix"
+    );
+    assert_eq!(
+        outcome.health(),
+        &RecoveryHealth::Healthy,
+        "an unacknowledged torn tail is not data loss"
+    );
+    assert_eq!(
+        outcome.wal().records().len(),
+        1,
+        "the intact record survives the repair"
+    );
+}
+
+/// The attestation backstop: when the durable commit watermark attests a
+/// version the torn tail was carrying, the repair may not silently drop it —
+/// strict recovery must refuse as corruption (the #2690 watermark contract).
+#[test]
+fn strict_recovery_still_refuses_a_torn_tail_the_commit_watermark_attests() {
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
+    backend.write_raw(
+        ObjectLayout::wal_watermark().expect("watermark object"),
+        crate::format::encode_wal_watermark(3).expect("watermark bytes"),
+    );
+    let branch = branch_id(0x44);
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
+        .expect("durable shell");
+    let record = wal_record(branch, 2, b"valid", b"value");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&record)
+        .expect("append valid record");
+    let wal_object = ObjectLayout::wal_segment(1).expect("active log object");
+    backend.append_raw(wal_object.clone(), b"partial");
+    let before = backend.object_bytes(&wal_object).expect("WAL bytes before");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+
+    let error = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect_err("attested commits above the repaired tail must refuse");
+    assert_eq!(
+        error.code(),
+        "corruption.lifecycle.recovery_corruption",
+        "the watermark backstop classifies the loss as corruption: {error:?}"
+    );
+    assert_eq!(
+        backend.object_bytes(&wal_object).expect("WAL bytes after"),
+        before,
+        "a refused recovery must not mutate the torn tail — the bytes are forensic evidence"
+    );
 }

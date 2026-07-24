@@ -103,10 +103,11 @@ fn open_durable(
 }
 
 /// Open with lossy WAL-tail recovery — the reopen path after on-disk damage.
-/// Strict recovery *refuses* to repair a torn tail (`WalTailRepairRejected`);
-/// lossy recovery drops the partial trailing record and recovers the intact
-/// prefix. Leaks the backend for a `'static` runtime (test-only; reclaimed on
-/// process exit).
+/// Strict recovery repairs a torn LATEST tail (an unacknowledged mid-append
+/// artifact) on its own; lossy opt-in is for deeper damage — non-tail loss,
+/// attested-suffix loss — where recovery must be allowed to drop
+/// acknowledged bytes. Leaks the backend for a `'static` runtime (test-only;
+/// reclaimed on process exit).
 fn open_durable_lossy(
     root: &Path,
     durability: OracleDurability,
