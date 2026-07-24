@@ -86,9 +86,13 @@ jobs:
     # storage-only): storage owns commit guards, maintenance scheduling,
     # and close ordering; engine adds the fork/COW and open-contention
     # threads; executor rides its threaded integration paths. Slow
-    # (5-15x), which is why it lives here and not per-PR.
+    # (5-15x), which is why it lives here and not per-PR. tokio's
+    # IO-driver internals are suppressed as a known TSan false positive
+    # (.tsan-suppressions); Strata-frame races still fail the lane.
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    env:
+      TSAN_OPTIONS: suppressions=${{ github.workspace }}/.tsan-suppressions
     steps:
       - uses: actions/checkout@v4
       - name: Authorize private git dependencies

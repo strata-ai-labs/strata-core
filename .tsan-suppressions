@@ -1,0 +1,10 @@
+# ThreadSanitizer suppressions (TCP4.13b).
+#
+# tokio's IO-driver readiness protocol (ScheduledIo::set_readiness and the
+# driver turn loop) is a known TSan false-positive class: the intrusive
+# atomic protocol is not modelable by TSan, and every frame in the reported
+# races sits inside tokio/std internals (first seen: nightly run
+# 30070025008, executor hub_clone_behavior binary). Suppression is
+# function-scoped — a race whose stack touches any Strata frame still
+# reports and fails the lane.
+race:tokio::runtime::io::scheduled_io
