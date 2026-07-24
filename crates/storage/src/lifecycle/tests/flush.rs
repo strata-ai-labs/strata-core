@@ -2530,3 +2530,74 @@ fn stale_flush_watermark_proof_defers_instead_of_failing() {
         runtime.maintenance_status()
     );
 }
+
+/// #2553's third site (#2778): a flush whose output races the table-object
+/// sweep is a benign scheduling race — the frozen input stays queued and the
+/// next drain publishes fresh bytes. The drain must count it as a deferral,
+/// exactly like the locked-publish and compaction-install arms, never as a
+/// task failure.
+#[test]
+fn flush_drain_defers_when_the_output_races_a_table_object_sweep() {
+    let branch = branch_id(0x7d);
+    let mut state = frozen_branch(branch, put_row(branch, b"sweep-race", 1, 1_000, b"row"));
+
+    let outcome = flush_branch_drain_with(
+        &mut state,
+        &flush_drain_request(branch),
+        |_branch, _request| {
+            Err(LifecycleError::RewriteOutputRacedSweep {
+                object: crate::object::ObjectName::new("tables/sweep-race-object")
+                    .expect("object name"),
+            })
+        },
+    )
+    .expect("flush drain");
+    let maintenance = outcome.maintenance_outcome();
+
+    assert_eq!(
+        outcome.failed_flushes(),
+        0,
+        "a benign race is not a failure"
+    );
+    // The raced flush defers, and `with_post_drain_frozen_tables` adds its
+    // own deferral for the retained frozen state — both are deferrals.
+    assert!(outcome.deferred_flushes() >= 1);
+    assert_eq!(
+        maintenance.status(),
+        MaintenanceOutcomeStatus::Deferred,
+        "sweep race defers: {maintenance:?}"
+    );
+    assert!(maintenance.retryable());
+    assert!(
+        maintenance.source_error().is_some(),
+        "the race is preserved for diagnostics"
+    );
+    assert_eq!(
+        state.frozen_table_count(),
+        1,
+        "the frozen input stays queued for the retried drain"
+    );
+}
+
+/// Direction control: genuine flush errors still fail the drain loudly.
+#[test]
+fn flush_drain_still_fails_on_genuine_flush_errors() {
+    let branch = branch_id(0x7e);
+    let mut state = frozen_branch(branch, put_row(branch, b"real-error", 1, 1_000, b"row"));
+
+    let outcome = flush_branch_drain_with(
+        &mut state,
+        &flush_drain_request(branch),
+        |_branch, _request| {
+            Err(LifecycleError::lower_layer(
+                LifecycleLowerLayer::Backend,
+                "backend write failed",
+            ))
+        },
+    )
+    .expect("flush drain");
+    let maintenance = outcome.maintenance_outcome();
+
+    assert_eq!(outcome.failed_flushes(), 1);
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Failed);
+}
