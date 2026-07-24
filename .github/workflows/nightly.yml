@@ -82,9 +82,11 @@ jobs:
         run: cargo +nightly test --tests -Zbuild-std --target x86_64-unknown-linux-gnu -p strata-engine
 
   memory-safety-thread-sanitizer:
-    # TSAN over storage: commit guards, maintenance scheduling, and
-    # close ordering are the real-thread surfaces. Slow (5-15x), which
-    # is why it lives here and not per-PR.
+    # TSAN over the threaded crates (TCP4.13b widened this from
+    # storage-only): storage owns commit guards, maintenance scheduling,
+    # and close ordering; engine adds the fork/COW and open-contention
+    # threads; executor rides its threaded integration paths. Slow
+    # (5-15x), which is why it lives here and not per-PR.
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
@@ -99,6 +101,14 @@ jobs:
         env:
           RUSTFLAGS: -Zsanitizer=thread
         run: cargo +nightly test --tests -Zbuild-std --target x86_64-unknown-linux-gnu -p strata-storage
+      - name: TSAN engine tests
+        env:
+          RUSTFLAGS: -Zsanitizer=thread
+        run: cargo +nightly test --tests -Zbuild-std --target x86_64-unknown-linux-gnu -p strata-engine
+      - name: TSAN executor tests
+        env:
+          RUSTFLAGS: -Zsanitizer=thread
+        run: cargo +nightly test --tests -Zbuild-std --target x86_64-unknown-linux-gnu -p strata-executor
 
   failure-during-failure-soak:
     # Compound-anomaly bug hunt: a second fault injected during crash
@@ -171,6 +181,17 @@ jobs:
         env:
           STRATA_STORAGE_STRESS_SECONDS: "120"
         run: cargo test --locked -p strata-storage --features testkit --test stress
+      - name: Concurrent shared-database stress (TCP4.13a)
+        # The randomized concurrent-session lane at soak scale: more
+        # sessions, deeper op streams, several seeds. Per-PR CI runs the
+        # same test at its small in-file defaults via the workspace suite.
+        env:
+          STRATA_STRESS_SESSIONS: "8"
+          STRATA_STRESS_OPS: "1500"
+        run: |
+          for seed in 1 2 3 4; do
+            STRATA_STRESS_SEED="$seed" cargo test --locked -p strata-storage --lib stress_random -- --nocapture
+          done
 
   coverage-baseline:
     # Publishes per-crate region/line coverage. Baseline only for now:

@@ -33,6 +33,8 @@ mod open_options;
 mod preheat;
 mod read;
 mod source_guards;
+#[cfg(feature = "localfs")]
+mod stress_random;
 mod surface;
 
 /// Concatenated source of the split runtime module, for source-introspection guards
