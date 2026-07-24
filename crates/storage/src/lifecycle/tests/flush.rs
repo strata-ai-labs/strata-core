@@ -2431,3 +2431,102 @@ fn segmented_flush_publish_failure_reports_every_published_output() {
     );
     assert_eq!(state.owned_table_count(), 0);
 }
+
+/// The off-lock flush-watermark design is optimistic by contract: the proof
+/// carries its build-time manifest epoch, and a concurrent flush advancing
+/// the manifest rejects the stale proof so the next wake recomputes. That
+/// rejection is the designed retry path — the apply fold must record it as
+/// a deferral, not a permanent task failure.
+#[test]
+fn stale_flush_watermark_proof_defers_instead_of_failing() {
+    let branch = branch_id(0x7a);
+    let backend: &'static FlushBackend = crate::testkit::leak_static(FlushBackend::new());
+    let mut shell = LifecycleDurableLocalShell::assemble(
+        durable_open_request(branch),
+        backend,
+        CommitManualTimestampSource::new(Timestamp::from_micros(9_000)),
+    )
+    .expect("durable shell");
+    let recovery_request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let recovery = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&recovery_request)
+        .expect("recovery outcome");
+    let mut runtime = shell.complete_recovery(&recovery).expect("open runtime");
+    let generation =
+        CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation"));
+
+    // First flush cycle: publishes a table manifest and auto-enqueues the
+    // coalescing flush-watermark task.
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, physical_key(branch, b"stale-a"), b"one".to_vec()),
+            generation,
+        )
+        .expect("first commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate first");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+        .expect("enqueue first flush");
+    let first_flush = runtime
+        .run_next_flush_maintenance()
+        .expect("run first flush")
+        .expect("first flush outcome");
+    assert_eq!(first_flush.status(), MaintenanceOutcomeStatus::Completed);
+
+    // Capture the off-lock coverage inputs and compute the proof against the
+    // CURRENT manifest epoch.
+    let step = runtime
+        .start_next_background_flush_watermark_maintenance()
+        .expect("start watermark step")
+        .expect("watermark task is pending");
+    let DurableBackgroundMaintenanceStep::FlushWatermarkCompute(inputs) = step else {
+        panic!("expected an off-lock coverage compute step, got a completed outcome");
+    };
+    let computed = inputs.compute_coverage();
+    assert!(computed.is_some(), "coverage must be provable at capture");
+
+    // Stale the proof: a second flush cycle advances the table-manifest
+    // sequence past the epoch the proof was built against.
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, physical_key(branch, b"stale-b"), b"two".to_vec()),
+            generation,
+        )
+        .expect("second commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate second");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+        .expect("enqueue second flush");
+    let second_flush = runtime
+        .run_next_flush_maintenance()
+        .expect("run second flush")
+        .expect("second flush outcome");
+    assert_eq!(second_flush.status(), MaintenanceOutcomeStatus::Completed);
+
+    // Applying the now-stale proof is the documented optimistic-concurrency
+    // rejection: a deferral that the next wake retries, never a failure.
+    let outcome = runtime
+        .apply_flush_watermark_coverage(&inputs, computed)
+        .expect("apply returns an outcome envelope")
+        .expect("the pending watermark task is redeemed");
+    assert_eq!(
+        outcome.status(),
+        MaintenanceOutcomeStatus::Deferred,
+        "stale proof must defer: {outcome:?}"
+    );
+    assert!(
+        outcome.source_error().is_some(),
+        "the deferral carries the staleness error for diagnostics"
+    );
+    assert_eq!(
+        runtime.maintenance_status().stats().failed(),
+        0,
+        "a stale proof is not a task failure: {:?}",
+        runtime.maintenance_status()
+    );
+}

@@ -2727,6 +2727,21 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         let result = self.persist_off_lock_flush_watermark_coverage(candidate, proof);
         let maintenance = match result {
             Ok(outcome) => outcome.maintenance_outcome(),
+            // The proof carries its build-time epochs and every
+            // `WalRetentionProofIncomplete` fires before the manifest write:
+            // a rejection means the world moved under the off-lock scan
+            // (concurrent flush/compaction advanced the manifest, a branch
+            // appeared, rows landed below the candidate) and nothing was
+            // persisted. That is the designed optimistic retry path — the
+            // next flush publish or WAL-growth evaluation re-enqueues a
+            // fresh coalescing candidate — so it defers like the inline
+            // runner's proof arm, and never records a task failure.
+            Err(error @ LifecycleError::WalRetentionProofIncomplete { .. }) => {
+                MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Deferred)
+                    .with_reason("flush watermark deferred: coverage proof went stale")
+                    .with_source_error(error)
+                    .with_stats(LifecycleStats::new(0, 0, 1, 1, 0))
+            }
             Err(error) => MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
                 .with_source_error(error),
         };

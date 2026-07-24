@@ -412,25 +412,20 @@ fn concurrent_random_sessions_stay_exact_on_one_shared_database() {
     let status = runtime
         .maintenance_status()
         .expect("final maintenance status");
-    // Open-issue allowances (shrink-only — each fix removes its arm):
-    // - #2776: background retention transiently fails on runner-class disks
-    //   when snapshot pruning's whole-tree listing walk races concurrent
-    //   object deletion (`failed_precondition.lifecycle.service`).
+    // Open-issue allowance (shrink-only — the fix removes its arm; the
+    // #2776 retention arm was removed when its fix landed):
     // - #2778: flush records the transient rewrite-output sweep race as a
     //   Failed outcome (`unavailable.lifecycle.rewrite_output_sweep_race`);
     //   reached under sanitizer/coverage slowdown.
-    // The lane found and classified both on its first nightly; every OTHER
+    // The lane found and classified this on its first nightly; every OTHER
     // failure class stays fatal, and a failure storm still trips the bound.
     let unexpected: Vec<_> = status
         .recent_failures()
         .into_iter()
         .filter(|record| {
-            let retention_listing_race = record.task_kind() == "retention"
-                && record.source_error_code() == Some("failed_precondition.lifecycle.service");
-            let flush_sweep_race = record.task_kind() == "flush"
+            !(record.task_kind() == "flush"
                 && record.source_error_code()
-                    == Some("unavailable.lifecycle.rewrite_output_sweep_race");
-            !(retention_listing_race || flush_sweep_race)
+                    == Some("unavailable.lifecycle.rewrite_output_sweep_race"))
         })
         .collect();
     assert!(
