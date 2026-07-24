@@ -200,6 +200,27 @@ pub(crate) enum MaintenanceTaskKind {
     CachePreheat,
 }
 
+impl MaintenanceTaskKind {
+    /// Stable identifier for diagnostic surfaces (failure records, summaries).
+    pub(crate) const fn as_static_str(self) -> &'static str {
+        match self {
+            Self::Flush => "flush",
+            Self::Checkpoint => "checkpoint",
+            Self::FlushWatermark => "flush_watermark",
+            Self::WalTruncation => "wal_truncation",
+            Self::Compaction => "compaction",
+            Self::Materialization => "materialization",
+            Self::SnapshotPruning => "snapshot_pruning",
+            Self::Retention => "retention",
+            Self::Quarantine => "quarantine",
+            Self::Purge => "purge",
+            Self::Repair => "repair",
+            Self::HealthCollection => "health_collection",
+            Self::CachePreheat => "cache_preheat",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub(crate) enum RetentionDecision {

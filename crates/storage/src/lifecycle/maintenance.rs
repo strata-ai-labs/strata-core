@@ -157,6 +157,52 @@ pub(crate) enum LifecycleWriteAdmissionStatus {
     AcceptedUnderPressure,
 }
 
+/// How many failed-task detail records the executor retains. The counters alone
+/// cannot classify a failure after the fact (#2763: seven red nightlies whose
+/// logs said only `failed: 4`); the ring keeps the newest failures' kind,
+/// reason, and error code for the status/summary surfaces.
+pub(crate) const MAINTENANCE_FAILURE_RECORD_CAPACITY: usize = 4;
+
+/// Detail captured when a maintenance task fails: which task class failed and
+/// why, in code form. Everything is `Copy` so the record rides the `Copy`
+/// status/summary types unchanged.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MaintenanceFailureRecord {
+    kind: MaintenanceTaskKind,
+    reason: Option<&'static str>,
+    source_error_code: Option<&'static str>,
+}
+
+impl MaintenanceFailureRecord {
+    fn from_outcome(outcome: &MaintenanceOutcome) -> Self {
+        Self {
+            kind: outcome.task_kind(),
+            reason: outcome.reason(),
+            source_error_code: outcome.source_error().map(LifecycleError::code),
+        }
+    }
+
+    fn from_error(kind: MaintenanceTaskKind, error: &LifecycleError) -> Self {
+        Self {
+            kind,
+            reason: None,
+            source_error_code: Some(error.code()),
+        }
+    }
+
+    pub(crate) const fn task_kind(self) -> MaintenanceTaskKind {
+        self.kind
+    }
+
+    pub(crate) const fn reason(self) -> Option<&'static str> {
+        self.reason
+    }
+
+    pub(crate) const fn source_error_code(self) -> Option<&'static str> {
+        self.source_error_code
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MaintenanceExecutorStatus {
     pending_tasks: usize,
@@ -186,6 +232,10 @@ pub(crate) struct LifecycleMaintenanceExecutor {
     queue: Vec<MaintenanceTask>,
     active: Vec<MaintenanceTask>,
     stats: LifecycleMaintenanceStats,
+    /// Ring of the newest failed-task details; `stats.failed` counts, this
+    /// classifies. Indexed by `failure_sequence % capacity`.
+    recent_failures: [Option<MaintenanceFailureRecord>; MAINTENANCE_FAILURE_RECORD_CAPACITY],
+    failure_sequence: usize,
     /// Max number of concurrent Rewrite-lane tasks (compaction/materialization). `1` is the
     /// legacy single-lane behavior; the durable runtime raises this to run non-conflicting
     /// compactions concurrently. Every other lane is always effectively `1`.
@@ -1141,6 +1191,8 @@ impl LifecycleMaintenanceExecutor {
             queue: Vec::new(),
             active: Vec::new(),
             stats: LifecycleMaintenanceStats::default(),
+            recent_failures: [None; MAINTENANCE_FAILURE_RECORD_CAPACITY],
+            failure_sequence: 0,
             rewrite_lane_cap: 1,
         })
     }
@@ -1315,11 +1367,15 @@ impl LifecycleMaintenanceExecutor {
             Ok(outcome) => attach_executor_facts(outcome, task)?,
             Err(error) => {
                 self.stats.failed = self.stats.failed.saturating_add(1);
+                self.record_failure_detail(MaintenanceFailureRecord::from_error(
+                    task.kind(),
+                    &error,
+                ));
                 self.active.insert(0, task);
                 return Err(error);
             }
         };
-        self.record_outcome(outcome.status(), true);
+        self.record_outcome(&outcome, true);
         Ok(Some(outcome))
     }
 
@@ -1337,6 +1393,10 @@ impl LifecycleMaintenanceExecutor {
             let task = self.queue[index];
             if let Err(error) = fault.check(MaintenanceFaultPoint::DuringDrain, Some(&task)) {
                 self.stats.failed = self.stats.failed.saturating_add(1);
+                self.record_failure_detail(MaintenanceFailureRecord::from_error(
+                    task.kind(),
+                    &error,
+                ));
                 return Err(error);
             }
             let outcome = self.run_index(index, runner, fault, true)?;
@@ -1356,6 +1416,16 @@ impl LifecycleMaintenanceExecutor {
             self.active.len(),
             self.stats,
         )
+    }
+
+    /// The newest failed-task records, oldest first. Kept off
+    /// [`MaintenanceExecutorStatus`] so the hot-path pressure/budget copies of
+    /// that status stay small; diagnostic summaries pull this separately.
+    pub(crate) fn recent_failures(&self) -> Vec<MaintenanceFailureRecord> {
+        self.ordered_recent_failures()
+            .into_iter()
+            .flatten()
+            .collect()
     }
 
     pub(crate) fn pending_tasks(&self) -> &[MaintenanceTask] {
@@ -1438,7 +1508,7 @@ impl LifecycleMaintenanceExecutor {
             });
         }
         let outcome = attach_executor_facts(outcome, task)?;
-        self.record_outcome(outcome.status(), draining);
+        self.record_outcome(&outcome, draining);
         Ok(outcome)
     }
 
@@ -1536,6 +1606,7 @@ impl LifecycleMaintenanceExecutor {
         let restore_on_error = draining;
         if let Err(error) = fault.check(MaintenanceFaultPoint::AtTaskStart, Some(&task)) {
             self.stats.failed = self.stats.failed.saturating_add(1);
+            self.record_failure_detail(MaintenanceFailureRecord::from_error(task.kind(), &error));
             self.clear_active_task(task);
             if restore_on_error {
                 self.queue.insert(index, task);
@@ -1546,6 +1617,10 @@ impl LifecycleMaintenanceExecutor {
             Ok(outcome) => attach_executor_facts(outcome, task)?,
             Err(error) => {
                 self.stats.failed = self.stats.failed.saturating_add(1);
+                self.record_failure_detail(MaintenanceFailureRecord::from_error(
+                    task.kind(),
+                    &error,
+                ));
                 self.clear_active_task(task);
                 if restore_on_error {
                     self.queue.insert(index, task);
@@ -1558,11 +1633,11 @@ impl LifecycleMaintenanceExecutor {
                 .with_status(MaintenanceOutcomeStatus::Failed)
                 .with_reason("maintenance task failed after run")
                 .with_recovery_health(telemetry_health_debt("maintenance task failed after run")?);
-            self.record_outcome(outcome.status(), draining);
+            self.record_outcome(&outcome, draining);
             self.clear_active_task(task);
             return Ok(outcome);
         }
-        self.record_outcome(outcome.status(), draining);
+        self.record_outcome(&outcome, draining);
         self.clear_active_task(task);
         Ok(outcome)
     }
@@ -1577,8 +1652,8 @@ impl LifecycleMaintenanceExecutor {
         }
     }
 
-    fn record_outcome(&mut self, status: MaintenanceOutcomeStatus, draining: bool) {
-        match status {
+    fn record_outcome(&mut self, outcome: &MaintenanceOutcome, draining: bool) {
+        match outcome.status() {
             MaintenanceOutcomeStatus::Completed => {
                 self.stats.completed = self.stats.completed.saturating_add(1);
             }
@@ -1590,11 +1665,37 @@ impl LifecycleMaintenanceExecutor {
             }
             MaintenanceOutcomeStatus::Failed => {
                 self.stats.failed = self.stats.failed.saturating_add(1);
+                self.record_failure_detail(MaintenanceFailureRecord::from_outcome(outcome));
             }
         }
         if draining {
             self.stats.drained = self.stats.drained.saturating_add(1);
         }
+    }
+
+    fn record_failure_detail(&mut self, record: MaintenanceFailureRecord) {
+        self.recent_failures[self.failure_sequence % MAINTENANCE_FAILURE_RECORD_CAPACITY] =
+            Some(record);
+        self.failure_sequence = self.failure_sequence.wrapping_add(1);
+    }
+
+    /// The retained failure records, oldest first.
+    fn ordered_recent_failures(
+        &self,
+    ) -> [Option<MaintenanceFailureRecord>; MAINTENANCE_FAILURE_RECORD_CAPACITY] {
+        let mut ordered = [None; MAINTENANCE_FAILURE_RECORD_CAPACITY];
+        for (position, slot) in ordered.iter_mut().enumerate() {
+            *slot = self.recent_failures[self.failure_sequence.wrapping_add(position)
+                % MAINTENANCE_FAILURE_RECORD_CAPACITY];
+        }
+        // Before the ring wraps, the occupied slots start at index zero rather
+        // than at the cursor; compact the `None` gaps out so records read
+        // oldest-to-newest from the front.
+        let mut compacted = [None; MAINTENANCE_FAILURE_RECORD_CAPACITY];
+        for (slot, record) in compacted.iter_mut().zip(ordered.into_iter().flatten()) {
+            *slot = Some(record);
+        }
+        compacted
     }
 }
 

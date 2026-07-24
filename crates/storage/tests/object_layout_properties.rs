@@ -104,6 +104,27 @@ fn reserved_layout_scan_allows_byte_string_family_labels_only() {
 }
 
 #[test]
+fn reserved_layout_scan_allows_the_quarantine_kind_label_arm_only() {
+    let label_arm = r#"            Self::Quarantine => "quarantine","#;
+    assert!(
+        reserved_layout_violations(&source_path("lifecycle/facts.rs"), label_arm).is_empty(),
+        "the exact task-kind label arm is an allowed diagnostic label"
+    );
+
+    let smuggled_alongside = r#"let _ = "quarantine"; Self::Quarantine => "quarantine","#;
+    assert_violation(
+        &reserved_layout_violations(&source_path("lifecycle/facts.rs"), smuggled_alongside),
+        "\"quarantine\"",
+    );
+
+    let smuggled_path = r#"            Self::Quarantine => "quarantine/branch","#;
+    assert_violation(
+        &reserved_layout_violations(&source_path("lifecycle/facts.rs"), smuggled_path),
+        "\"quarantine/",
+    );
+}
+
+#[test]
 fn reserved_layout_scan_rejects_seeded_production_parsers() {
     let source = r#"
 fn raw_object_name() {
@@ -247,9 +268,15 @@ struct ReservedLayoutViolation {
     fragment: &'static str,
 }
 
+/// The maintenance task-kind diagnostic label for the quarantine task spells
+/// the same as the reserved layout directory. Only this exact match-arm form
+/// is allowed — it is a kind label, not an object path.
+const ALLOWED_QUARANTINE_KIND_LABEL_ARM: &str = "Self::Quarantine => \"quarantine\",";
+
 fn reserved_layout_violations(path: &Path, source: &str) -> Vec<ReservedLayoutViolation> {
     let mut violations = Vec::new();
     for (line_number, line) in production_source_lines(source) {
+        let line = line.replacen(ALLOWED_QUARANTINE_KIND_LABEL_ARM, "", 1);
         for fragment in reserved_layout_fragments() {
             let searchable_line = line_without_allowed_byte_string_family_labels(&line, fragment);
             if searchable_line.contains(fragment) {

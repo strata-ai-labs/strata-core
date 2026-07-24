@@ -67,9 +67,10 @@ pub use diagnostics::{
 };
 pub use error::{StorageApiError, StorageApiErrorClass, StorageApiLowerLayer};
 pub use maintenance::{
-    MaintenanceDrainSummary, MaintenanceQueueSummary, MaintenanceReasonClass, MaintenanceRequest,
-    MaintenanceScope, MaintenanceSummary, MaintenanceSummaryStatus, MaintenanceTask,
-    MaintenanceWalGrowthStatus, MaintenanceWalGrowthSummary, MaintenanceWalGrowthTrigger,
+    MaintenanceDrainSummary, MaintenanceFailureSummary, MaintenanceQueueSummary,
+    MaintenanceReasonClass, MaintenanceRequest, MaintenanceScope, MaintenanceSummary,
+    MaintenanceSummaryStatus, MaintenanceTask, MaintenanceWalGrowthStatus,
+    MaintenanceWalGrowthSummary, MaintenanceWalGrowthTrigger,
 };
 pub use options::{
     StorageBackgroundMaintenanceOptions, StorageBudgetPolicy, StorageCachePreheatPolicy,
