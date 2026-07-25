@@ -1274,3 +1274,86 @@ fn commit_watermark_publishes_at_seal_points_and_is_monotonic() {
         "a marker at or above the sealed maximum must not republish"
     );
 }
+
+/// Background truncation deletes covered segments on an off-lock retention
+/// clone while the commit path's growth sampling scans under the lock — a
+/// segment listed at the start of the scan can be gone by the time its size
+/// is read. A vanished segment's bytes are already reclaimed; the sample
+/// must skip it, never fail the commit-path caller.
+#[test]
+fn growth_sampling_skips_a_segment_deleted_between_listing_and_stat() {
+    let backend = StoredWalBackend::new();
+    let vanished = seed_segment(&backend, 1, &[record(1, "one")]);
+    let survivor = seed_segment(&backend, 2, &[record(2, "two")]);
+    seed_segment(&backend, 3, &[record(3, "three")]);
+    let survivor_bytes = backend
+        .object_metadata(&survivor)
+        .expect("survivor size")
+        .size_bytes();
+
+    let service = WalService::open(
+        &backend,
+        database_id(),
+        3,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::new(64 * 1024),
+    )
+    .expect("open WAL service");
+    let active_size = backend
+        .object_metadata(&wal_segment(3))
+        .expect("active size")
+        .size_bytes();
+
+    // Freeze the race window: the listing still names segment 1, but its
+    // object is gone (the off-lock truncation clone deleted it mid-scan).
+    backend.set_list_order(vec![vanished.clone(), survivor.clone(), wal_segment(3)]);
+    backend
+        .delete_object(&vanished)
+        .expect("simulate the concurrent truncation delete");
+
+    let facts = service
+        .growth_facts()
+        .expect("a concurrently-deleted segment must not fail growth sampling");
+    assert_eq!(
+        facts.retained_segments(),
+        2,
+        "the vanished segment is excluded; survivor + active remain"
+    );
+    assert_eq!(
+        facts.retained_bytes(),
+        survivor_bytes + active_size,
+        "retained bytes count only the survivor and the active segment"
+    );
+}
+
+/// Direction control: only absence is tolerated — a stat failure that is
+/// not `NotFound` still fails the sample loudly.
+#[test]
+fn growth_sampling_still_fails_when_segment_stat_errors_are_not_absence() {
+    let backend = StoredWalBackend::new();
+    seed_segment(&backend, 1, &[record(1, "one")]);
+    let broken = seed_segment(&backend, 2, &[record(2, "two")]);
+    seed_segment(&backend, 3, &[record(3, "three")]);
+
+    let service = WalService::open(
+        &backend,
+        database_id(),
+        3,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::new(64 * 1024),
+    )
+    .expect("open WAL service");
+    backend.fail_metadata_for(&broken);
+
+    let error = service
+        .growth_facts()
+        .expect_err("non-absence stat failures must propagate");
+    assert!(
+        matches!(
+            &error,
+            WalServiceError::Backend { operation: WalOperation::List, source, .. }
+                if source.kind() == BackendErrorKind::Unavailable
+        ),
+        "unexpected error shape: {error:?}"
+    );
+}
