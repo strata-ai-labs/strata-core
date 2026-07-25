@@ -1575,6 +1575,38 @@ fn api_flush_honors_configured_data_block_bytes() {
 }
 
 #[test]
+#[cfg(feature = "localfs")]
+fn wal_growth_backpressure_paces_by_driving_further_policy_evaluations() {
+    use std::time::Duration;
+
+    let mut runtime = open_durable_runtime_with_options(
+        "wal-growth-backpressure-paces",
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+            .with_wal_growth_policy(StorageWalGrowthPolicy::thresholds(1, usize::MAX, u64::MAX)),
+    );
+    assert!(runtime.set_background_block_wait_for_test(
+        Duration::from_millis(5),
+        Duration::from_millis(200),
+        1,
+    ));
+
+    // One commit crosses both the 1-byte trigger and the 16x backpressure
+    // bound, so its own evaluation enqueues the four-task growth bundle and
+    // the post-commit pacing loop must run at least one iteration — each
+    // iteration re-evaluates the policy, which enqueues or coalesces another
+    // bundle. The counters are cumulative, so the assertion is race-free
+    // against background workers draining the queue.
+    runtime
+        .commit(&put_batch(b"growth-pacing", &[0x42; 256]))
+        .expect("commit over backpressure");
+    let status = runtime.maintenance_status().expect("maintenance status");
+    assert!(
+        status.enqueued() + status.coalesced() >= 8,
+        "the pacing loop never re-evaluated the growth policy: {status:?}"
+    );
+}
+
+#[test]
 fn wal_growth_pacing_waits_only_on_evaluations_that_enqueued_maintenance() {
     use crate::api::runtime::wal_growth_pacing_applies;
     use crate::lifecycle::LifecycleWalGrowthStatus;
