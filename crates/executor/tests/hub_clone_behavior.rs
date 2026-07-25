@@ -50,7 +50,11 @@ fn serve_bundle(
     std::thread::spawn(move || {
         let objects = Arc::new(objects);
         for _ in 0..64 {
-            let Ok(Some(request)) = server.recv_timeout(std::time::Duration::from_secs(5)) else {
+            // #2803: the idle window must outlast sanitizer-slowed client
+            // startup (tokio runtime + reqwest build take >5s under TSan;
+            // a dead listener then eats the whole client retry budget). The
+            // thread still self-reaps a minute after the test ends.
+            let Ok(Some(request)) = server.recv_timeout(std::time::Duration::from_secs(60)) else {
                 return;
             };
             let url = request.url().to_owned();
@@ -173,7 +177,8 @@ fn hub_clone_transport_failures_report_the_transport_code() {
     let server = tiny_http::Server::http("127.0.0.1:0").expect("binds");
     let port = server.server_addr().to_ip().expect("addr").port();
     std::thread::spawn(move || {
-        while let Ok(Some(request)) = server.recv_timeout(std::time::Duration::from_secs(3)) {
+        // #2803: same sanitizer-startup window as the full mock above.
+        while let Ok(Some(request)) = server.recv_timeout(std::time::Duration::from_secs(60)) {
             let _ = request.respond(tiny_http::Response::empty(404));
         }
     });
