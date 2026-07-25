@@ -93,6 +93,9 @@ jobs:
     timeout-minutes: 240
     env:
       TSAN_OPTIONS: suppressions=${{ github.workspace }}/.tsan-suppressions
+      # #2803: TSan runs 5-15x slower than native; the hub transport's 30s
+      # wall-clock default expires on legitimate mock-hub round trips.
+      STRATA_HUB_TIMEOUT_SECONDS: "180"
     steps:
       - uses: actions/checkout@v4
       - name: Authorize private git dependencies
