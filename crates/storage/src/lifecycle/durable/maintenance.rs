@@ -9,8 +9,9 @@ use crate::commit::{
 };
 use crate::format::TableManifest;
 use crate::lifecycle::checkpoint::{
-    branch_checkpoint_flush_boundary, branch_has_unflushed_rows_at_or_below,
-    checkpoint_durable_rows_with_budget, checkpoint_durable_runtime_with_budget,
+    any_branch_holds_unmaterialized_inherited_layers, branch_checkpoint_flush_boundary,
+    branch_has_unflushed_rows_at_or_below, checkpoint_durable_rows_with_budget,
+    checkpoint_durable_runtime_with_budget,
     checkpoint_request_from_maintenance_task_with_snapshot_id, non_seeded_branch_has_durable_base,
     persist_flush_watermark, persist_flush_watermark_with_table_manifest_proof,
     recovery_health_epoch, truncate_wal, wal_truncation_request_from_maintenance_task,
@@ -1448,6 +1449,31 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         dead_code,
         reason = "pre-public-boundary policy hook is consumed by lifecycle hardening tests"
     )]
+    /// The multi-branch guard states under which the checkpoint a growth
+    /// trigger would enqueue is structurally deferred at execution:
+    /// enqueue-mirrors-execution, so the policy never feeds the executor
+    /// tasks that can only churn (#2792 — a non-seeded branch with a durable
+    /// table base; the deferral-completion storm livelocked small-core
+    /// hosts) and never hard-fails on the fresh-fork window (#2798 —
+    /// unmaterialized COW inherited layers that `checkpoint_rows` refuses).
+    /// The execution-time guards stay authoritative; while either holds, the
+    /// WAL hard cap is advisory — unbounded growth is the documented V1
+    /// multi-branch trade, and pacing writers against it converts disk
+    /// headroom into unavailability.
+    fn structurally_deferred_checkpoint_reason(&self) -> LifecycleResult<Option<&'static str>> {
+        if non_seeded_branch_has_durable_base(&self.branch_catalog, self.initial_branch_id)? {
+            return Ok(Some(
+                "checkpoint policy deferred while a non-seeded branch holds a durable table base",
+            ));
+        }
+        if any_branch_holds_unmaterialized_inherited_layers(&self.branch_catalog)? {
+            return Ok(Some(
+                "checkpoint policy deferred while a branch holds unmaterialized inherited layers",
+            ));
+        }
+        Ok(None)
+    }
+
     pub(crate) fn evaluate_wal_growth_policy(
         &mut self,
     ) -> LifecycleResult<LifecycleWalGrowthOutcome> {
@@ -1505,26 +1531,12 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 },
             ));
         }
-        // #2792: the checkpoint this trigger would enqueue is structurally
-        // deferred while any non-seeded branch holds a durable table base (the
-        // multi-branch recovery guard on the checkpoint executor). Enqueueing
-        // anyway churned the executor with deferral completions at commit rate
-        // and paced writers on WAL relief that truncation cannot deliver — the
-        // checkpoint waterline never advances — livelocking small-core hosts.
-        // Defer the evaluation itself; the execution-time guard stays
-        // authoritative. While the guard is latched the WAL hard cap is
-        // advisory: unbounded growth is the documented V1 multi-branch trade,
-        // and pacing writers against it converts disk headroom into
-        // unavailability.
-        if non_seeded_branch_has_durable_base(&self.branch_catalog, self.initial_branch_id)? {
+        if let Some(reason) = self.structurally_deferred_checkpoint_reason()? {
             return Ok(LifecycleWalGrowthOutcome::deferred(
                 facts,
                 commits_since_checkpoint,
                 Some(trigger),
-                LifecycleError::InvalidLifecycleState {
-                    reason:
-                        "checkpoint policy deferred while a non-seeded branch holds a durable table base",
-                },
+                LifecycleError::InvalidLifecycleState { reason },
             ));
         }
         if let Some(error) = policy_admission_error(self.state) {
@@ -1905,6 +1917,21 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 MaintenanceOutcomeStatus::Deferred,
             )
             .with_reason("checkpoint deferred: non-seeded branch holds a durable table base");
+            let outcome = self.maintenance.finish_started(task, outcome, false)?;
+            self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+            return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+        }
+        // #2798: the fresh-fork window — a branch carrying unmaterialized COW
+        // inherited layers passes the durable-base guard (it owns no tables)
+        // but `checkpoint_rows` refuses to serialize it. Structural deferral,
+        // exactly like the arm above; failing the task here tripped the
+        // stress lane's zero-failures gate on the first full-speed run.
+        if any_branch_holds_unmaterialized_inherited_layers(&self.branch_catalog)? {
+            let outcome = MaintenanceOutcome::new(
+                crate::lifecycle::MaintenanceTaskKind::Checkpoint,
+                MaintenanceOutcomeStatus::Deferred,
+            )
+            .with_reason("checkpoint deferred: branch holds unmaterialized inherited layers");
             let outcome = self.maintenance.finish_started(task, outcome, false)?;
             self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
             return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));

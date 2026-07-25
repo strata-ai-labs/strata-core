@@ -189,6 +189,59 @@ fn automatic_checkpoint_triggers_when_retained_segments_exceed_threshold() {
 }
 
 #[test]
+fn checkpoint_reports_the_unmaterialized_inherited_layers_deferral_distinctly() {
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
+    let initial = branch_id(0x75);
+    let extra = branch_id(0x76);
+    let mut runtime = open_durable_runtime(initial, backend, LifecycleWalGrowthPolicy::disabled());
+
+    // Seal an owned table on the seeded branch so the fork below is COW:
+    // the child carries inherited layers and owns nothing.
+    runtime
+        .execute_durable_commit(
+            durable_batch(initial, b"initial-base", b"initial-base-value"),
+            generation_guard(),
+        )
+        .expect("commit initial base");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate initial");
+    runtime
+        .flush_frozen(
+            &FlushFrozenRequest::new(
+                initial,
+                None,
+                FlushTableIdentitySeed::new("initial-seed").expect("seed"),
+                FlushTableObjectId::new("initial-object").expect("object id"),
+            )
+            .expect("flush request"),
+        )
+        .expect("flush initial");
+    runtime
+        .fork_current(
+            initial,
+            extra,
+            CommitBranchGeneration::new(1).expect("generation"),
+        )
+        .expect("fork extra");
+
+    let request = LifecycleCheckpointRequest::new(initial, 1, Timestamp::from_micros(9_500))
+        .expect("checkpoint request");
+    let outcome = runtime.checkpoint(&request).expect("checkpoint runs");
+    // The distinct status and reason, not the generic deferral: the fresh
+    // fork's unmaterialized inherited layers are their own structural state.
+    assert_eq!(
+        outcome.status(),
+        LifecycleCheckpointStatus::DeferredUnmaterializedInheritedLayers
+    );
+    assert_eq!(
+        outcome.maintenance_outcome().reason(),
+        Some("checkpoint deferred: branch holds unmaterialized inherited layers")
+    );
+}
+
+#[test]
 fn wal_growth_policy_defers_while_a_non_seeded_branch_holds_a_durable_base() {
     let backend: &'static CheckpointTestBackend =
         crate::testkit::leak_static(CheckpointTestBackend::new());

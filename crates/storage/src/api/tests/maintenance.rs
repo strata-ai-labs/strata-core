@@ -197,6 +197,51 @@ fn api_checkpoint_returns_watermark_facts() {
 }
 
 #[test]
+#[cfg(feature = "localfs")]
+fn checkpoint_defers_while_a_fork_holds_unmaterialized_inherited_layers() {
+    let mut runtime = open_durable_runtime_with_options(
+        "checkpoint-fork-inherited-defers",
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+    );
+    runtime
+        .commit(&put_batch(b"base-row", b"value"))
+        .expect("commit base");
+    // Seal an owned table on the seeded branch so the fork is COW-structural:
+    // the child references that table through an inherited layer and owns no
+    // tables of its own.
+    let flush = runtime
+        .maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Flush,
+            MaintenanceScope::Branch(branch()),
+        ))
+        .expect("flush outcome");
+    assert_eq!(flush.status(), MaintenanceSummaryStatus::Completed);
+    fork_branch(&mut runtime, branch_with(0xC5));
+
+    // The fork's inherited layers are not materialized yet, so a checkpoint
+    // cannot include it. That is a structural deferral — the same posture as
+    // the durable-base guard one state later in the fork's lifecycle — never
+    // a hard task failure (#2798 recorded failed_precondition.lifecycle.
+    // branch_runtime here and tripped the stress lane's failure gate).
+    let outcome = runtime
+        .maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Checkpoint,
+            MaintenanceScope::Global,
+        ))
+        .expect("checkpoint outcome");
+    assert_eq!(
+        outcome.status(),
+        MaintenanceSummaryStatus::Deferred,
+        "{outcome:?}"
+    );
+    assert_eq!(
+        outcome.reason_class(),
+        Some(MaintenanceReasonClass::Deferred),
+        "{outcome:?}"
+    );
+}
+
+#[test]
 fn api_checkpoint_after_close_rejects() {
     let mut runtime = open_runtime();
     runtime.close().expect("close runtime");

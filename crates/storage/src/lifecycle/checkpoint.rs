@@ -62,6 +62,13 @@ pub(crate) enum LifecycleCheckpointStatus {
     /// branch holds a durable table-manifest base, so recording a snapshot would risk a
     /// non-contiguous recovery gap for that branch (see `non_seeded_branch_has_durable_base`).
     DeferredNonSeededBranchBase,
+    /// Deferred because a branch still carries unmaterialized COW inherited layers — the
+    /// fresh-fork window before materialization or a first flush. `checkpoint_rows` cannot
+    /// serialize such a branch, and the state is structural, not a task failure: the fork
+    /// either materializes (gaining owned tables, which latches
+    /// [`Self::DeferredNonSeededBranchBase`]) or stays COW, and either way a checkpoint
+    /// cannot proceed (#2798).
+    DeferredUnmaterializedInheritedLayers,
     SnapshotPublishedManifestNotUpdated,
     SnapshotVisibilityUncertain,
     FlushWatermarkFailed,
@@ -271,6 +278,13 @@ impl LifecycleCheckpointOutcome {
         }
     }
 
+    fn deferred_unmaterialized_inherited_layers(request: &LifecycleCheckpointRequest) -> Self {
+        Self {
+            status: LifecycleCheckpointStatus::DeferredUnmaterializedInheritedLayers,
+            ..Self::deferred(request)
+        }
+    }
+
     fn completed(
         request: &LifecycleCheckpointRequest,
         watermark: CommitVersion,
@@ -401,7 +415,8 @@ impl LifecycleCheckpointOutcome {
         let status = match self.status {
             LifecycleCheckpointStatus::Completed => MaintenanceOutcomeStatus::Completed,
             LifecycleCheckpointStatus::DeferredNoVisibleRows
-            | LifecycleCheckpointStatus::DeferredNonSeededBranchBase => {
+            | LifecycleCheckpointStatus::DeferredNonSeededBranchBase
+            | LifecycleCheckpointStatus::DeferredUnmaterializedInheritedLayers => {
                 MaintenanceOutcomeStatus::Deferred
             }
             LifecycleCheckpointStatus::SnapshotPublishedManifestNotUpdated
@@ -442,6 +457,9 @@ impl LifecycleCheckpointOutcome {
             }
             LifecycleCheckpointStatus::DeferredNonSeededBranchBase => {
                 Some("checkpoint deferred: non-seeded branch holds a durable table base")
+            }
+            LifecycleCheckpointStatus::DeferredUnmaterializedInheritedLayers => {
+                Some("checkpoint deferred: branch holds unmaterialized inherited layers")
             }
             LifecycleCheckpointStatus::SnapshotPublishedManifestNotUpdated => {
                 Some("checkpoint snapshot published before manifest update failed")
@@ -1603,6 +1621,9 @@ pub(crate) fn checkpoint_durable_runtime_with_budget(
             request,
         ));
     }
+    if any_branch_holds_unmaterialized_inherited_layers(branch_catalog)? {
+        return Ok(LifecycleCheckpointOutcome::deferred_unmaterialized_inherited_layers(request));
+    }
     // The request's `branch_id` is informational — it identifies the
     // branch whose maintenance task triggered the checkpoint. The
     // encoder reads rows from every active branch in the catalog so
@@ -1641,6 +1662,26 @@ pub(crate) fn checkpoint_durable_runtime_with_budget(
             Ok((combined, has_durable_rows, flush_boundary, timeline_groups))
         },
     )
+}
+
+/// Whether any active branch still carries unmaterialized COW inherited
+/// layers — the fresh-fork window. `checkpoint_rows` refuses such a branch,
+/// so a checkpoint over the catalog is structurally impossible until the
+/// fork materializes or gains its own durable base (#2798); callers defer,
+/// mirroring [`non_seeded_branch_has_durable_base`].
+pub(crate) fn any_branch_holds_unmaterialized_inherited_layers(
+    branch_catalog: &crate::lifecycle::LifecycleBranchCatalog,
+) -> LifecycleResult<bool> {
+    for descriptor in branch_catalog.list_branches(false) {
+        if !branch_catalog
+            .branch_state(descriptor.branch_id())?
+            .inherited_layers()
+            .is_empty()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// A checkpoint must defer when a branch other than the recovery-seeded branch holds a durable
