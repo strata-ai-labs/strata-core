@@ -1363,6 +1363,46 @@ mod tests {
     }
 
     #[test]
+    fn metadata_probe_does_not_create_missing_parent_directories() {
+        // A read-only probe walks parents with create_missing=false: it must
+        // report absence, never manufacture the directory chain.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("ghost/sub/object").expect("name");
+        let error = backend.object_metadata(&name).expect_err("missing object");
+        assert_eq!(error.kind(), BackendErrorKind::NotFound);
+        assert!(
+            !dir.path().join("ghost").exists(),
+            "a metadata probe created parent directories"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publish_surfaces_the_real_directory_creation_error() {
+        use std::os::unix::fs::PermissionsExt;
+        // When create_dir fails for a real reason, that error must surface —
+        // not a follow-on NotFound from treating the failure as success.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).expect("locked dir");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555))
+            .expect("read-only");
+        let name = ObjectName::new("locked/child/object").expect("name");
+        let error = backend
+            .publish_object(&name, b"bytes", PublishMode::Create)
+            .expect_err("publish into a read-only parent must fail");
+        assert_eq!(
+            error.source_error().kind(),
+            BackendErrorKind::PermissionDenied,
+            "{error:?}"
+        );
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
+            .expect("restore permissions");
+    }
+
+    #[test]
     fn concurrent_publishes_into_a_fresh_directory_all_succeed() {
         // Two workers publishing the first objects into a directory that does
         // not exist yet must both succeed: losing the parent-directory
