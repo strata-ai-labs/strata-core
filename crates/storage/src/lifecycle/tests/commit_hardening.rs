@@ -189,6 +189,76 @@ fn automatic_checkpoint_triggers_when_retained_segments_exceed_threshold() {
 }
 
 #[test]
+fn wal_growth_policy_defers_on_unmaterialized_inherited_layers_without_churn() {
+    // TCP4.14 choreography: the growth-policy (enqueue) side of the fresh-
+    // fork window, plus the anti-churn oracle — a structurally-deferred
+    // state must never feed the executor (#2792's signature was thousands
+    // of deferral completions per second; here the queue must stay EMPTY
+    // across repeated triggered evaluations, not merely drain).
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
+    let initial = branch_id(0x77);
+    let extra = branch_id(0x78);
+    let policy = LifecycleWalGrowthPolicy::new(u64::MAX, usize::MAX, Some(3));
+    let mut runtime = open_durable_runtime(initial, backend, policy);
+
+    runtime
+        .execute_durable_commit(
+            durable_batch(initial, b"initial-base", b"initial-base-value"),
+            generation_guard(),
+        )
+        .expect("commit initial base");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate initial");
+    runtime
+        .flush_frozen(
+            &FlushFrozenRequest::new(
+                initial,
+                None,
+                FlushTableIdentitySeed::new("initial-seed").expect("seed"),
+                FlushTableObjectId::new("initial-object").expect("object id"),
+            )
+            .expect("flush request"),
+        )
+        .expect("flush initial");
+    runtime
+        .fork_current(
+            initial,
+            extra,
+            CommitBranchGeneration::new(1).expect("generation"),
+        )
+        .expect("fork extra");
+
+    let mut triggered = 0;
+    for round in 0..6u8 {
+        runtime
+            .execute_durable_commit(
+                durable_batch(
+                    extra,
+                    Box::leak(format!("churn-{round}").into_bytes().into_boxed_slice()),
+                    b"value",
+                ),
+                generation_guard(),
+            )
+            .expect("commit over trigger");
+        let outcome = runtime
+            .last_wal_growth_outcome()
+            .expect("automatic policy outcome");
+        if outcome.trigger().is_some() {
+            triggered += 1;
+            assert_eq!(outcome.status(), LifecycleWalGrowthStatus::Deferred);
+        }
+        assert_eq!(
+            runtime.maintenance_status().pending_tasks(),
+            0,
+            "round {round}: a structurally-deferred checkpoint reached the queue"
+        );
+    }
+    assert!(triggered >= 3, "vacuous: the trigger never fired");
+}
+
+#[test]
 fn checkpoint_reports_the_unmaterialized_inherited_layers_deferral_distinctly() {
     let backend: &'static CheckpointTestBackend =
         crate::testkit::leak_static(CheckpointTestBackend::new());

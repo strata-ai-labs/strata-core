@@ -1616,13 +1616,18 @@ pub(crate) fn checkpoint_durable_runtime_with_budget(
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<LifecycleCheckpointOutcome> {
     request.validate()?;
-    if non_seeded_branch_has_durable_base(branch_catalog, seeded_branch_id)? {
-        return Ok(LifecycleCheckpointOutcome::deferred_non_seeded_branch_base(
-            request,
-        ));
-    }
-    if any_branch_holds_unmaterialized_inherited_layers(branch_catalog)? {
-        return Ok(LifecycleCheckpointOutcome::deferred_unmaterialized_inherited_layers(request));
+    match checkpoint_structural_deferral(branch_catalog, seeded_branch_id)? {
+        Some(CheckpointStructuralDeferral::NonSeededDurableBase) => {
+            return Ok(LifecycleCheckpointOutcome::deferred_non_seeded_branch_base(
+                request,
+            ));
+        }
+        Some(CheckpointStructuralDeferral::UnmaterializedInheritedLayers) => {
+            return Ok(
+                LifecycleCheckpointOutcome::deferred_unmaterialized_inherited_layers(request),
+            );
+        }
+        None => {}
     }
     // The request's `branch_id` is informational — it identifies the
     // branch whose maintenance task triggered the checkpoint. The
@@ -1664,12 +1669,50 @@ pub(crate) fn checkpoint_durable_runtime_with_budget(
     )
 }
 
+/// TCP4.14: the checkpoint's structural-deferral states — conditions only a
+/// state change resolves (materialization, base gain), as opposed to
+/// transient waits (quiesce, commit guards). One variant per underlying
+/// predicate; consumers map variants to their surface's status/reason.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CheckpointStructuralDeferral {
+    /// A non-seeded branch holds a durable table base — a snapshot now would
+    /// risk a non-contiguous recovery gap for that branch.
+    NonSeededDurableBase,
+    /// A branch still carries unmaterialized COW inherited layers — the
+    /// fresh-fork window `checkpoint_rows` refuses to serialize (#2798).
+    UnmaterializedInheritedLayers,
+}
+
+/// TCP4.14: the single authority for checkpoint structural deferrals.
+/// Enqueue mirrors execution BY CONSTRUCTION: the growth-policy evaluation,
+/// the background executor's guard arms, and the synchronous checkpoint path
+/// all consult this one function, and the underlying predicates are private
+/// so a new scheduling site cannot consult a divergent subset (#2792 and
+/// #2798 were both the fork lifecycle and checkpoint scheduling disagreeing
+/// about the same state). The close-drain path deliberately uses a STRICTER
+/// any-non-seeded-branch predicate (see `durable/close.rs`) — a different
+/// decision with its own documented rationale, not a registry bypass.
+pub(crate) fn checkpoint_structural_deferral(
+    branch_catalog: &crate::lifecycle::LifecycleBranchCatalog,
+    seeded_branch_id: BranchId,
+) -> LifecycleResult<Option<CheckpointStructuralDeferral>> {
+    if non_seeded_branch_has_durable_base(branch_catalog, seeded_branch_id)? {
+        return Ok(Some(CheckpointStructuralDeferral::NonSeededDurableBase));
+    }
+    if any_branch_holds_unmaterialized_inherited_layers(branch_catalog)? {
+        return Ok(Some(
+            CheckpointStructuralDeferral::UnmaterializedInheritedLayers,
+        ));
+    }
+    Ok(None)
+}
+
 /// Whether any active branch still carries unmaterialized COW inherited
 /// layers — the fresh-fork window. `checkpoint_rows` refuses such a branch,
 /// so a checkpoint over the catalog is structurally impossible until the
-/// fork materializes or gains its own durable base (#2798); callers defer,
-/// mirroring [`non_seeded_branch_has_durable_base`].
-pub(crate) fn any_branch_holds_unmaterialized_inherited_layers(
+/// fork materializes or gains its own durable base (#2798). Private:
+/// reachable only through [`checkpoint_structural_deferral`].
+fn any_branch_holds_unmaterialized_inherited_layers(
     branch_catalog: &crate::lifecycle::LifecycleBranchCatalog,
 ) -> LifecycleResult<bool> {
     for descriptor in branch_catalog.list_branches(false) {
@@ -1692,7 +1735,7 @@ pub(crate) fn any_branch_holds_unmaterialized_inherited_layers(
 /// Deferring leaves those rows in the WAL/memtable until the configuration is recoverable again.
 /// The per-branch fix that lifts this guard (a durable per-branch flushed-branch set + per-branch
 /// recovery) is tracked in multi-branch-orphaned-delta-recovery-gap.md.
-pub(crate) fn non_seeded_branch_has_durable_base(
+fn non_seeded_branch_has_durable_base(
     branch_catalog: &crate::lifecycle::LifecycleBranchCatalog,
     seeded_branch_id: BranchId,
 ) -> LifecycleResult<bool> {
