@@ -470,6 +470,107 @@ exploration exhausts the tractable interleavings, and the ratio has reached
 then does the separate review round decide whether to publish the ratio as an
 external credibility headline.
 
+## Phase 5 — Performance gates (the regression apparatus)
+
+Phases 1–4 protect *what* the engine computes; nothing yet protects *how fast*.
+At the current change rate a performance regression is a when, not an if — and
+the evidence is already in hand: **#2792 was a performance bug** (a livelock is
+an unbounded regression) and the only thing that caught it was a 4-hour CI job
+timeout. Perf needs its own apparatus class, with the same honesty discipline
+as the coverage program: gates that flap get ignored, and gates that only run
+on a dev box protect nothing.
+
+### Phase 5 principles
+
+1. **Noise discipline decides everything.** Shared CI runners carry 2–3×
+   wall-clock variance; a naive absolute-time gate either flaps or is tuned
+   blind. Three measurement classes, by determinism:
+   - **Deterministic counters** — instruction counts (cachegrind /
+     iai-callgrind, reproducible to ~±0.5% on any hardware), allocation
+     counts, peak RSS per phase (the 4.9b `VmHWM` subprocess technique).
+     These gate *hard, per-PR*, without flapping.
+   - **Same-runner relative A/B** — the main-branch binary and the PR binary
+     interleaved on one runner; only the *ratio* gates. This is the
+     control-first rule (M12 false-positive chain) turned into apparatus.
+   - **Wall-clock** — nightly trend material only, never a per-PR gate.
+2. **Dev-box numbers never set CI floors** (the #2764 coverage-floor lesson as
+   law). The one exception is instruction counts, which are
+   hardware-independent by construction.
+3. **Measure the shipping path.** Gates run through the executor wire and the
+   storage public API — internal microkernels may inform, but the number that
+   gates is the one a user would feel (M12 lesson).
+4. **A stall is a perf bug.** Every stress/soak lane carries an in-test
+   progress deadline and a wall-time budget so a livelock fails in minutes
+   with a thread/state dump — not at a job timeout with nothing (#2792 seed).
+5. **Advisory before blocking.** A new gate earns blocking status by
+   demonstrated flap rate (sustained clean nights), not by optimism.
+
+### Phase 5 slices
+
+| # | Slice | Scope | Status |
+|---|---|---|---|
+| 5.1 | **Liveness budgets on existing lanes** | In-test progress deadlines + per-lane wall-time budgets across the stress/soak/crash lanes (the deadline owed from #2792): a lane that stops progressing fails within minutes and dumps scheduler/thread state, instead of eating the job budget silently. Cheapest slice, immediately owed | Planned |
+| 5.2 | **Deterministic per-PR gates** | iai-callgrind instruction-count benches over the hot shipping paths (commit, kv get/scan, json get/set via the wire, WAL append + recovery replay); allocation-count and binary-size ratchets; `perf_floors.py` mirroring the `coverage_floors.py` ratchet discipline. No flap risk by construction — the first gate class that can block merges | Planned |
+| 5.3 | **Same-runner A/B relative gate** | Build both the merge-base and PR binaries in one job, run the scenario set interleaved (A/B/A/B), gate on median-of-N ratio with a guard band and a confirm-rerun on failure. Advisory first; blocking once the flap rate is proven | Planned |
+| 5.4 | **Nightly macro trend lane** | The `benchmarks/` scenarios at CI scale on the runner: results appended to a JSONL history artifact (the crate's existing provenance-tagged schema), alarm on *k-night sustained drift* (never single-night deltas), runner-measured peak-RSS budgets per scenario. This is also the vehicle for the M9F/M10D benchmark re-baseline — the stale dev-box baselines retire here | Planned |
+| 5.5 | **Release-leg comparative + GPU** | Peer-comparative runs (SQLite / DuckDB / Redis framing) on dedicated hardware, dispatch-only; GPU hot-tier gates (the decode-p95 class) stay dev-box dispatch — runners have no GPU | Planned |
+
+### The `benchmarks/` crate: audit and required changes (2026-07-25)
+
+The apparatus builds on the in-repo `benchmarks/` crate, not the external
+`strata-benchmarks` repo. Audit of what exists: **13 V1-native bench binaries**
+(engine YCSB A–F with Zipfian/Uniform/Latest distributions and per-op-type
+latency percentiles, driven through the *public* engine API — the shipping
+path; engine kv-scale / scan-regression / vector-indexing; six storage-level
+bins covering point reads, concurrent readers/writers, L0 compaction,
+after-version scans, L9 scale; a RocksDB YCSB comparative behind
+`rocksdb-compare`; a `bench-compare` A/B table tool), a recorder with a
+provenance-tagged JSON schema (git commit/branch/dirty + hardware), `/proc`
+CPU-time and context-switch capture, jemalloc pinned globally with a
+cross-cutover comparability rationale plus jemalloc-ctl phase gauges
+(allocated/active/resident/retained), and a 68-entry `history/history.json`.
+It builds clean against current `main` and is deliberately outside the
+workspace (jemalloc + RocksDB stay out of the product dependency graph).
+
+What it is today is an *instrument*, not a *gate* — the changes each slice
+owes it:
+
+1. **Zero CI presence** (no workflow references it; everything is hand-run).
+   Every slice below ends with a CI tier, per program principle 3.
+2. **Wall-clock is the primary metric** (`Instant`-based loops). 5.2 adds
+   iai-callgrind instruction-count targets over the same shipping paths as
+   the first blocking gate class; the existing CPU-time capture is promoted
+   to a reported secondary.
+3. **Baselines are stale dev-box numbers** (Apr–Jun 2026, Ryzen 7800X3D,
+   pre-V1 branches mixed in). They violate the runner-baseline law and never
+   gate; 5.2/5.4 regenerate floors on the runner via `perf_floors.py` with
+   provenance headers, and the old files retire.
+4. **No A/B automation**: `bench-compare` renders a table but nothing builds
+   the merge-base binary, interleaves runs, or applies a guard band — that
+   driver is the whole of 5.3.
+5. **No CI-scale profiles**: defaults (100k/100k, L9/1B-scale bins) run
+   minutes-to-hours. Slices add env-scaled quick shapes (the stress-lane
+   pattern) so per-PR cost stays in minutes.
+6. **Workload seeds are not pinned**: the YCSB generators accept a seed but
+   the binaries never wire one — run-to-run workload identity is required
+   before any ratio gate is trustworthy (5.3 prerequisite).
+7. **Missing measurement classes**: no `VmHWM` capture (adopt the 4.9b
+   subprocess technique), no allocation-count ratchet (the jemalloc-ctl
+   gauges make bytes-allocated-per-op deterministic and gateable in 5.2),
+   no binary-size ratchet (trivial, 5.2).
+8. **CI wiring specifics**: the crate needs its own build/cache step (outside
+   the workspace); `rocksdb-compare` needs the libclang step the differential
+   lane already carries; the RocksDB comparison stays an informational
+   nightly artifact, never a gate (peer framing is SQLite/DuckDB/Redis).
+
+Reuse inventory beyond the crate: the storage `perf_trace` counters, the
+4.9b `VmHWM` per-phase subprocess technique, the `coverage_floors.py`
+ratchet pattern, and the GPU hot-tier gate precedent.
+
+Sequencing: 5.1 immediately (small, owed); 5.2 next (deterministic, no flap
+risk, establishes `perf_floors.py`); 5.3 once 5.2's scenario set exists and
+seeds are pinned; 5.4 on nightly capacity; 5.5 at release legs.
+
 ## Deferred register
 
 Recorded so absence is a decision, not an accident:
