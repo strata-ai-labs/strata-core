@@ -281,6 +281,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Workspace tests (release)
         run: cargo test --locked --release --workspace
+      - name: Release binary size ratchet (TCP5.2)
+        # The test step above already built the release dep graph, so this
+        # build is nearly free; the ceiling lives in scripts/perf_floors.py.
+        run: |
+          cargo build --locked --release -p strata-cli
+          python3 scripts/perf_floors.py --binary target/release/strata
 
   differential:
     # TCP4.2a/b: Strata KV vs in-process RocksDB (Tiers A/B + snapshot<->as_of
