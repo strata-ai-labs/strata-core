@@ -52,6 +52,7 @@ mod lifecycle;
     not(target_arch = "wasm32")
 ))]
 mod process_crash;
+mod progress_watchdog;
 mod quarantine_fuzz;
 mod recovery_oracle;
 #[cfg(all(
@@ -181,6 +182,7 @@ pub use lifecycle::{
     not(target_arch = "wasm32")
 ))]
 pub use process_crash::ProcessCrashOutcome;
+pub use progress_watchdog::{ProgressTicker, ProgressWatchdog};
 pub use quarantine_fuzz::{run_quarantine_service_script, QuarantineServiceFuzzOutcome};
 #[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
 pub use recovery_oracle::{run_recovery_oracle_harness, RecoveryOracleOutcome};

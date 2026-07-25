@@ -162,7 +162,15 @@ jobs:
         run: git config --global url."https://x-access-token:${{ secrets.STRATAHUB_READ_TOKEN }}@github.com/stratalab/stratahub".insteadOf "https://github.com/stratalab/stratahub"
       - uses: dtolnay/rust-toolchain@1.94.1
       - uses: Swatinem/rust-cache@v2
+      # TCP5.1 liveness budgets: every soak step carries its own wall-time
+      # budget (generous 10x+ over observed timings) so one wedged step fails
+      # in bounded time instead of eating the whole 240-minute job — #2792
+      # sat silent for 3h41m behind exactly this gap. The stress lane also
+      # carries an in-test progress watchdog that fails a hard stall within
+      # its 120s window and dumps per-session positions plus a
+      # CPU-during-stall discriminator.
       - name: Fault sweep and FS-model soaks
+        timeout-minutes: 45
         env:
           STRATA_STORAGE_FAULT_CASES: "10000"
         run: |
@@ -170,22 +178,26 @@ jobs:
           cargo test --locked -p strata-storage --features fault-injection --test recovery_read_faults -- --ignored
           cargo test --locked -p strata-storage --features fault-injection --test fs_persistence_models -- --ignored
       - name: Deterministic-simulation soaks
+        timeout-minutes: 45
         # No env override: simulation cases are ~10x costlier per case, and
         # the in-file soak default (2,000) is the calibrated nightly budget.
         run: |
           cargo test --locked -p strata-storage --features fault-injection --test simulation_smoke -- --ignored
           cargo test --locked -p strata-storage --features fault-injection --test simulation_faults -- --ignored
       - name: Crash-recovery deep grids
+        timeout-minutes: 60
         env:
           STRATA_STORAGE_CRASH_CASES: "5000"
         run: |
           cargo test --locked -p strata-storage --features testkit --test crash_recovery
           cargo test --locked -p strata-storage --features testkit --test crash_recovery_oracle
       - name: Extended stress
+        timeout-minutes: 30
         env:
           STRATA_STORAGE_STRESS_SECONDS: "120"
         run: cargo test --locked -p strata-storage --features testkit --test stress
       - name: Concurrent shared-database stress (TCP4.13a)
+        timeout-minutes: 45
         # The randomized concurrent-session lane at soak scale: more
         # sessions, deeper op streams, several seeds. Per-PR CI runs the
         # same test at its small in-file defaults via the workspace suite.
