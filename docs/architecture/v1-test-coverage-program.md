@@ -514,6 +514,48 @@ on a dev box protect nothing.
 | 5.3 | **Same-runner A/B relative gate** | Build both the merge-base and PR binaries in one job, run the scenario set interleaved (A/B/A/B), gate on median-of-N ratio with a guard band and a confirm-rerun on failure. Advisory first; blocking once the flap rate is proven | Planned |
 | 5.4 | **Nightly macro trend lane** | The `benchmarks/` scenarios at CI scale on the runner: results appended to a JSONL history artifact (the crate's existing provenance-tagged schema), alarm on *k-night sustained drift* (never single-night deltas), runner-measured peak-RSS budgets per scenario. This is also the vehicle for the M9F/M10D benchmark re-baseline — the stale dev-box baselines retire here | Planned |
 | 5.5 | **Release-leg comparative + GPU** | Peer-comparative runs (SQLite / DuckDB / Redis framing) on dedicated hardware, dispatch-only; GPU hot-tier gates (the decode-p95 class) stay dev-box dispatch — runners have no GPU | Planned |
+| 5.6 | **Characteristic metrics (its own exercise)** | Internal system characteristics as first-class measured-and-gated quantities — see the dedicated section below. Runs as its own exercise with its own instrument audit, not folded into 5.1–5.4's scope | Planned |
+
+### 5.6 — Characteristic metrics (its own exercise)
+
+Latency is the loudest number but the least gateable. The internal
+characteristics below are mostly **counters and ratios — exact or near-exact
+on a seeded workload** — which puts them in the flap-proof gate class, and
+several operationalize invariants the catalog already documents but nothing
+currently enforces (SCALE-002 budget propagation, SCALE-005 bounded write
+amplification, ACID-006/007 sync discipline).
+
+| Metric | Definition | Class |
+|---|---|---|
+| Write amplification | physical bytes written (WAL + flush + compaction rewrite) / logical bytes committed | Exact ratio (SCALE-005 made a gate; `amp_repro` is the seed bin) |
+| fsyncs per commit | durability syscalls / commit, per durability mode | Exact counter (ACID-006/007 efficiency) |
+| Allocated bytes per op | jemalloc-ctl allocated delta / op | Near-exact (gauges already in `benchmarks/`) |
+| Peak RSS vs budget | `VmHWM` per phase at multiple `memory_budget` points (incl. the 512 MB Pi-class profile) | Low-noise (SCALE-002 made a gate; the 4.9b technique; #2567 is the proof this fails silently) |
+| Space amplification | disk footprint after checkpoint+quiesce / logical data size | Near-exact at fixed workload |
+| Startup / recovery | cold open (WAL replay) and warm open vs store size; replay MB/s | Wall-clock, trend-only |
+| Background quiescence | background task completions/s on an idle store → must reach ~0 | Exact (#2792's churn signature was 3,000/s on an idle 1 MB store) |
+| Write-stall tail | p99.9 commit latency / max stall under sustained load | Wall-clock, trend-only |
+
+The exercise runs in its own sequence, stacked on the 5.2 harness but not
+inside it:
+
+1. **Instrument audit** — what `perf_trace`, the jemalloc-ctl gauges, and
+   `/proc` capture already expose per metric vs what needs new plumbing
+   (e.g., a physical-bytes-written counter that spans WAL + flush +
+   compaction; `VmHWM` capture in the harness). Same shape as the
+   `benchmarks/` audit above: findings recorded here before code.
+2. **Instrumentation slices** — close the plumbing gaps found by the audit;
+   every counter lands with a test proving it moves when the underlying
+   behavior moves (the positive-control discipline).
+3. **Gate wiring** — exact counters/ratios join the per-PR deterministic
+   tier via `perf_floors.py`; scale-dependent characteristics
+   (RSS-vs-budget, space amp, startup, stall tail) join the nightly trend
+   lane; the quiescence assert lands on the soak lanes.
+
+Boundary with the other slices: 5.2 keeps its instruction-count /
+binary-size ratchets and the `perf_floors.py` mechanism; 5.6 owns the
+characteristic *metrics* end-to-end (definitions, instrumentation, gates)
+and plugs into 5.2/5.4's delivery rails rather than duplicating them.
 
 ### The `benchmarks/` crate: audit and required changes (2026-07-25)
 
