@@ -87,16 +87,34 @@ fn oracle_durability(durability: StorageDurabilityPolicy) -> OracleDurability {
 }
 
 /// Deterministic-inline maintenance: the inline executor owns the queue and spawns
-/// no worker threads, so there is nothing to detach on drop and nothing to race the
-/// crash-state snapshot or the immediate same-dir reopen (#2662 — under load,
-/// `EvaluateAndEnqueue`'s threaded workers could miss the bounded 250 ms shutdown
-/// quiesce, be detached still holding the writer lock, and fail the verify reopen
-/// with a spurious `Unavailable`). Same pattern as `testkit::simulation`.
+/// no worker threads, so the #2662 detached-worker window is closed at its main
+/// source. This does NOT make the same-dir verify reopen race-free — two CI hits
+/// (#2796) showed an in-process holder can still keep the writer lock briefly
+/// across the staging drop — which is why `open_verify_runtime` additionally
+/// carries the bounded reopen retry. Same pattern as `testkit::simulation`.
 /// (This helper's old name/comment claimed a "borrowed" open path; post-BS4.4i
 /// durable runtimes are uniformly owned, reordering backends included.)
 fn inline_options(durability: StorageDurabilityPolicy) -> StorageOpenOptions {
     StorageOpenOptions::durable_local(durability)
         .with_maintenance_scheduling_policy(StorageMaintenanceSchedulingPolicy::DeterministicInline)
+}
+
+/// The lossy verify reopen after a crash-state materialization: a
+/// same-process reopen of the case directory, routed through the sanctioned
+/// bounded retry (#2727 policy, as `testkit::simulation` does) — a briefly
+/// held writer lock is a transient, not a verdict on the store (#2796: two
+/// CI hits proved an in-process holder can outlive the staging drop even
+/// under `DeterministicInline`). Exhaustion returns the original error, so
+/// a genuine lock leak still fails loud.
+fn open_verify_runtime(
+    backend: &StorageBackend,
+) -> crate::api::StorageApiResult<crate::api::StorageOpenOutcome<'_>> {
+    crate::testkit::reopen_retry::open_with_retry_on_unavailable(|| {
+        StorageRuntime::open_with_backend(
+            inline_options(StorageDurabilityPolicy::Standard).with_strict_recovery(false),
+            backend,
+        )
+    })
 }
 
 fn case_dir(root: &Path, label: &str) -> Result<PathBuf, TestkitError> {
@@ -196,10 +214,7 @@ fn run_one_fs_model(
         let backend = StorageBackend::local_fs(root.to_path_buf());
         // Bind the open result so it drops before `backend` (reverse declaration
         // order), rather than as a tail-expression temporary that outlives it.
-        let opened = StorageRuntime::open_with_backend(
-            inline_options(StorageDurabilityPolicy::Standard).with_strict_recovery(false),
-            &backend,
-        );
+        let opened = open_verify_runtime(&backend);
         match opened {
             Ok(outcome) => {
                 let runtime = outcome.into_runtime();
@@ -320,6 +335,51 @@ pub fn run_fs_model_harness(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verify_reopen_outlasts_a_briefly_held_writer_lock() {
+        use fs2::FileExt as _;
+
+        let dir = tempfile::tempdir().expect("tmp");
+        // Stage a real store so the writer-lock object and durable state exist.
+        {
+            let backend = StorageBackend::local_fs(dir.path().to_path_buf());
+            let _runtime = StorageRuntime::open_with_backend(
+                inline_options(StorageDurabilityPolicy::Standard),
+                &backend,
+            )
+            .expect("staging open")
+            .into_runtime();
+        }
+        // Interloper: hold the writer flock briefly, exactly as an in-process
+        // holder from the previous instance would, releasing well inside the
+        // reopen retry budget. (The on-disk object suffix is ".object@".)
+        let lock_path = dir.path().join("locks/writer.object@");
+        std::fs::create_dir_all(lock_path.parent().expect("locks dir")).expect("locks dir");
+        let interloper = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .expect("open lock object");
+        interloper
+            .try_lock_exclusive()
+            .expect("interloper takes the writer lock");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(interloper);
+        });
+
+        let backend = StorageBackend::local_fs(dir.path().to_path_buf());
+        let opened = open_verify_runtime(&backend);
+        release.join().expect("release thread");
+        // A transiently held writer lock is not a verdict on the store: the
+        // verify reopen must absorb it instead of failing the whole sweep.
+        let _runtime = opened
+            .expect("verify reopen must outlast a briefly held writer lock")
+            .into_runtime();
+    }
 
     #[test]
     fn every_model_holds_the_oracle_across_seeds() {
