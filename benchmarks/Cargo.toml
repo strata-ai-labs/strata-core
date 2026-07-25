@@ -6,6 +6,10 @@ description = "Regression benchmarks for the Strata cleanup program"
 license = "Apache-2.0"
 publish = false
 autobins = false
+# `benches/ycsb_workloads.rs` is a `#[path]`-shared module, not a bench
+# target; without this it is silently auto-discovered as an empty libtest
+# bench. Every real bench target is declared explicitly below.
+autobenches = false
 
 [features]
 default = []
@@ -33,10 +37,36 @@ rocksdb = { version = "0.22.0", default-features = false, features = [
     "lz4",
 ], optional = true }
 
+# TCP5.2: the wire-level instruction-count benches drive the executor's
+# public `Command`/`Executor` surface. Default features are trimmed — `hub`
+# (HTTP/tokio) and `arrow` (parquet) are dead weight for benches.
+strata-executor = { path = "../crates/executor", default-features = false, features = [
+    "localfs",
+] }
+
 [dev-dependencies]
 byte-unit = "5.1.6"
 walkdir = "2.5.0"
 hex = "0.4"
+# TCP5.2 instruction-count gates: deterministic callgrind counts, requires
+# valgrind plus a matching-version `iai-callgrind-runner` on PATH.
+iai-callgrind = "0.16.1"
+base64 = "0.22"
+
+[[bench]]
+name = "storage_commit"
+path = "benches/storage_commit.rs"
+harness = false
+
+[[bench]]
+name = "storage_reopen"
+path = "benches/storage_reopen.rs"
+harness = false
+
+[[bench]]
+name = "wire_commands"
+path = "benches/wire_commands.rs"
+harness = false
 
 [[bin]]
 name = "bench-compare"
