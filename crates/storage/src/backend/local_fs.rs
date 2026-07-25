@@ -1,4 +1,27 @@
 //! Local filesystem backend shell.
+//!
+//! # Concurrent-mutator contract (TCP4.15)
+//!
+//! Every lister and statter here races every writer BY DESIGN: background
+//! sweeps, retention deletes, and rewrite publications run concurrently with
+//! commits and each other (#2524). Helpers are therefore written against a
+//! *mutating* filesystem, never a quiescent one — the audit below is the
+//! contract each operation upholds, and new helpers must pick their row
+//! before they land. Four TOCTOU bugs came from helpers written against the
+//! quiescent model (#2776, #2778, #2781, #2799); the conventions are now:
+//! **absence mid-operation is an outcome, not an error** (skip-NotFound,
+//! already-missing, tolerate-EEXIST), while non-absence errors stay fatal.
+//!
+//! | operation | behavior under a concurrent mutator |
+//! |---|---|
+//! | `read_object` / `read_range` / `object_metadata` | absence-propagating: a racer's delete surfaces as `NotFound`, a replace serves the new bytes; the symlink/dir prechecks are best-effort classifiers, not guards |
+//! | `write_object` | last-writer-wins: a raced delete is recreated; a raced parent-directory delete fails `NotFound` (the owner is gone) |
+//! | `delete_object` | idempotent: losing any window (parent walk, stat, or the stat→unlink gap) reports `already_missing`; the winner's parent fsync carries removal durability |
+//! | `list_prefix` / `collect_files` | fuzzy snapshot: concurrently created/deleted entries may or may not appear, a vanished entry or directory is skipped, and the walk itself never fails on absence |
+//! | `publish_object` | atomic install: parent-dir creation tolerates a racer's `EEXIST` with post-verify (#2799), temp files retry collisions, create-mode no-clobber maps a raced final link to `PreconditionFailed`, and partial failures classify by visibility |
+//! | `acquire_writer_lock` | fail-fast BY CONTRACT: contention is the "another live opener" signal and must never be retried here (harness-side retry policy lives in `testkit::reopen_retry`) |
+//! | `append_object` / `open_append_handle` / `sync_object` | single-writer by the lifecycle writer-lock contract; a raced delete of the target fails `NotFound` deliberately (#2766: name-based loss detection) |
+//! | `sync_publish_parent` / `sync_delete_parent` | fail-safe ambiguity: a vanished parent reports durability-unconfirmed — visibility is known, durability of the rename/unlink genuinely is not |
 
 use super::{
     Backend, BackendAppend, BackendAppendHandle, BackendCapabilities, BackendError,
@@ -813,7 +836,14 @@ impl LocalFsBackend {
                 for entry in entries {
                     let entry = entry.map_err(|err| map_io_error(&err))?;
                     let path = entry.path();
-                    let file_type = entry.file_type().map_err(|err| map_io_error(&err))?;
+                    // TCP4.15: an entry can vanish between the readdir yield
+                    // and this type probe (ext4's d_type masks the race; a
+                    // non-d_type filesystem stats here). A vanished entry is
+                    // an absence, not a listing failure — the snapshot is
+                    // documented as fuzzy against concurrent mutators.
+                    let Some(file_type) = classify_entry_type(entry.file_type())? else {
+                        continue;
+                    };
                     if file_type.is_symlink() {
                         return Err(BackendError::new(
                             BackendErrorKind::Corruption,
@@ -993,8 +1023,20 @@ impl Backend for LocalFsBackend {
             return Err(DeleteError::removal_unknown(name, error));
         }
 
-        fs::remove_file(&path)
-            .map_err(|err| DeleteError::removal_unknown(name, map_io_error(&err)))?;
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            // TCP4.15: a concurrent deleter can win between the stat above and
+            // this unlink; absence is this call's goal, exactly like the two
+            // already-missing arms above (the winner's parent sync carries the
+            // durability of the removal).
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(DeleteOutcome::already_missing(
+                    name.clone(),
+                    DeleteDurability::NonDurable,
+                ));
+            }
+            Err(err) => return Err(DeleteError::removal_unknown(name, map_io_error(&err))),
+        }
         self.sync_delete_parent(name, &path)
     }
 
@@ -1144,6 +1186,21 @@ impl Backend for LocalFsBackend {
             BackendMetadata::new(bytes.len() as u64, None),
             PublishDurability::Durable,
         ))
+    }
+}
+
+/// The fuzzy-snapshot rule for a directory entry's type probe: a vanished
+/// entry (`NotFound`) is `Ok(None)` — skip it — while every other probe
+/// failure is a real listing error. Pure so the boundary is truth-tabled
+/// (the `NotFound` arm is dead code on `d_type` filesystems and only a unit
+/// test can prove it).
+fn classify_entry_type(
+    probe: std::io::Result<std::fs::FileType>,
+) -> BackendResult<Option<std::fs::FileType>> {
+    match probe {
+        Ok(file_type) => Ok(Some(file_type)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(map_io_error(&err)),
     }
 }
 
@@ -1400,6 +1457,120 @@ mod tests {
         );
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
             .expect("restore permissions");
+    }
+
+    #[test]
+    fn entry_type_probe_truth_table() {
+        // The NotFound arm is dead code on d_type filesystems (ext4 answers
+        // from the dirent), so only this table proves the boundary.
+        let vanished = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert!(matches!(
+            super::classify_entry_type(Err(vanished)),
+            Ok(None)
+        ));
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(super::classify_entry_type(Err(denied)).is_err());
+        let file_type = std::fs::metadata(std::env::temp_dir())
+            .expect("temp dir metadata")
+            .file_type();
+        assert!(matches!(
+            super::classify_entry_type(Ok(file_type)),
+            Ok(Some(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_surfaces_the_real_unlink_error() {
+        use std::os::unix::fs::PermissionsExt;
+        // A real unlink failure (EACCES on a read-only parent) must stay an
+        // ambiguous removal error — never be misread as absence.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("sealed/victim").expect("name");
+        backend
+            .publish_object(&name, b"victim", PublishMode::Create)
+            .expect("stage victim");
+        let sealed = dir.path().join("sealed");
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o555))
+            .expect("read-only parent");
+        let error = backend
+            .delete_object(&name)
+            .expect_err("unlink in a read-only parent must fail");
+        assert_eq!(error.kind(), DeleteFailureKind::RemovalUnknown, "{error:?}");
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755))
+            .expect("restore permissions");
+    }
+
+    #[test]
+    fn concurrent_deletes_of_the_same_object_are_idempotent() {
+        // Two racers deleting one object must BOTH succeed — one as the
+        // deleter, the loser as already-missing. Losing the stat->unlink
+        // window is an absence, never an ambiguous removal (TCP4.15).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        for round in 0..200 {
+            let name = ObjectName::new(format!("race/del{round}/victim")).expect("name");
+            backend
+                .publish_object(&name, b"victim", PublishMode::Create)
+                .expect("stage victim");
+            let barrier = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                let backend = &backend;
+                let barrier = &barrier;
+                let name = &name;
+                let first = scope.spawn(move || {
+                    barrier.wait();
+                    backend.delete_object(name)
+                });
+                let second = scope.spawn(move || {
+                    barrier.wait();
+                    backend.delete_object(name)
+                });
+                let outcomes = [
+                    first.join().expect("first deleter"),
+                    second.join().expect("second deleter"),
+                ];
+                for outcome in outcomes {
+                    outcome.unwrap_or_else(|error| {
+                        panic!("round {round}: concurrent delete not idempotent: {error:?}")
+                    });
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn listing_stays_clean_while_objects_churn() {
+        // The listing snapshot is documented as fuzzy against concurrent
+        // mutators: entries may or may not appear, but a vanished entry is
+        // never a listing FAILURE (TCP4.15 contract pin; the d_type-less
+        // stat path is the latent hazard this protects).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let prefix = ObjectPrefix::new("churn/".to_owned()).expect("prefix");
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let backend = &backend;
+            let stop = &stop;
+            let churn = scope.spawn(move || {
+                for round in 0..400u32 {
+                    let name = ObjectName::new(format!("churn/c{}/obj", round % 8)).expect("name");
+                    let _ = backend.publish_object(&name, b"x", PublishMode::Replace);
+                    let _ = backend.delete_object(&name);
+                }
+                stop.store(true, std::sync::atomic::Ordering::Release);
+            });
+            let mut listings = 0u32;
+            while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                backend
+                    .list_prefix(&prefix)
+                    .unwrap_or_else(|error| panic!("listing failed under churn: {error:?}"));
+                listings += 1;
+            }
+            churn.join().expect("churn thread");
+            assert!(listings > 0, "vacuous: no listing raced the churn");
+        });
     }
 
     #[test]
