@@ -609,9 +609,11 @@ Reuse inventory beyond the crate: the storage `perf_trace` counters, the
 4.9b `VmHWM` per-phase subprocess technique, the `coverage_floors.py`
 ratchet pattern, and the GPU hot-tier gate precedent.
 
-Sequencing: 5.1 immediately (small, owed); 5.2 next (deterministic, no flap
-risk, establishes `perf_floors.py`); 5.3 once 5.2's scenario set exists and
-seeds are pinned; 5.4 on nightly capacity; 5.5 at release legs.
+Sequencing: **5.1 first** (small, owed); 5.2 next (deterministic, no flap
+risk, establishes `perf_floors.py`); 5.6 after 5.2 (its instrument audit may
+run alongside 5.2, but its gates land on 5.2/5.4's rails); 5.3 once 5.2's
+scenario set exists and seeds are pinned; 5.4 on nightly capacity; 5.5 at
+release legs.
 
 ## Deferred register
 
