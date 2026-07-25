@@ -497,6 +497,23 @@ mod tests {
     }
 
     #[test]
+    fn partially_synced_segment_reports_only_the_unsynced_tail() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let backend = watchdog(dir.path());
+        backend.record_wal_append(&wal_segment(1), 100);
+        backend.record_wal_sync(&wal_segment(1));
+        backend.record_wal_append(&wal_segment(1), 50);
+        backend.check_publish(&manifest());
+        let report = backend.report();
+        let [violation] = report.violations() else {
+            panic!("expected exactly one violation: {report:?}");
+        };
+        // The synced 100 bytes are not part of the raced window.
+        assert_eq!(violation.unsynced_bytes(), 50);
+        assert!(violation.last_sync_order().is_some());
+    }
+
+    #[test]
     fn publish_over_in_flight_appends_is_exonerated_by_the_covering_sync() {
         let dir = tempfile::tempdir().expect("tmp");
         let backend = watchdog(dir.path());
