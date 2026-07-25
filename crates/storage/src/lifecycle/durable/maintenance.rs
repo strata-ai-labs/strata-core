@@ -9,10 +9,11 @@ use crate::commit::{
 };
 use crate::format::TableManifest;
 use crate::lifecycle::checkpoint::{
-    any_branch_holds_unmaterialized_inherited_layers, branch_checkpoint_flush_boundary,
+    branch_checkpoint_flush_boundary,
     branch_has_unflushed_rows_at_or_below, checkpoint_durable_rows_with_budget,
     checkpoint_durable_runtime_with_budget,
-    checkpoint_request_from_maintenance_task_with_snapshot_id, non_seeded_branch_has_durable_base,
+    checkpoint_request_from_maintenance_task_with_snapshot_id, checkpoint_structural_deferral,
+    CheckpointStructuralDeferral,
     persist_flush_watermark, persist_flush_watermark_with_table_manifest_proof,
     recovery_health_epoch, truncate_wal, wal_truncation_request_from_maintenance_task,
     LifecycleCheckpointOutcome, LifecycleCheckpointRequest, LifecycleFlushWatermarkOutcome,
@@ -1461,17 +1462,18 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     /// multi-branch trade, and pacing writers against it converts disk
     /// headroom into unavailability.
     fn structurally_deferred_checkpoint_reason(&self) -> LifecycleResult<Option<&'static str>> {
-        if non_seeded_branch_has_durable_base(&self.branch_catalog, self.initial_branch_id)? {
-            return Ok(Some(
-                "checkpoint policy deferred while a non-seeded branch holds a durable table base",
-            ));
-        }
-        if any_branch_holds_unmaterialized_inherited_layers(&self.branch_catalog)? {
-            return Ok(Some(
-                "checkpoint policy deferred while a branch holds unmaterialized inherited layers",
-            ));
-        }
-        Ok(None)
+        Ok(
+            checkpoint_structural_deferral(&self.branch_catalog, self.initial_branch_id)?.map(
+                |deferral| match deferral {
+                    CheckpointStructuralDeferral::NonSeededDurableBase => {
+                        "checkpoint policy deferred while a non-seeded branch holds a durable table base"
+                    }
+                    CheckpointStructuralDeferral::UnmaterializedInheritedLayers => {
+                        "checkpoint policy deferred while a branch holds unmaterialized inherited layers"
+                    }
+                },
+            ),
+        )
     }
 
     pub(crate) fn evaluate_wal_growth_policy(
@@ -1911,27 +1913,24 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         // non-contiguous gap if a crash later dropped that branch's manifest (the seeded-only
         // orphan detector cannot see it). The per-branch fix that lifts this guard is tracked in
         // multi-branch-orphaned-delta-recovery-gap.md.
-        if non_seeded_branch_has_durable_base(&self.branch_catalog, self.initial_branch_id)? {
+        // TCP4.14: one registry decides structural deferral for BOTH this
+        // execution-time arm and every enqueue/pacing site (#2792, #2798).
+        if let Some(deferral) =
+            checkpoint_structural_deferral(&self.branch_catalog, self.initial_branch_id)?
+        {
+            let reason = match deferral {
+                CheckpointStructuralDeferral::NonSeededDurableBase => {
+                    "checkpoint deferred: non-seeded branch holds a durable table base"
+                }
+                CheckpointStructuralDeferral::UnmaterializedInheritedLayers => {
+                    "checkpoint deferred: branch holds unmaterialized inherited layers"
+                }
+            };
             let outcome = MaintenanceOutcome::new(
                 crate::lifecycle::MaintenanceTaskKind::Checkpoint,
                 MaintenanceOutcomeStatus::Deferred,
             )
-            .with_reason("checkpoint deferred: non-seeded branch holds a durable table base");
-            let outcome = self.maintenance.finish_started(task, outcome, false)?;
-            self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
-            return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
-        }
-        // #2798: the fresh-fork window — a branch carrying unmaterialized COW
-        // inherited layers passes the durable-base guard (it owns no tables)
-        // but `checkpoint_rows` refuses to serialize it. Structural deferral,
-        // exactly like the arm above; failing the task here tripped the
-        // stress lane's zero-failures gate on the first full-speed run.
-        if any_branch_holds_unmaterialized_inherited_layers(&self.branch_catalog)? {
-            let outcome = MaintenanceOutcome::new(
-                crate::lifecycle::MaintenanceTaskKind::Checkpoint,
-                MaintenanceOutcomeStatus::Deferred,
-            )
-            .with_reason("checkpoint deferred: branch holds unmaterialized inherited layers");
+            .with_reason(reason);
             let outcome = self.maintenance.finish_started(task, outcome, false)?;
             self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
             return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
