@@ -94,6 +94,18 @@ impl Drop for ProgressWatchdog {
     }
 }
 
+/// Sampling cadence for a stall window: a quarter-window, floored so tiny
+/// test windows cannot busy-spin the monitor.
+fn stall_poll_interval(stall_window: Duration) -> Duration {
+    (stall_window / 4).max(Duration::from_millis(10))
+}
+
+/// The stall decision, pure so the boundary is pinned by a truth table: a
+/// lane is stalled once a full window has elapsed with no tick.
+fn stall_window_elapsed(since_last_tick: Duration, stall_window: Duration) -> bool {
+    since_last_tick >= stall_window
+}
+
 fn monitor(
     label: &'static str,
     stall_window: Duration,
@@ -101,7 +113,7 @@ fn monitor(
     disarmed: &AtomicBool,
     context: &(impl Fn() -> String + Send),
 ) {
-    let poll = (stall_window / 4).max(Duration::from_millis(10));
+    let poll = stall_poll_interval(stall_window);
     let mut last_count = progress.load(Ordering::Relaxed);
     let mut last_change = Instant::now();
     let mut cpu_at_last_change = process_cpu_ticks();
@@ -117,7 +129,7 @@ fn monitor(
             cpu_at_last_change = process_cpu_ticks();
             continue;
         }
-        if last_change.elapsed() < stall_window {
+        if !stall_window_elapsed(last_change.elapsed(), stall_window) {
             continue;
         }
         let cpu_delta = process_cpu_ticks().saturating_sub(cpu_at_last_change);
@@ -141,18 +153,10 @@ fn monitor(
 fn process_cpu_ticks() -> u64 {
     #[cfg(target_os = "linux")]
     {
-        let Ok(stat) = std::fs::read_to_string("/proc/self/stat") else {
-            return 0;
-        };
-        // Fields 14/15 (1-indexed) after the parenthesized comm, which may
-        // itself contain spaces — split after the closing paren.
-        let Some(after_comm) = stat.rsplit(") ").next() else {
-            return 0;
-        };
-        let mut fields = after_comm.split_whitespace();
-        let utime = fields.nth(11).and_then(|f| f.parse::<u64>().ok());
-        let stime = fields.next().and_then(|f| f.parse::<u64>().ok());
-        utime.unwrap_or(0) + stime.unwrap_or(0)
+        std::fs::read_to_string("/proc/self/stat")
+            .ok()
+            .and_then(|stat| parse_proc_stat_cpu_ticks(&stat))
+            .unwrap_or(0)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -160,9 +164,84 @@ fn process_cpu_ticks() -> u64 {
     }
 }
 
+/// utime + stime (fields 14/15, 1-indexed) from a `/proc/<pid>/stat` line.
+/// The parenthesized comm may itself contain spaces and parens — fields are
+/// counted after the LAST `") "`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_proc_stat_cpu_ticks(stat: &str) -> Option<u64> {
+    let after_comm = stat.rsplit(") ").next()?;
+    let mut fields = after_comm.split_whitespace();
+    let utime = fields.nth(11)?.parse::<u64>().ok()?;
+    let stime = fields.next()?.parse::<u64>().ok()?;
+    Some(utime + stime)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stall_decision_boundary_truth_table() {
+        let window = Duration::from_secs(1);
+        // Below the window: not stalled (kills the inverted comparisons).
+        assert!(!stall_window_elapsed(Duration::from_millis(500), window));
+        // Exactly the window: stalled (kills >).
+        assert!(stall_window_elapsed(window, window));
+        // Past the window: stalled (kills ==).
+        assert!(stall_window_elapsed(Duration::from_secs(2), window));
+    }
+
+    #[test]
+    fn poll_interval_is_a_floored_quarter_window() {
+        assert_eq!(
+            stall_poll_interval(Duration::from_secs(120)),
+            Duration::from_secs(30)
+        );
+        // The floor keeps tiny test windows from busy-spinning the monitor.
+        assert_eq!(
+            stall_poll_interval(Duration::from_millis(20)),
+            Duration::from_millis(10)
+        );
+    }
+
+    #[test]
+    fn proc_stat_parser_sums_utime_and_stime_after_a_hostile_comm() {
+        // comm contains spaces and a closing paren; utime=1714 stime=286.
+        let stat = "12345 (a (weird) name) S 1 12345 12345 0 -1 4194304 \
+                    100 0 0 0 1714 286 0 0 20 0 8 0 555 100000 200 400 300";
+        assert_eq!(parse_proc_stat_cpu_ticks(stat), Some(2000));
+        assert_eq!(parse_proc_stat_cpu_ticks("garbage"), None);
+    }
+
+    #[test]
+    fn process_cpu_ticks_grow_when_the_process_burns_cpu() {
+        let before = process_cpu_ticks();
+        // Burn well over a scheduler tick (10ms at 100Hz) of pure CPU.
+        let start = Instant::now();
+        let mut sink = 0u64;
+        while start.elapsed() < Duration::from_millis(150) {
+            sink = sink.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        }
+        std::hint::black_box(sink);
+        let after = process_cpu_ticks();
+        // Kills the constant-return mutants: the counter must move, and by
+        // more than one tick. Other tests' CPU only pushes it further up.
+        assert!(
+            after >= before + 2,
+            "cpu ticks did not grow: before={before} after={after}"
+        );
+    }
+
+    #[test]
+    fn a_quiet_gap_shorter_than_the_window_does_not_fire() {
+        // One tick, then silence for several polls but less than the window:
+        // the monitor must keep waiting, not abort (an abort here kills the
+        // whole test process, so a miswired decision cannot pass unnoticed).
+        let watchdog = ProgressWatchdog::arm("short-gap", Duration::from_millis(500), String::new);
+        watchdog.ticker().tick();
+        std::thread::sleep(Duration::from_millis(300));
+        drop(watchdog);
+    }
 
     #[test]
     fn ticking_keeps_the_watchdog_quiet_and_drop_disarms() {
