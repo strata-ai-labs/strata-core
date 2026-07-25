@@ -841,10 +841,8 @@ impl LocalFsBackend {
                     // non-d_type filesystem stats here). A vanished entry is
                     // an absence, not a listing failure — the snapshot is
                     // documented as fuzzy against concurrent mutators.
-                    let file_type = match entry.file_type() {
-                        Ok(file_type) => file_type,
-                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-                        Err(err) => return Err(map_io_error(&err)),
+                    let Some(file_type) = classify_entry_type(entry.file_type())? else {
+                        continue;
                     };
                     if file_type.is_symlink() {
                         return Err(BackendError::new(
@@ -1191,6 +1189,21 @@ impl Backend for LocalFsBackend {
     }
 }
 
+/// The fuzzy-snapshot rule for a directory entry's type probe: a vanished
+/// entry (`NotFound`) is `Ok(None)` — skip it — while every other probe
+/// failure is a real listing error. Pure so the boundary is truth-tabled
+/// (the `NotFound` arm is dead code on d_type filesystems and only a unit
+/// test can prove it).
+fn classify_entry_type(
+    probe: std::io::Result<std::fs::FileType>,
+) -> BackendResult<Option<std::fs::FileType>> {
+    match probe {
+        Ok(file_type) => Ok(Some(file_type)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(map_io_error(&err)),
+    }
+}
+
 fn is_object_file_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -1443,6 +1456,49 @@ mod tests {
             "{error:?}"
         );
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
+            .expect("restore permissions");
+    }
+
+    #[test]
+    fn entry_type_probe_truth_table() {
+        // The NotFound arm is dead code on d_type filesystems (ext4 answers
+        // from the dirent), so only this table proves the boundary.
+        let vanished = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert!(matches!(
+            super::classify_entry_type(Err(vanished)),
+            Ok(None)
+        ));
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(super::classify_entry_type(Err(denied)).is_err());
+        let file_type = std::fs::metadata(std::env::temp_dir())
+            .expect("temp dir metadata")
+            .file_type();
+        assert!(matches!(
+            super::classify_entry_type(Ok(file_type)),
+            Ok(Some(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_surfaces_the_real_unlink_error() {
+        use std::os::unix::fs::PermissionsExt;
+        // A real unlink failure (EACCES on a read-only parent) must stay an
+        // ambiguous removal error — never be misread as absence.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        let name = ObjectName::new("sealed/victim").expect("name");
+        backend
+            .publish_object(&name, b"victim", PublishMode::Create)
+            .expect("stage victim");
+        let sealed = dir.path().join("sealed");
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o555))
+            .expect("read-only parent");
+        let error = backend
+            .delete_object(&name)
+            .expect_err("unlink in a read-only parent must fail");
+        assert_eq!(error.kind(), DeleteFailureKind::RemovalUnknown, "{error:?}");
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755))
             .expect("restore permissions");
     }
 
