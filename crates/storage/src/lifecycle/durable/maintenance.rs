@@ -9,16 +9,14 @@ use crate::commit::{
 };
 use crate::format::TableManifest;
 use crate::lifecycle::checkpoint::{
-    branch_checkpoint_flush_boundary,
-    branch_has_unflushed_rows_at_or_below, checkpoint_durable_rows_with_budget,
-    checkpoint_durable_runtime_with_budget,
+    branch_checkpoint_flush_boundary, branch_has_unflushed_rows_at_or_below,
+    checkpoint_durable_rows_with_budget, checkpoint_durable_runtime_with_budget,
     checkpoint_request_from_maintenance_task_with_snapshot_id, checkpoint_structural_deferral,
-    CheckpointStructuralDeferral,
     persist_flush_watermark, persist_flush_watermark_with_table_manifest_proof,
     recovery_health_epoch, truncate_wal, wal_truncation_request_from_maintenance_task,
-    LifecycleCheckpointOutcome, LifecycleCheckpointRequest, LifecycleFlushWatermarkOutcome,
-    LifecycleFlushWatermarkProof, LifecycleTableManifestFlushCoverageProof,
-    LifecycleWalTruncationOutcome,
+    CheckpointStructuralDeferral, LifecycleCheckpointOutcome, LifecycleCheckpointRequest,
+    LifecycleFlushWatermarkOutcome, LifecycleFlushWatermarkProof,
+    LifecycleTableManifestFlushCoverageProof, LifecycleWalTruncationOutcome,
 };
 use crate::lifecycle::compaction::{
     bind_materialization_task_for_enqueue, collect_storage_pressure_with_budget,

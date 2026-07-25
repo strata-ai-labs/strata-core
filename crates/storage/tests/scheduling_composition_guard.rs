@@ -50,7 +50,9 @@ fn scheduling_sites_consult_the_registry_not_raw_predicates() {
              it through checkpoint_structural_deferral instead"
         );
     }
-    let registry_calls = maintenance.matches("checkpoint_structural_deferral(").count();
+    let registry_calls = maintenance
+        .matches("checkpoint_structural_deferral(")
+        .count();
     assert!(
         registry_calls >= 2,
         "expected the executor arm and the growth-policy helper to consult \
@@ -59,7 +61,10 @@ fn scheduling_sites_consult_the_registry_not_raw_predicates() {
 
     let checkpoint = source("src/lifecycle/checkpoint.rs");
     assert!(
-        checkpoint.matches("checkpoint_structural_deferral(").count() >= 2,
+        checkpoint
+            .matches("checkpoint_structural_deferral(")
+            .count()
+            >= 2,
         "the synchronous checkpoint path must consult the registry"
     );
 }
