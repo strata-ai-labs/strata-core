@@ -189,6 +189,130 @@ fn automatic_checkpoint_triggers_when_retained_segments_exceed_threshold() {
 }
 
 #[test]
+fn wal_growth_policy_defers_while_a_non_seeded_branch_holds_a_durable_base() {
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
+    let initial = branch_id(0x71);
+    let extra = branch_id(0x72);
+    // Commit-count trigger only, sized so every setup commit stays below
+    // threshold and no earlier enqueue can mask the deferral with a coalesce.
+    let policy = LifecycleWalGrowthPolicy::new(u64::MAX, usize::MAX, Some(3));
+    let mut runtime = open_durable_runtime(initial, backend, policy);
+
+    runtime
+        .execute_durable_commit(
+            durable_batch(initial, b"initial-base", b"initial-base-value"),
+            generation_guard(),
+        )
+        .expect("commit initial base");
+    runtime
+        .create_branch(
+            extra,
+            CommitBranchGeneration::new(1).expect("generation"),
+            Some(CommitVersion::new(2)),
+        )
+        .expect("create extra");
+
+    // Latch the multi-branch checkpoint guard: the non-seeded branch gains a
+    // durable table base (base commit -> rotate -> flush).
+    runtime
+        .execute_durable_commit(
+            durable_batch(extra, b"extra-base", b"extra-base-value"),
+            generation_guard(),
+        )
+        .expect("commit extra base");
+    runtime
+        .rotate_active_for_branch_for_maintenance(extra)
+        .expect("rotate extra");
+    runtime
+        .flush_frozen(
+            &FlushFrozenRequest::new(
+                extra,
+                None,
+                FlushTableIdentitySeed::new("extra-seed").expect("seed"),
+                FlushTableObjectId::new("extra-object").expect("object id"),
+            )
+            .expect("flush request"),
+        )
+        .expect("flush extra");
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+
+    // These commits cross the trigger. The checkpoint the policy would
+    // enqueue is structurally deferred by the multi-branch guard, so the
+    // evaluation must defer instead of feeding the executor tasks that can
+    // only churn.
+    runtime
+        .execute_durable_commit(
+            durable_batch(extra, b"extra-delta", b"extra-delta-value"),
+            generation_guard(),
+        )
+        .expect("commit extra delta");
+    runtime
+        .execute_durable_commit(
+            durable_batch(extra, b"extra-delta-two", b"extra-delta-two-value"),
+            generation_guard(),
+        )
+        .expect("commit extra delta two");
+    let outcome = runtime
+        .last_wal_growth_outcome()
+        .expect("automatic policy outcome");
+    assert_eq!(outcome.status(), LifecycleWalGrowthStatus::Deferred);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+}
+
+#[test]
+fn wal_growth_policy_still_enqueues_when_no_non_seeded_branch_has_a_durable_base() {
+    let backend: &'static CheckpointTestBackend =
+        crate::testkit::leak_static(CheckpointTestBackend::new());
+    let initial = branch_id(0x73);
+    let extra = branch_id(0x74);
+    let policy = LifecycleWalGrowthPolicy::new(u64::MAX, usize::MAX, Some(3));
+    let mut runtime = open_durable_runtime(initial, backend, policy);
+
+    // The non-seeded branch exists and has rows, but no durable table base:
+    // mere branch existence must not defer checkpoint scheduling.
+    runtime
+        .execute_durable_commit(
+            durable_batch(initial, b"initial-base", b"initial-base-value"),
+            generation_guard(),
+        )
+        .expect("commit initial base");
+    runtime
+        .create_branch(
+            extra,
+            CommitBranchGeneration::new(1).expect("generation"),
+            Some(CommitVersion::new(2)),
+        )
+        .expect("create extra");
+    runtime
+        .execute_durable_commit(
+            durable_batch(extra, b"extra-base", b"extra-base-value"),
+            generation_guard(),
+        )
+        .expect("commit extra base");
+    runtime
+        .execute_durable_commit(
+            durable_batch(extra, b"extra-delta", b"extra-delta-value"),
+            generation_guard(),
+        )
+        .expect("commit extra delta");
+    runtime
+        .execute_durable_commit(
+            durable_batch(extra, b"extra-delta-two", b"extra-delta-two-value"),
+            generation_guard(),
+        )
+        .expect("commit extra delta two");
+    let outcome = runtime
+        .last_wal_growth_outcome()
+        .expect("automatic policy outcome");
+    assert_eq!(
+        outcome.status(),
+        LifecycleWalGrowthStatus::MaintenanceEnqueued
+    );
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 4);
+}
+
+#[test]
 fn automatic_checkpoint_coalesces_existing_checkpoint_task() {
     let backend: &'static CheckpointTestBackend =
         crate::testkit::leak_static(CheckpointTestBackend::new());

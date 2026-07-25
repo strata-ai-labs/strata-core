@@ -1505,6 +1505,28 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 },
             ));
         }
+        // #2792: the checkpoint this trigger would enqueue is structurally
+        // deferred while any non-seeded branch holds a durable table base (the
+        // multi-branch recovery guard on the checkpoint executor). Enqueueing
+        // anyway churned the executor with deferral completions at commit rate
+        // and paced writers on WAL relief that truncation cannot deliver — the
+        // checkpoint waterline never advances — livelocking small-core hosts.
+        // Defer the evaluation itself; the execution-time guard stays
+        // authoritative. While the guard is latched the WAL hard cap is
+        // advisory: unbounded growth is the documented V1 multi-branch trade,
+        // and pacing writers against it converts disk headroom into
+        // unavailability.
+        if non_seeded_branch_has_durable_base(&self.branch_catalog, self.initial_branch_id)? {
+            return Ok(LifecycleWalGrowthOutcome::deferred(
+                facts,
+                commits_since_checkpoint,
+                Some(trigger),
+                LifecycleError::InvalidLifecycleState {
+                    reason:
+                        "checkpoint policy deferred while a non-seeded branch holds a durable table base",
+                },
+            ));
+        }
         if let Some(error) = policy_admission_error(self.state) {
             return Ok(LifecycleWalGrowthOutcome::deferred(
                 facts,
