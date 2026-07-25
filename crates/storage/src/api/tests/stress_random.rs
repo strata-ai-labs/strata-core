@@ -37,9 +37,11 @@
 use super::*;
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::Arc;
 
 use crate::testkit::rng::SplitMix64;
+use crate::testkit::{ProgressTicker, ProgressWatchdog};
 
 const DEFAULT_SESSIONS: usize = 4;
 const DEFAULT_OPS: usize = 150;
@@ -192,6 +194,8 @@ fn run_session(
     ops: usize,
     sessions: usize,
     fork_ids: &AtomicU8,
+    ticker: &ProgressTicker,
+    session_ops: &AtomicU64,
 ) -> BTreeMap<u64, Vec<u8>> {
     let branch = StorageRuntime::default_branch_id_for_test();
     let mut rng = SplitMix64::new(seed ^ (session as u64).wrapping_mul(0x9e37_79b9));
@@ -201,6 +205,8 @@ fn run_session(
     let mut forked = false;
 
     for op in 0..ops {
+        ticker.tick();
+        session_ops.store(op as u64, Ordering::Relaxed);
         let context = format!("seed={seed} session={session} op={op}");
         let choice = rng.next_u64() % 100;
         match choice {
@@ -388,6 +394,27 @@ fn concurrent_random_sessions_stay_exact_on_one_shared_database() {
     .expect("open shared stress runtime")
     .into_runtime();
 
+    // TCP5.1 liveness budget: a hard hang or total livelock in any phase
+    // fails within the stall window with per-session positions and a
+    // CPU-during-stall discriminator, instead of eating the CI job budget
+    // (#2792 sat silent for 3h41m). Crawls that still tick are bounded by
+    // the workflow step's timeout-minutes, not this watchdog.
+    let session_ops: Arc<Vec<AtomicU64>> =
+        Arc::new((0..sessions).map(|_| AtomicU64::new(0)).collect());
+    let dump_ops = Arc::clone(&session_ops);
+    let watchdog = ProgressWatchdog::arm(
+        "stress_random",
+        std::time::Duration::from_secs(120),
+        move || {
+            let positions: Vec<u64> = dump_ops
+                .iter()
+                .map(|ops| ops.load(Ordering::Relaxed))
+                .collect();
+            format!("per-session op positions at stall: {positions:?}")
+        },
+    );
+    let ticker = watchdog.ticker();
+
     let fork_ids = AtomicU8::new(0);
     let mut models: Vec<(usize, BTreeMap<u64, Vec<u8>>)> = Vec::new();
     std::thread::scope(|scope| {
@@ -395,9 +422,22 @@ fn concurrent_random_sessions_stay_exact_on_one_shared_database() {
         for session in 0..sessions {
             let runtime = &runtime;
             let fork_ids = &fork_ids;
+            let ticker = &ticker;
+            let session_ops = &session_ops;
             handles.push((
                 session,
-                scope.spawn(move || run_session(runtime, session, seed, ops, sessions, fork_ids)),
+                scope.spawn(move || {
+                    run_session(
+                        runtime,
+                        session,
+                        seed,
+                        ops,
+                        sessions,
+                        fork_ids,
+                        ticker,
+                        &session_ops[session],
+                    )
+                }),
             ));
         }
         for (session, handle) in handles {
@@ -405,6 +445,7 @@ fn concurrent_random_sessions_stay_exact_on_one_shared_database() {
                 .join()
                 .unwrap_or_else(|_| panic!("session {session} panicked (seed={seed})"));
             models.push((session, model));
+            ticker.tick();
         }
     });
 
@@ -431,11 +472,13 @@ fn concurrent_random_sessions_stay_exact_on_one_shared_database() {
     let branch = StorageRuntime::default_branch_id_for_test();
     for (session, model) in &models {
         assert_model_matches(&runtime, branch, *session, model, "post-quiesce sweep");
+        ticker.tick();
     }
 
     // Durability oracle: close, reopen, and every model must still serve.
     let mut closing = runtime;
     closing.close().expect("close stress runtime");
+    ticker.tick();
     let backend = crate::testkit::leak_static(StorageBackend::local_fs(root));
     let reopened = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
@@ -443,9 +486,12 @@ fn concurrent_random_sessions_stay_exact_on_one_shared_database() {
     )
     .expect("reopen stress runtime")
     .into_runtime();
+    ticker.tick();
     for (session, model) in &models {
         assert_model_matches(&reopened, branch, *session, model, "post-reopen sweep");
+        ticker.tick();
     }
     let mut reopened = reopened;
     reopened.close().expect("close reopened runtime");
+    drop(watchdog);
 }
