@@ -483,7 +483,16 @@ impl LocalFsBackend {
                 format!("directory path {} is not a directory", path.display()),
             )),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound && create_missing => {
-                fs::create_dir(path).map_err(|err| map_io_error(&err))?;
+                // #2799: a concurrent publish into the same fresh directory
+                // can win the stat->create_dir window; the directory existing
+                // is this call's goal, so EEXIST is success, not failure. The
+                // re-verify below still rejects a file or symlink that
+                // appeared instead.
+                match fs::create_dir(path) {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(err) => return Err(map_io_error(&err)),
+                }
                 Self::ensure_dir(path, false)
             }
             Err(error) => Err(map_io_error(&error)),
@@ -1351,6 +1360,41 @@ mod tests {
             .expect_err("symlink lock file should be rejected");
 
         assert_eq!(error.kind(), BackendErrorKind::Corruption);
+    }
+
+    #[test]
+    fn concurrent_publishes_into_a_fresh_directory_all_succeed() {
+        // Two workers publishing the first objects into a directory that does
+        // not exist yet must both succeed: losing the parent-directory
+        // creation race is not a publish failure. Barrier-synced rounds put
+        // both threads inside the stat->create_dir window reliably.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = LocalFsBackend::new(dir.path());
+        for round in 0..200 {
+            let first = ObjectName::new(format!("race/r{round}/first")).expect("first name");
+            let second = ObjectName::new(format!("race/r{round}/second")).expect("second name");
+            let barrier = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                let backend = &backend;
+                let barrier = &barrier;
+                let publish_first = scope.spawn(move || {
+                    barrier.wait();
+                    backend.publish_object(&first, b"first", PublishMode::Create)
+                });
+                let publish_second = scope.spawn(move || {
+                    barrier.wait();
+                    backend.publish_object(&second, b"second", PublishMode::Create)
+                });
+                publish_first
+                    .join()
+                    .expect("first publish thread")
+                    .unwrap_or_else(|error| panic!("round {round} first publish: {error:?}"));
+                publish_second
+                    .join()
+                    .expect("second publish thread")
+                    .unwrap_or_else(|error| panic!("round {round} second publish: {error:?}"));
+            });
+        }
     }
 
     #[cfg(unix)]
