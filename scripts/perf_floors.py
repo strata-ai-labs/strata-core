@@ -63,10 +63,12 @@ def iai_instruction_count(summary: dict) -> int | None:
             if not metric:
                 continue
             metrics = metric.get("metrics", {})
-            for shape in ("Both", "New"):
-                values = metrics.get(shape)
-                if values:
-                    return int(values[0]["Int"])
+            # Baseline-diff runs carry Both([new, old]); fresh runs carry
+            # Left(new) with a bare metric object.
+            if "Both" in metrics:
+                return int(metrics["Both"][0]["Int"])
+            if "Left" in metrics:
+                return int(metrics["Left"]["Int"])
     return None
 
 
