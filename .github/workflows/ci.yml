@@ -115,6 +115,39 @@ jobs:
       - name: Hub tests with ingest enabled
         run: cargo test --locked -p strata-hub --features ingest
 
+  perf-gates:
+    # TCP5.2: instruction-count ceilings over the shipping paths. Callgrind
+    # counts are deterministic (~0.02% observed spread; benchmarks/README.md)
+    # and hardware-independent, so committed ceilings can block merges
+    # without flapping. Ceilings live in scripts/perf_floors.py, pinned to
+    # the workspace toolchain; the benches live in the out-of-workspace
+    # benchmarks/ crate.
+    if: github.event_name == 'pull_request'
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorize private git dependencies
+        run: git config --global url."https://x-access-token:${{ secrets.STRATAHUB_READ_TOKEN }}@github.com/stratalab/stratahub".insteadOf "https://github.com/stratalab/stratahub"
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks
+      - name: Install valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: iai-callgrind-runner@0.16.1
+      - name: Instruction-count benches
+        working-directory: benchmarks
+        run: |
+          cargo bench --locked --bench storage_commit -- --save-summary=json
+          cargo bench --locked --bench storage_reopen -- --save-summary=json
+          cargo bench --locked --bench wire_commands -- --save-summary=json
+      - name: Perf ceilings gate
+        run: python3 scripts/perf_floors.py --iai-root benchmarks/target/iai
+
   mutation-on-diff:
     # SQLite-style suite-strength gate, bounded to stay affordable: mutate
     # only the lines this PR touches; an un-killed mutant is a missing
