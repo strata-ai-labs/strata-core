@@ -30,8 +30,10 @@ impl ClientTransport {
     /// [`CloneError::Transport`] when the URL or HTTP stack refuses
     /// configuration.
     pub fn new(base_url: Url) -> Result<Self, CloneError> {
-        let client = Client::new(base_url.clone(), ClientConfig::default())
-            .map_err(|error| transport_error(&error))?;
+        let mut config = ClientConfig::default();
+        config.request_timeout = request_timeout_from_env(config.request_timeout);
+        let client =
+            Client::new(base_url.clone(), config).map_err(|error| transport_error(&error))?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -45,6 +47,18 @@ impl ClientTransport {
             base_url,
         })
     }
+}
+
+/// Test-facing override for the per-request wall-clock timeout
+/// (`STRATA_HUB_TIMEOUT_SECONDS`): sanitizer CI legs run 5-15x slower than
+/// native, so the 30s default expires on legitimate mock-hub round trips
+/// (#2803). Unset or unparsable values keep the default; production callers
+/// never set this.
+fn request_timeout_from_env(default: std::time::Duration) -> std::time::Duration {
+    std::env::var("STRATA_HUB_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map_or(default, std::time::Duration::from_secs)
 }
 
 impl HubTransport for ClientTransport {
@@ -89,5 +103,27 @@ impl HubTransport for ClientTransport {
 fn transport_error(error: &stratahub_client::ClientError) -> CloneError {
     CloneError::Transport {
         detail: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::request_timeout_from_env;
+    use std::time::Duration;
+
+    /// One test for all three cases: the override env var is process-global,
+    /// so sequential assertions avoid a set/remove race between tests.
+    #[test]
+    fn request_timeout_env_override_truth_table() {
+        let default = Duration::from_secs(30);
+        std::env::remove_var("STRATA_HUB_TIMEOUT_SECONDS");
+        assert_eq!(request_timeout_from_env(default), default);
+
+        std::env::set_var("STRATA_HUB_TIMEOUT_SECONDS", "180");
+        assert_eq!(request_timeout_from_env(default), Duration::from_secs(180));
+
+        std::env::set_var("STRATA_HUB_TIMEOUT_SECONDS", "not-a-number");
+        assert_eq!(request_timeout_from_env(default), default);
+        std::env::remove_var("STRATA_HUB_TIMEOUT_SECONDS");
     }
 }
