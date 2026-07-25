@@ -1192,7 +1192,7 @@ impl Backend for LocalFsBackend {
 /// The fuzzy-snapshot rule for a directory entry's type probe: a vanished
 /// entry (`NotFound`) is `Ok(None)` — skip it — while every other probe
 /// failure is a real listing error. Pure so the boundary is truth-tabled
-/// (the `NotFound` arm is dead code on d_type filesystems and only a unit
+/// (the `NotFound` arm is dead code on `d_type` filesystems and only a unit
 /// test can prove it).
 fn classify_entry_type(
     probe: std::io::Result<std::fs::FileType>,
