@@ -1573,3 +1573,30 @@ fn api_flush_honors_configured_data_block_bytes() {
         assert_eq!(row.value().expect("value").as_bytes(), payload.as_slice());
     }
 }
+
+#[test]
+fn wal_growth_pacing_waits_only_on_evaluations_that_enqueued_maintenance() {
+    use crate::api::runtime::wal_growth_pacing_applies;
+    use crate::lifecycle::LifecycleWalGrowthStatus;
+
+    assert!(wal_growth_pacing_applies(
+        LifecycleWalGrowthStatus::MaintenanceEnqueued
+    ));
+    assert!(wal_growth_pacing_applies(
+        LifecycleWalGrowthStatus::MaintenanceCoalesced
+    ));
+    // A deferred evaluation enqueued nothing; pacing the writer would wait on
+    // relief the deferred task class cannot deliver.
+    assert!(!wal_growth_pacing_applies(
+        LifecycleWalGrowthStatus::Deferred
+    ));
+    assert!(!wal_growth_pacing_applies(
+        LifecycleWalGrowthStatus::Disabled
+    ));
+    assert!(!wal_growth_pacing_applies(
+        LifecycleWalGrowthStatus::BelowThreshold
+    ));
+    assert!(!wal_growth_pacing_applies(
+        LifecycleWalGrowthStatus::NoDurableAction
+    ));
+}

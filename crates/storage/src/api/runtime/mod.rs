@@ -579,6 +579,20 @@ fn assemble_durable_runtime(
     Ok((runtime, summary, recovery_report, config))
 }
 
+/// Whether a commit's WAL-growth evaluation warrants pacing the writer on
+/// background progress: only when it actually enqueued (or coalesced into)
+/// maintenance. A deferred evaluation enqueued nothing (#2792) — pacing would
+/// wait on relief the structurally-deferred task class cannot deliver, which
+/// on a multi-branch store with the checkpoint guard latched turns bounded
+/// backpressure into an unbounded stall.
+pub(crate) const fn wal_growth_pacing_applies(status: LifecycleWalGrowthStatus) -> bool {
+    matches!(
+        status,
+        LifecycleWalGrowthStatus::MaintenanceEnqueued
+            | LifecycleWalGrowthStatus::MaintenanceCoalesced
+    )
+}
+
 fn wal_service_config(options: StorageOpenOptions) -> StorageApiResult<WalServiceConfig> {
     // W3.3a: every production durable open coalesces WAL appends; the bare
     // constructors stay direct for service-level byte-contract tests and the
@@ -2730,12 +2744,7 @@ impl<'a> StorageRuntime<'a> {
         // condition that is almost always below threshold. A cap/threshold
         // crossing between this commit and the next is caught by the next
         // commit's own evaluation (the loop's documented re-check semantics).
-        if matches!(
-            outcome.status(),
-            LifecycleWalGrowthStatus::Disabled
-                | LifecycleWalGrowthStatus::BelowThreshold
-                | LifecycleWalGrowthStatus::NoDurableAction
-        ) {
+        if !wal_growth_pacing_applies(outcome.status()) {
             return;
         }
         if !self.has_background_runtime() {
