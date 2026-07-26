@@ -1066,9 +1066,13 @@ mod tests {
         .collect();
         assert_eq!(counts, expected, "seed 0's action mix drifted");
         // The per-run facts counters, exactly (the sweep sums can mask
-        // per-run constant mutants by coincidence).
+        // per-run constant mutants by coincidence) — including the
+        // no-op/unavailable counters nothing else observes.
         assert_eq!(facts.deletes, 1);
         assert_eq!(facts.forks, 3);
+        assert_eq!(facts.recreates, 0);
+        assert_eq!(facts.forks_unavailable, 1);
+        assert_eq!(facts.temporal_probes_unavailable, 5);
     }
 
     /// Pool ids and branch labels are stable identifiers.
@@ -1092,6 +1096,8 @@ mod tests {
         let dir_a = tempfile::tempdir().expect("tmp");
         let four = run_whole_db_sim(dir_a.path(), 4, 3, 24).expect("seed 4");
         assert_eq!(four.deletes(), 2, "{four:?}");
+        // Seed 4 recreates once — the counter's only >0 pin (seed 0 is 0).
+        assert_eq!(four.recreates, 1, "{four:?}");
         let dir_b = tempfile::tempdir().expect("tmp");
         let five = run_whole_db_sim(dir_b.path(), 5, 3, 24).expect("seed 5");
         assert_eq!(five.deletes(), 0, "{five:?}");

@@ -29,6 +29,16 @@ exclude_globs = [
     # loom CI job's own sabotage / should-panic twins. The *_loom.rs suffix is
     # the naming contract for loom model modules.
     "crates/storage/src/**/*_loom.rs",
+    # The DST simulation harness (TCP4.11): mutated to SATURATION during its
+    # build-out — 25 mutants found across five gate rounds, every one killed
+    # by the exact-facts pins it now carries (bit-exact trajectories make
+    # every counter a constant of the seed, pinned at distinct values; action
+    # histograms pin the grammar; truth tables pin labels/ids). The full-file
+    # mutant set times out any per-PR budget (~200 mutants x ~90s of storage
+    # suite), and the harness's strength mechanism — like the loom modules'
+    # twins — is its own pins: a future edit that weakens an oracle fails the
+    # pins loudly. Product code the harness CALLS stays fully mutated.
+    "crates/storage/src/testkit/simulation/**",
 ]
 
 # Reasoned equivalent-mutant exclusions (regexes over mutant names):

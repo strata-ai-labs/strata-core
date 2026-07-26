@@ -182,11 +182,11 @@ jobs:
     if: github.event_name == 'pull_request'
     needs: check
     runs-on: ubuntu-latest
-    # 120 minutes: a large testkit diff (TCP4.11b, ~150 mutants x ~75s with
-    # the DST sweep tests in the per-mutant suite) outgrew the 90-minute
-    # budget mid-run — the same class as the #2770 raise. The gate must be
-    # able to finish judging before it can gate.
-    timeout-minutes: 120
+    # 90 minutes (#2770): sized for product diffs. The DST harness modules
+    # are mutation-excluded at saturation (see .cargo/mutants.toml) — their
+    # full-file mutant set outgrew any per-PR budget and their strength
+    # mechanism is their own exact-facts pins.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
