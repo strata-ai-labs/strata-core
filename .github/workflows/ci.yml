@@ -182,7 +182,11 @@ jobs:
     if: github.event_name == 'pull_request'
     needs: check
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # 120 minutes: a large testkit diff (TCP4.11b, ~150 mutants x ~75s with
+    # the DST sweep tests in the per-mutant suite) outgrew the 90-minute
+    # budget mid-run — the same class as the #2770 raise. The gate must be
+    # able to finish judging before it can gate.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
