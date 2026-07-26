@@ -399,19 +399,13 @@ impl<P: GroupProtocol> GroupQueue<P> {
                         self.finish_leadership();
                         return GroupWaitOutcome::Abandoned;
                     };
-                    match std::mem::replace(&mut *reclaimed, JoinState::Taken) {
-                        JoinState::Pending(request) => return GroupWaitOutcome::Lead(request),
-                        JoinState::Done(response) => {
-                            drop(reclaimed);
-                            self.finish_leadership();
-                            return GroupWaitOutcome::Done(response);
-                        }
-                        _ => {
-                            drop(reclaimed);
-                            self.finish_leadership();
-                            return GroupWaitOutcome::Abandoned;
-                        }
+                    let taken = std::mem::replace(&mut *reclaimed, JoinState::Taken);
+                    drop(reclaimed);
+                    let (outcome, keeps_leadership) = reclaimed_outcome::<P>(taken);
+                    if !keeps_leadership {
+                        self.finish_leadership();
                     }
+                    return outcome;
                 }
                 let Ok(again) = joiner.state.lock() else {
                     return GroupWaitOutcome::Abandoned;
@@ -419,6 +413,21 @@ impl<P: GroupProtocol> GroupQueue<P> {
                 state = again;
             }
         }
+    }
+}
+
+/// Resolve the joiner state a self-promoted waiter reclaimed (the
+/// lost-promotion fallback): what the caller returns, and whether it keeps
+/// the leadership it just claimed. Pure so the decision table is directly
+/// testable: still `Pending` → lead with the own request; raced to `Done`
+/// (a leader served us in the window between the timeout check and the
+/// claim) → hand leadership back and return the response; anything else →
+/// hand leadership back and fail closed, never re-execute.
+fn reclaimed_outcome<P: GroupProtocol>(taken: JoinState<P>) -> (GroupWaitOutcome<P>, bool) {
+    match taken {
+        JoinState::Pending(request) => (GroupWaitOutcome::Lead(request), true),
+        JoinState::Done(response) => (GroupWaitOutcome::Done(response), false),
+        _ => (GroupWaitOutcome::Abandoned, false),
     }
 }
 
@@ -616,12 +625,6 @@ impl<P: GroupProtocol> GroupApplyExchange<P> {
 #[derive(Debug)]
 pub(super) struct ExchangeHandle<P: GroupProtocol>(Arc<GroupApplyExchange<P>>);
 
-impl<P: GroupProtocol> Clone for ExchangeHandle<P> {
-    fn clone(&self) -> Self {
-        Self(Arc::clone(&self.0))
-    }
-}
-
 impl<P: GroupProtocol> Default for ExchangeHandle<P> {
     fn default() -> Self {
         Self(Arc::new(GroupApplyExchange::default()))
@@ -776,6 +779,69 @@ mod tests {
         // node is promoted on handoff.
         queue.finish_leadership();
         assert!(matches!(queue.join(request(4)), JoinPath::Wait(_)));
+    }
+
+    /// u32-payload protocol for direction tests on the generic layer (the
+    /// std twin of the loom lane's `TagProtocol`).
+    #[derive(Debug)]
+    struct TagProtocol;
+
+    impl GroupProtocol for TagProtocol {
+        type Request = u32;
+        type Response = u32;
+        type Work = u32;
+        type Done = u32;
+
+        fn apply(work: u32) -> u32 {
+            work + 1000
+        }
+    }
+
+    #[test]
+    fn reclaimed_state_decision_table() {
+        // Still pending: lead with the own request, keep the claimed
+        // leadership.
+        let (outcome, keeps) = reclaimed_outcome::<TagProtocol>(JoinState::Pending(9));
+        assert!(matches!(outcome, GroupWaitOutcome::Lead(9)));
+        assert!(keeps);
+        // Raced to done: hand leadership back, return the response.
+        let (outcome, keeps) = reclaimed_outcome::<TagProtocol>(JoinState::Done(Box::new(70)));
+        let GroupWaitOutcome::Done(response) = outcome else {
+            panic!("done state returns the response");
+        };
+        assert_eq!(*response, 70);
+        assert!(!keeps);
+        // Anything else: hand leadership back and fail closed.
+        let (outcome, keeps) = reclaimed_outcome::<TagProtocol>(JoinState::Taken);
+        assert!(matches!(outcome, GroupWaitOutcome::Abandoned));
+        assert!(!keeps);
+        let (outcome, keeps) = reclaimed_outcome::<TagProtocol>(JoinState::Promoted(3));
+        assert!(matches!(outcome, GroupWaitOutcome::Abandoned));
+        assert!(!keeps);
+    }
+
+    #[test]
+    fn apply_handoff_is_accepted_only_by_taken_members() {
+        let queue = GroupQueue::<TagProtocol>::default();
+        let GroupJoinPath::Lead(_own) = queue.join(0) else {
+            panic!("first joiner must lead");
+        };
+        let GroupJoinPath::Wait(_handle) = queue.join(7) else {
+            panic!("member must wait behind the leader");
+        };
+        let exchange = ExchangeHandle::<TagProtocol>::default();
+
+        // Pending (not yet drained): the member cannot take the work.
+        let queued = queue.drain_members(0);
+        assert!(queued.is_empty());
+        // Drained (Taken): the handoff is accepted.
+        let members = queue.drain_members(1);
+        assert_eq!(members.len(), 1);
+        assert!(members[0].0.request_apply(5, &exchange).is_ok());
+
+        // Completed (Done): a further handoff is refused and returned.
+        members[0].0.complete(70);
+        assert_eq!(members[0].0.request_apply(6, &exchange), Err(6));
     }
 
     #[test]

@@ -78,3 +78,15 @@ impl Deadline {
         false
     }
 }
+
+#[cfg(all(test, not(loom)))]
+mod tests {
+    use super::Deadline;
+    use std::time::Duration;
+
+    #[test]
+    fn deadline_expiry_truth_table() {
+        assert!(Deadline::after(Duration::ZERO).expired());
+        assert!(!Deadline::after(Duration::from_secs(3600)).expired());
+    }
+}
