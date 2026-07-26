@@ -27,6 +27,7 @@ mod object;
 mod observability;
 mod row;
 mod service;
+mod sync;
 mod table;
 mod time_compat;
 mod timeline_index;
