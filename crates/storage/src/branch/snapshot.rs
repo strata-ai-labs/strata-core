@@ -24,13 +24,16 @@ pub(crate) type BranchSnapshotRegistry = ArcSwap<HashMap<BranchId, Arc<BranchRea
 /// reachable from both the publish path (under the lock) and the off-lock registry.
 #[derive(Debug)]
 pub(crate) struct BranchReadSlot {
-    snapshot: ArcSwap<BranchReadView>,
+    // TCP4.3b: the coherence-critical cell of the off-lock read protocol
+    // (V-before-S) goes through the sync seam so the loom lane explores
+    // publish/load schedules on the real slot.
+    snapshot: crate::sync::SwapCell<BranchReadView>,
 }
 
 impl BranchReadSlot {
     fn new(view: Arc<BranchReadView>) -> Self {
         Self {
-            snapshot: ArcSwap::from(view),
+            snapshot: crate::sync::SwapCell::new(view),
         }
     }
 

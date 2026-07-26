@@ -16,6 +16,8 @@ pub(crate) mod pruning;
 pub(crate) mod read;
 pub(crate) mod snapshot;
 pub(crate) mod state;
+#[cfg(all(loom, test))]
+mod visibility_loom;
 
 #[cfg(test)]
 mod tests;
