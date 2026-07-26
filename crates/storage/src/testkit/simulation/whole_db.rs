@@ -1083,6 +1083,20 @@ mod tests {
         assert_eq!(super::branch_label(super::pool_branch(2)), "pool-b2");
     }
 
+    /// The facts accessors at values a constant cannot fake: seed 4 counts
+    /// two deletes and seed 5 zero — a `-> 1` accessor mutant survived
+    /// three rounds because every other pinned config truly had one delete
+    /// (and the sweep sum coincidentally matched three ones).
+    #[test]
+    fn facts_accessors_report_distinct_pinned_values() {
+        let dir_a = tempfile::tempdir().expect("tmp");
+        let four = run_whole_db_sim(dir_a.path(), 4, 3, 24).expect("seed 4");
+        assert_eq!(four.deletes(), 2, "{four:?}");
+        let dir_b = tempfile::tempdir().expect("tmp");
+        let five = run_whole_db_sim(dir_b.path(), 5, 3, 24).expect("seed 5");
+        assert_eq!(five.deletes(), 0, "{five:?}");
+    }
+
     /// Distinct seeds diverge (the explorer is not degenerate).
     #[test]
     fn whole_db_distinct_seeds_diverge() {
