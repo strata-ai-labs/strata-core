@@ -11,12 +11,17 @@ use serde_json::{json, Value};
 /// Object fields scrubbed before comparison — wall-clock artifacts. Commit
 /// versions are deliberately NOT here: the logical commit clock is
 /// deterministic for a fixed op sequence on a fresh database.
-const VOLATILE_FIELDS: [&str; 5] = [
+const VOLATILE_FIELDS: [&str; 7] = [
     "timestamp",
     "timestamps",
     "recorded_at",
     "elapsed_ms",
     "duration_ms",
+    // Event-chain hashes derive from the wall-clock event timestamp
+    // (TCP4.2d), so they change per recording run; chain INTEGRITY is
+    // pinned by event_verify_chain, not by frozen hash bytes.
+    "hash",
+    "previous_hash",
 ];
 
 pub(crate) const CORPUS_FORMAT_VERSION: u64 = 1;
