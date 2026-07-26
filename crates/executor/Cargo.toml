@@ -78,6 +78,10 @@ required-features = ["differential"]
 name = "differential_graph"
 required-features = ["differential"]
 
+[[test]]
+name = "differential_event"
+required-features = ["differential"]
+
 [dev-dependencies]
 tiny_http = "0.12"
 url = "2"

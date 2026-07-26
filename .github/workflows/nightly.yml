@@ -339,3 +339,9 @@ jobs:
           STRATA_GRAPH_DIFF_OPS: "400"
           STRATA_NEO4J_URL: http://127.0.0.1:7474
         run: cargo test --locked -p strata-executor --features differential --test differential_graph -- --nocapture
+      - name: Event differential soak vs Redis Streams (TCP4.2d)
+        env:
+          STRATA_EVENT_DIFF_SEEDS: "16"
+          STRATA_EVENT_DIFF_OPS: "500"
+          STRATA_REDIS_URL: 127.0.0.1:6379
+        run: cargo test --locked -p strata-executor --features differential --test differential_event -- --nocapture
