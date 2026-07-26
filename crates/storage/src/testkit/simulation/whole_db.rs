@@ -1038,6 +1038,51 @@ mod tests {
         )));
     }
 
+    /// Seed 0's exact action mix, pinned: the bit-exact trace makes label
+    /// counts constants of the seed, and asserting them kills grammar-arm
+    /// and label mutants that both the counter smoke and the replay twins
+    /// structurally miss (a mutated arm or label mutates both twin runs
+    /// identically). Re-pin when the grammar deliberately changes.
+    #[test]
+    fn pinned_seed_action_mix_is_stable() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let facts = run_whole_db_sim(dir.path(), 0, 3, 24).expect("run");
+        let mut counts = std::collections::BTreeMap::new();
+        for label in &facts.action_trace {
+            *counts.entry(*label).or_insert(0usize) += 1;
+        }
+        let expected: std::collections::BTreeMap<&str, usize> = [
+            ("advance_clock", 14),
+            ("commit", 34),
+            ("delete_branch", 4),
+            ("drain_maintenance", 3),
+            ("enqueue_checkpoint", 4),
+            ("enqueue_flush", 3),
+            ("fork_at_version", 4),
+            ("fork_current", 1),
+            ("recreate_branch", 5),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(counts, expected, "seed 0's action mix drifted");
+        // The per-run facts counters, exactly (the sweep sums can mask
+        // per-run constant mutants by coincidence).
+        assert_eq!(facts.deletes, 1);
+        assert_eq!(facts.forks, 3);
+    }
+
+    /// Pool ids and branch labels are stable identifiers.
+    #[test]
+    fn pool_ids_and_branch_labels_are_stable() {
+        assert_eq!(super::pool_branch(0).as_bytes()[0], 0xB0);
+        assert_eq!(super::pool_branch(3).as_bytes()[0], 0xB3);
+        assert_eq!(
+            super::branch_label(crate::testkit::recovery_oracle::workload::default_branch()),
+            "default"
+        );
+        assert_eq!(super::branch_label(super::pool_branch(2)), "pool-b2");
+    }
+
     /// Distinct seeds diverge (the explorer is not degenerate).
     #[test]
     fn whole_db_distinct_seeds_diverge() {
