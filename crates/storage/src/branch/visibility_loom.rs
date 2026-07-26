@@ -27,12 +27,29 @@
 //! Two sabotage twins keep the oracle honest: publishing the frontier
 //! before the apply must surface the torn/stale read, and rotating without
 //! republishing must strand the next batch invisibly.
+//!
+//! TCP4.3c adds the maintenance-driven structural swap — the last #2682
+//! surface: a concurrent FLUSH retires a frozen table for its built L0
+//! twin through the real install
+//! ([`BranchLocalState::replace_frozen_with_level_zero_tables_by_identity`],
+//! the BS5.3b identity path) with the production choreography (clone the
+//! frozen handle under a brief lock, build the twin off-lock, install +
+//! republish under the lock). Readers must stay covered on BOTH sides of
+//! the swap: old views keep the retired frozen table alive by `Arc`, new
+//! views serve the twin. Its sabotage twin republishes a stale capture
+//! over a newer one — the publish-regression bug shape — which the oracle
+//! must catch.
 
 use super::config::BranchRuntimeConfig;
-use super::read::{BranchReadBound, BranchScanBounds};
+use super::facts::{BranchLevel, BranchTableDescriptor};
+use super::read::{BranchOwnedTable, BranchReadBound, BranchScanBounds};
 use super::snapshot::{load_from_registry, BranchSnapshotPublisher, BranchSnapshotRegistry};
 use super::state::BranchLocalState;
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
+use crate::table::{
+    sort_table_rows_by_key, FrozenTable, ImmutableTableBuilder, ImmutableTableReader,
+    TableBuilderConfig, TableIdentity, TableReaderConfig, TableRow, TableSummaryExtras,
+};
 use loom::sync::atomic::{AtomicU64, Ordering};
 use loom::sync::{Arc as LoomArc, Mutex as LoomMutex};
 use std::sync::Arc;
@@ -321,6 +338,137 @@ fn loom_rotation_without_republish_is_caught() {
                 .expect("batch applies");
             drop(guard);
             world.visible.store(3, Ordering::Release);
+        }
+        let (bound, versions) = frontier_bounded_scan(&world);
+        assert_batch_atomicity(bound, &versions, 3);
+    });
+}
+
+/// Build the flush's L0 twin of a frozen table from its rows — the
+/// in-memory equivalent of the prepare phase's durable table build (the
+/// unit-test `immutable_reader` recipe).
+fn l0_twin(identity: &str, frozen: &FrozenTable) -> BranchOwnedTable {
+    let mut rows: Vec<TableRow> = frozen
+        .iter()
+        .map(|row| TableRow::new(row.row().clone()))
+        .collect();
+    sort_table_rows_by_key(&mut rows);
+    let identity = TableIdentity::new(identity).expect("table identity");
+    let builder = ImmutableTableBuilder::new(TableBuilderConfig::default()).expect("builder");
+    let artifact = builder
+        .build_from_rows(identity.clone(), &rows)
+        .expect("twin builds");
+    let reader = ImmutableTableReader::open_bytes(
+        identity,
+        artifact.into_bytes(),
+        TableReaderConfig::default(),
+    )
+    .expect("twin reader");
+    let descriptor = BranchTableDescriptor::new(
+        reader.facts().identity().clone(),
+        reader.facts().clone(),
+        BranchLevel::ZERO,
+    )
+    .expect("twin descriptor");
+    let extras = TableSummaryExtras::from_rows(reader.rows()).expect("twin extras");
+    BranchOwnedTable::new(branch(), descriptor, reader, extras).expect("twin owned table")
+}
+
+/// TCP4.3c: the flush structural swap under concurrency — a frozen table
+/// retired for its L0 twin (real identity-install + republish, production
+/// choreography) while a writer commits and a reader scans. Readers must
+/// stay covered on both sides of the swap, and the swap must preserve
+/// content exactly.
+#[test]
+fn loom_flush_install_keeps_readers_covered() {
+    let mut model = loom::model::Builder::new();
+    model.preemption_bound = Some(2);
+    model.check(|| {
+        // Threshold 1: the seed batch (v1) rotated into frozen[0].
+        let world = world(1);
+        let writer = {
+            let world = LoomArc::clone(&world);
+            loom::thread::spawn(move || commit_batch(&world, 2))
+        };
+        let flusher = {
+            let world = LoomArc::clone(&world);
+            // The immutable-table build (block encode + eager decode) is
+            // deeper than loom's default coroutine stack.
+            loom::thread::Builder::new()
+                .stack_size(4 << 20)
+                .spawn(move || {
+                    // Production shape: clone the frozen handle under a brief
+                    // lock, build the twin OFF-lock, install + republish under
+                    // the lock.
+                    let (frozen, identity) = {
+                        let guard = world.runtime.lock().expect("runtime lock");
+                        let (state, _publisher) = &*guard;
+                        let frozen = state.frozen()[0].clone();
+                        let identity = frozen.memory_state_identity();
+                        (frozen, identity)
+                    };
+                    let twin = l0_twin("flush-l0-twin", &frozen);
+                    let mut guard = world.runtime.lock().expect("runtime lock");
+                    let (state, publisher) = &mut *guard;
+                    state
+                        .replace_frozen_with_level_zero_tables_by_identity(identity, vec![twin])
+                        .expect("flush install");
+                    publisher.publish_view(
+                        branch(),
+                        Arc::new(state.capture_snapshot().expect("post-install snapshot")),
+                    );
+                })
+                .expect("flusher spawns")
+        };
+        let reader = {
+            let world = LoomArc::clone(&world);
+            loom::thread::spawn(move || {
+                let (bound, versions) = frontier_bounded_scan(&world);
+                assert_batch_atomicity(bound, &versions, 2);
+            })
+        };
+        writer.join().expect("writer completes");
+        flusher.join().expect("flusher completes");
+        reader.join().expect("reader completes");
+
+        // Post-quiesce: content preserved through the swap, structure moved.
+        let (bound, versions) = frontier_bounded_scan(&world);
+        assert_eq!(bound, 2);
+        assert_batch_atomicity(bound, &versions, 2);
+        let guard = world.runtime.lock().expect("runtime lock");
+        let (state, _publisher) = &*guard;
+        assert_eq!(state.owned_table_count(), 1, "the twin is installed at L0");
+        assert_eq!(
+            state.frozen_table_count(),
+            1,
+            "only batch 2's rotated table remains frozen"
+        );
+    });
+}
+
+/// Sabotage twin (publish regression): republishing a STALE capture over a
+/// newer one leaves readers bounded beyond the published coverage — the
+/// oracle must catch it. (The stale view's live active handle still covers
+/// batch 2 — it WAS the active when batch 2 applied — so the loss surfaces
+/// at batch 3, which landed in an active the stale capture has no handle
+/// to.)
+#[test]
+#[should_panic(expected = "torn or stale read")]
+fn loom_republishing_a_stale_capture_is_caught() {
+    loom::model(|| {
+        let world = world(1);
+        let stale = {
+            let guard = world.runtime.lock().expect("runtime lock");
+            let (state, _publisher) = &*guard;
+            Arc::new(state.capture_snapshot().expect("stale capture"))
+        };
+        commit_batch(&world, 2);
+        commit_batch(&world, 3);
+        {
+            let mut guard = world.runtime.lock().expect("runtime lock");
+            let (_state, publisher) = &mut *guard;
+            // The bug under test: an old capture clobbers the newer publish.
+            publisher.publish_view(branch(), stale);
         }
         let (bound, versions) = frontier_bounded_scan(&world);
         assert_batch_atomicity(bound, &versions, 3);
