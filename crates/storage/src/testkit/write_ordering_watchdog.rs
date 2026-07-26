@@ -247,6 +247,17 @@ impl<B> WriteOrderingWatchdog<B> {
         report
     }
 
+    /// CONFIRMED violations only — publishes whose raced bytes were later
+    /// discarded (the direction with no innocent explanation). Safe to take
+    /// mid-stream or on a faulted/crashed run that never quiesces cleanly:
+    /// pending entries are excluded because an in-flight append tail is
+    /// indistinguishable from a dependency violation until the future settles
+    /// it (#2785).
+    #[must_use]
+    pub fn confirmed_report(&self) -> WriteOrderingReport {
+        self.lock().report.clone()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, WatchdogState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }

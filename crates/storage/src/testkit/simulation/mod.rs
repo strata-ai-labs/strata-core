@@ -10,7 +10,10 @@
 //! Interleaving comes from cadence (how much maintenance drains between client ops),
 //! seeded clock advancement, and where each op lands — never from reordering the
 //! production maintenance priority, so every schedule explored is one production can
-//! actually emit. The fault/crash dimension is a separate slice.
+//! actually emit. The fault/crash dimension ([`faults`]) runs on the SAME
+//! deterministic substrate (TCP4.11a): owned decorator backends under
+//! `DeterministicInline` with the write-ordering watchdog stacked as a
+//! continuous oracle, bit-exact from the seed like the clean lane.
 
 mod driver;
 mod faults;
@@ -66,6 +69,28 @@ impl SimulationOutcome {
     }
 }
 
+/// Environment knobs that change storage behavior and would silently break the
+/// seed-replay guarantee if set to non-defaults. The harness refuses to run in
+/// a polluted environment instead of diverging quietly.
+fn assert_deterministic_environment() -> Result<(), TestkitError> {
+    let checks: [(&str, &[&str]); 3] = [
+        ("STRATA_SUBCOMPACTIONS", &["1"]),
+        ("STRATA_COMPACTION_LANES", &["4"]),
+        ("STRATA_ADMISSION", &[]),
+    ];
+    for (name, allowed) in checks {
+        if let Ok(value) = std::env::var(name) {
+            if !allowed.contains(&value.as_str()) {
+                return Err(TestkitError::new(format!(
+                    "simulation requires a deterministic environment: {name}={value} \
+                     changes storage behavior (unset it, or set the default)"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn case_dir(root: &Path, label: &str) -> Result<PathBuf, TestkitError> {
     let dir = root.join(label);
     std::fs::create_dir_all(&dir)
@@ -80,6 +105,7 @@ pub fn run_simulation_harness(
     root: &Path,
     case_limit: Option<usize>,
 ) -> Result<SimulationOutcome, TestkitError> {
+    assert_deterministic_environment()?;
     let mut outcome = SimulationOutcome::default();
     // Seeds scale with the case budget: an uncapped run covers a few seeds, a large
     // soak explores as many as the budget allows. Seeds stay `0..N` so any failure
