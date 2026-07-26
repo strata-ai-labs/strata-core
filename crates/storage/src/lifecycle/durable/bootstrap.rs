@@ -1441,6 +1441,11 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ) -> LifecycleResult<crate::lifecycle::LifecycleBranchDeleteOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let _quiesce = self.guard_set.try_begin_quiesce().map_err(commit_error)?;
+        // #2820: the durable live-delete refuses while a fork child's
+        // recovery depends on this branch (replay and cache mode do not
+        // consult this — see the helper's doc).
+        self.branch_catalog
+            .require_no_recovery_dependent_children(branch_id)?;
         let outcome = self
             .branch_catalog
             .delete_branch(branch_id, generation_guard, deleted_at)?;
@@ -3166,6 +3171,20 @@ fn rebuild_fork_snapshot_rows(branch_catalog: &mut LifecycleBranchCatalog) -> Li
                 .branch_state(descriptor.branch_id())?
                 .inherited_layers()
                 .is_empty()
+            {
+                continue;
+            }
+            // #2820: a deleted source proves no live child depended on it —
+            // `delete_branch` refuses while any layer-less child has
+            // non-empty fork-visible rows, so reaching a Deleted source here
+            // means this child re-materializes nothing. Skipping is the
+            // recovery-side half of that invariant; dereferencing (the old
+            // behavior) permanently bricked the reopen.
+            if branch_catalog
+                .lookup_descriptor(parent.source_branch_id())
+                .is_ok_and(|source| {
+                    source.status() == crate::lifecycle::LifecycleBranchStatus::Deleted
+                })
             {
                 continue;
             }
