@@ -1000,6 +1000,44 @@ mod tests {
         );
     }
 
+    /// Grammar labels are stable identifiers (they feed the bit-exact
+    /// action trace, which cannot police its own labels — a mutated label
+    /// mutates both replay runs identically).
+    #[test]
+    fn action_labels_are_stable() {
+        use super::DbAction;
+        let expected = [
+            (DbAction::Commit, "commit"),
+            (DbAction::ForkCurrent, "fork_current"),
+            (DbAction::ForkAtVersion, "fork_at_version"),
+            (DbAction::DeleteBranch, "delete_branch"),
+            (DbAction::RecreateBranch, "recreate_branch"),
+            (DbAction::DrainMaintenance, "drain_maintenance"),
+            (DbAction::EnqueueFlush, "enqueue_flush"),
+            (DbAction::EnqueueCheckpoint, "enqueue_checkpoint"),
+            (DbAction::AdvanceClock(7), "advance_clock"),
+        ];
+        for (action, label) in expected {
+            assert_eq!(action.label(), label);
+        }
+    }
+
+    /// The #2820 signature matcher discriminates: the pinned shape matches,
+    /// unrelated errors do not.
+    #[test]
+    fn pinned_signature_discriminates() {
+        use crate::testkit::TestkitError;
+        assert!(is_pinned_2820_signature(&TestkitError::new(
+            "[seed=2 epoch=2] reopen failed: InvalidRuntimeState { reason: \"deleted\" }"
+        )));
+        assert!(!is_pinned_2820_signature(&TestkitError::new(
+            "[seed=1 step=3] commit: StoragePressure"
+        )));
+        assert!(!is_pinned_2820_signature(&TestkitError::new(
+            "reopen failed: Corruption"
+        )));
+    }
+
     /// Distinct seeds diverge (the explorer is not degenerate).
     #[test]
     fn whole_db_distinct_seeds_diverge() {

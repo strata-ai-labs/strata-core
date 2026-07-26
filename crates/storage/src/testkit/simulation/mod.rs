@@ -107,10 +107,13 @@ pub fn run_whole_db_harness(
                 outcome.deletes += facts.deletes();
                 outcome.temporal_probes_ok += facts.temporal_probes_ok();
             }
-            Err(error) if whole_db::is_pinned_2820_signature(&error) => {
-                outcome.pinned_2820_hits += 1;
+            Err(error) => {
+                if whole_db::is_pinned_2820_signature(&error) {
+                    outcome.pinned_2820_hits += 1;
+                } else {
+                    return Err(error);
+                }
             }
-            Err(error) => return Err(error),
         }
         outcome.seeds_executed += 1;
     }
@@ -227,27 +230,36 @@ mod tests {
 
     #[test]
     fn whole_db_sweep_entry_holds_and_is_non_vacuous() {
+        // EXACT values, not floors: every trajectory is bit-exact from its
+        // seed, so the sweep's counters are constants of (seed set, budget)
+        // — and asserting them exactly kills accessor/grammar mutants that
+        // floor checks structurally cannot (a mutated grammar arm shifts
+        // every counter). A divergence here on another machine would itself
+        // be a determinism bug worth failing on. Re-pin the constants when
+        // the grammar deliberately changes.
         let dir = tempfile::tempdir().expect("tmp");
         let outcome = super::run_whole_db_harness(dir.path(), Some(4)).expect("whole-db sweep");
-        assert!(outcome.seeds_executed() > 0, "no seeds executed");
-        assert!(outcome.epochs_executed() > 0, "no epochs executed");
-        assert!(
-            outcome.crashed_epochs() > 0,
-            "no epoch crashed: {outcome:?}"
-        );
-        // Deletes are grammar-reachable but not budget-guaranteed; consume
-        // the accessor so the counter surface stays honest.
-        let _ = outcome.deletes();
-        assert!(outcome.forks() > 0, "no fork happened: {outcome:?}");
-        assert!(
-            outcome.temporal_probes_ok() > 0,
-            "no temporal probe succeeded: {outcome:?}"
-        );
-        // Loud allowance: seed 2 currently dies with the pinned #2820 shape.
-        assert!(
-            outcome.pinned_2820_hits() >= 1,
-            "the #2820 allowance is stale — remove it: {outcome:?}"
-        );
+        assert_eq!(outcome.seeds_executed(), 4, "{outcome:?}");
+        assert_eq!(outcome.epochs_executed(), 8, "{outcome:?}");
+        assert_eq!(outcome.crashed_epochs(), 5, "{outcome:?}");
+        assert_eq!(outcome.forks(), 10, "{outcome:?}");
+        assert_eq!(outcome.deletes(), 3, "{outcome:?}");
+        assert_eq!(outcome.temporal_probes_ok(), 12, "{outcome:?}");
+        // Loud allowance: seed 2 dies with the pinned #2820 shape (exactly
+        // once at this budget); the pin test breaks when the bug is fixed
+        // and this constant drops to zero with it.
+        assert_eq!(outcome.pinned_2820_hits(), 1, "{outcome:?}");
+    }
+
+    /// A sweep BELOW the pinned seed (seeds 0-1 only): zero #2820 hits —
+    /// kills the constant-1 mutant on the pin counter and pins that the
+    /// allowance counts only genuine signature matches.
+    #[test]
+    fn whole_db_sweep_below_the_pinned_seed_counts_no_pins() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let outcome = super::run_whole_db_harness(dir.path(), Some(2)).expect("mini sweep");
+        assert_eq!(outcome.seeds_executed(), 2, "{outcome:?}");
+        assert_eq!(outcome.pinned_2820_hits(), 0, "{outcome:?}");
     }
 
     #[test]
