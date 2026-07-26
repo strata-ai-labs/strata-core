@@ -345,3 +345,9 @@ jobs:
           STRATA_EVENT_DIFF_OPS: "500"
           STRATA_REDIS_URL: 127.0.0.1:6379
         run: cargo test --locked -p strata-executor --features differential --test differential_event -- --nocapture
+      # In-process exact k-NN oracle — no service container, no feature gate.
+      - name: Vector differential soak vs exact k-NN oracle (TCP4.2e)
+        env:
+          STRATA_VECTOR_DIFF_SEEDS: "16"
+          STRATA_VECTOR_DIFF_OPS: "500"
+        run: cargo test --locked -p strata-executor --test differential_vector -- --nocapture
