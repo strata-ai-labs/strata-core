@@ -483,6 +483,15 @@ fn api_source_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     common::source_guard_helpers::collect_rs_files(&root.join("src/api"), &mut files);
     files
+        .into_iter()
+        .filter(|file| {
+            // The TCP4.3 loom lane is `#[cfg(all(loom, test))]` model-checking
+            // code, not API surface: `loom::model` / `loom::thread::spawn`
+            // are the checker's own vocabulary, unrelated to the product and
+            // runtime terms this guard keeps out of the API.
+            !file.ends_with("commit_group_loom.rs")
+        })
+        .collect()
 }
 
 fn production_source_files(root: &Path) -> Vec<PathBuf> {

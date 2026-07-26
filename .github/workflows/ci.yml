@@ -148,6 +148,30 @@ jobs:
       - name: Perf ceilings gate
         run: python3 scripts/perf_floors.py --iai-root benchmarks/target/iai
 
+  loom:
+    # TCP4.3: exhaustive schedule exploration of the write-group protocol
+    # (commit_group.rs) under loom. Fully deterministic — every schedule at
+    # the model bounds is explored, so this can block merges without
+    # flapping. The --cfg loom build swaps the storage sync seam
+    # (crates/storage/src/sync.rs) to loom primitives; the separate cache
+    # key keeps the differently-flagged dep tree warm.
+    if: github.event_name == 'pull_request'
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorize private git dependencies
+        run: git config --global url."https://x-access-token:${{ secrets.STRATAHUB_READ_TOKEN }}@github.com/stratalab/stratahub".insteadOf "https://github.com/stratalab/stratahub"
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: loom
+      - name: Schedule-exploration models
+        env:
+          RUSTFLAGS: --cfg loom
+        run: cargo test --locked -p strata-storage --lib commit_group_loom
+
   mutation-on-diff:
     # SQLite-style suite-strength gate, bounded to stay affordable: mutate
     # only the lines this PR touches; an un-killed mutant is a missing

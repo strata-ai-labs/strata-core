@@ -21,4 +21,24 @@
 #
 # Keep this partition and the three run definitions in ci.yml in sync: a
 # package added here must gain a featured run there, and vice versa.
-exclude_globs = ["crates/executor/**", "crates/inference/**"]
+exclude_globs = [
+    "crates/executor/**",
+    "crates/inference/**",
+    # cfg(loom)-gated model-checking module (TCP4.3): never compiled in this
+    # lane, so its mutants survive vacuously. Its strength mechanism is the
+    # loom CI job's own sabotage / should-panic twins.
+    "crates/storage/src/api/runtime/commit_group_loom.rs",
+]
+
+# Reasoned equivalent-mutant exclusions (regexes over mutant names):
+exclude_re = [
+    # W3.3 batching beat: a pure throughput heuristic — replacing the pause
+    # with () is semantics-preserving by design (differently-batched fsyncs,
+    # never fewer). No noise-free observer exists.
+    "replace beat_pause with \\(\\)",
+    # BS5.4c parallel dispatch: the finish path's leader-applied fallback
+    # (deliberate robustness for checkout failures, lifecycle bootstrap.rs)
+    # makes a skipped dispatch semantics-equivalent — parallelism is a
+    # latency property, pinned by the loom barrier model.
+    "replace run_group_applies_parallel -> bool with false",
+]

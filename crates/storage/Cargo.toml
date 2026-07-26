@@ -39,5 +39,9 @@ tempfile = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 proptest = { workspace = true }
 
+# TCP4.3 schedule-exploration lane: only compiled under RUSTFLAGS="--cfg loom".
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
 [lints]
 workspace = true

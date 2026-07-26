@@ -84,6 +84,8 @@ use std::time::Duration;
 
 mod background;
 mod commit_group;
+#[cfg(all(loom, test))]
+mod commit_group_loom;
 mod data;
 mod diagnostics;
 mod error;
@@ -3577,7 +3579,7 @@ where
 fn run_group_applies_parallel<S>(
     runtime: &mut LifecycleDurableLocalRuntime<'static, S>,
     in_flight: &mut crate::lifecycle::DurableGroupInFlight<'static>,
-    joiners: &[Arc<commit_group::CommitGroupJoiner>],
+    joiners: &[commit_group::CommitGroupJoinerHandle],
     member_branches: &[BranchId],
 ) -> bool
 where
@@ -3587,7 +3589,7 @@ where
     if work.is_empty() {
         return false;
     }
-    let exchange = Arc::new(commit_group::GroupApplyExchange::default());
+    let exchange = commit_group::CommitGroupExchangeHandle::default();
     let mut expected = 0_usize;
     let mut leader_work = Vec::new();
     for unit in work {
@@ -3599,12 +3601,9 @@ where
             leader_work.push(unit);
             continue;
         };
-        match joiners[index].request_apply(Box::new(commit_group::GroupApplyHandoff {
-            work: unit,
-            exchange: Arc::clone(&exchange),
-        })) {
+        match joiners[index].request_apply(unit, &exchange) {
             Ok(()) => expected += 1,
-            Err(handoff) => leader_work.push(handoff.work),
+            Err(work) => leader_work.push(work),
         }
     }
     // The leader's own share overlaps the members' applies.
@@ -3626,7 +3625,7 @@ where
 /// (always LAST — member order is version order), with per-member byte
 /// estimates captured before the batches are consumed.
 struct FormedCommitGroup {
-    joiners: Vec<Arc<commit_group::CommitGroupJoiner>>,
+    joiners: Vec<commit_group::CommitGroupJoinerHandle>,
     batches: Vec<(crate::commit::CommitBatch, CommitBranchGenerationGuard)>,
     member_bytes: Vec<u64>,
     /// Branch of each joiner member (aligned with `joiners`; the leader is
@@ -3681,7 +3680,7 @@ fn distribute_group_responses<S>(
     runtime: &mut LifecycleDurableLocalRuntime<'static, S>,
     results: Vec<crate::lifecycle::DurableGroupMemberResult>,
     member_bytes: Vec<u64>,
-    joiners: Vec<Arc<commit_group::CommitGroupJoiner>>,
+    joiners: Vec<commit_group::CommitGroupJoinerHandle>,
 ) -> commit_group::CommitGroupResponse
 where
     S: CommitTimestampSource,
