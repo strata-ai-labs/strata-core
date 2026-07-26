@@ -5,12 +5,12 @@ use super::{
     TableKeyBounds, TableRow,
 };
 use crate::observability::perf_trace;
+use crate::sync::RwLockReadGuard;
 use crate::table::mutable::{entry_visible, TableMemoryData};
 use crate::table::TableRuntimeResult;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::ops::Bound::{Excluded, Unbounded};
-use std::sync::RwLockReadGuard;
 
 pub(crate) const MERGE_HEAP_THRESHOLD: usize = 4;
 const _: () = assert!(MERGE_HEAP_THRESHOLD >= 2);

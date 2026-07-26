@@ -7,9 +7,10 @@ use super::{
 use crate::observability::perf_trace;
 use crate::row::StorageRow;
 use crate::row::{InternalKey, PhysicalKey};
+use crate::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::collections::BTreeMap;
 use std::ops::Bound::{Included, Unbounded};
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::Arc;
 use strata_core::{CommitVersion, Timestamp};
 
 #[derive(Clone, Debug, Eq, PartialEq)]

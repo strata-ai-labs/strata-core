@@ -170,7 +170,7 @@ jobs:
       - name: Schedule-exploration models
         env:
           RUSTFLAGS: --cfg loom
-        run: cargo test --locked -p strata-storage --lib commit_group_loom
+        run: cargo test --locked -p strata-storage --lib -- commit_group_loom visibility_loom
 
   mutation-on-diff:
     # SQLite-style suite-strength gate, bounded to stay affordable: mutate

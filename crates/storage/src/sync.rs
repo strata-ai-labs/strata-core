@@ -20,12 +20,66 @@
 //!   model checking.
 
 #[cfg(not(loom))]
-pub(crate) use std::sync::{Arc, Condvar, Mutex};
+pub(crate) use std::sync::{Arc, Condvar, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 #[cfg(loom)]
-pub(crate) use loom::sync::{Arc, Condvar, Mutex};
+pub(crate) use loom::sync::{Arc, Condvar, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use std::time::Duration;
+
+/// Published-snapshot swap cell (TCP4.3b): [`arc_swap::ArcSwap`] in
+/// production (single-atomic lock-free load on the off-lock read path); a
+/// loom `RwLock<Arc<T>>` under exploration. The substitution is
+/// ordering-equivalent — both are a Release store / Acquire load on one
+/// location — and trades only `ArcSwap`'s lock-freedom, a liveness property
+/// loom's deadlock detector covers trivially.
+#[derive(Debug)]
+pub(crate) struct SwapCell<T> {
+    #[cfg(not(loom))]
+    inner: arc_swap::ArcSwap<T>,
+    #[cfg(loom)]
+    inner: loom::sync::RwLock<std::sync::Arc<T>>,
+}
+
+impl<T> SwapCell<T> {
+    pub(crate) fn new(value: std::sync::Arc<T>) -> Self {
+        #[cfg(not(loom))]
+        {
+            Self {
+                inner: arc_swap::ArcSwap::from(value),
+            }
+        }
+        #[cfg(loom)]
+        {
+            Self {
+                inner: loom::sync::RwLock::new(value),
+            }
+        }
+    }
+
+    /// Publish a new value (release ordering); old values stay valid for
+    /// readers still holding them and die by `Arc` drop.
+    pub(crate) fn store(&self, value: std::sync::Arc<T>) {
+        #[cfg(not(loom))]
+        self.inner.store(value);
+        #[cfg(loom)]
+        {
+            *self.inner.write().expect("swap cell write lock poisoned") = value;
+        }
+    }
+
+    /// Load the current value with one atomic refcount bump.
+    pub(crate) fn load_full(&self) -> std::sync::Arc<T> {
+        #[cfg(not(loom))]
+        {
+            self.inner.load_full()
+        }
+        #[cfg(loom)]
+        {
+            std::sync::Arc::clone(&self.inner.read().expect("swap cell read lock poisoned"))
+        }
+    }
+}
 
 /// Batching-beat pause: real sleep in production, scheduler yield under
 /// loom (time is not modeled; the beat is a throughput heuristic with no
