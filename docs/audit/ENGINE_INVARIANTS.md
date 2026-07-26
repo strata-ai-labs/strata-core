@@ -11,7 +11,7 @@
 > **Maintenance**: Update when the *architecture* changes, not when code is refactored.
 > If a new compaction strategy is added, add invariants for it. If a function is renamed, do nothing.
 >
-> **Categories**: LSM (7), CMP (6), COW (6), MVCC (6), ACID (7), ARCH (8), SCALE (10) = 50 invariants
+> **Categories**: LSM (7), CMP (6), COW (6), MVCC (6), ACID (7), ARCH (8), SCALE (10), DUR (9) = 59 invariants
 
 ---
 
@@ -604,11 +604,121 @@ out of memory MUST produce a clear error, not a silent crash or data corruption.
 
 ---
 
+
+---
+
+## DUR — V1 Durability, Publish-Ordering, and Scheduling Invariants
+
+Contracts established by the V1 test-coverage program (2026-07). Each is pinned by a live
+guard — the Audit instruction names it; a verdict must confirm the guard still exists and
+still fails on the inverted contract.
+
+### DUR-001: Off-lock reads bound by V-before-S
+
+The off-lock read protocol loads the visible frontier `V` (Acquire) BEFORE the published
+snapshot `S`; a reader observing `V = v` must see every structural change published under
+the lock before `v`. Writers publish structure first, frontier second.
+
+**Audit**: `load_published_snapshot` (api/runtime/mod.rs) documents and implements the
+ordering; the loom lane (`crates/storage/src/branch/visibility_loom.rs`) explores it
+exhaustively on the real structures. Verify the loom job is green and the sabotage twin
+(`loom_frontier_published_before_apply_is_caught`) still panics as expected.
+
+### DUR-002: Structural republish precedes the visible-mirror advance
+
+Every structural change on the commit path (commit-triggered rotation; flush and compaction
+installs on the maintenance path) republishes the branch snapshot BEFORE the visible
+mirror's Release store. A reader at the new frontier must always find a covering snapshot.
+
+**Audit**: every commit path (solo, eager member, deferred wrapper, parallel check-in) calls
+`republish_branch_snapshot_after_rotation` before `mirror_visible_and_evaluate_wal_growth`.
+The loom twin `loom_rotation_without_republish_is_caught` pins the failure shape.
+
+### DUR-003: Group applies complete before visibility publishes
+
+BS5.4c parallel branch applies are collected by the exchange barrier under the leader's
+lock hold; the group's visibility publish happens only after every apply outcome (or the
+group goes fatal). No schedule may show a reader a torn batch.
+
+**Audit**: `run_group_applies_parallel` barriers before `publish_commit_group`;
+`loom_visibility_publish_after_barrier_forbids_torn_reads` and the 4.3a exchange model
+explore it. Verify the loom job covers both models.
+
+### DUR-004: No dependent publish over unsynced WAL bytes
+
+A manifest, snapshot, or table publish must not become durably visible while a WAL segment
+holds appended-but-unsynced bytes it depends on. Pending-vs-confirmed semantics: a flagged
+publish is exonerated only by a later covering durability event; discarded raced bytes
+confirm the violation.
+
+**Audit**: `WriteOrderingWatchdog` (testkit) is the tripwire; `tests/write_ordering.rs`
+keeps the strict barrier-free lane; the DST fault/crash lanes run the watchdog stacked over
+every trajectory and fail on any CONFIRMED violation.
+
+### DUR-005: The commit-version watermark is sync-attested and monotonic
+
+The durable watermark (`meta/wal-watermark`) is published only AFTER the sync it attests,
+never regresses, and recovery refuses any state the watermark proves incomplete (missing
+attested segments; sole-segment deletion). Torn final WAL records are provably unacked and
+repairable without violating this.
+
+**Audit**: the #2769 watermark tests + `wal_segment_loss` testkit lane + the promoted 4.9a
+pins (permanent contracts since the fix). Verify `verify_commit_watermark_recoverable` runs
+BEFORE any tail repair mutates bytes.
+
+### DUR-006: Timed waits are safety nets, never load-bearing
+
+Every blocking coordination protocol must reach completion under direct notification alone;
+a timed wait may only absorb lost wake-ups, never structural gaps. Under loom (whose
+`wait_timeout` never fires) a protocol needing the timeout deadlocks — that detection is
+the contract's enforcement.
+
+**Audit**: the per-PR loom job explores every seam-migrated protocol with timeouts
+unreachable. Precedent: the #2815 completion-counter condvar was load-bearing and was
+replaced by the token queue. New blocking protocols must join the loom seam.
+
+### DUR-007: Degraded data-loss health fail-closes mutating admission
+
+`RecoveryHealth::Degraded { DataLoss }` (lossy recovery) blocks mutating commit admission
+non-retryably, with no silent resume path. The engine never opens lossy; the storage-level
+lossy surface is read-only after loss by design.
+
+**Audit**: `maintenance_ready_for_recovery_health` + the admission check in
+`require_write_admission_recovery_health`. The whole-DB DST records `degraded_read_only`
+and ends trajectories there — verify the harness still treats it as terminal, not
+retryable.
+
+### DUR-008: Fork sources are retained while recovery-dependent children live
+
+A branch that is the fork source of a live LAYER-LESS child with non-empty fork-visible
+rows must not be deleted on the durable live path — that child's recovery re-materializes
+from the source (`rebuild_fork_snapshot_rows`). Layered children (durably published
+inherited-layer manifests) and empty forks keep their parent deletable. Cache mode (no
+recovery) and WAL replay (history re-application) are exempt. The recovery rebuild skips
+Deleted sources — sound only because of this refusal.
+
+**Audit**: `require_no_recovery_dependent_children` (branch catalog) called from the
+durable delete only; `branch_delete_refused_while_layerless_fork_children_live`,
+`branch_delete_of_layered_fork_source_stays_allowed`,
+`fork_parent_deletion_cannot_brick_recovery` (api tests) pin all three directions;
+`branch_dag_model` (engine, cache) pins the cache exemption. Origin: #2820.
+
+### DUR-009: Enqueue mirrors execution
+
+Every maintenance scheduling site (enqueue, pacing, growth policy) consults the same
+structural-deferral predicate registry as the execution-time deferral arms. A task kind
+whose scheduling and execution disagree churns (#2792) or hard-fails (#2798).
+
+**Audit**: `checkpoint_structural_deferral` is the single authority (raw predicates are
+private — a divergent consumer must be uncompilable); `scheduling_composition_guard.rs`
+pins the shape and the anti-churn oracle. New task kinds add registry variants, never
+ad-hoc arms.
+
 ## How to Use This Catalog
 
 ### After a code change
 
-1. Identify which invariants the change could affect (use the category prefixes: LSM, CMP, COW, MVCC, ACID, ARCH, SCALE)
+1. Identify which invariants the change could affect (use the category prefixes: LSM, CMP, COW, MVCC, ACID, ARCH, SCALE, DUR)
 2. Execute the **Audit** instruction for each affected invariant against the current codebase
 3. If an invariant is violated, fix the code — do not weaken the invariant
 
