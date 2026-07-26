@@ -9,9 +9,16 @@
 //! commit survives (the faulted commit is in-doubt); under a power-loss crash the
 //! durability contract holds (`Always` loses nothing, `Standard` a clean prefix).
 //!
-//! The fault/reordering backends are `Mutex`-backed (no owned handle), so this runs
-//! on the borrowed `EvaluateAndEnqueue` path — no manual clock here, which is fine:
-//! post-crash determinism rests on the oracle classification, not on timing.
+//! TCP4.11a: this lane runs under `DeterministicInline` exactly like the clean
+//! driver — the fault/reordering decorators are `Clone` with `Arc`-shared state
+//! (BS4.4h), so durable opens take the same owned-handle path, with the manual
+//! maintenance clock wired and seeded clock advancement in the step grammar.
+//! Every backend is additionally wrapped in the write-ordering watchdog: the
+//! ordering oracle observes each faulted trajectory continuously, and CONFIRMED
+//! violations (raced bytes later discarded — no innocent explanation, #2785)
+//! fail the case even though a faulted run never quiesces cleanly. Each case's
+//! deterministic facts replay bit-exact from the seed — the same guarantee the
+//! clean lane pins.
 
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
@@ -98,11 +105,43 @@ impl SimulationFaultOutcome {
     }
 }
 
-/// A faulting / reordering backend holds a `Mutex` and has no owned handle, so it opens
-/// via the borrowed (evaluate-and-enqueue) path, with maintenance driven manually.
-fn borrowed_options(durability: StorageDurabilityPolicy) -> StorageOpenOptions {
+/// Deterministic-inline options: the production `Background` scheduling logic on
+/// the inline executor with the manual clock — the same path as the clean driver.
+fn deterministic_options(durability: StorageDurabilityPolicy) -> StorageOpenOptions {
     StorageOpenOptions::durable_local(durability)
-        .with_maintenance_scheduling_policy(StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue)
+        .with_maintenance_scheduling_policy(StorageMaintenanceSchedulingPolicy::DeterministicInline)
+}
+
+/// Probe that the just-opened runtime exposes the manual maintenance clock; a
+/// `false` means the deterministic seam is not wired and the case is invalid.
+fn require_manual_clock(runtime: &StorageRuntime<'_>, seed: u64) -> Result<(), TestkitError> {
+    if runtime.advance_maintenance_clock_for_test(std::time::Duration::ZERO) {
+        Ok(())
+    } else {
+        Err(TestkitError::new(format!(
+            "[seed={seed}] deterministic-inline runtime exposes no manual maintenance clock"
+        )))
+    }
+}
+
+/// Confirmed-only ordering check: a faulted/crashed run never quiesces, so
+/// pending entries are excluded (#2785) — but a CONFIRMED violation is a real
+/// ordering bug regardless of the injected fault.
+fn require_no_confirmed_ordering_violations(
+    backend: &StorageBackend,
+    seed: u64,
+    label: &str,
+) -> Result<(usize, usize), TestkitError> {
+    let report = backend
+        .write_ordering_confirmed_report()
+        .ok_or_else(|| TestkitError::new(format!("[seed={seed}] {label}: watchdog missing")))?;
+    if !report.violations().is_empty() {
+        return Err(TestkitError::new(format!(
+            "[seed={seed}] {label}: confirmed write-ordering violations under fault: {:?}",
+            report.violations()
+        )));
+    }
+    Ok((report.violations().len(), report.publishes_checked()))
 }
 
 fn case_dir(root: &Path, label: &str) -> Result<PathBuf, TestkitError> {
@@ -120,7 +159,7 @@ fn swept_op_count(backend: &StorageBackend, op: BackendOperation) -> usize {
         .count()
 }
 
-/// One interleaved action against the runtime (no clock — this path has none).
+/// One interleaved action against the runtime.
 #[derive(Clone, Copy, Debug)]
 enum SimStep {
     Commit,
@@ -128,18 +167,44 @@ enum SimStep {
     EnqueueCheckpoint,
     EnqueueFlush,
     EnqueueSnapshotPruning,
+    /// Advance the manual maintenance clock by a seeded jitter (ms).
+    AdvanceClock(u64),
+}
+
+impl SimStep {
+    const fn label(self) -> &'static str {
+        match self {
+            SimStep::Commit => "commit",
+            SimStep::DrainMaintenance => "drain_maintenance",
+            SimStep::EnqueueCheckpoint => "enqueue_checkpoint",
+            SimStep::EnqueueFlush => "enqueue_flush",
+            SimStep::EnqueueSnapshotPruning => "enqueue_snapshot_pruning",
+            SimStep::AdvanceClock(_) => "advance_clock",
+        }
+    }
 }
 
 fn draw_step(rng: &mut SplitMix64) -> SimStep {
-    match rng.gen_u8_below(7) {
+    match rng.gen_u8_below(8) {
         // Bias toward commits so there is real write load to maintain against.
         0..=2 => SimStep::Commit,
         3 => SimStep::DrainMaintenance,
         4 => SimStep::EnqueueCheckpoint,
         5 => SimStep::EnqueueFlush,
         // Pruning issues the backend deletes that exercise the DeleteObject fault.
-        _ => SimStep::EnqueueSnapshotPruning,
+        6 => SimStep::EnqueueSnapshotPruning,
+        _ => SimStep::AdvanceClock(u64::from(rng.gen_u8_below(50))),
     }
+}
+
+/// Deterministic facts of one interleaved drive — state and sequencing only,
+/// never wall-clock numbers, so a seed replays them bit-exact.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct InterleaveFacts {
+    step_trace: Vec<&'static str>,
+    acked_versions: Vec<u64>,
+    in_doubt_commits: usize,
+    clock_advances: usize,
 }
 
 /// Drive a seeded interleaving of commits + maintenance for `steps` actions, recording
@@ -152,12 +217,15 @@ fn drive_interleaved(
     seed: u64,
     steps: usize,
     model: &mut ExpectedState,
-) -> Result<(), TestkitError> {
+) -> Result<InterleaveFacts, TestkitError> {
     let mut rng = SplitMix64::new(seed ^ STEP_SALT);
     let workload = generate_workload(seed, steps.max(1));
     let mut commit_index = 0usize;
+    let mut facts = InterleaveFacts::default();
     for _ in 0..steps {
-        match draw_step(&mut rng) {
+        let step = draw_step(&mut rng);
+        facts.step_trace.push(step.label());
+        match step {
             SimStep::Commit => {
                 if commit_index >= workload.len() {
                     continue;
@@ -171,10 +239,12 @@ fn drive_interleaved(
                 )
                 .map_err(|err| TestkitError::new(format!("build batch: {err:?}")))?;
                 if let Ok(summary) = runtime.commit(&batch) {
+                    facts.acked_versions.push(summary.commit_version().as_u64());
                     model.record_ack(branch, summary.commit_version(), mutations);
                 } else {
+                    facts.in_doubt_commits += 1;
                     model.record_in_doubt(branch, mutations);
-                    return Ok(());
+                    return Ok(facts);
                 }
             }
             SimStep::DrainMaintenance => {
@@ -198,16 +268,31 @@ fn drive_interleaved(
                     MaintenanceScope::Global,
                 ));
             }
+            SimStep::AdvanceClock(ms) => {
+                if runtime.advance_maintenance_clock_for_test(std::time::Duration::from_millis(ms))
+                {
+                    facts.clock_advances += 1;
+                }
+            }
         }
     }
-    Ok(())
+    Ok(facts)
 }
 
-/// Result of one backend-op fault case.
+/// Result of one backend-op fault case: the verdict plus deterministic facts
+/// that must replay bit-exact from the seed.
 #[derive(Debug)]
 struct FaultCaseRun {
     fired: bool,
     violation: Option<RecoveryOracleViolation>,
+    facts: FaultCaseFacts,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct FaultCaseFacts {
+    interleave: InterleaveFacts,
+    ordering_publishes_checked: usize,
+    recovered_rows: usize,
 }
 
 /// Inject a seed-chosen backend-op fault during a seeded interleaving (STH-2 substrate),
@@ -230,28 +315,34 @@ fn run_one_fault_case(root: &Path, seed: u64) -> Result<FaultCaseRun, TestkitErr
         FaultKind::NoSpace
     };
 
-    let fired = {
+    let (fired, interleave, ordering_publishes_checked) = {
         let nz = NonZeroU64::new(call).ok_or_else(|| TestkitError::new("call must be non-zero"))?;
-        let backend = StorageBackend::faulting_local_fs(
+        let backend = StorageBackend::write_ordering_faulting_local_fs(
             root.to_path_buf(),
             FaultScript::new([FaultRule::with_mode(op, nz, kind, mode)]),
         );
         // The fault may land during open or the workload; either surfaces as a typed
         // error, never a panic.
-        if let Ok(outcome) = StorageRuntime::open_with_backend(
-            borrowed_options(StorageDurabilityPolicy::Always),
+        let interleave = if let Ok(outcome) = StorageRuntime::open_with_backend(
+            deterministic_options(StorageDurabilityPolicy::Always),
             &backend,
         ) {
             let mut runtime = outcome.into_runtime();
-            drive_interleaved(&mut runtime, branch, seed, FAULT_SIM_STEPS, &mut model)?;
-        }
-        swept_op_count(&backend, op) >= usize::try_from(call).unwrap_or(usize::MAX)
+            require_manual_clock(&runtime, seed)?;
+            drive_interleaved(&mut runtime, branch, seed, FAULT_SIM_STEPS, &mut model)?
+        } else {
+            InterleaveFacts::default()
+        };
+        let (_confirmed, publishes_checked) =
+            require_no_confirmed_ordering_violations(&backend, seed, "fault case")?;
+        let fired = swept_op_count(&backend, op) >= usize::try_from(call).unwrap_or(usize::MAX);
+        (fired, interleave, publishes_checked)
     };
 
-    let violation = {
+    let (violation, recovered_rows) = {
         let backend = StorageBackend::local_fs(root.to_path_buf());
         let runtime = StorageRuntime::open_with_backend(
-            borrowed_options(StorageDurabilityPolicy::Standard),
+            deterministic_options(StorageDurabilityPolicy::Standard),
             &backend,
         )
         .map_err(|err| TestkitError::new(format!("[seed={seed}] fault verify reopen: {err:?}")))?
@@ -263,18 +354,38 @@ fn run_one_fault_case(root: &Path, seed: u64) -> Result<FaultCaseRun, TestkitErr
             &oracle_prefix_key(),
             SCAN_LIMIT,
         )?;
-        classify_recovered(&model, branch, &recovered, CrashFamily::ZeroLoss).err()
+        let rows = recovered.len();
+        (
+            classify_recovered(&model, branch, &recovered, CrashFamily::ZeroLoss).err(),
+            rows,
+        )
     };
 
-    Ok(FaultCaseRun { fired, violation })
+    Ok(FaultCaseRun {
+        fired,
+        violation,
+        facts: FaultCaseFacts {
+            interleave,
+            ordering_publishes_checked,
+            recovered_rows,
+        },
+    })
 }
 
-/// Result of one power-loss crash case.
+/// Result of one power-loss crash case: verdict plus deterministic facts.
 #[derive(Debug)]
 struct CrashCaseRun {
     perturbed: bool,
     fail_loud: bool,
     violation: Option<RecoveryOracleViolation>,
+    facts: CrashCaseFacts,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CrashCaseFacts {
+    interleave: InterleaveFacts,
+    ordering_publishes_checked: usize,
+    recovered_rows: Option<usize>,
 }
 
 /// Materialize a seed-chosen power-loss crash at a seed-chosen point of a seeded
@@ -296,16 +407,18 @@ fn run_one_crash_case(root: &Path, seed: u64) -> Result<CrashCaseRun, TestkitErr
     let fs_model = FS_MODELS[usize::try_from(seed % 4).unwrap_or(0)];
     let crash_index = 1 + usize::try_from((seed >> 2) % (FAULT_SIM_STEPS as u64)).unwrap_or(0);
 
-    let perturbed = {
-        let backend = StorageBackend::reordering_local_fs(root.to_path_buf());
-        {
+    let (perturbed, interleave, ordering_publishes_checked) = {
+        let backend = StorageBackend::write_ordering_reordering_local_fs(root.to_path_buf());
+        let interleave = {
             let mut runtime =
-                StorageRuntime::open_with_backend(borrowed_options(durability), &backend)
+                StorageRuntime::open_with_backend(deterministic_options(durability), &backend)
                     .map_err(|err| {
                         TestkitError::new(format!("[seed={seed}] reordering open: {err:?}"))
                     })?
                     .into_runtime();
-            drive_interleaved(&mut runtime, branch, seed, crash_index, &mut model)?;
+            require_manual_clock(&runtime, seed)?;
+            let interleave =
+                drive_interleaved(&mut runtime, branch, seed, crash_index, &mut model)?;
             if matches!(fs_model, FsModel::SplitRename) {
                 let _ = runtime.enqueue_maintenance(&MaintenanceRequest::new(
                     MaintenanceTask::Checkpoint,
@@ -313,8 +426,15 @@ fn run_one_crash_case(root: &Path, seed: u64) -> Result<CrashCaseRun, TestkitErr
                 ));
                 let _ = runtime.drain_maintenance();
             }
-        }
-        backend.reordering_crash(fs_model, seed)?
+            interleave
+        };
+        // Ordering is judged BEFORE the crash is materialized: the crash mutates
+        // files around the Backend trait, so the watchdog's stream ends at the
+        // power cut — exactly the window it must have been clean in.
+        let (_confirmed, publishes_checked) =
+            require_no_confirmed_ordering_violations(&backend, seed, "crash case")?;
+        let perturbed = backend.reordering_crash(fs_model, seed)?;
+        (perturbed, interleave, publishes_checked)
     };
 
     let family = if matches!(durability, StorageDurabilityPolicy::Always) {
@@ -324,10 +444,10 @@ fn run_one_crash_case(root: &Path, seed: u64) -> Result<CrashCaseRun, TestkitErr
     };
     let tolerate_fail_loud = matches!(fs_model, FsModel::GarbageUnsyncedTail);
 
-    let (fail_loud, violation) = {
+    let (fail_loud, violation, recovered_rows) = {
         let backend = StorageBackend::local_fs(root.to_path_buf());
         let opened = StorageRuntime::open_with_backend(
-            borrowed_options(StorageDurabilityPolicy::Standard).with_strict_recovery(false),
+            deterministic_options(StorageDurabilityPolicy::Standard).with_strict_recovery(false),
             &backend,
         );
         match opened {
@@ -340,14 +460,16 @@ fn run_one_crash_case(root: &Path, seed: u64) -> Result<CrashCaseRun, TestkitErr
                     &oracle_prefix_key(),
                     SCAN_LIMIT,
                 )?;
+                let rows = recovered.len();
                 (
                     false,
                     classify_recovered(&model, branch, &recovered, family).err(),
+                    Some(rows),
                 )
             }
             Err(error) if tolerate_fail_loud => {
                 let _ = error;
-                (true, None)
+                (true, None, None)
             }
             Err(error) => {
                 return Err(TestkitError::new(format!(
@@ -362,6 +484,11 @@ fn run_one_crash_case(root: &Path, seed: u64) -> Result<CrashCaseRun, TestkitErr
         perturbed,
         fail_loud,
         violation,
+        facts: CrashCaseFacts {
+            interleave,
+            ordering_publishes_checked,
+            recovered_rows,
+        },
     })
 }
 
@@ -384,6 +511,7 @@ pub fn run_fault_simulation_harness(
     root: &Path,
     case_limit: Option<usize>,
 ) -> Result<SimulationFaultOutcome, TestkitError> {
+    super::assert_deterministic_environment()?;
     let mut outcome = SimulationFaultOutcome::default();
     let mut cases = 0usize;
     let seed_budget = if case_limit.is_some() {
@@ -723,6 +851,7 @@ mod tests {
     fn regression_split_rename_power_loss_recovers_clean_prefix() {
         let dir = tempfile::tempdir().expect("tmp");
         let run = run_one_crash_case(dir.path(), 155).expect("crash case");
+        assert!(run.perturbed, "crash did not perturb the disk: {run:?}");
         assert!(
             run.violation.is_none(),
             "SplitRename dropping a delta checkpoint's table-manifest base must recover a \
@@ -733,10 +862,47 @@ mod tests {
     #[test]
     fn power_loss_during_interleaving_is_oracle_valid() {
         let dir = tempfile::tempdir().expect("tmp");
-        let run = run_one_crash_case(dir.path(), 2).expect("crash case");
+        // Seed 3 perturbs under the TCP4.11a step grammar (seed 2 no longer
+        // does) — the perturbation assert keeps this pin non-vacuous.
+        let run = run_one_crash_case(dir.path(), 3).expect("crash case");
+        assert!(run.perturbed, "crash did not perturb the disk: {run:?}");
         assert!(
             run.violation.is_none(),
             "power-loss recovery was not oracle-valid: {run:?}"
+        );
+    }
+
+    /// TCP4.11a determinism guard: a fault case replays bit-exact from its
+    /// seed — same step trace, same acked versions, same ordering facts, same
+    /// recovered state.
+    #[test]
+    fn fault_case_replays_bit_exact() {
+        let dir_a = tempfile::tempdir().expect("tmp");
+        let dir_b = tempfile::tempdir().expect("tmp");
+        let first = run_one_fault_case(dir_a.path(), 8).expect("first run");
+        let second = run_one_fault_case(dir_b.path(), 8).expect("second run");
+        assert!(first.fired && second.fired, "fault must fire in both runs");
+        assert_eq!(
+            first.facts, second.facts,
+            "same seed produced divergent fault-case trajectories"
+        );
+    }
+
+    /// TCP4.11a determinism guard: a power-loss crash case replays bit-exact
+    /// from its seed, including the post-crash recovered state.
+    #[test]
+    fn crash_case_replays_bit_exact() {
+        let dir_a = tempfile::tempdir().expect("tmp");
+        let dir_b = tempfile::tempdir().expect("tmp");
+        let first = run_one_crash_case(dir_a.path(), 3).expect("first run");
+        let second = run_one_crash_case(dir_b.path(), 3).expect("second run");
+        assert!(
+            first.perturbed && second.perturbed,
+            "crash must perturb in both runs"
+        );
+        assert_eq!(
+            first.facts, second.facts,
+            "same seed produced divergent crash-case trajectories"
         );
     }
 
