@@ -313,6 +313,35 @@ mod model_legality_tests {
         }
     }
 
+    /// A deleted object leaves crash tracking with it: an unsynced tail
+    /// recorded before the delete must not drive a materialization against
+    /// the now-missing file (kills a `record_delete -> ()` stub, which
+    /// leaves the tombstoned entry in the durability map).
+    #[test]
+    fn deleted_objects_leave_crash_tracking() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let backend = ReorderingBackend::local_fs(dir.path());
+        let doomed = object("tables/branch-a/l0000/doomed");
+        backend
+            .publish_object(&doomed, b"published", PublishMode::Create)
+            .expect("publish");
+        backend
+            .append_object(&doomed, b"unsynced-tail")
+            .expect("append");
+        backend.delete_object(&doomed).expect("delete");
+        let perturbed = backend
+            .crash(FsModel::OrderedAtomic, 7)
+            .expect("crash materialization must not touch the deleted file");
+        assert!(
+            !perturbed,
+            "nothing unsynced remains after the delete: {perturbed:?}"
+        );
+        assert!(
+            !object_path(dir.path(), &doomed).exists(),
+            "the deleted object must stay deleted"
+        );
+    }
+
     #[test]
     fn split_rename_leaves_segment_shaped_objects_intact() {
         // WAL segments are BORN via a durable publish (header) then extended
