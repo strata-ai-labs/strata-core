@@ -213,6 +213,11 @@ impl LifecycleBranchDescriptor {
         self.created_at
     }
 
+    pub(crate) const fn with_created_at(mut self, created_at: Option<CommitVersion>) -> Self {
+        self.created_at = created_at;
+        self
+    }
+
     pub(crate) const fn deleted_at(self) -> Option<CommitVersion> {
         self.deleted_at
     }
@@ -376,6 +381,23 @@ impl LifecycleBranchCatalog {
     ) -> LifecycleResult<()> {
         let index = self.entry_index(branch_id)?;
         self.entries[index].descriptor = self.entries[index].descriptor.with_parent(parent);
+        Ok(())
+    }
+
+    /// #2826: adopt the durable manifest's `created_at` for the SEEDED
+    /// branch during recovery. The shell registers the seeded branch before
+    /// the manifest is read, so its creation point is unknown at that
+    /// moment — and the WAL-replay generation fence depends on it (a
+    /// deleted-and-recreated seeded branch must fence its predecessor's
+    /// records like any other). Recovery-only, like `set_parent_for_recovery`.
+    pub(crate) fn set_created_at_for_recovery(
+        &mut self,
+        branch_id: BranchId,
+        created_at: Option<CommitVersion>,
+        _token: RecoveryExclusivityToken,
+    ) -> LifecycleResult<()> {
+        let index = self.entry_index(branch_id)?;
+        self.entries[index].descriptor = self.entries[index].descriptor.with_created_at(created_at);
         Ok(())
     }
 
@@ -825,6 +847,7 @@ impl LifecycleBranchCatalog {
         source_branch_id: BranchId,
         destination_branch_id: BranchId,
         destination_generation: CommitBranchGeneration,
+        created_at: Option<CommitVersion>,
     ) -> LifecycleResult<LifecycleBranchForkOutcome> {
         self.require_destination_available(destination_branch_id, destination_generation)?;
         let source = self.branch_state(source_branch_id)?.clone();
@@ -838,10 +861,15 @@ impl LifecycleBranchCatalog {
             .map_err(branch_error)?;
         Self::seed_child_timeline_from_parent(&source, &child, fork_outcome.fork_version());
         let parent = LifecycleBranchParent::new(source_branch_id, fork_outcome.fork_version());
+        // #2826: `created_at` is the globally visible version when the fork
+        // happened (the fork POINT lives in `parent.fork_version`). Recovery
+        // fences dead-generation WAL records on it, so it must upper-bound
+        // every version a deleted predecessor of this branch id could have
+        // committed.
         let descriptor = LifecycleBranchDescriptor::active(
             destination_branch_id,
             destination_generation,
-            Some(fork_outcome.fork_version()),
+            created_at,
         )
         .with_parent(parent);
         self.install_new_branch_state(descriptor, child)?;
@@ -922,6 +950,7 @@ impl LifecycleBranchCatalog {
         destination_generation: CommitBranchGeneration,
         fork_version: CommitVersion,
         retained_floor: CommitVersion,
+        created_at: Option<CommitVersion>,
     ) -> LifecycleResult<LifecycleBranchForkOutcome> {
         self.fork_at_retained_version_with_unsealed_builder(
             source_branch_id,
@@ -929,6 +958,7 @@ impl LifecycleBranchCatalog {
             destination_generation,
             fork_version,
             retained_floor,
+            created_at,
             None,
         )
     }
@@ -945,6 +975,7 @@ impl LifecycleBranchCatalog {
         destination_generation: CommitBranchGeneration,
         fork_version: CommitVersion,
         retained_floor: CommitVersion,
+        created_at: Option<CommitVersion>,
         unsealed_table_builder: Option<ForkUnsealedTableBuilder<'_>>,
     ) -> LifecycleResult<LifecycleBranchForkOutcome> {
         self.require_destination_available(destination_branch_id, destination_generation)?;
@@ -969,12 +1000,15 @@ impl LifecycleBranchCatalog {
                     .map_err(branch_error)?;
                 child.retained_timeline().mark_complete_from_birth();
                 let parent = LifecycleBranchParent::new(source_branch_id, CommitVersion::ZERO);
-                // `created_at` stays unset: the manifest codec reserves
-                // version zero (same as a branch created before any commit).
+                // #2826: even an empty fork stamps visible-at-fork — a
+                // deleted predecessor of this branch id may have committed
+                // rows the recovery fence must exclude. `None` only when the
+                // store has no commits at all (the codec reserves zero), in
+                // which case no predecessor row can exist either.
                 let descriptor = LifecycleBranchDescriptor::active(
                     destination_branch_id,
                     destination_generation,
-                    None,
+                    created_at,
                 )
                 .with_parent(parent);
                 self.install_new_branch_state(descriptor, child)?;
@@ -1052,10 +1086,12 @@ impl LifecycleBranchCatalog {
         };
         Self::seed_child_timeline_from_parent(source, &child, fork_version);
         let parent = LifecycleBranchParent::new(source_branch_id, fork_version);
+        // #2826: visible-at-fork, NOT the fork point (`parent.fork_version`
+        // carries that) — the recovery generation fence depends on it.
         let descriptor = LifecycleBranchDescriptor::active(
             destination_branch_id,
             destination_generation,
-            Some(fork_version),
+            created_at,
         )
         .with_parent(parent);
         self.install_new_branch_state(descriptor, child)?;
@@ -1075,6 +1111,7 @@ impl LifecycleBranchCatalog {
         destination_generation: CommitBranchGeneration,
         timestamp: Timestamp,
         retained_floor: CommitVersion,
+        created_at: Option<CommitVersion>,
     ) -> LifecycleResult<LifecycleBranchForkOutcome> {
         self.fork_at_retained_timestamp_with_unsealed_builder(
             source_branch_id,
@@ -1082,6 +1119,7 @@ impl LifecycleBranchCatalog {
             destination_generation,
             timestamp,
             retained_floor,
+            created_at,
             None,
         )
     }
@@ -1094,6 +1132,7 @@ impl LifecycleBranchCatalog {
         destination_generation: CommitBranchGeneration,
         timestamp: Timestamp,
         retained_floor: CommitVersion,
+        created_at: Option<CommitVersion>,
         unsealed_table_builder: Option<ForkUnsealedTableBuilder<'_>>,
     ) -> LifecycleResult<LifecycleBranchForkOutcome> {
         self.require_destination_available(destination_branch_id, destination_generation)?;
@@ -1128,6 +1167,7 @@ impl LifecycleBranchCatalog {
             destination_generation,
             resolved,
             retained_floor,
+            created_at,
             unsealed_table_builder,
         )
     }

@@ -1103,3 +1103,135 @@ fn branch_api_has_no_publish_review_method() {
     assert!(!source.contains("pub fn publish"));
     assert!(!source.contains("pub fn review"));
 }
+
+/// #2826: after delete + re-fork of the same branch id, recovery must not
+/// resurrect the dead predecessor generation's rows into the new fork. The
+/// ghost commit is deliberately the LAST global commit before the fork, so
+/// the fence's `<=` boundary (record version == visible-at-fork) is exactly
+/// what this test exercises; the fresh post-fork commit and the inherited
+/// source row pin both legal directions.
+#[test]
+fn fork_onto_deleted_name_does_not_resurrect_predecessor_rows_after_reopen() {
+    let root = temp_dir_for_api_test("branch-fork-generation-fence");
+    let backend = StorageBackend::local_fs(root.clone());
+    let source = branch_with(0x71);
+    let victim = branch_with(0x70);
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        runtime
+            .branch(&create_request(source))
+            .expect("create source");
+        put_at(&mut runtime, source, b"base", b"inherited", 10);
+        runtime
+            .branch(&create_request(victim))
+            .expect("create victim generation 1");
+        put_at(&mut runtime, victim, b"ghost", b"dead", 20);
+        runtime
+            .branch(&branch_request(victim, BranchAction::Delete))
+            .expect("delete victim generation 1");
+        runtime
+            .branch(&BranchRequest::new(
+                victim,
+                BranchAction::ForkCurrent { source },
+                Some(BranchGeneration::new(2)),
+            ))
+            .expect("re-fork the deleted name as generation 2");
+        assert_eq!(
+            read_value(&runtime, victim, b"ghost"),
+            None,
+            "live runtime already fences the dead generation"
+        );
+        put_at(&mut runtime, victim, b"fresh", b"alive", 30);
+    }
+
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("reopen")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, victim, b"ghost"),
+        None,
+        "recovery must not resurrect the deleted generation's row"
+    );
+    assert_eq!(
+        read_value(&runtime, victim, b"base"),
+        Some(b"inherited".to_vec()),
+        "the fork keeps serving its inherited source row after reopen"
+    );
+    assert_eq!(
+        read_value(&runtime, victim, b"fresh"),
+        Some(b"alive".to_vec()),
+        "the new generation's own commit survives reopen"
+    );
+}
+
+/// #2826 (recreate direction): a fresh empty re-creation of a deleted name
+/// must stay empty across reopen — the predecessor's WAL records belong to
+/// a dead generation.
+#[test]
+fn recreate_after_delete_does_not_resurrect_predecessor_rows_after_reopen() {
+    let root = temp_dir_for_api_test("branch-recreate-generation-fence");
+    let backend = StorageBackend::local_fs(root.clone());
+    let victim = branch_with(0x72);
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        runtime
+            .branch(&create_request(victim))
+            .expect("create victim generation 1");
+        // Two ghost commits: the earlier one sits STRICTLY below the
+        // recreate point and the later one exactly AT it, so the fence's
+        // `<` and `==` arms are both load-bearing here.
+        put_at(&mut runtime, victim, b"ghost", b"dead", 10);
+        put_at(&mut runtime, victim, b"ghost-two", b"dead-too", 15);
+        runtime
+            .branch(&branch_request(victim, BranchAction::Delete))
+            .expect("delete victim generation 1");
+        runtime
+            .branch(&BranchRequest::new(
+                victim,
+                BranchAction::Create,
+                Some(BranchGeneration::new(2)),
+            ))
+            .expect("recreate the deleted name as generation 2");
+        assert_eq!(
+            read_value(&runtime, victim, b"ghost"),
+            None,
+            "live runtime already fences the dead generation"
+        );
+        put_at(&mut runtime, victim, b"fresh", b"alive", 20);
+    }
+
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("reopen")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, victim, b"ghost"),
+        None,
+        "recovery must not resurrect the deleted generation's earlier row"
+    );
+    assert_eq!(
+        read_value(&runtime, victim, b"ghost-two"),
+        None,
+        "recovery must not resurrect the deleted generation's boundary row"
+    );
+    assert_eq!(
+        read_value(&runtime, victim, b"fresh"),
+        Some(b"alive".to_vec()),
+        "the new generation's own commit survives reopen"
+    );
+}

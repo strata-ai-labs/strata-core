@@ -2123,6 +2123,12 @@ impl<'a> StorageRuntime<'a> {
             }
             Err(error) => return Err(error),
         };
+        // #2826: stamp the fork's `created_at` with the CURRENT visible
+        // version, not the fork point (`parent.fork_version` carries that):
+        // recovery's generation fence drops dead-predecessor WAL records at
+        // `version <= created_at`, so the stamp must upper-bound every commit
+        // a deleted prior generation of this branch id could have made.
+        let created_at = current_visible(self);
         let outcome = match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
                 let mut runtime = slot.lock();
@@ -2132,6 +2138,7 @@ impl<'a> StorageRuntime<'a> {
                     generation,
                     version,
                     retained_floor,
+                    created_at,
                 )
             }
             StorageRuntimeInner::DurableOwned(slot) => {
@@ -2142,6 +2149,7 @@ impl<'a> StorageRuntime<'a> {
                     generation,
                     version,
                     retained_floor,
+                    created_at,
                 )
             }
             StorageRuntimeInner::Closed => {
@@ -3152,15 +3160,26 @@ impl<'a> StorageRuntime<'a> {
         let destination_generation =
             crate::commit::CommitBranchGeneration::new(DEFAULT_BRANCH_GENERATION)
                 .map_err(commit_error)?;
+        let created_at = current_visible(self);
         match &mut self.inner {
             StorageRuntimeInner::Cache(slot) => slot
                 .lock()
-                .fork_current(DEFAULT_BRANCH_ID, destination, destination_generation)
+                .fork_current(
+                    DEFAULT_BRANCH_ID,
+                    destination,
+                    destination_generation,
+                    created_at,
+                )
                 .map(|_| ())
                 .map_err(map_lifecycle_error),
             StorageRuntimeInner::DurableOwned(slot) => slot
                 .lock()
-                .fork_current(DEFAULT_BRANCH_ID, destination, destination_generation)
+                .fork_current(
+                    DEFAULT_BRANCH_ID,
+                    destination,
+                    destination_generation,
+                    created_at,
+                )
                 .map(|_| ())
                 .map_err(map_lifecycle_error),
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {

@@ -109,6 +109,7 @@ fn check_durable_branch_recovery_round_trip(
                 generation_one,
                 CommitVersion::new(1),
                 CommitVersion::ZERO,
+                None,
             )
             .map_err(|error| testkit_error(&error))?;
     }

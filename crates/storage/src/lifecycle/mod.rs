@@ -142,11 +142,12 @@ pub(crate) use config::{
     reason = "durable lifecycle assembly exports define the local surface for recovery slices"
 )]
 pub(crate) use durable::{
-    DurableBackgroundMaintenanceBuild, DurableBackgroundMaintenanceBuilt,
-    DurableBackgroundMaintenanceStep, DurableGroupApplyDone, DurableGroupApplyWork,
-    DurableGroupInFlight, DurableGroupMemberResult, LifecycleDurableAssemblyFacts,
-    LifecycleDurableLocalOpenRequest, LifecycleDurableLocalRuntime, LifecycleDurableLocalServices,
-    LifecycleDurableLocalShell, LifecycleRecoveryBootstrapReport, PreparedPublishStep,
+    record_predates_current_generation, DurableBackgroundMaintenanceBuild,
+    DurableBackgroundMaintenanceBuilt, DurableBackgroundMaintenanceStep, DurableGroupApplyDone,
+    DurableGroupApplyWork, DurableGroupInFlight, DurableGroupMemberResult,
+    LifecycleDurableAssemblyFacts, LifecycleDurableLocalOpenRequest, LifecycleDurableLocalRuntime,
+    LifecycleDurableLocalServices, LifecycleDurableLocalShell, LifecycleRecoveryBootstrapReport,
+    PreparedPublishStep,
 };
 #[allow(
     unused_imports,

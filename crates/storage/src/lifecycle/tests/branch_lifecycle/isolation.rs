@@ -168,7 +168,7 @@ fn fork_branch_a_to_branch_c_does_not_change_branch_b() {
         .expect("append b");
 
     catalog
-        .fork_current(branch_a, branch_c, generation(1))
+        .fork_current(branch_a, branch_c, generation(1), None)
         .expect("fork c");
 
     assert_eq!(
@@ -286,7 +286,7 @@ fn materialize_branch_c_does_not_change_branch_a() {
         )
         .expect("replace a");
     catalog
-        .fork_current(branch_a, branch_c, generation(1))
+        .fork_current(branch_a, branch_c, generation(1), None)
         .expect("fork c");
     let view_a_before = catalog
         .capture_read_view(branch_a)

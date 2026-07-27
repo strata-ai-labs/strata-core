@@ -113,7 +113,7 @@ fn check_fork(
         )
         .map_err(testkit_error)?;
     catalog
-        .fork_current(parent, child, generation(1)?)
+        .fork_current(parent, child, generation(1)?, None)
         .map_err(testkit_error)?;
     catalog
         .fork_at_retained_version(
@@ -122,6 +122,7 @@ fn check_fork(
             generation(1)?,
             CommitVersion::new(2),
             CommitVersion::new(1),
+            None,
         )
         .map_err(testkit_error)?;
     let key = physical_key(grandchild, b"fork-model")?;
