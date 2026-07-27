@@ -883,16 +883,9 @@ pub(super) fn run_whole_db_sim(
     Ok(sim.facts)
 }
 
-/// The #2823 failure shape: recovery's fork-row rebuild colliding with a
-/// self-covered child's own recovered rows (duplicate internal keys; see the
-/// issue for the chain). Shrink-only: dies with the #2823 fix.
-pub(crate) fn is_pinned_2823_signature(error: &TestkitError) -> bool {
-    format!("{error:?}").contains("duplicate internal keys")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{is_pinned_2823_signature, run_whole_db_sim};
+    use super::run_whole_db_sim;
 
     /// The determinism guard at whole-DB scope: one seed, two directories,
     /// bit-identical multi-epoch trajectories.
@@ -909,31 +902,24 @@ mod tests {
     }
 
     /// The sweep exercises the whole grammar (non-vacuity): forks happen,
-    /// crashes happen, temporal probes succeed. The #2820 allowance is gone
-    /// (DUR-008 refusals are seeded no-ops); seeds dying with the pinned
-    /// #2823 signature are counted loudly (shrink-only, dies with that fix).
+    /// crashes happen, temporal probes succeed, and EVERY seed completes —
+    /// both harness-era allowances (#2820, #2823) are gone.
     #[test]
     fn whole_db_sweep_is_non_vacuous() {
         let mut forks = 0;
         let mut crashes = 0;
         let mut probes = 0;
-        let mut pinned_2823 = 0;
         for seed in 0..6u64 {
             let dir = tempfile::tempdir().expect("tmp");
-            match run_whole_db_sim(dir.path(), seed, 3, 24) {
-                Ok(facts) => {
-                    forks += facts.forks();
-                    crashes += facts.crashed_epochs();
-                    probes += facts.temporal_probes_ok();
-                }
-                Err(error) if is_pinned_2823_signature(&error) => pinned_2823 += 1,
-                Err(error) => panic!("seed {seed} failed outside the #2823 pin: {error:?}"),
-            }
+            let facts = run_whole_db_sim(dir.path(), seed, 3, 24)
+                .unwrap_or_else(|error| panic!("seed {seed}: {error:?}"));
+            forks += facts.forks();
+            crashes += facts.crashed_epochs();
+            probes += facts.temporal_probes_ok();
         }
         assert!(forks > 0, "no fork ever happened across the sweep");
         assert!(crashes > 0, "no epoch ever crashed across the sweep");
         assert!(probes > 0, "no temporal probe ever succeeded");
-        assert_eq!(pinned_2823, 1, "the #2823 allowance drifted");
     }
 
     /// Promoted from the #2820 gate-7 pin (DUR-008): a trajectory where the
@@ -952,21 +938,15 @@ mod tests {
         assert_eq!(facts.deletes, 3, "legal deletes must still work: {facts:?}");
     }
 
-    /// Gate 7 pin for #2823 (surfaced the moment #2820's refusal let seed 2
-    /// run further): a layer-less child that FLUSHED its copied rows still
-    /// triggers the recovery rebuild, which re-materializes rows the child
-    /// already owns — duplicate internal keys, reopen refused. Asserts the
-    /// CURRENT broken behavior; breaks when #2823 is fixed — promote it and
-    /// drop the sweep allowance together.
+    /// Promoted from the #2823 gate-7 pin: the trajectory that once refused
+    /// its reopen (a replay-redundant fork source whose fork snapshot hit
+    /// byte-identical duplicate internal keys) now completes — identical
+    /// redundancy collapses to one row (ACID-005), divergent duplicates
+    /// still refuse.
     #[test]
-    fn pin_2823_rebuild_duplicates_self_covered_fork_rows() {
+    fn replay_redundant_fork_sources_recover_cleanly() {
         let dir = tempfile::tempdir().expect("tmp");
-        let error = run_whole_db_sim(dir.path(), 2, 3, 24)
-            .expect_err("#2823 fixed? promote this pin and drop the allowance");
-        assert!(
-            is_pinned_2823_signature(&error),
-            "seed 2 failed with an unexpected shape (not #2823): {error:?}"
-        );
+        run_whole_db_sim(dir.path(), 2, 3, 24).expect("the once-refusing seed completes cleanly");
     }
 
     /// Sabotage twin: a fork whose model seeding is SKIPPED must fire the
@@ -1044,22 +1024,6 @@ mod tests {
         for (action, label) in expected {
             assert_eq!(action.label(), label);
         }
-    }
-
-    /// The #2823 signature matcher discriminates: the pinned shape matches,
-    /// unrelated errors do not.
-    #[test]
-    fn pinned_signature_discriminates() {
-        use crate::testkit::TestkitError;
-        assert!(is_pinned_2823_signature(&TestkitError::new(
-            "reopen failed: fork snapshot own rows must not contain duplicate internal keys"
-        )));
-        assert!(!is_pinned_2823_signature(&TestkitError::new(
-            "[seed=1 step=3] commit: StoragePressure"
-        )));
-        assert!(!is_pinned_2823_signature(&TestkitError::new(
-            "reopen failed: Corruption"
-        )));
     }
 
     /// Seed 0's exact action mix, pinned: the bit-exact trace makes label

@@ -524,10 +524,23 @@ fn insert_own_fork_snapshot_row(
     }
     let rewritten = rewrite_row_branch(row, source_branch_id, target_branch_id)?;
     let key = TableInternalKeyBytes::from_row(&rewritten);
-    if rows_by_key.insert(key, rewritten).is_some() {
-        return Err(BranchRuntimeError::InvalidBranchState {
-            reason: "fork snapshot own rows must not contain duplicate internal keys",
-        });
+    match rows_by_key.entry(key) {
+        std::collections::btree_map::Entry::Occupied(existing) => {
+            // #2823 / ACID-005: idempotent recovery replay can leave the
+            // SAME row in a rotated-out source and the replayed memtable.
+            // Byte-identical redundancy collapses to one row; only a
+            // DIVERGENT duplicate (same internal key, different content) is
+            // a corruption signal.
+            if existing.get() != &rewritten {
+                return Err(BranchRuntimeError::InvalidBranchState {
+                    reason: "fork snapshot own rows must not contain divergent duplicate \
+                             internal keys",
+                });
+            }
+        }
+        std::collections::btree_map::Entry::Vacant(slot) => {
+            slot.insert(rewritten);
+        }
     }
     Ok(())
 }
