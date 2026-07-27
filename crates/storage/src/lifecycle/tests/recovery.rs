@@ -2327,6 +2327,91 @@ fn recovery_table_manifest_multi_branch_rows_round_trip() {
     assert_eq!(extra_row.row().value(), b"extra-value");
 }
 
+/// #2830 direction control at the fence's own granularity: a parentless
+/// branch WITH `created_at` stamped whose hand-crafted manifest owns rows
+/// ABOVE the creation point must still install — the stale-manifest skip
+/// consults `manifest_max_commit_version`, and this shape (no snapshot, no
+/// WAL to heal a wrong skip) is the one that kills its stub mutants.
+#[test]
+fn manifest_above_created_at_installs_for_stamped_parentless_branch() {
+    use crate::format::{
+        encode_table_manifest, table_row_split_extension_section, BranchCatalogEntry,
+        BranchCatalogManifest, BranchCatalogStatus, TableManifest, TableManifestLevel,
+        TableRowSplit,
+    };
+    use crate::layout::ObjectLayout;
+
+    let backend: &'static RecoveryTestBackend =
+        crate::testkit::leak_static(RecoveryTestBackend::new());
+    let initial = branch_id(0x38);
+    let extra = branch_id(0x48);
+
+    let extra_table = publish_table_for_recovery(
+        backend,
+        extra,
+        0,
+        "stamped-extra-table",
+        &[put_row(extra, 2, b"stamped-row", b"stamped-value")],
+    );
+    let extra_manifest = TableManifest::new(
+        extra,
+        None,
+        3,
+        vec![TableManifestLevel::new(
+            crate::branch::facts::BranchLevel::ZERO,
+            vec![extra_table.clone()],
+        )
+        .expect("extra level")],
+        Vec::new(),
+        vec![
+            table_row_split_extension_section(&[TableRowSplit::new(1, 0)])
+                .expect("row-split section"),
+        ],
+    )
+    .expect("extra table manifest");
+    backend.write_raw(
+        ObjectLayout::branch_table_manifest(&extra.to_string()).expect("extra manifest object"),
+        encode_table_manifest(&extra_manifest).expect("extra manifest bytes"),
+    );
+
+    let initial_entry =
+        BranchCatalogEntry::new(initial, 1, BranchCatalogStatus::Active).expect("initial entry");
+    // created_at 1 with a v2 row: the manifest is ABOVE the creation point,
+    // so the generation fence must let it through.
+    let extra_entry = BranchCatalogEntry::new(extra, 1, BranchCatalogStatus::Active)
+        .expect("extra entry")
+        .with_created_at(1)
+        .expect("extra created_at");
+    let catalog_manifest =
+        BranchCatalogManifest::new(DATABASE_ID, 1, vec![initial_entry, extra_entry])
+            .expect("branch catalog manifest");
+    backend.write_raw(
+        ObjectLayout::branch_catalog_manifest().expect("branch catalog manifest object"),
+        crate::format::encode_branch_catalog_manifest(&catalog_manifest)
+            .expect("branch catalog manifest bytes"),
+    );
+
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, backend)
+        .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    let runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+    let extra_state = runtime
+        .branch_catalog()
+        .branch_state(extra)
+        .expect("extra branch state");
+    let extra_view = extra_state.capture_read_view().expect("extra view");
+    let extra_row = extra_view
+        .latest(&physical_key(extra, b"stamped-row"))
+        .expect("extra read view")
+        .expect("above-created_at manifest row must install");
+    assert_eq!(extra_row.row().value(), b"stamped-value");
+}
+
 #[test]
 fn recovery_checkpoint_multi_branch_rows_round_trip() {
     // Open a durable runtime, create a non-seeded branch, commit a row to

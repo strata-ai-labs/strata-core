@@ -1367,3 +1367,209 @@ fn recreate_after_flush_does_not_resurrect_predecessor_tables() {
         "the new generation's own commit survives reopen"
     );
 }
+
+/// #2830 direction control: a LEGITIMATE parentless branch (`created_at`
+/// stamped, no delete/recreate anywhere) keeps its flushed tables across
+/// reopen — the stale-manifest skip must not fire on a live generation.
+/// Kills the `manifest_max_commit_version -> None / Some(default)` stub
+/// mutants: either stub misclassifies this manifest as stale and the row
+/// vanishes. The initial commit on another branch makes the victim's
+/// `created_at` Some (visible > 0), which is what routes recovery through
+/// the fence at all.
+#[test]
+fn legitimate_flushed_branch_survives_reopen_with_created_at_stamped() {
+    use crate::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
+
+    let root = temp_dir_for_api_test("branch-legit-manifest-not-fenced");
+    let backend = StorageBackend::local_fs(root.clone());
+    let keeper = branch_with(0x75);
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+                .with_maintenance_scheduling_policy(
+                    crate::api::StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+                ),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        put_at(&mut runtime, branch(), b"warm-up", b"one", 5);
+        runtime
+            .branch(&create_request(keeper))
+            .expect("create keeper with created_at stamped");
+        put_at(&mut runtime, keeper, b"kept", b"safe", 10);
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Flush,
+                MaintenanceScope::Branch(keeper),
+            ))
+            .expect("enqueue flush");
+        runtime.drain_maintenance().expect("drain flush");
+        // Checkpoint AFTER the flush: replay starts above the row, so the
+        // flushed table (via the manifest) is the row's sole recovery
+        // source — a wrongly skipped manifest is a lost row, not a
+        // WAL-replay-healed one.
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Checkpoint,
+                MaintenanceScope::Global,
+            ))
+            .expect("enqueue checkpoint");
+        runtime.drain_maintenance().expect("drain checkpoint");
+    }
+
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("reopen")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, keeper, b"kept"),
+        Some(b"safe".to_vec()),
+        "a live generation's flushed table must survive reopen"
+    );
+}
+
+/// #2830: after delete + recreate + checkpoint + reopen, a timestamp from
+/// the DEAD generation's era must stay unresolvable — stale timeline
+/// entries seeded into the fresh branch would let fork-at-timestamp
+/// resolve a version the generation never had. The fresh-era fork is the
+/// in-test direction control. Kills the fence-inversion (`!` deletion)
+/// mutant in the timeline seeding.
+#[test]
+fn recreated_branch_refuses_dead_generation_timestamps_after_reopen() {
+    use crate::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
+
+    let root = temp_dir_for_api_test("branch-recreate-timeline-fence");
+    let backend = StorageBackend::local_fs(root.clone());
+    let victim = branch_with(0x76);
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+                .with_maintenance_scheduling_policy(
+                    crate::api::StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+                ),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        runtime
+            .branch(&create_request(victim))
+            .expect("create victim generation 1");
+        put_at(&mut runtime, victim, b"ghost", b"dead", 10);
+        runtime
+            .branch(&branch_request(victim, BranchAction::Delete))
+            .expect("delete victim generation 1");
+        runtime
+            .branch(&BranchRequest::new(
+                victim,
+                BranchAction::Create,
+                Some(BranchGeneration::new(2)),
+            ))
+            .expect("recreate as generation 2");
+        put_at(&mut runtime, victim, b"fresh", b"alive", 30);
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Checkpoint,
+                MaintenanceScope::Global,
+            ))
+            .expect("enqueue checkpoint");
+        runtime.drain_maintenance().expect("drain checkpoint");
+    }
+
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("reopen")
+    .into_runtime();
+    let error = runtime
+        .branch(&branch_request(
+            branch_with(0x77),
+            BranchAction::ForkAtTimestamp {
+                source: victim,
+                timestamp: Timestamp::from_micros(10),
+            },
+        ))
+        .expect_err("dead-generation-era timestamp must stay unresolvable");
+    assert_eq!(error.class(), StorageApiErrorClass::HistoryUnavailable);
+    let outcome = runtime
+        .branch(&branch_request(
+            branch_with(0x78),
+            BranchAction::ForkAtTimestamp {
+                source: victim,
+                timestamp: Timestamp::from_micros(30),
+            },
+        ))
+        .expect("fresh-era timestamp resolves");
+    assert_eq!(
+        read_value(&runtime, branch_with(0x78), b"fresh"),
+        Some(b"alive".to_vec()),
+        "the fresh-era fork serves the new generation's row"
+    );
+    let _ = outcome;
+}
+
+/// #2830 direction control: a FORK child's checkpoint-covered timeline
+/// keeps its inherited-era entries across reopen — the fence must never
+/// filter fork children (their inherited history sits at or below
+/// `created_at` by design). Kills the `&&`->`||` mutant in the timeline
+/// seeding's parentless qualification.
+#[test]
+fn fork_child_keeps_inherited_era_timestamps_after_reopen() {
+    use crate::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
+
+    let root = temp_dir_for_api_test("branch-fork-timeline-not-fenced");
+    let backend = StorageBackend::local_fs(root.clone());
+    let source = branch_with(0x79);
+    let child = branch_with(0x7a);
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+                .with_maintenance_scheduling_policy(
+                    crate::api::StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+                ),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        runtime
+            .branch(&create_request(source))
+            .expect("create source");
+        put_at(&mut runtime, source, b"lineage", b"one", 10);
+        put_at(&mut runtime, source, b"lineage", b"two", 30);
+        runtime
+            .branch(&branch_request(child, BranchAction::ForkCurrent { source }))
+            .expect("fork child");
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Checkpoint,
+                MaintenanceScope::Global,
+            ))
+            .expect("enqueue checkpoint");
+        runtime.drain_maintenance().expect("drain checkpoint");
+    }
+
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("reopen")
+    .into_runtime();
+    let outcome = runtime
+        .branch(&branch_request(
+            branch_with(0x7b),
+            BranchAction::ForkAtTimestamp {
+                source: child,
+                timestamp: Timestamp::from_micros(20),
+            },
+        ))
+        .expect("inherited-era timestamp resolves on the fork child after reopen");
+    assert_eq!(
+        read_value(&runtime, branch_with(0x7b), b"lineage"),
+        Some(b"one".to_vec()),
+        "the inherited-era fork serves the pre-fork row"
+    );
+    let _ = outcome;
+}
