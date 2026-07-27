@@ -455,3 +455,73 @@ fn assert_duplicate_internal_key(error: &BranchRuntimeError) {
     assert!(error.source().is_some());
     assert!(!error.to_string().contains("secret-payload"));
 }
+
+#[test]
+fn fork_snapshot_tolerates_identical_replay_redundancy_across_own_sources() {
+    // ACID-005: idempotent recovery replay can leave the SAME row (same
+    // internal key, same bytes) in a rotated-out source AND the replayed
+    // active memtable. The fork snapshot must treat that byte-identical
+    // redundancy as one row — refusing it bricks recovery's fork-row
+    // rebuild for every child of such a source (#2823).
+    let branch = branch_id(0x70);
+    let target = branch_id(0x71);
+    let mut state = BranchLocalState::empty(branch);
+    let row = storage_row_with(
+        branch,
+        b"replayed".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"value".to_vec(),
+    );
+    state
+        .append_committed_row(row.clone())
+        .expect("first copy into the active memtable");
+    state.rotate_active();
+    state
+        .append_committed_row(row)
+        .expect("idempotent replay re-applies the same row into the new active");
+
+    let rows = state
+        .fork_snapshot_rows(CommitVersion::new(3), target)
+        .expect("a replay-redundant source must still be forkable");
+    assert_eq!(rows.len(), 1, "the redundancy collapses to one row");
+}
+
+#[test]
+fn fork_snapshot_still_refuses_divergent_duplicate_internal_keys() {
+    // Direction control: the SAME internal key with DIFFERENT bytes is a
+    // genuine corruption signal and must keep refusing.
+    let branch = branch_id(0x72);
+    let target = branch_id(0x73);
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .append_committed_row(storage_row_with(
+            branch,
+            b"diverged".to_vec(),
+            3,
+            30,
+            Timestamp::EPOCH,
+            b"one".to_vec(),
+        ))
+        .expect("first copy");
+    state.rotate_active();
+    state
+        .append_committed_row(storage_row_with(
+            branch,
+            b"diverged".to_vec(),
+            3,
+            30,
+            Timestamp::EPOCH,
+            b"two".to_vec(),
+        ))
+        .expect("divergent copy into the new active");
+
+    let error = state
+        .fork_snapshot_rows(CommitVersion::new(3), target)
+        .expect_err("divergent duplicates are corruption and must refuse");
+    assert!(matches!(
+        error,
+        BranchRuntimeError::InvalidBranchState { .. }
+    ));
+}
