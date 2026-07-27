@@ -88,7 +88,11 @@ fn check_durable_branch_recovery_round_trip(
             .map_err(|error| testkit_error(&error))?;
 
         runtime
-            .create_branch(extra, generation_one, Some(CommitVersion::new(2)))
+            // #2826: truthful stamp — nothing is visible yet, and a
+            // future-dated created_at is exactly what the replay generation
+            // fence exists to act on (it would fence this branch's own v2
+            // commit; production stamps `current_visible`).
+            .create_branch(extra, generation_one, None)
             .map_err(|error| testkit_error(&error))?;
         runtime
             .execute_durable_commit(
@@ -216,4 +220,22 @@ fn testkit_error<E: std::fmt::Display>(error: E) -> TestkitError {
 
 fn testkit_error_branch(error: &crate::branch::error::BranchRuntimeError) -> TestkitError {
     TestkitError::new(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_lifecycle_branch_lifecycle_recovery_contract;
+
+    /// In-crate exerciser (see the sibling module's note): exact recovered
+    /// counts kill a body-stub of the round-trip check in the
+    /// default-features mutation lane.
+    #[test]
+    fn recovery_round_trip_recovers_exact_counts() {
+        let outcome =
+            check_lifecycle_branch_lifecycle_recovery_contract(b"in-crate-mutation-exerciser")
+                .expect("recovery contract");
+        assert_eq!(outcome.branches_recovered(), 2);
+        assert_eq!(outcome.forks_recovered(), 1);
+        assert_eq!(outcome.rows_recovered(), 2);
+    }
 }

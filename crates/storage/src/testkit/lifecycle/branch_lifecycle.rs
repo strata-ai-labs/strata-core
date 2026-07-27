@@ -288,3 +288,24 @@ fn generation(value: u64) -> Result<CommitBranchGeneration, TestkitError> {
 fn testkit_error(error: impl std::fmt::Display) -> TestkitError {
     TestkitError::new(error.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::check_lifecycle_branch_lifecycle_contract;
+
+    /// In-crate exerciser: the feature-gated integration harness is the
+    /// production caller, but it is invisible to the default-features
+    /// mutation lane — a whole-check-fn stub survived there (#2826's PR).
+    /// Exact counters (not floors) kill body-stub mutants of every check.
+    #[test]
+    fn contract_walks_every_check_exactly_once() {
+        let outcome = check_lifecycle_branch_lifecycle_contract(b"in-crate-mutation-exerciser")
+            .expect("contract");
+        assert_eq!(outcome.catalog_cases(), 1);
+        assert_eq!(outcome.fork_cases(), 1);
+        assert_eq!(outcome.clear_delete_cases(), 1);
+        assert_eq!(outcome.pinned_view_cases(), 1);
+        assert_eq!(outcome.generation_cases(), 1);
+        assert_eq!(outcome.stale_work_cases(), 1);
+    }
+}
