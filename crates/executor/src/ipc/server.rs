@@ -256,11 +256,12 @@ fn handle_connection(
         }
         let frame = match wire::read_frame(&mut reader) {
             Ok(frame) => frame,
-            Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+            // A read timeout re-checks the shutdown flag and loops; anything
+            // else (a clean EOF disconnect included) ends this connection.
             Err(ref e)
                 if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
-                continue; // read timeout — re-check shutdown and loop
+                continue;
             }
             Err(_) => break,
         };
@@ -361,6 +362,96 @@ mod tests {
         wire::write_frame(&mut writer, &payload).expect("write");
         let response = wire::read_frame(&mut reader).expect("read");
         serde_json::from_slice(&response).expect("decode response")
+    }
+
+    #[test]
+    fn process_is_alive_distinguishes_a_live_pid_from_a_dead_one() {
+        // Our own process is alive; i32::MAX is not a running pid.
+        let own = i32::try_from(std::process::id()).expect("pid fits i32");
+        assert!(super::process_is_alive(own), "this process is alive");
+        assert!(
+            !super::process_is_alive(i32::MAX),
+            "i32::MAX is not a running process"
+        );
+    }
+
+    #[test]
+    fn start_writes_an_owner_pid_file_and_shutdown_removes_it() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+        let pid_file = dir.path().join("strata.pid");
+        let recorded = std::fs::read_to_string(&pid_file).expect("pid file written");
+        assert_eq!(
+            recorded.trim(),
+            std::process::id().to_string(),
+            "pid file records our pid"
+        );
+        server.shutdown();
+        assert!(!pid_file.exists(), "pid file removed on shutdown");
+    }
+
+    #[test]
+    fn stop_removes_the_socket_and_pid_files_for_a_dead_owner() {
+        // A crashed owner leaves stale files with a dead pid; stop() clears them.
+        let dir = tempfile::tempdir().expect("tmp");
+        std::fs::write(dir.path().join("strata.pid"), i32::MAX.to_string()).expect("pid");
+        std::fs::write(dir.path().join("strata.sock"), b"").expect("sock");
+        IpcServer::stop(dir.path()).expect("stop");
+        assert!(!dir.path().join("strata.pid").exists(), "pid removed");
+        assert!(!dir.path().join("strata.sock").exists(), "socket removed");
+    }
+
+    #[test]
+    fn a_well_formed_json_frame_that_is_not_a_request_returns_a_wire_request_error() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+        let sock = server.socket_path().to_path_buf();
+
+        // Valid JSON, but not a `{branch,space,command}` envelope.
+        let stream = UnixStream::connect(&sock).expect("connect");
+        let mut writer = BufWriter::new(stream.try_clone().expect("clone"));
+        let mut reader = BufReader::new(stream);
+        wire::write_frame(&mut writer, b"[1,2,3]").expect("write");
+        let response = wire::read_frame(&mut reader).expect("read");
+        let response: serde_json::Value = serde_json::from_slice(&response).expect("decode");
+        assert_eq!(
+            response["error"]["code"], "invalid_argument.executor.wire_request",
+            "a non-envelope frame is a wire_request error: {response}"
+        );
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn a_connection_idle_past_the_read_timeout_is_still_served() {
+        // The handler's read timeout must CONTINUE (re-check shutdown) rather
+        // than drop the connection — a client that pauses longer than
+        // HANDLER_READ_TIMEOUT then sends a command must still get a response.
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+        let sock = server.socket_path().to_path_buf();
+
+        let stream = UnixStream::connect(&sock).expect("connect");
+        let mut writer = BufWriter::new(stream.try_clone().expect("clone"));
+        let mut reader = BufReader::new(stream);
+        std::thread::sleep(super::HANDLER_READ_TIMEOUT + std::time::Duration::from_millis(500));
+
+        let raw = serde_json::value::RawValue::from_string("{\"type\":\"ping\"}".to_owned())
+            .expect("raw");
+        let request = WireRequestOwned {
+            branch: None,
+            space: None,
+            command: &raw,
+        };
+        wire::write_frame(&mut writer, &serde_json::to_vec(&request).expect("ser")).expect("write");
+        let response = wire::read_frame(&mut reader).expect("handler continued past the timeout");
+        let response: serde_json::Value = serde_json::from_slice(&response).expect("decode");
+        assert_eq!(response["type"], "pong", "served after an idle pause");
+
+        server.shutdown();
     }
 
     #[test]

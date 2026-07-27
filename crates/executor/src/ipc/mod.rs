@@ -158,6 +158,29 @@ mod path_tests {
     }
 
     #[test]
+    fn distinct_data_dirs_get_distinct_runtime_sockets() {
+        // The hash must discriminate stores — a constant would collide two
+        // different data dirs onto one socket.
+        let a = runtime_socket(std::path::Path::new("/tmp/store-a"));
+        let b = runtime_socket(std::path::Path::new("/tmp/store-b"));
+        assert_ne!(a, b, "different stores must not share a runtime socket");
+    }
+
+    #[test]
+    fn fnv1a_mixes_input() {
+        assert_ne!(fnv1a(b""), fnv1a(b"x"));
+        assert_ne!(fnv1a(b"ab"), fnv1a(b"ba"), "order-sensitive");
+    }
+
+    #[test]
+    fn sun_path_fit_boundary() {
+        let just_fits = std::path::PathBuf::from("x".repeat(MAX_SUN_PATH - 1));
+        let too_long = std::path::PathBuf::from("x".repeat(MAX_SUN_PATH));
+        assert!(fits_sun_path(&just_fits));
+        assert!(!fits_sun_path(&too_long));
+    }
+
+    #[test]
     fn connect_follows_the_pointer_file() {
         let tmp = tempfile::tempdir().expect("tmp");
         let real = tmp.path().join("elsewhere.sock");

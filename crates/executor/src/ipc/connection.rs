@@ -390,6 +390,27 @@ mod tests {
     }
 
     #[test]
+    fn a_non_contention_open_error_propagates_without_brokering() {
+        // A regular file (not a database directory) fails with a permanent,
+        // non-lock error. The brokered open must surface THAT error, not treat
+        // it as contention and try to connect to a nonexistent owner.
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("not-a-db");
+        std::fs::write(&path, b"plain file").expect("write file");
+        let refused = Connection::open_durable_local_brokered(
+            &path,
+            DurableLocalOpenOptions::new(),
+            false,
+            true, // ipc ON — the fallback path, which must NOT swallow this
+        );
+        let Err(error) = refused else {
+            panic!("a regular file is not a database");
+        };
+        assert_eq!(error.code(), "invalid_argument.engine.persistence");
+        assert_ne!(error.code(), super::LOCK_CONTENTION_CODE);
+    }
+
+    #[test]
     fn opt_out_client_refuses_a_held_store_instead_of_brokering() {
         let dir = tempfile::tempdir().expect("tmp");
         let owner = Connection::open_durable_local_brokered(
