@@ -875,6 +875,36 @@ fn branch_delete_refused_while_layerless_fork_children_live() {
 }
 
 #[test]
+fn branch_delete_of_empty_fork_source_stays_allowed() {
+    // A fork of a rowless parent re-materializes nothing at recovery: the
+    // dependency check must consult the actual fork-visible rows (an
+    // always-dependent fold would refuse here — the mutation the engine's
+    // cache-mode DAG model cannot see).
+    let root = temp_dir_for_api_test("branch-empty-fork-parent-delete");
+    let backend = StorageBackend::local_fs(root);
+    let parent = branch_with(0x66);
+    let child = branch_with(0x67);
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("durable open")
+    .into_runtime();
+    runtime
+        .branch(&create_request(parent))
+        .expect("create parent");
+    runtime
+        .branch(&branch_request(
+            child,
+            BranchAction::ForkCurrent { source: parent },
+        ))
+        .expect("fork empty parent");
+    runtime
+        .branch(&branch_request(parent, BranchAction::Delete))
+        .expect("an empty fork keeps its parent deletable");
+}
+
+#[test]
 fn branch_delete_of_layered_fork_source_stays_allowed() {
     use crate::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
 
