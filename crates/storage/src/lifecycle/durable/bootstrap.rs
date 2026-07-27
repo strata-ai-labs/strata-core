@@ -2799,6 +2799,37 @@ fn deleted_branch_allows_recovered_version(
 /// its catalog slot. The seeded branch's manifest was already applied by
 /// the pre-catalog recovery phase; skip it. Deleted descriptors are
 /// resurrection-guarded — the manifest is treated as stale.
+/// #2830: parentless branches own no content at or below their creation
+/// point — `created_at` is visible-at-creation (#2826) and the allocator
+/// stays strictly above it — so restored base-state content at
+/// `version <= created_at` belongs to a DEAD predecessor generation of the
+/// same branch id and must not install. Fork children are exempt: their
+/// inherited rows legitimately sit at or below `created_at`.
+pub(crate) fn parentless_content_predates_generation(
+    has_parent: bool,
+    created_at: Option<CommitVersion>,
+    version: CommitVersion,
+) -> bool {
+    !has_parent && created_at.is_some_and(|created| version <= created)
+}
+
+/// The highest commit version any table in the manifest covers (owned
+/// levels and inherited layers), or `None` for a table-free manifest.
+fn manifest_max_commit_version(manifest: &crate::format::TableManifest) -> Option<CommitVersion> {
+    let owned = manifest
+        .levels()
+        .iter()
+        .flat_map(crate::format::TableManifestLevel::tables)
+        .map(|table| table.facts().commit_max());
+    let inherited = manifest
+        .inherited_layers()
+        .iter()
+        .flat_map(crate::format::TableManifestInheritedLayer::levels)
+        .flat_map(crate::format::TableManifestLevel::tables)
+        .map(|table| table.facts().commit_max());
+    owned.chain(inherited).max()
+}
+
 fn recover_per_branch_table_manifests(
     services: &LifecycleDurableLocalServices<'_>,
     table_catalog: &mut crate::lifecycle::LifecycleDurableTableCatalog,
@@ -2830,6 +2861,24 @@ fn recover_per_branch_table_manifests(
                 })?;
         if descriptor.status() == LifecycleBranchStatus::Deleted {
             continue;
+        }
+        // #2830: a manifest published by a dead predecessor generation of a
+        // re-created (parentless) branch survives the delete on disk; every
+        // version it covers is <= the current generation's creation point,
+        // so it is skipped like a deleted branch's manifest (the #2553 rule
+        // extended from status to generation). A table-free stale manifest
+        // is skipped too: its retained-history extension would claim the
+        // dead generation's coverage. Fork children keep their manifests
+        // (fork publishes a fresh one; inherited content sits below
+        // created_at by design).
+        if descriptor.parent().is_none() {
+            if let Some(created) = descriptor.created_at() {
+                if manifest_max_commit_version(&manifest)
+                    .is_none_or(|max_version| max_version <= created)
+                {
+                    continue;
+                }
+            }
         }
         let generation = branch_catalog
             .registry()
@@ -2977,6 +3026,30 @@ fn seed_non_seeded_branch_timelines(
         let Ok(branch) = branch_catalog.branch_state(group.branch_id) else {
             continue;
         };
+        // #2830: drop a dead predecessor generation's timeline entries for a
+        // re-created (parentless) branch — stale coverage claims would let
+        // temporal reads resolve versions the generation never had.
+        let fenced;
+        let group = if descriptor.parent().is_none() && descriptor.created_at().is_some() {
+            fenced = crate::format::SnapshotTimelineBranchGroup {
+                branch_id: group.branch_id,
+                entries: group
+                    .entries
+                    .iter()
+                    .copied()
+                    .filter(|(version, _)| {
+                        !parentless_content_predates_generation(
+                            false,
+                            descriptor.created_at(),
+                            *version,
+                        )
+                    })
+                    .collect(),
+            };
+            &fenced
+        } else {
+            group
+        };
         crate::lifecycle::recovery::seed_branch_timeline_from_groups(
             branch,
             std::slice::from_ref(group),
@@ -3002,6 +3075,8 @@ fn install_non_seeded_checkpoint_rows(
     }
     affected.sort_by_key(|id| *id.as_bytes());
     let mut active_affected = Vec::new();
+    // #2830 fence inputs per active branch: (id, has_parent, created_at).
+    let mut fences: Vec<(BranchId, bool, Option<CommitVersion>)> = Vec::new();
     for id in &affected {
         let descriptor =
             branch_catalog
@@ -3024,6 +3099,7 @@ fn install_non_seeded_checkpoint_rows(
             });
         }
         active_affected.push(*id);
+        fences.push((*id, descriptor.parent().is_some(), descriptor.created_at()));
     }
     if active_affected.is_empty() {
         return Ok(());
@@ -3040,9 +3116,21 @@ fn install_non_seeded_checkpoint_rows(
     let active_rows = rows
         .iter()
         .filter(|row| {
-            active_affected
-                .iter()
-                .any(|id| row.physical_key().branch_id() == *id)
+            let id = row.physical_key().branch_id();
+            if !active_affected.contains(&id) {
+                return false;
+            }
+            // #2830: a re-created (parentless) branch installs nothing at or
+            // below its creation point — those checkpoint rows belong to the
+            // dead predecessor generation.
+            !fences.iter().any(|(fence_id, has_parent, created_at)| {
+                *fence_id == id
+                    && parentless_content_predates_generation(
+                        *has_parent,
+                        *created_at,
+                        row.commit_version(),
+                    )
+            })
         })
         .cloned()
         .collect();

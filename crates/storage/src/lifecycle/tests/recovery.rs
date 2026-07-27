@@ -1959,6 +1959,36 @@ fn recovery_newer_generation_outranks_older_deleted_marker() {
 }
 
 #[test]
+fn base_restore_generation_fence_truth_table() {
+    // #2830: the base-restore fence — parentless only (fork-inherited rows
+    // legitimately sit at or below created_at), `<=` boundary, None fences
+    // nothing.
+    use crate::lifecycle::parentless_content_predates_generation;
+    let v = CommitVersion::new;
+    assert!(parentless_content_predates_generation(
+        false,
+        Some(v(10)),
+        v(9)
+    ));
+    assert!(parentless_content_predates_generation(
+        false,
+        Some(v(10)),
+        v(10)
+    ));
+    assert!(!parentless_content_predates_generation(
+        false,
+        Some(v(10)),
+        v(11)
+    ));
+    assert!(!parentless_content_predates_generation(
+        true,
+        Some(v(10)),
+        v(9)
+    ));
+    assert!(!parentless_content_predates_generation(false, None, v(1)));
+}
+
+#[test]
 fn generation_fence_truth_table() {
     // #2826: the WAL-replay generation fence. `<=` is the boundary — a
     // predecessor's last record can share the exact version the successor
@@ -2248,10 +2278,11 @@ fn recovery_table_manifest_multi_branch_rows_round_trip() {
         .expect("initial entry")
         .with_created_at(1)
         .expect("initial created_at");
-    let extra_entry = BranchCatalogEntry::new(extra, 1, BranchCatalogStatus::Active)
-        .expect("extra entry")
-        .with_created_at(2)
-        .expect("extra created_at");
+    // #2830: no created_at — the hand-crafted manifest owns a v1 row, and a
+    // branch created at visible 2 cannot own rows at or below 2 (the base
+    // restore now fences on exactly that impossibility).
+    let extra_entry =
+        BranchCatalogEntry::new(extra, 1, BranchCatalogStatus::Active).expect("extra entry");
     let catalog_manifest =
         BranchCatalogManifest::new(DATABASE_ID, 1, vec![initial_entry, extra_entry])
             .expect("branch catalog manifest");
@@ -2321,7 +2352,11 @@ fn recovery_checkpoint_multi_branch_rows_round_trip() {
             .create_branch(
                 extra,
                 CommitBranchGeneration::new(1).expect("generation"),
-                Some(CommitVersion::new(2)),
+                // #2830: truthful stamp — nothing is visible yet, and a
+                // future-dated created_at fences the branch's own rows out
+                // of the checkpoint restore (production stamps
+                // `current_visible`).
+                None,
             )
             .expect("create extra branch");
         runtime

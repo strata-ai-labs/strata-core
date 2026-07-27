@@ -1235,3 +1235,135 @@ fn recreate_after_delete_does_not_resurrect_predecessor_rows_after_reopen() {
         "the new generation's own commit survives reopen"
     );
 }
+
+/// #2830 (checkpoint door): a checkpoint captures generation 1's rows; the
+/// name is deleted and re-created; recovery must not install the dead
+/// generation's checkpoint rows into the fresh branch. Two ghost commits
+/// put the fence's strictly-below and at-boundary arms on the line.
+#[test]
+fn recreate_after_checkpoint_does_not_resurrect_predecessor_rows() {
+    use crate::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
+
+    let root = temp_dir_for_api_test("branch-recreate-checkpoint-fence");
+    let backend = StorageBackend::local_fs(root.clone());
+    let victim = branch_with(0x73);
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+                .with_maintenance_scheduling_policy(
+                    crate::api::StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+                ),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        runtime
+            .branch(&create_request(victim))
+            .expect("create victim generation 1");
+        put_at(&mut runtime, victim, b"ghost", b"dead", 10);
+        put_at(&mut runtime, victim, b"ghost-two", b"dead-too", 15);
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Checkpoint,
+                MaintenanceScope::Global,
+            ))
+            .expect("enqueue checkpoint");
+        runtime.drain_maintenance().expect("drain checkpoint");
+        runtime
+            .branch(&branch_request(victim, BranchAction::Delete))
+            .expect("delete victim generation 1");
+        runtime
+            .branch(&BranchRequest::new(
+                victim,
+                BranchAction::Create,
+                Some(BranchGeneration::new(2)),
+            ))
+            .expect("recreate the deleted name as generation 2");
+        put_at(&mut runtime, victim, b"fresh", b"alive", 20);
+    }
+
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("reopen")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, victim, b"ghost"),
+        None,
+        "checkpointed dead-generation row must not resurrect"
+    );
+    assert_eq!(
+        read_value(&runtime, victim, b"ghost-two"),
+        None,
+        "checkpointed dead-generation boundary row must not resurrect"
+    );
+    assert_eq!(
+        read_value(&runtime, victim, b"fresh"),
+        Some(b"alive".to_vec()),
+        "the new generation's own commit survives reopen"
+    );
+}
+
+/// #2830 (table-manifest door): generation 1's rows are FLUSHED to owned
+/// tables (durable table manifest) before the delete; the recreate leaves
+/// the stale manifest on disk; recovery must not attach the dead
+/// generation's tables to the fresh branch.
+#[test]
+fn recreate_after_flush_does_not_resurrect_predecessor_tables() {
+    use crate::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
+
+    let root = temp_dir_for_api_test("branch-recreate-manifest-fence");
+    let backend = StorageBackend::local_fs(root.clone());
+    let victim = branch_with(0x74);
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+                .with_maintenance_scheduling_policy(
+                    crate::api::StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+                ),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        runtime
+            .branch(&create_request(victim))
+            .expect("create victim generation 1");
+        put_at(&mut runtime, victim, b"ghost", b"dead", 10);
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Flush,
+                MaintenanceScope::Branch(victim),
+            ))
+            .expect("enqueue flush");
+        runtime.drain_maintenance().expect("drain flush");
+        runtime
+            .branch(&branch_request(victim, BranchAction::Delete))
+            .expect("delete victim generation 1");
+        runtime
+            .branch(&BranchRequest::new(
+                victim,
+                BranchAction::Create,
+                Some(BranchGeneration::new(2)),
+            ))
+            .expect("recreate the deleted name as generation 2");
+        put_at(&mut runtime, victim, b"fresh", b"alive", 20);
+    }
+
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("reopen")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, victim, b"ghost"),
+        None,
+        "flushed dead-generation table row must not resurrect"
+    );
+    assert_eq!(
+        read_value(&runtime, victim, b"fresh"),
+        Some(b"alive".to_vec()),
+        "the new generation's own commit survives reopen"
+    );
+}
