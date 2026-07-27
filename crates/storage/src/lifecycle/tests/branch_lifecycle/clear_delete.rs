@@ -441,7 +441,7 @@ fn clear_branch_removes_active_frozen_owned_and_inherited_rows() {
         )
         .expect("replace source");
     catalog
-        .fork_current(source, child, generation(1))
+        .fork_current(source, child, generation(1), None)
         .expect("fork");
     assert!(catalog
         .capture_read_view(child)
@@ -622,7 +622,7 @@ fn delete_branch_with_shared_parent_table_keeps_parent_readable() {
         )
         .expect("replace parent");
     catalog
-        .fork_current(parent, child, generation(1))
+        .fork_current(parent, child, generation(1), None)
         .expect("fork");
     let delete = catalog
         .delete_branch(
@@ -881,7 +881,7 @@ fn pinned_view_inherited_layer_rows_remain_readable() {
         )
         .expect("replace parent");
     catalog
-        .fork_current(parent, child, generation(1))
+        .fork_current(parent, child, generation(1), None)
         .expect("fork child");
     let view = catalog.capture_read_view(child).expect("child view");
     // Verify reads through inherited layer survive after capture.
@@ -916,7 +916,7 @@ fn pinned_view_materialized_rows_remain_readable() {
         )
         .expect("replace parent");
     catalog
-        .fork_current(parent, child, generation(1))
+        .fork_current(parent, child, generation(1), None)
         .expect("fork child");
     // Materialize the inherited layer into the child's own state.
     catalog
@@ -958,7 +958,7 @@ fn clear_branch_release_facts_name_owned_and_inherited_tables() {
         .expect("seed parent");
     // Child inherits parent's table, then gets its own owned table after fork.
     catalog
-        .fork_current(parent, child, generation(1))
+        .fork_current(parent, child, generation(1), None)
         .expect("fork");
     // Replace the child's state with both inherited layer and its own
     // owned table by going through replace_active_branch_state with
@@ -1037,7 +1037,7 @@ fn shared_table_delete_candidate_is_blocked_by_other_branch() {
         )
         .expect("seed parent");
     catalog
-        .fork_current(parent, child, generation(1))
+        .fork_current(parent, child, generation(1), None)
         .expect("fork child");
 
     let outcome = catalog

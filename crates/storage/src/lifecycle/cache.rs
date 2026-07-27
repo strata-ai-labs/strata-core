@@ -836,12 +836,16 @@ impl<S> LifecycleCacheRuntime<S> {
         source: BranchId,
         destination: BranchId,
         destination_generation: CommitBranchGeneration,
+        created_at: Option<CommitVersion>,
     ) -> LifecycleResult<LifecycleBranchForkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let _quiesce = self.guard_set.try_begin_quiesce().map_err(commit_error)?;
-        let outcome =
-            self.branch_catalog
-                .fork_current(source, destination, destination_generation)?;
+        let outcome = self.branch_catalog.fork_current(
+            source,
+            destination,
+            destination_generation,
+            created_at,
+        )?;
         // BS2.3: the forked child needs a published snapshot over its inherited layers.
         self.republish_all_branch_snapshots();
         Ok(outcome)
@@ -858,6 +862,7 @@ impl<S> LifecycleCacheRuntime<S> {
         destination_generation: CommitBranchGeneration,
         fork_version: CommitVersion,
         retained_floor: CommitVersion,
+        created_at: Option<CommitVersion>,
     ) -> LifecycleResult<LifecycleBranchForkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let _quiesce = self.guard_set.try_begin_quiesce().map_err(commit_error)?;
@@ -867,6 +872,7 @@ impl<S> LifecycleCacheRuntime<S> {
             destination_generation,
             fork_version,
             retained_floor,
+            created_at,
         )?;
         self.republish_all_branch_snapshots(); // BS2.3: publish the forked child's snapshot.
         Ok(outcome)
@@ -883,6 +889,7 @@ impl<S> LifecycleCacheRuntime<S> {
         destination_generation: CommitBranchGeneration,
         timestamp: Timestamp,
         retained_floor: CommitVersion,
+        created_at: Option<CommitVersion>,
     ) -> LifecycleResult<LifecycleBranchForkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let _quiesce = self.guard_set.try_begin_quiesce().map_err(commit_error)?;
@@ -892,6 +899,7 @@ impl<S> LifecycleCacheRuntime<S> {
             destination_generation,
             timestamp,
             retained_floor,
+            created_at,
         )?;
         self.republish_all_branch_snapshots(); // BS2.3: publish the forked child's snapshot.
         Ok(outcome)

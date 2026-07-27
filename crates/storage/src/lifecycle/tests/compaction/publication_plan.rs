@@ -1758,6 +1758,7 @@ fn queued_durable_compaction_of_lone_cow_layer_publishes_without_resubmitting_ma
             parent,
             child,
             CommitBranchGeneration::new(2).expect("child generation"),
+            None,
         )
         .expect("fork child");
     let child_generation = runtime

@@ -857,6 +857,7 @@ fn cache_background_materialization_deleted_branch_finishes_stale_and_clears_act
             parent,
             child,
             CommitBranchGeneration::new(1).expect("generation"),
+            None,
         )
         .expect("fork child from flushed parent");
     runtime
@@ -1112,6 +1113,7 @@ fn cache_foreground_commit_completes_while_background_materialization_build_is_p
             parent,
             child,
             CommitBranchGeneration::new(1).expect("generation"),
+            None,
         )
         .expect("fork child from flushed parent");
     runtime
@@ -1233,6 +1235,7 @@ fn cache_fork_during_background_compaction_keeps_child_reads_valid_after_publish
             parent,
             child,
             CommitBranchGeneration::new(1).expect("generation"),
+            None,
         )
         .expect("fork child while parent compaction is active");
     let child_history_before = cache_history_facts(&runtime, child, inherited_key);
@@ -2828,6 +2831,7 @@ fn cache_read_correctness_without_maintenance_branch_fork_reads() {
             parent,
             child,
             CommitBranchGeneration::new(1).expect("generation"),
+            None,
         )
         .expect("fork child branch");
 
@@ -3554,6 +3558,7 @@ fn cache_fork_current_requires_quiesce_and_rejects_when_branch_guard_active() {
             branch,
             other,
             CommitBranchGeneration::new(1).expect("generation"),
+            None,
         )
         .expect_err("fork_current must reject while branch guard is active");
     assert_cache_quiesce_unavailable(&error);
@@ -3593,6 +3598,7 @@ fn cache_fork_at_retained_version_requires_quiesce_and_rejects_when_branch_guard
             CommitBranchGeneration::new(1).expect("generation"),
             CommitVersion::new(1),
             CommitVersion::ZERO,
+            None,
         )
         .expect_err("fork_at_retained_version must reject while branch guard is active");
     assert_cache_quiesce_unavailable(&error);
@@ -3632,6 +3638,7 @@ fn cache_fork_at_retained_timestamp_requires_quiesce_and_rejects_when_branch_gua
             CommitBranchGeneration::new(1).expect("generation"),
             Timestamp::from_micros(2_000),
             CommitVersion::ZERO,
+            None,
         )
         .expect_err("fork_at_retained_timestamp must reject while branch guard is active");
     assert_cache_quiesce_unavailable(&error);

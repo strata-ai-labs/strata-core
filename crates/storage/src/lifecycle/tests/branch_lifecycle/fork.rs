@@ -7,7 +7,7 @@ fn fork_current_missing_source_rejects_before_destination_mutation() {
     let mut catalog = LifecycleBranchCatalog::new(BranchRuntimeConfig::default()).expect("catalog");
 
     assert_eq!(
-        catalog.fork_current(source, child, generation(1)),
+        catalog.fork_current(source, child, generation(1), None),
         Err(LifecycleError::BranchNotFound { branch_id: source })
     );
     assert_eq!(
@@ -26,7 +26,7 @@ fn fork_current_existing_destination_rejects() {
         .expect("create child");
 
     assert_eq!(
-        catalog.fork_current(source, child, generation(1)),
+        catalog.fork_current(source, child, generation(1), None),
         Err(LifecycleError::BranchAlreadyExists { branch_id: child })
     );
 }
@@ -53,7 +53,7 @@ fn fork_current_existing_destination_with_rows_rejects_without_overwrite() {
         .expect("append");
 
     assert_eq!(
-        catalog.fork_current(source, child, generation(1)),
+        catalog.fork_current(source, child, generation(1), None),
         Err(LifecycleError::BranchAlreadyExists { branch_id: child })
     );
     assert_eq!(
@@ -84,7 +84,7 @@ fn fork_current_inherits_owned_tables_without_copying_objects() {
         .expect("replace source");
 
     let outcome = catalog
-        .fork_current(source, child, generation(1))
+        .fork_current(source, child, generation(1), None)
         .expect("fork current");
 
     assert_eq!(outcome.source_branch_id(), source);
@@ -139,7 +139,7 @@ fn fork_current_inherited_rows_are_visible_in_child() {
         .expect("replace source");
 
     catalog
-        .fork_current(source, child, generation(1))
+        .fork_current(source, child, generation(1), None)
         .expect("fork");
 
     assert_eq!(
@@ -169,7 +169,7 @@ fn fork_current_records_source_branch_and_fork_version() {
         .expect("replace source");
 
     let outcome = catalog
-        .fork_current(source, child, generation(1))
+        .fork_current(source, child, generation(1), None)
         .expect("fork");
 
     assert_eq!(outcome.source_branch_id(), source);
@@ -205,7 +205,7 @@ fn fork_current_reachability_facts_include_shared_tables() {
         )
         .expect("replace source");
     catalog
-        .fork_current(source, child, generation(1))
+        .fork_current(source, child, generation(1), None)
         .expect("fork");
 
     let child_snapshot = catalog
@@ -246,7 +246,7 @@ fn fork_current_works_from_materialized_replacement_tables() {
         )
         .expect("replace source");
     catalog
-        .fork_current(source, child, generation(1))
+        .fork_current(source, child, generation(1), None)
         .expect("fork child");
     catalog
         .branch_state_mut(child, CommitBranchGenerationGuard::exact(generation(1)))
@@ -258,7 +258,7 @@ fn fork_current_works_from_materialized_replacement_tables() {
         .expect("materialize");
 
     let outcome = catalog
-        .fork_current(child, grandchild, generation(1))
+        .fork_current(child, grandchild, generation(1), None)
         .expect("fork grandchild");
 
     assert_eq!(outcome.source_branch_id(), child);
@@ -291,10 +291,10 @@ fn fork_current_preserves_inherited_chain_order() {
         )
         .expect("replace parent");
     catalog
-        .fork_current(parent, child, generation(1))
+        .fork_current(parent, child, generation(1), None)
         .expect("fork child");
     catalog
-        .fork_current(child, grandchild, generation(1))
+        .fork_current(child, grandchild, generation(1), None)
         .expect("fork grandchild");
 
     let snapshot = catalog
@@ -328,7 +328,7 @@ fn fork_current_source_with_active_rows_is_rejected_explicitly() {
         .expect("append");
 
     assert_eq!(
-        catalog.fork_current(source, child, generation(1)),
+        catalog.fork_current(source, child, generation(1), None),
         Err(LifecycleError::SourceHasUnflushedRows { branch_id: source })
     );
     assert_eq!(
@@ -351,7 +351,7 @@ fn fork_current_child_local_row_shadows_inherited_row() {
         )
         .expect("replace source");
     catalog
-        .fork_current(source, child, generation(1))
+        .fork_current(source, child, generation(1), None)
         .expect("fork");
     catalog
         .branch_state_mut(child, CommitBranchGenerationGuard::exact(generation(1)))
@@ -386,7 +386,7 @@ fn fork_current_source_later_write_does_not_change_child_view() {
         )
         .expect("replace source");
     catalog
-        .fork_current(source, child, generation(1))
+        .fork_current(source, child, generation(1), None)
         .expect("fork");
     catalog
         .branch_state_mut(source, CommitBranchGenerationGuard::exact(generation(1)))
@@ -433,6 +433,7 @@ fn fork_at_history_child_excludes_rows_after_requested_version() {
             generation(1),
             CommitVersion::new(2),
             CommitVersion::new(1),
+            None,
         )
         .expect("fork at retained version");
 
@@ -495,6 +496,7 @@ fn fork_at_history_falls_back_to_materialization_for_unsealed_in_fork_rows() {
             generation(1),
             CommitVersion::new(2),
             CommitVersion::new(1),
+            None,
         )
         .expect("fork at retained version");
 
@@ -569,6 +571,7 @@ fn forked_branch_at_timestamp_before_fork_returns_parent_row() {
             generation(1),
             CommitVersion::new(5),
             CommitVersion::new(1),
+            None,
         )
         .expect("fork at retained version");
 
@@ -619,6 +622,7 @@ fn forked_branch_at_timestamp_after_fork_returns_child_row() {
             generation(1),
             CommitVersion::new(5),
             CommitVersion::new(1),
+            None,
         )
         .expect("fork at retained version");
 
@@ -672,6 +676,7 @@ fn forked_branch_isolated_from_parent_post_fork_commits() {
             generation(1),
             CommitVersion::new(5),
             CommitVersion::new(1),
+            None,
         )
         .expect("fork at retained version");
 
@@ -739,6 +744,7 @@ fn fork_at_history_child_includes_rows_at_requested_version() {
             generation(1),
             CommitVersion::new(5),
             CommitVersion::new(1),
+            None,
         )
         .expect("fork at boundary");
 
@@ -775,6 +781,7 @@ fn fork_at_history_retained_version_succeeds() {
             generation(1),
             CommitVersion::new(7),
             CommitVersion::new(7),
+            None,
         )
         .expect("fork at retained floor");
 
@@ -797,7 +804,7 @@ fn fork_at_history_visible_latest_matches_current_fork() {
         )
         .expect("replace source");
     catalog
-        .fork_current(source, current_child, generation(1))
+        .fork_current(source, current_child, generation(1), None)
         .expect("current fork");
     catalog
         .fork_at_retained_version(
@@ -806,6 +813,7 @@ fn fork_at_history_visible_latest_matches_current_fork() {
             generation(1),
             CommitVersion::new(7),
             CommitVersion::new(1),
+            None,
         )
         .expect("history fork");
 
@@ -851,6 +859,7 @@ fn fork_at_history_after_visible_version_rejects() {
             generation(1),
             CommitVersion::new(3),
             CommitVersion::new(1),
+            None
         ),
         Err(LifecycleError::BranchHistoryUnavailable {
             branch_id: source,
@@ -879,6 +888,7 @@ fn fork_at_history_source_deleted_before_capture_rejects() {
             generation(1),
             CommitVersion::new(1),
             CommitVersion::new(1),
+            None
         ),
         Err(LifecycleError::BranchNotWritable {
             branch_id: source,
@@ -917,6 +927,7 @@ fn fork_at_history_destination_generation_guard_is_enforced() {
             generation(1),
             CommitVersion::new(2),
             CommitVersion::new(1),
+            None
         ),
         Err(LifecycleError::BranchGenerationMismatch {
             branch_id: child,
@@ -947,7 +958,7 @@ fn fork_at_history_from_inherited_source_includes_visible_parent_row() {
         )
         .expect("replace parent");
     catalog
-        .fork_current(parent, child, generation(1))
+        .fork_current(parent, child, generation(1), None)
         .expect("fork child");
 
     catalog
@@ -957,6 +968,7 @@ fn fork_at_history_from_inherited_source_includes_visible_parent_row() {
             generation(1),
             CommitVersion::new(2),
             CommitVersion::new(1),
+            None,
         )
         .expect("fork grandchild");
 
@@ -1005,6 +1017,7 @@ fn fork_at_history_tombstone_at_boundary_is_preserved() {
             generation(1),
             CommitVersion::new(4),
             CommitVersion::new(1),
+            None,
         )
         .expect("fork");
 
@@ -1037,6 +1050,7 @@ fn fork_at_history_below_retained_floor_rejects() {
             generation(1),
             CommitVersion::new(1),
             CommitVersion::new(2),
+            None
         ),
         Err(LifecycleError::BranchHistoryUnavailable {
             branch_id: source,
@@ -1070,6 +1084,7 @@ fn fork_at_history_missing_timestamp_coverage_rejects() {
             generation(1),
             Timestamp::from_micros(500),
             CommitVersion::new(1),
+            None
         ),
         Err(LifecycleError::InsufficientTimestampHistory {
             branch_id: source,
@@ -1106,6 +1121,7 @@ fn fork_at_history_below_timestamp_coverage_rejects() {
             generation(1),
             Timestamp::from_micros(200),
             CommitVersion::new(1),
+            None
         ),
         Err(LifecycleError::InsufficientTimestampHistory {
             branch_id: source,
@@ -1158,6 +1174,7 @@ fn fork_at_history_timestamp_lookup_uses_timeline_tiebreaker() {
             generation(1),
             Timestamp::from_micros(300),
             CommitVersion::new(1),
+            None,
         )
         .expect("fork at timestamp");
 
@@ -1206,6 +1223,7 @@ fn fork_at_history_no_rows_at_or_before_timestamp_rejects() {
             generation(1),
             Timestamp::from_micros(500),
             CommitVersion::new(1),
+            None
         ),
         Err(LifecycleError::InsufficientTimestampHistory {
             branch_id: source,
@@ -1231,7 +1249,7 @@ fn pinned_view_survives_source_branch_delete_after_fork() {
         )
         .expect("replace parent");
     catalog
-        .fork_current(parent, child, generation(1))
+        .fork_current(parent, child, generation(1), None)
         .expect("fork child");
     let view = catalog.capture_read_view(child).expect("child view");
     // Delete the source (parent) branch — child's pinned view must keep

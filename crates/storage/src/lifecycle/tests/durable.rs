@@ -2574,6 +2574,7 @@ fn durable_fork_current_requires_quiesce_and_rejects_when_branch_guard_active() 
             branch,
             other,
             CommitBranchGeneration::new(1).expect("generation"),
+            None,
         )
         .expect_err("fork_current must reject while branch guard is active");
     assert_quiesce_unavailable(&error);
@@ -2608,6 +2609,7 @@ fn durable_fork_at_retained_version_requires_quiesce_and_rejects_when_branch_gua
             CommitBranchGeneration::new(1).expect("generation"),
             CommitVersion::new(1),
             CommitVersion::ZERO,
+            None,
         )
         .expect_err("fork_at_retained_version must reject while branch guard is active");
     assert_quiesce_unavailable(&error);
@@ -2642,6 +2644,7 @@ fn durable_fork_at_retained_timestamp_requires_quiesce_and_rejects_when_branch_g
             CommitBranchGeneration::new(1).expect("generation"),
             Timestamp::from_micros(1_000_000),
             CommitVersion::ZERO,
+            None,
         )
         .expect_err("fork_at_retained_timestamp must reject while branch guard is active");
     assert_quiesce_unavailable(&error);
@@ -4074,6 +4077,7 @@ fn fork_with_unsealed_rows_builds_a_cow_child() {
             CommitBranchGeneration::new(1).expect("generation"),
             fork_version,
             CommitVersion::ZERO,
+            None,
         )
         .expect("hybrid fork");
     assert_eq!(
@@ -4109,6 +4113,7 @@ fn fork_of_an_all_unsealed_source_stays_eager() {
             CommitBranchGeneration::new(1).expect("generation"),
             fork_version,
             CommitVersion::ZERO,
+            None,
         )
         .expect("eager fork");
     assert_eq!(outcome.inherited_layer_count(), 0, "no table to reference");

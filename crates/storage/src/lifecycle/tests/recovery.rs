@@ -1959,6 +1959,19 @@ fn recovery_newer_generation_outranks_older_deleted_marker() {
 }
 
 #[test]
+fn generation_fence_truth_table() {
+    // #2826: the WAL-replay generation fence. `<=` is the boundary — a
+    // predecessor's last record can share the exact version the successor
+    // recorded as visible-at-creation; own records are strictly above it.
+    use crate::lifecycle::record_predates_current_generation;
+    let v = CommitVersion::new;
+    assert!(record_predates_current_generation(v(9), Some(v(10))));
+    assert!(record_predates_current_generation(v(10), Some(v(10))));
+    assert!(!record_predates_current_generation(v(11), Some(v(10))));
+    assert!(!record_predates_current_generation(v(1), None));
+}
+
+#[test]
 fn recovery_rebuilds_active_branch_states() {
     // Open a durable runtime, create a non-seeded branch, commit a row to
     // it (durable WAL append), drop the runtime, reopen on the same
@@ -1982,7 +1995,11 @@ fn recovery_rebuilds_active_branch_states() {
             .create_branch(
                 new_branch,
                 CommitBranchGeneration::new(1).expect("generation"),
-                Some(CommitVersion::new(2)),
+                // #2826: truthful stamp — nothing is visible yet, and a
+                // future-dated created_at would fence the branch's own
+                // replayed records (production always stamps
+                // `current_visible`, which the allocator stays above).
+                None,
             )
             .expect("create branch");
         runtime
@@ -2115,6 +2132,10 @@ fn recovery_rebuilds_fork_at_history_version() {
                 CommitBranchGeneration::new(1).expect("generation"),
                 CommitVersion::new(1),
                 CommitVersion::ZERO,
+                // #2826: visible-at-fork (one commit so far) — the recovery
+                // generation fence consumes this; the fork POINT is asserted
+                // separately via `parent.fork_version`.
+                Some(CommitVersion::new(1)),
             )
             .expect("fork child at history version");
     }
@@ -2141,7 +2162,7 @@ fn recovery_rebuilds_fork_at_history_version() {
     assert_eq!(
         child_descriptor.created_at(),
         Some(CommitVersion::new(1)),
-        "fork created_at matches fork version",
+        "fork created_at records visible-at-fork (#2826)",
     );
 }
 
@@ -2872,6 +2893,7 @@ fn recovery_rebuilds_inherited_layers() {
                 parent,
                 child,
                 CommitBranchGeneration::new(1).expect("generation"),
+                None,
             )
             .expect("fork child");
         assert!(
@@ -2992,6 +3014,7 @@ fn recovery_rebuilds_cow_historical_fork() {
                 CommitBranchGeneration::new(1).expect("generation"),
                 CommitVersion::new(1),
                 CommitVersion::ZERO,
+                None,
             )
             .expect("fork child at history version");
         assert!(

@@ -422,11 +422,14 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             .lookup(initial_branch_id)
             .map_err(commit_error)?
             .generation();
-        let mut branch_catalog = LifecycleBranchCatalog::with_existing_branch(
-            &self.branch,
-            branch_generation,
-            self.branch.max_commit_version(),
-        )?;
+        // #2826: the seeded branch's `created_at` starts UNKNOWN (None), not
+        // the restored max commit version — created_at is now the WAL-replay
+        // generation fence, and stamping the rebuild watermark here would
+        // fence the branch's own already-applied records. The durable
+        // manifest's truthful value is adopted in
+        // `replay_branch_catalog_manifest` before WAL replay runs.
+        let mut branch_catalog =
+            LifecycleBranchCatalog::with_existing_branch(&self.branch, branch_generation, None)?;
         // The shell's `self.branch` was cloned into the catalog above;
         // the catalog owns the canonical state from here on. The shell's
         // copy is dropped together with `self` when `complete_recovery`
@@ -572,11 +575,10 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             .lookup(self.branch.branch_id())
             .map_err(commit_error)?
             .generation();
-        let mut branch_catalog = LifecycleBranchCatalog::with_existing_branch(
-            &self.branch,
-            branch_generation,
-            self.branch.max_commit_version(),
-        )?;
+        // #2826: None for the same reason as the primary assembly path —
+        // created_at now feeds the replay generation fence.
+        let mut branch_catalog =
+            LifecycleBranchCatalog::with_existing_branch(&self.branch, branch_generation, None)?;
         validate_recovered_wal_package(&branch_catalog, recovery.wal().records())?;
         replay_wal_into_catalog(
             &mut branch_catalog,
@@ -1267,12 +1269,16 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         source: BranchId,
         destination: BranchId,
         destination_generation: CommitBranchGeneration,
+        created_at: Option<CommitVersion>,
     ) -> LifecycleResult<crate::lifecycle::LifecycleBranchForkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let _quiesce = self.guard_set.try_begin_quiesce().map_err(commit_error)?;
-        let outcome =
-            self.branch_catalog
-                .fork_current(source, destination, destination_generation)?;
+        let outcome = self.branch_catalog.fork_current(
+            source,
+            destination,
+            destination_generation,
+            created_at,
+        )?;
         self.publish_branch_catalog()?;
         self.publish_fork_child_table_manifest(&outcome);
         self.republish_all_branch_snapshots(); // BS2.3: publish the new/forked branch snapshot.
@@ -1290,6 +1296,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         destination_generation: CommitBranchGeneration,
         fork_version: CommitVersion,
         retained_floor: CommitVersion,
+        created_at: Option<CommitVersion>,
     ) -> LifecycleResult<crate::lifecycle::LifecycleBranchForkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let _quiesce = self.guard_set.try_begin_quiesce().map_err(commit_error)?;
@@ -1319,6 +1326,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                     destination_generation,
                     fork_version,
                     retained_floor,
+                    created_at,
                     Some(&mut builder),
                 )?
         };
@@ -1336,6 +1344,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         destination_generation: CommitBranchGeneration,
         timestamp: Timestamp,
         retained_floor: CommitVersion,
+        created_at: Option<CommitVersion>,
     ) -> LifecycleResult<crate::lifecycle::LifecycleBranchForkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let _quiesce = self.guard_set.try_begin_quiesce().map_err(commit_error)?;
@@ -1365,6 +1374,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                     destination_generation,
                     timestamp,
                     retained_floor,
+                    created_at,
                     Some(&mut builder),
                 )?
         };
@@ -1607,7 +1617,14 @@ fn replay_branch_catalog_manifest(
         let created_at = entry.created_at().map(CommitVersion::new);
 
         if branch_id == initial_branch_id {
-            // The seeded branch is already registered via with_existing_branch.
+            // The seeded branch is already registered via with_existing_branch
+            // with created_at UNKNOWN; adopt the manifest's truthful value so
+            // the WAL-replay generation fence sees the real creation point.
+            catalog.set_created_at_for_recovery(
+                initial_branch_id,
+                created_at,
+                RecoveryExclusivityToken::new(),
+            )?;
             // For Active entries, no further work; for Deleted entries, mark
             // the seeded branch as deleted now. Generation mismatches against
             // the seeded branch's runtime generation surface as a recovery
@@ -3231,6 +3248,17 @@ fn visible_version_mirror(visible: VisibleVersionTracker) -> Arc<AtomicU64> {
 /// to its branch's slot in the catalog. After all records replay, advance
 /// the allocator and the visibility tracker to the highest version
 /// observed (across all branches, including the checkpoint watermark).
+/// #2826: `true` when a replayed WAL record belongs to a DEAD predecessor
+/// generation of its branch id — its version was allocated at or before the
+/// current generation's creation point. `None` (a branch created before any
+/// commit existed) fences nothing: no predecessor row can exist either.
+pub(crate) fn record_predates_current_generation(
+    record_version: CommitVersion,
+    created_at: Option<CommitVersion>,
+) -> bool {
+    created_at.is_some_and(|created| record_version <= created)
+}
+
 fn replay_wal_into_catalog<S>(
     branch_catalog: &mut LifecycleBranchCatalog,
     commit_config: &crate::commit::CommitRuntimeConfig,
@@ -3258,6 +3286,18 @@ fn replay_wal_into_catalog<S>(
         let branch_id = record.branch_id();
         let descriptor = branch_catalog.lookup(branch_id)?;
         if descriptor.status() == crate::lifecycle::LifecycleBranchStatus::Deleted {
+            continue;
+        }
+        // #2826: generation fence. WAL records carry no generation, so a
+        // record for a branch id whose name was deleted and re-created (or
+        // re-forked) is indistinguishable from the current generation's by
+        // id alone — and replaying it resurrects acknowledged-deleted rows.
+        // `created_at` is the globally visible version when the CURRENT
+        // generation was created; the allocator is globally monotonic, so
+        // every predecessor-generation record is `<= created_at` and every
+        // own record is `> created_at`. `replayed_max` above deliberately
+        // still counts fenced records: their versions were really allocated.
+        if record_predates_current_generation(record.commit_version(), descriptor.created_at()) {
             continue;
         }
         let generation = branch_catalog

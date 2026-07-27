@@ -949,25 +949,29 @@ mod tests {
         run_whole_db_sim(dir.path(), 2, 3, 24).expect("the once-refusing seed completes cleanly");
     }
 
-    /// Gate-7 pin for #2826 (cross-generation resurrection): seed 28 —
-    /// `Always` durability, two CLEAN drops, no crash — currently fails its
-    /// epoch-2 reopen with a Phantom on the re-forked `pool-b0`: the deleted
-    /// generation-1 branch's own commit (o1 @ v10) resurrects into the
-    /// generation-2 fork, which was seeded from `default` ≤ v9 and can never
-    /// legally contain it. The live per-step oracle stays green through both
-    /// epochs — recovery alone diverges. This pin asserts the CURRENT broken
-    /// behavior and BREAKS when #2826 is fixed; the fix PR promotes it to a
-    /// permanent clean-completion contract.
+    /// Seed 28 after the #2826 fix: the resurrection is DEAD (no Phantom —
+    /// the replay generation fence holds; the permanent #2826 contracts are
+    /// the api-level `..._does_not_resurrect_predecessor_rows_after_reopen`
+    /// tests), and the trajectory now runs three epochs further into the
+    /// NEXT onion layer. Gate-7 pin for #2831: a live fork at step 66
+    /// refuses with `InvalidInheritedLayer` duplicate internal keys (the
+    /// #2823 replay-redundancy class at the inherited-layer validator).
+    /// Breaks when #2831 is fixed; that PR promotes seed 28 to a
+    /// clean-completion contract.
     #[test]
-    fn pin_2826_recovery_resurrects_deleted_generation_rows() {
+    fn pin_2831_replay_redundant_source_poisons_live_fork() {
         let dir = tempfile::tempdir().expect("tmp");
         let error = run_whole_db_sim(dir.path(), 28, 3, 24)
-            .expect_err("#2826 fixed? promote this pin to a clean-completion contract");
+            .expect_err("#2831 fixed? promote seed 28 to a clean-completion contract");
         let message = format!("{error}");
         assert!(
-            message.contains("Phantom") && message.contains("CommitVersion(10)"),
-            "seed 28 failed with a DIFFERENT signature than the pinned #2826 \
-             resurrection — investigate before touching the pin: {message}"
+            !message.contains("Phantom"),
+            "seed 28 resurrected again — the #2826 fence regressed: {message}"
+        );
+        assert!(
+            message.contains("must not contain duplicate internal keys"),
+            "seed 28 failed with a DIFFERENT signature than the pinned #2831 \
+             fork refusal — investigate before touching the pin: {message}"
         );
     }
 

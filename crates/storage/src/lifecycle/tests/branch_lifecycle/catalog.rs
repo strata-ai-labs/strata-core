@@ -458,7 +458,7 @@ fn cache_runtime_fork_current_with_unflushed_source_rejects() {
         .expect("commit");
 
     assert!(matches!(
-        runtime.fork_current(source, child, generation(1)),
+        runtime.fork_current(source, child, generation(1), None),
         Err(LifecycleError::SourceHasUnflushedRows { .. })
     ));
 }
@@ -527,6 +527,7 @@ fn durable_runtime_fork_at_retained_timestamp_resolves_via_coverage() {
         generation(1),
         Timestamp::from_micros(500),
         CommitVersion::new(1),
+        None,
     );
     assert!(matches!(
         result,

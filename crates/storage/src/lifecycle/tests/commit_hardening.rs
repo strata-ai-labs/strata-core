@@ -227,6 +227,7 @@ fn wal_growth_policy_defers_on_unmaterialized_inherited_layers_without_churn() {
             initial,
             extra,
             CommitBranchGeneration::new(1).expect("generation"),
+            None,
         )
         .expect("fork extra");
 
@@ -293,6 +294,7 @@ fn checkpoint_reports_the_unmaterialized_inherited_layers_deferral_distinctly() 
             initial,
             extra,
             CommitBranchGeneration::new(1).expect("generation"),
+            None,
         )
         .expect("fork extra");
 
