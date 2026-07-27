@@ -528,7 +528,9 @@ pub fn run_fault_simulation_harness(
         }
         outcome.seeds_executed += 1;
 
-        let fault = run_one_fault_case(&case_dir(root, &format!("fault-{seed}"))?, seed)?;
+        let fault = run_one_fault_case(&case_dir(root, &format!("fault-{seed}"))?, seed).map_err(
+            |error| TestkitError::new(format!("fault-simulation failed [seed={seed}]: {error}")),
+        )?;
         if let Some(violation) = fault.violation {
             return Err(fault_violation(seed, &violation));
         }
@@ -541,7 +543,9 @@ pub fn run_fault_simulation_harness(
         if case_limit.is_some_and(|limit| cases >= limit) {
             break;
         }
-        let crash = run_one_crash_case(&case_dir(root, &format!("crash-{seed}"))?, seed)?;
+        let crash = run_one_crash_case(&case_dir(root, &format!("crash-{seed}"))?, seed).map_err(
+            |error| TestkitError::new(format!("crash-simulation failed [seed={seed}]: {error}")),
+        )?;
         if let Some(violation) = crash.violation {
             return Err(crash_violation(seed, &violation));
         }

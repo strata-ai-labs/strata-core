@@ -184,9 +184,14 @@ jobs:
         timeout-minutes: 45
         # No env override: simulation cases are ~10x costlier per case, and
         # the in-file soak default (2,000) is the calibrated nightly budget.
+        # The whole-DB target runs its SMOKE tier (seeds 0-5) only: the deep
+        # soak line (`--test simulation_whole_db -- --ignored`) lands when
+        # the #2828 tracker closes — the first deepened sweep found 66/200
+        # seeds failing (#2826/#2827/#2828), and lanes are never born red.
         run: |
           cargo test --locked -p strata-storage --features fault-injection --test simulation_smoke -- --ignored
           cargo test --locked -p strata-storage --features fault-injection --test simulation_faults -- --ignored
+          cargo test --locked -p strata-storage --features fault-injection --test simulation_whole_db
       - name: Crash-recovery deep grids
         timeout-minutes: 60
         env:

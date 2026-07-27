@@ -74,8 +74,6 @@ pub fn run_whole_db_harness(
     case_limit: Option<usize>,
 ) -> Result<WholeDbOutcome, TestkitError> {
     const DEFAULT_WHOLE_DB_SEEDS: u64 = 6;
-    const EPOCHS: usize = 3;
-    const STEPS_PER_EPOCH: usize = 24;
     assert_deterministic_environment()?;
     let mut outcome = WholeDbOutcome::default();
     let seed_budget = if case_limit.is_some() {
@@ -90,8 +88,8 @@ pub fn run_whole_db_harness(
         match whole_db::run_whole_db_sim(
             &case_dir(root, &format!("whole-db-{seed}"))?,
             seed,
-            EPOCHS,
-            STEPS_PER_EPOCH,
+            WHOLE_DB_EPOCHS,
+            WHOLE_DB_STEPS_PER_EPOCH,
         ) {
             Ok(facts) => {
                 outcome.epochs_executed += facts.epochs();
@@ -100,11 +98,49 @@ pub fn run_whole_db_harness(
                 outcome.deletes += facts.deletes();
                 outcome.temporal_probes_ok += facts.temporal_probes_ok();
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(whole_db_replay_error(seed, &error)),
         }
         outcome.seeds_executed += 1;
     }
     Ok(outcome)
+}
+
+/// Canonical whole-DB trajectory shape. The seed corpus (`README.md` in this
+/// directory) records trajectories at exactly this shape; replay is only
+/// bit-exact against the shape the failure ran at.
+const WHOLE_DB_EPOCHS: usize = 3;
+const WHOLE_DB_STEPS_PER_EPOCH: usize = 24;
+
+/// The replay contract: every sweep failure names its seed and prints the
+/// one-line local repro, so a nightly finding becomes a deterministic local
+/// run instead of a flake hunt.
+fn whole_db_replay_error(seed: u64, error: &TestkitError) -> TestkitError {
+    TestkitError::new(format!(
+        "whole-db simulation failed [seed={seed}]: {error}\n  replay: \
+         STRATA_SIM_SEED={seed} cargo test -p strata-storage --features fault-injection \
+         --test simulation_whole_db -- replay_single_seed --ignored --nocapture"
+    ))
+}
+
+/// Replay exactly one whole-DB seed at the canonical trajectory shape — the
+/// deterministic local repro for a sweep failure (`STRATA_SIM_SEED=n`).
+pub fn replay_whole_db_seed(root: &Path, seed: u64) -> Result<WholeDbOutcome, TestkitError> {
+    assert_deterministic_environment()?;
+    let facts = whole_db::run_whole_db_sim(
+        &case_dir(root, &format!("whole-db-{seed}"))?,
+        seed,
+        WHOLE_DB_EPOCHS,
+        WHOLE_DB_STEPS_PER_EPOCH,
+    )
+    .map_err(|error| whole_db_replay_error(seed, &error))?;
+    Ok(WholeDbOutcome {
+        seeds_executed: 1,
+        epochs_executed: facts.epochs(),
+        crashed_epochs: facts.crashed_epochs(),
+        forks: facts.forks(),
+        deletes: facts.deletes(),
+        temporal_probes_ok: facts.temporal_probes_ok(),
+    })
 }
 
 /// Default seed count with no case budget. A case budget lets seeds scale freely,
@@ -201,7 +237,10 @@ pub fn run_simulation_harness(
         if case_limit.is_some_and(|limit| cases >= limit) {
             break;
         }
-        let facts = run_one_sim(&case_dir(root, &format!("sim-{seed}"))?, seed, STEP_BUDGET)?;
+        let facts = run_one_sim(&case_dir(root, &format!("sim-{seed}"))?, seed, STEP_BUDGET)
+            .map_err(|error| {
+                TestkitError::new(format!("simulation failed [seed={seed}]: {error}"))
+            })?;
         outcome.seeds_executed += 1;
         outcome.steps_executed += facts.steps();
         outcome.maintenance_completed += facts.maintenance_completed();

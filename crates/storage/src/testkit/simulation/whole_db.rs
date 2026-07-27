@@ -949,6 +949,46 @@ mod tests {
         run_whole_db_sim(dir.path(), 2, 3, 24).expect("the once-refusing seed completes cleanly");
     }
 
+    /// Gate-7 pin for #2826 (cross-generation resurrection): seed 28 —
+    /// `Always` durability, two CLEAN drops, no crash — currently fails its
+    /// epoch-2 reopen with a Phantom on the re-forked `pool-b0`: the deleted
+    /// generation-1 branch's own commit (o1 @ v10) resurrects into the
+    /// generation-2 fork, which was seeded from `default` ≤ v9 and can never
+    /// legally contain it. The live per-step oracle stays green through both
+    /// epochs — recovery alone diverges. This pin asserts the CURRENT broken
+    /// behavior and BREAKS when #2826 is fixed; the fix PR promotes it to a
+    /// permanent clean-completion contract.
+    #[test]
+    fn pin_2826_recovery_resurrects_deleted_generation_rows() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let error = run_whole_db_sim(dir.path(), 28, 3, 24)
+            .expect_err("#2826 fixed? promote this pin to a clean-completion contract");
+        let message = format!("{error}");
+        assert!(
+            message.contains("Phantom") && message.contains("CommitVersion(10)"),
+            "seed 28 failed with a DIFFERENT signature than the pinned #2826 \
+             resurrection — investigate before touching the pin: {message}"
+        );
+    }
+
+    /// Gate-7 pin for #2827 (fork-object manifest brick): seed 10 currently
+    /// refuses its epoch-2 reopen — the child's table manifest durably lists
+    /// a fork-materialized table object that is missing on disk. Asserts the
+    /// CURRENT broken behavior; breaks on fix; promote in the fix PR.
+    #[test]
+    fn pin_2827_fork_object_missing_bricks_reopen() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let error = run_whole_db_sim(dir.path(), 10, 3, 24)
+            .expect_err("#2827 fixed? promote this pin to a clean-completion contract");
+        let message = format!("{error}");
+        assert!(
+            message.contains("corruption.lifecycle.table_manifest")
+                && message.contains("table manifest listed table object is missing"),
+            "seed 10 failed with a DIFFERENT signature than the pinned #2827 \
+             missing-object brick — investigate before touching the pin: {message}"
+        );
+    }
+
     /// Sabotage twin: a fork whose model seeding is SKIPPED must fire the
     /// per-branch prefix oracle — inherited rows with no model history are
     /// phantoms. Proves the fork-seeding half of the oracle is load-bearing.
