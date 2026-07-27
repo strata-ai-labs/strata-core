@@ -2173,7 +2173,8 @@ pub(super) fn validate_compaction_levels(
     owned_levels: &[Vec<BranchOwnedTable>],
 ) -> BranchRuntimeResult<()> {
     #[cfg(any(test, debug_assertions))]
-    let mut seen_keys = BTreeSet::<TableInternalKeyBytes>::new();
+    let mut seen_keys =
+        std::collections::BTreeMap::<TableInternalKeyBytes, crate::row::StorageRow>::new();
     for (level_index, level) in owned_levels.iter().enumerate() {
         let branch_level = BranchLevel::new(u8::try_from(level_index).map_err(|_| {
             BranchRuntimeError::InvalidCompaction {
@@ -2214,12 +2215,24 @@ pub(super) fn validate_compaction_levels(
             #[cfg(any(test, debug_assertions))]
             {
                 for row in &table.materialize_rows_for_oracle() {
-                    if !seen_keys.insert(row.key().clone()) {
-                        return Err(BranchRuntimeError::InvalidCompaction {
-                            reason: BranchCompactionInvalidity::Generic(
-                                "compaction levels must not contain duplicate internal keys",
-                            ),
-                        });
+                    match seen_keys.get(row.key()) {
+                        // #2831 / ACID-005: idempotent recovery replay
+                        // legitimately leaves the SAME row byte-identical in
+                        // more than one sealed table; the read path shadows
+                        // it. Only a DIVERGENT duplicate is corruption
+                        // (the #2825 boundary).
+                        Some(existing) if existing == row.row() => {}
+                        Some(_) => {
+                            return Err(BranchRuntimeError::InvalidCompaction {
+                                reason: BranchCompactionInvalidity::Generic(
+                                    "compaction levels must not contain divergent duplicate \
+                                     internal keys",
+                                ),
+                            });
+                        }
+                        None => {
+                            seen_keys.insert(row.key().clone(), row.row().clone());
+                        }
                     }
                 }
             }

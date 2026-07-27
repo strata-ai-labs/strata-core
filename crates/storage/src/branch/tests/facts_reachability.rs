@@ -1221,3 +1221,96 @@ fn branch_reachability_marks_materialized_tables_as_replacements() {
         } if source_branch_id == source && fork_version == CommitVersion::new(4)
     ));
 }
+
+/// #2831 / ACID-005 (compaction-levels oracle): idempotent recovery replay
+/// legitimately leaves the SAME row byte-identical in two sealed tables; the
+/// manifest-recovery install's level validation must tolerate the redundancy
+/// (the read path shadows it) — only a DIVERGENT duplicate is a corruption
+/// signal (sibling boundary to the inherited-layer validator and #2825).
+#[test]
+fn manifest_recovery_tolerates_identical_replay_redundancy_across_tables() {
+    let branch = branch_id(5);
+    let row = storage_row_with(
+        branch,
+        b"replayed-twice".to_vec(),
+        1,
+        10,
+        Timestamp::EPOCH,
+        b"same-bytes".to_vec(),
+    );
+    let mut owned_levels = vec![Vec::new(); 1];
+    owned_levels[0].push(branch_owned_table(
+        branch,
+        BranchLevel::ZERO,
+        "replayed-copy-a",
+        vec![row.clone()],
+    ));
+    owned_levels[0].push(branch_owned_table(
+        branch,
+        BranchLevel::ZERO,
+        "replayed-copy-b",
+        vec![row.clone()],
+    ));
+    let request = BranchTableManifestRecoveryRequest::new(branch, owned_levels, Vec::new())
+        .expect("recovery request");
+    let mut state = BranchLocalState::empty(branch);
+
+    state
+        .install_table_manifest_recovery(request)
+        .expect("byte-identical replay redundancy across recovered tables is legal");
+
+    let view = state.capture_read_view().expect("read view");
+    assert_eq!(
+        view.latest(&physical_key(branch, b"replayed-twice".to_vec()))
+            .expect("visible")
+            .expect("row present")
+            .row()
+            .value(),
+        b"same-bytes"
+    );
+}
+
+/// Direction control for the tolerance above: a DIVERGENT duplicate (same
+/// internal key, different content) stays refused.
+#[test]
+fn manifest_recovery_refuses_divergent_duplicate_internal_keys() {
+    let branch = branch_id(6);
+    let mut owned_levels = vec![Vec::new(); 1];
+    owned_levels[0].push(branch_owned_table(
+        branch,
+        BranchLevel::ZERO,
+        "divergent-copy-a",
+        vec![storage_row_with(
+            branch,
+            b"divergent".to_vec(),
+            1,
+            10,
+            Timestamp::EPOCH,
+            b"one".to_vec(),
+        )],
+    ));
+    owned_levels[0].push(branch_owned_table(
+        branch,
+        BranchLevel::ZERO,
+        "divergent-copy-b",
+        vec![storage_row_with(
+            branch,
+            b"divergent".to_vec(),
+            1,
+            10,
+            Timestamp::EPOCH,
+            b"two".to_vec(),
+        )],
+    ));
+    let request = BranchTableManifestRecoveryRequest::new(branch, owned_levels, Vec::new())
+        .expect("recovery request");
+    let mut state = BranchLocalState::empty(branch);
+
+    let error = state
+        .install_table_manifest_recovery(request)
+        .expect_err("divergent duplicates stay refused");
+    assert!(matches!(
+        error,
+        BranchRuntimeError::InvalidCompaction { .. }
+    ));
+}

@@ -19,7 +19,7 @@ use crate::table::{
 };
 use std::cell::Cell;
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use strata_core::{BranchId, CommitVersion};
 
 const MATERIALIZATION_ROWS_PER_OUTPUT_TABLE: usize = 4_096;
@@ -725,7 +725,7 @@ impl BranchLocalState {
             .iter()
             .map(|source| source as &dyn TableCompactionInput)
             .collect::<Vec<_>>();
-        let mut target_keys = BTreeSet::<TableInternalKeyBytes>::new();
+        let mut target_keys = BTreeMap::<TableInternalKeyBytes, StorageRow>::new();
         let mut summary = MaterializedRowsSummary::default();
         let mut artifact_builder = materialization_artifact_builder(output_mode, layer_index)?;
         let mut artifact_verifier = materialization_artifact_verifier(output_mode);
@@ -735,11 +735,29 @@ impl BranchLocalState {
                 .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
             while let Some(row) = merged.current().map(|current| current.row().clone()) {
                 let key = row.key().clone();
-                if !target_keys.insert(key.clone()) {
-                    return Err(BranchRuntimeError::InvalidInheritedLayer {
-                        reason:
-                            "materialized inherited rows must not contain duplicate internal keys",
-                    });
+                match target_keys.get(&key) {
+                    // #2831 / ACID-005: idempotent recovery replay
+                    // legitimately leaves the SAME row byte-identical in two
+                    // sealed tables of one layer; the merge collapses it as
+                    // an exact-duplicate skip (the higher-precedence arm's
+                    // semantics). Only a DIVERGENT duplicate is corruption.
+                    Some(existing) if existing == row.row() => {
+                        summary.record_shadow_skip();
+                        stats.record_shadow_skip();
+                        merged
+                            .advance()
+                            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+                        continue;
+                    }
+                    Some(_) => {
+                        return Err(BranchRuntimeError::InvalidInheritedLayer {
+                            reason: "materialized inherited rows must not contain divergent \
+                                     duplicate internal keys",
+                        });
+                    }
+                    None => {
+                        target_keys.insert(key.clone(), row.row().clone());
+                    }
                 }
                 // BS4.4e: probe the higher-precedence sources for this exact internal key instead of a
                 // precomputed whole-branch map (O(dataset) RAM). The gathered set equals the old map's

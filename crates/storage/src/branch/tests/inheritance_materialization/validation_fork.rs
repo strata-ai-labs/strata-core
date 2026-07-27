@@ -269,6 +269,54 @@ fn branch_inherited_layer_rejects_duplicate_internal_keys_across_tables() {
     assert!(!error.to_string().contains("secret-payload"));
 }
 
+/// #2831 / ACID-005: idempotent recovery replay legitimately leaves the SAME
+/// row (byte-identical) in more than one sealed table of a source; a fork's
+/// inherited layer over that source must tolerate the redundancy — only a
+/// DIVERGENT duplicate (the sibling test above) is a corruption signal. The
+/// tolerance is debug-scoped like the check itself.
+#[cfg(debug_assertions)]
+#[test]
+fn branch_inherited_layer_tolerates_identical_replay_redundancy() {
+    let source = branch_id(74);
+    let identical_left = branch_owned_table(
+        source,
+        BranchLevel::ZERO,
+        "inherited-identical-left",
+        vec![storage_row_with(
+            source,
+            b"identical".to_vec(),
+            4,
+            40,
+            Timestamp::EPOCH,
+            b"same-bytes".to_vec(),
+        )],
+    );
+    let identical_right = branch_owned_table(
+        source,
+        BranchLevel::ZERO,
+        "inherited-identical-right",
+        vec![storage_row_with(
+            source,
+            b"identical".to_vec(),
+            4,
+            40,
+            Timestamp::EPOCH,
+            b"same-bytes".to_vec(),
+        )],
+    );
+
+    BranchInheritedLayer::new(
+        InheritedLayerDescriptor::new(
+            source,
+            CommitVersion::new(4),
+            InheritedLayerStatus::Active,
+            2,
+        ),
+        vec![vec![identical_left, identical_right]],
+    )
+    .expect("byte-identical replay redundancy across inherited tables is legal");
+}
+
 #[test]
 fn branch_inherited_layer_status_and_count_edges_are_enforced() {
     let source = branch_id(72);
