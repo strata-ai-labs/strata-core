@@ -83,7 +83,7 @@ seeds still exercise what they are named for).
 | 2 | The #2820 → #2823 discovery trajectory (fork + delete-parent + crash; then replay-redundant fork sources). Both fixed; the seed now completes end-to-end and is pinned as `replay_redundant_fork_sources_recover_cleanly` | 3 epochs × 24 steps, completes clean |
 | 4, 5 | Distinct-constant facts pins (seed 4: deletes 2, recreates 1; seed 5: deletes 0) — distinct values across configs keep constant-mutants from coinciding with any single pin | see `facts_accessors_report_distinct_pinned_values` |
 | 6 | DUR-008 refusal seed: fork-source durable live delete refused (deletes_refused 1, deletes 3), recovery survives — promoted pin `fork_source_deletion_is_refused_and_recovery_survives` | 3 epochs, refusal is a seeded no-op |
-| 10 | #2827 gate-7 pin: fork-materialized table object missing while the child manifest durably lists it — reopen bricks with `corruption.lifecycle.table_manifest` | fails at epoch 2 reopen until fixed (`pin_2827_*`) |
+| 10 | #2827 promoted contract: the `SplitRename` model illegally dropped a completed fork-object publish (the production publish discipline dir-fsyncs every file birth); with the model corrected the trajectory completes — `fork_object_publishes_survive_power_loss_models` | completes clean |
 | 11 | Bit-exact replay twin | identical facts across two runs |
 | 28 | #2826 gate-7 pin: cross-generation resurrection — `Always` durability, two clean drops, deleted gen-1 `pool-b0`'s commit (o1 @ v10) resurrects into the gen-2 re-fork seeded from `default` ≤ v9; live oracle green, recovery diverges | fails at epoch 2 reopen until fixed (`pin_2826_*`) |
 
@@ -93,9 +93,12 @@ families tracked on #2828. Every failing seed reproduces via the replay
 contract above. The Phase 4 exit gate ("DST soaks clean across seed
 corpora") is open until #2828 closes.
 
-Fault-lane named seeds: 3 (crash perturbation pin), 155 (perturbs
-SplitRename/Standard). Grammar changes can silently VACUATE a pinned seed —
-every pin asserts its own perturbation/non-vacuity fact, never just "passes".
+Fault-lane named seeds: 5 (crash perturbation pin — re-seeded from 3 when
+the #2827 model correction made `SplitRename` damage-free), 155 (the
+delta-checkpoint missing-manifest-base contract, now planted as explicit
+artifact damage on the same trajectory rather than fabricated by the model).
+Grammar changes can silently VACUATE a pinned seed — every pin asserts its
+own perturbation/non-vacuity fact, never just "passes".
 
 ## Adding to the corpus
 
