@@ -1239,7 +1239,31 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         &mut self,
         outcome: &crate::lifecycle::LifecycleBranchForkOutcome,
     ) {
+        // #2833: the layer-less fork paths (eager/materialized fork-of-a-fork
+        // and empty forks) own no durable tables — publishing their manifest
+        // is impossible (the child holds a volatile materialized table with
+        // no durable catalog entry, which the manifest builder rightly
+        // refuses). But silently returning left a DELETED predecessor
+        // generation's manifest on disk as the re-created name's recovery
+        // provenance: fork children are #2830-fence-exempt by design and the
+        // #2820 rebuild skips children that hold a layer, so recovery served
+        // the DEAD generation's lineage. REMOVE the stale artifact instead:
+        // an absent manifest restores the layer-less shape the fork rebuild
+        // expects. Best-effort like the publish arm — on failure recovery
+        // health carries the debt.
         if outcome.inherited_layer_count() == 0 {
+            let remove_result = self
+                .services
+                .table_manifest()
+                .remove_manifest(outcome.descriptor().branch_id());
+            if remove_result.is_err() {
+                if let Ok(health) = crate::lifecycle::telemetry_health_debt(
+                    "fork child stale table manifest removal failed; recovery may serve a \
+                     dead generation's provenance",
+                ) {
+                    self.record_recovery_health(Some(&health));
+                }
+            }
             return;
         }
         let publish_result = self

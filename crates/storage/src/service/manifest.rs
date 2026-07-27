@@ -91,6 +91,10 @@ pub(crate) enum ManifestServiceError {
         role: ManifestRole,
         source: PublishError,
     },
+    Delete {
+        role: ManifestRole,
+        source: crate::backend::DeleteError,
+    },
     InvalidPublishMetadata {
         role: ManifestRole,
         object: ObjectName,
@@ -147,6 +151,9 @@ impl fmt::Display for ManifestServiceError {
             Self::Publish { role, source } => {
                 write!(formatter, "failed to publish {role}: {source}")
             }
+            Self::Delete { role, source } => {
+                write!(formatter, "failed to delete {role}: {source}")
+            }
             Self::InvalidPublishMetadata {
                 role,
                 object,
@@ -184,6 +191,7 @@ impl std::error::Error for ManifestServiceError {
             Self::Read { source, .. } | Self::List { source, .. } => Some(source),
             Self::Decode { source, .. } | Self::Encode { source, .. } => Some(source),
             Self::Publish { source, .. } => Some(source),
+            Self::Delete { source, .. } => Some(source),
             Self::Missing { .. }
             | Self::InvalidPublishMetadata { .. }
             | Self::CodecMismatch { .. }
@@ -611,6 +619,31 @@ impl ManifestService<'_, TABLE_MANIFEST_SERVICE> {
             manifest,
             CREATE_MANIFEST_OBJECT,
         )
+    }
+
+    /// #2833: remove a branch's table-manifest object outright — the
+    /// layer-less fork paths (eager/materialized and empty forks) own no
+    /// durable tables, and a DELETED predecessor generation's manifest left
+    /// on disk becomes the re-created branch's recovery provenance.
+    /// Idempotent: an already-absent manifest is success.
+    pub(crate) fn remove_manifest(
+        &self,
+        branch_id: strata_core::BranchId,
+    ) -> ManifestServiceResult<()> {
+        let branch_component = branch_id.to_string();
+        let object = table_manifest_object(&branch_component)?;
+        match self.backend.delete_object(&object) {
+            Ok(_) => Ok(()),
+            Err(source)
+                if source.source_error().kind() == crate::backend::BackendErrorKind::NotFound =>
+            {
+                Ok(())
+            }
+            Err(source) => Err(ManifestServiceError::Delete {
+                role: ManifestRole::Table,
+                source,
+            }),
+        }
     }
 
     pub(crate) fn publish_replace_manifest(
@@ -2741,6 +2774,31 @@ mod tests {
             backend.read_object(&object).expect("stored manifest"),
             encode_table_manifest(&manifest).expect("canonical manifest bytes")
         );
+    }
+
+    /// #2833: removal deletes a present manifest and is idempotent when the
+    /// manifest never existed (the fresh-name eager fork's no-op arm).
+    #[test]
+    fn table_manifest_service_remove_deletes_and_tolerates_absent() {
+        let backend = RecordingBackend::new();
+        let service = TableManifestService::new(&backend);
+        let branch = branch_id(0x57);
+        let manifest = typed_table_manifest(branch, 12, "service-remove-table");
+        let object = ObjectLayout::branch_table_manifest(&branch.to_string()).expect("manifest");
+        service
+            .publish_create_manifest(branch, &manifest)
+            .expect("create manifest");
+        assert!(backend.read_object(&object).is_ok());
+
+        service.remove_manifest(branch).expect("remove present");
+        assert!(
+            backend.read_object(&object).is_err(),
+            "the manifest object is gone after removal"
+        );
+
+        service
+            .remove_manifest(branch)
+            .expect("removing an absent manifest is idempotent success");
     }
 
     #[test]
