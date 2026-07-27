@@ -41,9 +41,9 @@ mod maintenance;
 pub(crate) use inflight::{InFlightOutputsGuard, InFlightTableOutputs};
 
 pub(crate) use bootstrap::{
-    record_predates_current_generation, DurableGroupApplyDone, DurableGroupApplyWork,
-    DurableGroupInFlight, DurableGroupMemberResult, LifecycleDurableLocalRuntime,
-    LifecycleRecoveryBootstrapReport,
+    parentless_content_predates_generation, record_predates_current_generation,
+    DurableGroupApplyDone, DurableGroupApplyWork, DurableGroupInFlight, DurableGroupMemberResult,
+    LifecycleDurableLocalRuntime, LifecycleRecoveryBootstrapReport,
 };
 pub(crate) use maintenance::{
     DurableBackgroundMaintenanceBuild, DurableBackgroundMaintenanceBuilt,

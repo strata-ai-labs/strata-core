@@ -52,4 +52,16 @@ exclude_re = [
     # makes a skipped dispatch semantics-equivalent — parallelism is a
     # latency property, pinned by the loom barrier model.
     "replace run_group_applies_parallel -> bool with false",
+    # #2830: checkpoint timeline-group seeding is a FAST PATH with two
+    # independent fail-safe healers (parentless branches scan-seed via
+    # ensure_branch_timeline_complete; forked branches re-seed from the
+    # parent chain via seed_forked_branch_timelines_from_parents), so
+    # mutants that DROP or WIDEN the seeding are healed by design in every
+    # row-preserving state — hand-verified: both survive their killer-shaped
+    # tests because the healer rebuilds the coverage. The dangerous
+    # direction — stale entries KEPT (the fence inversion) — cannot be
+    # healed away and IS test-killed
+    # (recreated_branch_refuses_dead_generation_timestamps_after_reopen).
+    "replace seed_non_seeded_branch_timelines with \\(\\)",
+    "replace && with \\|\\| in seed_non_seeded_branch_timelines",
 ]
