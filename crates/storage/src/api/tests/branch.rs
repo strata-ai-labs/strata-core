@@ -825,6 +825,188 @@ fn durable_branch_delete_allows_reopen_after_process_drop() {
 }
 
 #[test]
+fn branch_delete_refused_while_layerless_fork_children_live() {
+    // Durable: the refusal protects RECOVERY, so cache mode (no recovery)
+    // deliberately keeps unrestricted deletes — the branch-DAG model pins
+    // that. Replay is likewise exempt (a WAL'd delete already happened).
+    let root = temp_dir_for_api_test("branch-layerless-parent-delete-refusal");
+    let backend = StorageBackend::local_fs(root);
+    let parent = branch_with(0x60);
+    let child = branch_with(0x61);
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("durable open")
+    .into_runtime();
+    runtime
+        .branch(&create_request(parent))
+        .expect("create parent");
+    let first = put_at(&mut runtime, parent, b"parent-row", b"one", 10);
+    put_at(&mut runtime, parent, b"parent-row", b"two", 20);
+
+    // A historical (eager) fork is layer-less: its materialized rows are not
+    // WAL'd, so recovery re-materializes them from the parent's state.
+    runtime
+        .branch(&branch_request(
+            child,
+            BranchAction::ForkAtVersion {
+                source: parent,
+                version: first.commit_version(),
+            },
+        ))
+        .expect("historical fork");
+
+    // Deleting the source while such a child lives would arm a permanent
+    // recovery failure — it must refuse.
+    let error = runtime
+        .branch(&branch_request(parent, BranchAction::Delete))
+        .expect_err("deleting the layer-less fork's source must refuse");
+    assert_eq!(error.code(), "failed_precondition.storage_api.state");
+
+    // Direction control: once the dependent child is gone, the parent
+    // delete proceeds.
+    runtime
+        .branch(&branch_request(child, BranchAction::Delete))
+        .expect("delete child");
+    runtime
+        .branch(&branch_request(parent, BranchAction::Delete))
+        .expect("delete parent after its children are gone");
+}
+
+#[test]
+fn branch_delete_of_empty_fork_source_stays_allowed() {
+    // A fork of a rowless parent re-materializes nothing at recovery: the
+    // dependency check must consult the actual fork-visible rows (an
+    // always-dependent fold would refuse here — the mutation the engine's
+    // cache-mode DAG model cannot see).
+    let root = temp_dir_for_api_test("branch-empty-fork-parent-delete");
+    let backend = StorageBackend::local_fs(root);
+    let parent = branch_with(0x66);
+    let child = branch_with(0x67);
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("durable open")
+    .into_runtime();
+    runtime
+        .branch(&create_request(parent))
+        .expect("create parent");
+    runtime
+        .branch(&branch_request(
+            child,
+            BranchAction::ForkCurrent { source: parent },
+        ))
+        .expect("fork empty parent");
+    runtime
+        .branch(&branch_request(parent, BranchAction::Delete))
+        .expect("an empty fork keeps its parent deletable");
+}
+
+#[test]
+fn branch_delete_of_layered_fork_source_stays_allowed() {
+    use crate::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
+
+    // Durable, with the parent's rows flushed to owned tables BEFORE the
+    // fork: the hybrid fork child then carries durably published inherited
+    // layers, its recovery never dereferences the parent, and the parent
+    // stays deletable — the exact boundary of the #2820 refusal. (A fork
+    // from an UNFLUSHED parent copies unsealed rows that are not WAL'd:
+    // that child is layer-less and correctly blocks the delete.)
+    let root = temp_dir_for_api_test("branch-layered-parent-delete");
+    let backend = StorageBackend::local_fs(root);
+    let parent = branch_with(0x64);
+    let child = branch_with(0x65);
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+            .with_maintenance_scheduling_policy(
+                crate::api::StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+            ),
+        &backend,
+    )
+    .expect("durable open")
+    .into_runtime();
+    runtime
+        .branch(&create_request(parent))
+        .expect("create parent");
+    put_at(&mut runtime, parent, b"layered-row", b"one", 10);
+    runtime
+        .enqueue_maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Flush,
+            MaintenanceScope::Branch(parent),
+        ))
+        .expect("enqueue flush");
+    runtime.drain_maintenance().expect("drain flush");
+
+    runtime
+        .branch(&branch_request(
+            child,
+            BranchAction::ForkCurrent { source: parent },
+        ))
+        .expect("hybrid fork of a flushed parent");
+    runtime
+        .branch(&branch_request(parent, BranchAction::Delete))
+        .expect("layered child keeps its parent deletable");
+    assert_eq!(
+        read_value(&runtime, child, b"layered-row"),
+        Some(b"one".to_vec()),
+        "the child keeps serving inherited rows after the parent delete"
+    );
+}
+
+#[test]
+fn fork_parent_deletion_cannot_brick_recovery() {
+    let root = temp_dir_for_api_test("branch-fork-parent-delete-recovery");
+    let backend = StorageBackend::local_fs(root.clone());
+    let parent = branch_with(0x62);
+    let child = branch_with(0x63);
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        runtime
+            .branch(&create_request(parent))
+            .expect("create parent");
+        let first = put_at(&mut runtime, parent, b"lineage", b"one", 10);
+        put_at(&mut runtime, parent, b"lineage", b"two", 20);
+        runtime
+            .branch(&branch_request(
+                child,
+                BranchAction::ForkAtVersion {
+                    source: parent,
+                    version: first.commit_version(),
+                },
+            ))
+            .expect("historical fork");
+
+        // The refusal is what makes the store recoverable: an accepted
+        // delete here left the child's recovery re-materialization with no
+        // source and permanently bricked the reopen.
+        let error = runtime
+            .branch(&branch_request(parent, BranchAction::Delete))
+            .expect_err("deleting the historical fork's source must refuse");
+        assert_eq!(error.code(), "failed_precondition.storage_api.state");
+    }
+
+    let backend = StorageBackend::local_fs(root);
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("reopen after refused parent delete")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, child, b"lineage"),
+        Some(b"one".to_vec()),
+        "the historical fork serves its fork-version state after reopen"
+    );
+}
+
+#[test]
 fn branch_delete_unknown_rejects() {
     let runtime = open_runtime();
 

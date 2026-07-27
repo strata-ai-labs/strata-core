@@ -35,7 +35,7 @@ pub struct WholeDbOutcome {
     forks: usize,
     deletes: usize,
     temporal_probes_ok: usize,
-    pinned_2820_hits: usize,
+    pinned_2823_hits: usize,
 }
 
 impl WholeDbOutcome {
@@ -65,11 +65,11 @@ impl WholeDbOutcome {
     pub const fn temporal_probes_ok(&self) -> usize {
         self.temporal_probes_ok
     }
-    /// Seeds that died with the pinned #2820 signature (loud, shrink-only:
-    /// the pin test breaks when the bug is fixed and this counter goes).
+    /// Seeds that died with the pinned #2823 signature (loud, shrink-only:
+    /// the pin test breaks when that bug is fixed and this counter goes).
     #[must_use]
-    pub const fn pinned_2820_hits(&self) -> usize {
-        self.pinned_2820_hits
+    pub const fn pinned_2823_hits(&self) -> usize {
+        self.pinned_2823_hits
     }
 }
 
@@ -108,8 +108,8 @@ pub fn run_whole_db_harness(
                 outcome.temporal_probes_ok += facts.temporal_probes_ok();
             }
             Err(error) => {
-                if whole_db::is_pinned_2820_signature(&error) {
-                    outcome.pinned_2820_hits += 1;
+                if whole_db::is_pinned_2823_signature(&error) {
+                    outcome.pinned_2823_hits += 1;
                 } else {
                     return Err(error);
                 }
@@ -243,12 +243,16 @@ mod tests {
         assert_eq!(outcome.epochs_executed(), 8, "{outcome:?}");
         assert_eq!(outcome.crashed_epochs(), 5, "{outcome:?}");
         assert_eq!(outcome.forks(), 10, "{outcome:?}");
-        assert_eq!(outcome.deletes(), 3, "{outcome:?}");
+        // One delete became a DUR-008 refusal under the #2820 fix.
+        assert_eq!(outcome.deletes(), 2, "{outcome:?}");
         assert_eq!(outcome.temporal_probes_ok(), 12, "{outcome:?}");
+        // Loud allowance: seed 2 dies with the pinned #2823 shape, exactly
+        // once at this budget; drops to zero with that fix.
+        assert_eq!(outcome.pinned_2823_hits(), 1, "{outcome:?}");
         // Loud allowance: seed 2 dies with the pinned #2820 shape (exactly
         // once at this budget); the pin test breaks when the bug is fixed
         // and this constant drops to zero with it.
-        assert_eq!(outcome.pinned_2820_hits(), 1, "{outcome:?}");
+        assert_eq!(outcome.pinned_2823_hits(), 1, "{outcome:?}");
     }
 
     /// A sweep BELOW the pinned seed (seeds 0-1 only): zero #2820 hits —
@@ -259,7 +263,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tmp");
         let outcome = super::run_whole_db_harness(dir.path(), Some(2)).expect("mini sweep");
         assert_eq!(outcome.seeds_executed(), 2, "{outcome:?}");
-        assert_eq!(outcome.pinned_2820_hits(), 0, "{outcome:?}");
+        assert_eq!(outcome.pinned_2823_hits(), 0, "{outcome:?}");
     }
 
     #[test]

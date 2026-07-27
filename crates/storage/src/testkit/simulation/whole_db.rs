@@ -167,6 +167,7 @@ pub(super) struct WholeDbFacts {
     temporal_probes_ok: usize,
     temporal_probes_unavailable: usize,
     forks_unavailable: usize,
+    deletes_refused: usize,
     adopted_watermarks: Vec<(String, u64)>,
     resurrections: usize,
     fail_loud_epochs: usize,
@@ -394,17 +395,27 @@ impl WholeDbSim {
                     return Ok(());
                 }
                 let generation = book.generation;
-                runtime
-                    .branch(&BranchRequest::new(
-                        target,
-                        BranchAction::Delete,
-                        Some(BranchGeneration::new(generation)),
-                    ))
-                    .map_err(|err| self.error(step, format!("delete: {err:?}")))?;
-                let book = self.book_mut(target).expect("book exists");
-                book.alive = false;
-                book.delete_acked = true;
-                self.facts.deletes += 1;
+                match runtime.branch(&BranchRequest::new(
+                    target,
+                    BranchAction::Delete,
+                    Some(BranchGeneration::new(generation)),
+                )) {
+                    Ok(_) => {
+                        let book = self.book_mut(target).expect("book exists");
+                        book.alive = false;
+                        book.delete_acked = true;
+                        self.facts.deletes += 1;
+                    }
+                    Err(crate::api::StorageApiError::InvalidRuntimeState { reason })
+                        if reason.starts_with("fork source of a live branch") =>
+                    {
+                        // DUR-008 (#2820): deleting a fork source that a
+                        // layer-less child's recovery depends on is refused.
+                        // A seeded no-op; the branch stays alive.
+                        self.facts.deletes_refused += 1;
+                    }
+                    Err(err) => return Err(self.error(step, format!("delete: {err:?}"))),
+                }
             }
             DbAction::RecreateBranch => {
                 let slot = rng.gen_u8_below(BRANCH_POOL);
@@ -872,17 +883,16 @@ pub(super) fn run_whole_db_sim(
     Ok(sim.facts)
 }
 
-/// The #2820 failure shape: a reopen refused with the deleted-branch state
-/// reason (see the issue for the probe-verified chain). Shrink-only: the
-/// pin test breaks when the bug is fixed, and every use of this goes with it.
-pub(crate) fn is_pinned_2820_signature(error: &TestkitError) -> bool {
-    let message = format!("{error:?}");
-    message.contains("reopen failed") && message.contains("deleted")
+/// The #2823 failure shape: recovery's fork-row rebuild colliding with a
+/// self-covered child's own recovered rows (duplicate internal keys; see the
+/// issue for the chain). Shrink-only: dies with the #2823 fix.
+pub(crate) fn is_pinned_2823_signature(error: &TestkitError) -> bool {
+    format!("{error:?}").contains("duplicate internal keys")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{is_pinned_2820_signature, run_whole_db_sim};
+    use super::{is_pinned_2823_signature, run_whole_db_sim};
 
     /// The determinism guard at whole-DB scope: one seed, two directories,
     /// bit-identical multi-epoch trajectories.
@@ -899,15 +909,15 @@ mod tests {
     }
 
     /// The sweep exercises the whole grammar (non-vacuity): forks happen,
-    /// crashes happen, temporal probes succeed. Seeds that die with the
-    /// pinned #2820 signature are counted loudly (shrink-only: the pin test
-    /// breaks when the bug is fixed, and this allowance goes with it).
+    /// crashes happen, temporal probes succeed. The #2820 allowance is gone
+    /// (DUR-008 refusals are seeded no-ops); seeds dying with the pinned
+    /// #2823 signature are counted loudly (shrink-only, dies with that fix).
     #[test]
     fn whole_db_sweep_is_non_vacuous() {
         let mut forks = 0;
         let mut crashes = 0;
         let mut probes = 0;
-        let mut pinned_2820 = 0;
+        let mut pinned_2823 = 0;
         for seed in 0..6u64 {
             let dir = tempfile::tempdir().expect("tmp");
             match run_whole_db_sim(dir.path(), seed, 3, 24) {
@@ -916,32 +926,46 @@ mod tests {
                     crashes += facts.crashed_epochs();
                     probes += facts.temporal_probes_ok();
                 }
-                Err(error) if is_pinned_2820_signature(&error) => pinned_2820 += 1,
-                Err(error) => panic!("seed {seed} failed outside the #2820 pin: {error:?}"),
+                Err(error) if is_pinned_2823_signature(&error) => pinned_2823 += 1,
+                Err(error) => panic!("seed {seed} failed outside the #2823 pin: {error:?}"),
             }
         }
         assert!(forks > 0, "no fork ever happened across the sweep");
         assert!(crashes > 0, "no epoch ever crashed across the sweep");
         assert!(probes > 0, "no temporal probe ever succeeded");
-        // Loud, not silent: the pinned bug currently claims at least seed 2.
-        assert!(pinned_2820 >= 1, "the #2820 allowance is stale — remove it");
+        assert_eq!(pinned_2823, 1, "the #2823 allowance drifted");
     }
 
-    /// Gate 7 pin for #2820 (found by this harness's first sweep): fork a
-    /// child, delete the parent, crash — recovery dereferences the deleted
-    /// parent in `rebuild_fork_snapshot_rows` and the database permanently
-    /// refuses to reopen. This pin asserts the CURRENT broken behavior and
-    /// BREAKS when the bug is fixed — remove it and the sweep allowance
-    /// together.
+    /// Promoted from the #2820 gate-7 pin (DUR-008): a trajectory where the
+    /// durable delete REFUSED a recovery-dependent fork source completes
+    /// cleanly, with legal deletes still working on the same run — the
+    /// refusal fired (count pinned) and every reopen succeeded.
     #[test]
-    fn pin_2820_fork_parent_deletion_bricks_recovery() {
+    fn fork_source_deletion_is_refused_and_recovery_survives() {
         let dir = tempfile::tempdir().expect("tmp");
-        let error = run_whole_db_sim(dir.path(), 2, 3, 24).expect_err(
-            "#2820 fixed? promote this pin to a permanent contract and drop the sweep allowance",
+        let facts = run_whole_db_sim(dir.path(), 6, 3, 24)
+            .expect("a refusal-bearing trajectory completes cleanly");
+        assert_eq!(
+            facts.deletes_refused, 1,
+            "the DUR-008 refusal never fired on the pinned trajectory: {facts:?}"
         );
+        assert_eq!(facts.deletes, 3, "legal deletes must still work: {facts:?}");
+    }
+
+    /// Gate 7 pin for #2823 (surfaced the moment #2820's refusal let seed 2
+    /// run further): a layer-less child that FLUSHED its copied rows still
+    /// triggers the recovery rebuild, which re-materializes rows the child
+    /// already owns — duplicate internal keys, reopen refused. Asserts the
+    /// CURRENT broken behavior; breaks when #2823 is fixed — promote it and
+    /// drop the sweep allowance together.
+    #[test]
+    fn pin_2823_rebuild_duplicates_self_covered_fork_rows() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let error = run_whole_db_sim(dir.path(), 2, 3, 24)
+            .expect_err("#2823 fixed? promote this pin and drop the allowance");
         assert!(
-            is_pinned_2820_signature(&error),
-            "seed 2 failed with an unexpected shape (not #2820): {error:?}"
+            is_pinned_2823_signature(&error),
+            "seed 2 failed with an unexpected shape (not #2823): {error:?}"
         );
     }
 
@@ -1022,18 +1046,18 @@ mod tests {
         }
     }
 
-    /// The #2820 signature matcher discriminates: the pinned shape matches,
+    /// The #2823 signature matcher discriminates: the pinned shape matches,
     /// unrelated errors do not.
     #[test]
     fn pinned_signature_discriminates() {
         use crate::testkit::TestkitError;
-        assert!(is_pinned_2820_signature(&TestkitError::new(
-            "[seed=2 epoch=2] reopen failed: InvalidRuntimeState { reason: \"deleted\" }"
+        assert!(is_pinned_2823_signature(&TestkitError::new(
+            "reopen failed: fork snapshot own rows must not contain duplicate internal keys"
         )));
-        assert!(!is_pinned_2820_signature(&TestkitError::new(
+        assert!(!is_pinned_2823_signature(&TestkitError::new(
             "[seed=1 step=3] commit: StoragePressure"
         )));
-        assert!(!is_pinned_2820_signature(&TestkitError::new(
+        assert!(!is_pinned_2823_signature(&TestkitError::new(
             "reopen failed: Corruption"
         )));
     }
@@ -1071,6 +1095,7 @@ mod tests {
         assert_eq!(facts.deletes, 1);
         assert_eq!(facts.forks, 3);
         assert_eq!(facts.recreates, 0);
+        assert_eq!(facts.deletes_refused, 0);
         assert_eq!(facts.forks_unavailable, 1);
         assert_eq!(facts.temporal_probes_unavailable, 5);
     }

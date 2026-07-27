@@ -734,6 +734,57 @@ impl LifecycleBranchCatalog {
         })
     }
 
+    /// #2820: whether any active fork child's RECOVERY depends on `branch_id`
+    /// — layer-less (its inherited rows were eagerly copied, not layered) AND
+    /// with non-empty fork-visible rows in this source. Deleting the source
+    /// while such a child lives arms a permanent recovery failure
+    /// (`rebuild_fork_snapshot_rows` re-materializes from the source), so the
+    /// DURABLE runtime's live delete refuses on it — the branch-entry analog
+    /// of the COW-001 segment refcount, scoped exactly to the rebuild's own
+    /// conditions. Layered children (hybrid `fork_current`, #2527) ride
+    /// durably published manifests and segment reachability, and empty forks
+    /// re-materialize nothing: both keep their parent deletable. Cache mode
+    /// has no recovery and replay re-applies history, so neither consults
+    /// this. A checked-out state on either side is treated as dependent
+    /// (fail closed).
+    pub(crate) fn require_no_recovery_dependent_children(
+        &self,
+        branch_id: BranchId,
+    ) -> LifecycleResult<()> {
+        let source_state = self
+            .find_entry_index(branch_id)
+            .and_then(|index| self.entries[index].state.as_ref());
+        for child in self.entries.iter().filter(|entry| {
+            entry.descriptor.status() == LifecycleBranchStatus::Active
+                && entry
+                    .descriptor
+                    .parent()
+                    .is_some_and(|parent| parent.source_branch_id() == branch_id)
+                && entry
+                    .state
+                    .as_ref()
+                    .is_none_or(|state| state.inherited_layers().is_empty())
+        }) {
+            let depends = match (child.descriptor.parent(), source_state) {
+                (Some(parent), Some(source_state)) => !source_state
+                    .fork_snapshot_rows(parent.fork_version(), child.descriptor.branch_id())
+                    .map_err(branch_error)?
+                    .is_empty(),
+                // Checked-out source state (or a parentless match, which the
+                // filter forbids): fail closed.
+                _ => true,
+            };
+            if depends {
+                return Err(LifecycleError::BranchNotWritable {
+                    branch_id,
+                    state: "fork source of a live branch whose recovery depends on it; \
+                            delete or materialize its children first",
+                });
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn delete_branch(
         &mut self,
         branch_id: BranchId,
