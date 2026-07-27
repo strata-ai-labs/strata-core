@@ -714,6 +714,7 @@ fn manifest_error(error: ManifestServiceError) -> LifecycleError {
             }
             PublishFailureKind::Unsupported => "database manifest publish unsupported",
         },
+        ManifestServiceError::Delete { .. } => "database manifest delete failed",
         ManifestServiceError::Missing { .. } => "database manifest missing",
         ManifestServiceError::CodecMismatch { .. } => "database manifest codec mismatch",
         ManifestServiceError::Decode { .. } => "database manifest decode failed",

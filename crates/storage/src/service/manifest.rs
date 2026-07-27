@@ -91,6 +91,10 @@ pub(crate) enum ManifestServiceError {
         role: ManifestRole,
         source: PublishError,
     },
+    Delete {
+        role: ManifestRole,
+        source: crate::backend::DeleteError,
+    },
     InvalidPublishMetadata {
         role: ManifestRole,
         object: ObjectName,
@@ -147,6 +151,9 @@ impl fmt::Display for ManifestServiceError {
             Self::Publish { role, source } => {
                 write!(formatter, "failed to publish {role}: {source}")
             }
+            Self::Delete { role, source } => {
+                write!(formatter, "failed to delete {role}: {source}")
+            }
             Self::InvalidPublishMetadata {
                 role,
                 object,
@@ -184,6 +191,7 @@ impl std::error::Error for ManifestServiceError {
             Self::Read { source, .. } | Self::List { source, .. } => Some(source),
             Self::Decode { source, .. } | Self::Encode { source, .. } => Some(source),
             Self::Publish { source, .. } => Some(source),
+            Self::Delete { source, .. } => Some(source),
             Self::Missing { .. }
             | Self::InvalidPublishMetadata { .. }
             | Self::CodecMismatch { .. }
@@ -611,6 +619,32 @@ impl ManifestService<'_, TABLE_MANIFEST_SERVICE> {
             manifest,
             CREATE_MANIFEST_OBJECT,
         )
+    }
+
+    /// #2833: remove a branch's table-manifest object outright — the
+    /// layer-less fork paths (eager/materialized and empty forks) own no
+    /// durable tables, and a DELETED predecessor generation's manifest left
+    /// on disk becomes the re-created branch's recovery provenance.
+    /// Idempotent: an already-absent manifest is success (the backend
+    /// classifies absence as `AlreadyMissing`, an Ok outcome — #2810).
+    pub(crate) fn remove_manifest(
+        &self,
+        branch_id: strata_core::BranchId,
+    ) -> ManifestServiceResult<()> {
+        let branch_component = branch_id.to_string();
+        let object = table_manifest_object(&branch_component)?;
+        // Absence is SUCCESS at the backend layer already: LocalFs classifies
+        // a missing object as `Ok(AlreadyMissing)` (#2810's stat→unlink race
+        // fix), so the Ok arm covers the idempotent case and every Err is a
+        // real failure. (A NotFound-source guard here was dead code on the
+        // shipping backend — the mutation gate proved it.)
+        match self.backend.delete_object(&object) {
+            Ok(_) => Ok(()),
+            Err(source) => Err(ManifestServiceError::Delete {
+                role: ManifestRole::Table,
+                source,
+            }),
+        }
     }
 
     pub(crate) fn publish_replace_manifest(
@@ -2741,6 +2775,105 @@ mod tests {
             backend.read_object(&object).expect("stored manifest"),
             encode_table_manifest(&manifest).expect("canonical manifest bytes")
         );
+    }
+
+    /// #2833: removal deletes a present manifest and is idempotent when the
+    /// manifest never existed (the fresh-name eager fork's no-op arm).
+    #[test]
+    fn table_manifest_service_remove_deletes_and_tolerates_absent() {
+        let backend = RecordingBackend::new();
+        let service = TableManifestService::new(&backend);
+        let branch = branch_id(0x57);
+        let manifest = typed_table_manifest(branch, 12, "service-remove-table");
+        let object = ObjectLayout::branch_table_manifest(&branch.to_string()).expect("manifest");
+        service
+            .publish_create_manifest(branch, &manifest)
+            .expect("create manifest");
+        assert!(backend.read_object(&object).is_ok());
+
+        service.remove_manifest(branch).expect("remove present");
+        assert!(
+            backend.read_object(&object).is_err(),
+            "the manifest object is gone after removal"
+        );
+
+        service
+            .remove_manifest(branch)
+            .expect("removing an absent manifest is idempotent success");
+    }
+
+    /// The absent-manifest arm against the REAL backend: `LocalFsBackend`
+    /// reports a missing object as an error whose source kind is `NotFound`
+    /// (unlike the in-memory fixtures' `AlreadyMissing` success), so this
+    /// leg exercises the guard itself.
+    #[test]
+    fn table_manifest_service_remove_tolerates_absent_on_local_fs() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let backend = crate::backend::local_fs::LocalFsBackend::new(dir.path());
+        let service = TableManifestService::new(&backend);
+        let branch = branch_id(0x58);
+
+        service
+            .remove_manifest(branch)
+            .expect("absent manifest on local fs is idempotent success");
+    }
+
+    /// A NON-absence delete failure must surface as a typed `Delete` error
+    /// with its source retained — never be swallowed by the absence guard.
+    #[test]
+    fn table_manifest_service_remove_surfaces_real_delete_failures() {
+        struct DeleteFailureBackend;
+        impl Backend for DeleteFailureBackend {
+            fn capabilities(&self) -> BackendCapabilities {
+                BackendCapabilities::from_slice(&[BackendCapability::DeleteObject])
+            }
+            fn read_object(&self, _name: &ObjectName) -> BackendResult<Vec<u8>> {
+                unreachable!("remove path never reads")
+            }
+            fn read_range(
+                &self,
+                _name: &ObjectName,
+                _range: BackendRange,
+            ) -> BackendResult<Vec<u8>> {
+                unreachable!("remove path never reads")
+            }
+            fn write_object(
+                &self,
+                _name: &ObjectName,
+                _bytes: &[u8],
+            ) -> BackendResult<BackendMetadata> {
+                unreachable!("remove path never writes")
+            }
+            fn delete_object(&self, name: &ObjectName) -> crate::backend::DeleteResult {
+                Err(crate::backend::DeleteError::new(
+                    name.clone(),
+                    crate::backend::DeleteFailureKind::RemovalUnknown,
+                    BackendError::new(BackendErrorKind::Unavailable, "disk unavailable"),
+                ))
+            }
+            fn list_prefix(&self, _prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
+                unreachable!("remove path never lists")
+            }
+            fn object_metadata(&self, _name: &ObjectName) -> BackendResult<BackendMetadata> {
+                unreachable!("remove path never stats")
+            }
+        }
+
+        let service = TableManifestService::new(&DeleteFailureBackend);
+        let error = service
+            .remove_manifest(branch_id(0x59))
+            .expect_err("a real delete failure surfaces");
+        match &error {
+            ManifestServiceError::Delete { role, source } => {
+                assert_eq!(*role, ManifestRole::Table);
+                assert_eq!(source.source_error().kind(), BackendErrorKind::Unavailable);
+            }
+            other => panic!("expected delete error, got {other:?}"),
+        }
+        // Chain retention (#2771 lesson): source() and Display stay wired.
+        let source = std::error::Error::source(&error).expect("delete error retains its source");
+        assert!(!source.to_string().is_empty());
+        assert!(!error.to_string().is_empty());
     }
 
     #[test]

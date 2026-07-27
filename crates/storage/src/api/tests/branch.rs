@@ -1573,3 +1573,181 @@ fn fork_child_keeps_inherited_era_timestamps_after_reopen() {
     );
     let _ = outcome;
 }
+
+/// #2833: re-fork a deleted name from a source that ITSELF has inherited
+/// layers (the EAGER fork path). The dead generation's flushed manifest must
+/// not survive as the new generation's recovery provenance — pre-fix, the
+/// eager path published no child manifest, the stale gen-1 artifact remained
+/// on disk, and the recovered branch silently served gen 1's lineage
+/// (dropping `root-new`, inherited via the REAL parent). Both flushes are
+/// load-bearing: the source flush gives gen 1's layer real tables (else the
+/// recovery rebuild heals the staleness), the child flush durably publishes
+/// gen 1's manifest.
+#[test]
+fn eager_refork_over_deleted_name_recovers_current_lineage() {
+    let root = temp_dir_for_api_test("triage-eager-refork");
+    let backend = StorageBackend::local_fs(root.clone());
+    let mid = branch_with(0x87);
+    let leaf = branch_with(0x88);
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always)
+                .with_maintenance_scheduling_policy(
+                    crate::api::StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+                ),
+            &backend,
+        )
+        .expect("open 1")
+        .into_runtime();
+        put_at(&mut runtime, branch(), b"root-old", b"old-v", 10);
+        // Flush DEFAULT first: gen 1's inherited layer must reference real
+        // flushed source tables (a table-less layer counts as layer-less and
+        // the #2820 recovery rebuild would heal the staleness).
+        runtime
+            .enqueue_maintenance(&crate::api::MaintenanceRequest::new(
+                crate::api::MaintenanceTask::Flush,
+                crate::api::MaintenanceScope::Branch(branch()),
+            ))
+            .expect("enqueue default flush");
+        runtime.drain_maintenance().expect("drain default flush");
+        // leaf gen 1: COW fork of default (publishes a child manifest with
+        // gen 1's inherited provenance).
+        runtime
+            .branch(&branch_request(
+                leaf,
+                BranchAction::ForkCurrent { source: branch() },
+            ))
+            .expect("fork leaf gen 1");
+        put_at(&mut runtime, branch(), b"root-new", b"new-v", 20);
+        // mid: fork of default AFTER root-new (mid has an inherited layer).
+        runtime
+            .branch(&branch_request(
+                mid,
+                BranchAction::ForkCurrent { source: branch() },
+            ))
+            .expect("fork mid");
+        // Flush the gen-1 leaf: the flush publishes its table manifest WITH
+        // the gen-1 inherited-layer record — the artifact that must not
+        // outlive the generation.
+        put_at(&mut runtime, leaf, b"leaf-ghost", b"dead", 25);
+        runtime
+            .enqueue_maintenance(&crate::api::MaintenanceRequest::new(
+                crate::api::MaintenanceTask::Flush,
+                crate::api::MaintenanceScope::Branch(leaf),
+            ))
+            .expect("enqueue flush");
+        runtime.drain_maintenance().expect("drain flush");
+        // delete leaf gen 1, re-fork the name from MID (source has inherited
+        // layers -> EAGER path -> no manifest publish).
+        runtime
+            .branch(&branch_request(leaf, BranchAction::Delete))
+            .expect("delete leaf gen 1");
+        runtime
+            .branch(&BranchRequest::new(
+                leaf,
+                BranchAction::ForkCurrent { source: mid },
+                Some(BranchGeneration::new(2)),
+            ))
+            .expect("re-fork leaf gen 2 from mid");
+        // The layer-less re-fork must have REMOVED gen 1's stale manifest
+        // (and the layered mid fork must have PUBLISHED one) — both sides of
+        // the boundary observed on disk.
+        assert!(
+            !table_manifest_path(&root, leaf).exists(),
+            "the eager re-fork removes the dead generation's manifest"
+        );
+        assert!(
+            table_manifest_path(&root, mid).exists(),
+            "the layered fork keeps publishing its manifest"
+        );
+        put_at(&mut runtime, leaf, b"leaf-own", b"own-v", 30);
+        assert_eq!(
+            read_value(&runtime, leaf, b"root-new"),
+            Some(b"new-v".to_vec()),
+            "live: gen 2 inherits root-new via mid"
+        );
+    }
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always),
+        &backend,
+    )
+    .expect("reopen")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, leaf, b"root-new"),
+        Some(b"new-v".to_vec()),
+        "recovered gen 2 must inherit root-new via mid, not gen 1's stale lineage"
+    );
+    assert_eq!(
+        read_value(&runtime, leaf, b"leaf-own"),
+        Some(b"own-v".to_vec()),
+        "recovered gen 2 keeps its own row"
+    );
+}
+
+/// On-disk path of a branch's table-manifest object (`tables/<branch>/manifest`
+/// + the `.object@` suffix).
+fn table_manifest_path(root: &std::path::Path, branch_id: BranchId) -> std::path::PathBuf {
+    root.join(format!("tables/{branch_id}/manifest.object@"))
+}
+
+/// #2833 direction control: an eager fork onto a FRESH name (no predecessor,
+/// nothing to remove) still recovers through the fork rebuild — the removal
+/// arm is a `NotFound` no-op there.
+#[test]
+fn eager_fork_on_fresh_name_recovers_current_lineage() {
+    use crate::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
+
+    let root = temp_dir_for_api_test("eager-fork-fresh-name");
+    let backend = StorageBackend::local_fs(root.clone());
+    let mid = branch_with(0x89);
+    let leaf = branch_with(0x8a);
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always)
+                .with_maintenance_scheduling_policy(
+                    crate::api::StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+                ),
+            &backend,
+        )
+        .expect("open")
+        .into_runtime();
+        put_at(&mut runtime, branch(), b"root-row", b"root-v", 10);
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Flush,
+                MaintenanceScope::Branch(branch()),
+            ))
+            .expect("enqueue default flush");
+        runtime.drain_maintenance().expect("drain default flush");
+        runtime
+            .branch(&branch_request(
+                mid,
+                BranchAction::ForkCurrent { source: branch() },
+            ))
+            .expect("fork mid (layered)");
+        runtime
+            .branch(&branch_request(
+                leaf,
+                BranchAction::ForkCurrent { source: mid },
+            ))
+            .expect("eager fork leaf from mid on a fresh name");
+        put_at(&mut runtime, leaf, b"leaf-own", b"own-v", 20);
+    }
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always),
+        &backend,
+    )
+    .expect("reopen")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, leaf, b"root-row"),
+        Some(b"root-v".to_vec()),
+        "fresh-name eager fork inherits through the chain after reopen"
+    );
+    assert_eq!(
+        read_value(&runtime, leaf, b"leaf-own"),
+        Some(b"own-v".to_vec()),
+        "fresh-name eager fork keeps its own row"
+    );
+}
