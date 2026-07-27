@@ -17,6 +17,7 @@
 
 mod driver;
 mod faults;
+pub(crate) mod whole_db;
 
 use std::path::{Path, PathBuf};
 
@@ -24,6 +25,100 @@ use crate::testkit::TestkitError;
 use driver::run_one_sim;
 
 pub use faults::{run_fault_simulation_harness, SimulationFaultOutcome};
+
+/// Counters describing a whole-DB simulation sweep (TCP4.11b).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WholeDbOutcome {
+    seeds_executed: usize,
+    epochs_executed: usize,
+    crashed_epochs: usize,
+    forks: usize,
+    deletes: usize,
+    temporal_probes_ok: usize,
+    pinned_2820_hits: usize,
+}
+
+impl WholeDbOutcome {
+    #[must_use]
+    pub const fn seeds_executed(&self) -> usize {
+        self.seeds_executed
+    }
+    #[must_use]
+    pub const fn epochs_executed(&self) -> usize {
+        self.epochs_executed
+    }
+    /// Epochs that ended in a materialized power-loss crash (non-vacuity).
+    #[must_use]
+    pub const fn crashed_epochs(&self) -> usize {
+        self.crashed_epochs
+    }
+    #[must_use]
+    pub const fn forks(&self) -> usize {
+        self.forks
+    }
+    #[must_use]
+    pub const fn deletes(&self) -> usize {
+        self.deletes
+    }
+    /// Successful at-version probes (non-vacuity for the temporal oracle).
+    #[must_use]
+    pub const fn temporal_probes_ok(&self) -> usize {
+        self.temporal_probes_ok
+    }
+    /// Seeds that died with the pinned #2820 signature (loud, shrink-only:
+    /// the pin test breaks when the bug is fixed and this counter goes).
+    #[must_use]
+    pub const fn pinned_2820_hits(&self) -> usize {
+        self.pinned_2820_hits
+    }
+}
+
+/// Sweep seeded whole-DB trajectories (multi-branch, multi-epoch, seeded
+/// crashes), each continuously oracle-checked. `case_limit` caps seeds for
+/// CI budgets; `None` runs the default set.
+pub fn run_whole_db_harness(
+    root: &Path,
+    case_limit: Option<usize>,
+) -> Result<WholeDbOutcome, TestkitError> {
+    const DEFAULT_WHOLE_DB_SEEDS: u64 = 6;
+    const EPOCHS: usize = 3;
+    const STEPS_PER_EPOCH: usize = 24;
+    assert_deterministic_environment()?;
+    let mut outcome = WholeDbOutcome::default();
+    let seed_budget = if case_limit.is_some() {
+        u64::MAX
+    } else {
+        DEFAULT_WHOLE_DB_SEEDS
+    };
+    for (cases, seed) in (0..seed_budget).enumerate() {
+        if case_limit.is_some_and(|limit| cases >= limit) {
+            break;
+        }
+        match whole_db::run_whole_db_sim(
+            &case_dir(root, &format!("whole-db-{seed}"))?,
+            seed,
+            EPOCHS,
+            STEPS_PER_EPOCH,
+        ) {
+            Ok(facts) => {
+                outcome.epochs_executed += facts.epochs();
+                outcome.crashed_epochs += facts.crashed_epochs();
+                outcome.forks += facts.forks();
+                outcome.deletes += facts.deletes();
+                outcome.temporal_probes_ok += facts.temporal_probes_ok();
+            }
+            Err(error) => {
+                if whole_db::is_pinned_2820_signature(&error) {
+                    outcome.pinned_2820_hits += 1;
+                } else {
+                    return Err(error);
+                }
+            }
+        }
+        outcome.seeds_executed += 1;
+    }
+    Ok(outcome)
+}
 
 /// Default seed count with no case budget. A case budget lets seeds scale freely,
 /// so a large soak explores many seeds, not just these.
@@ -132,6 +227,40 @@ pub fn run_simulation_harness(
 #[cfg(test)]
 mod tests {
     use super::run_simulation_harness;
+
+    #[test]
+    fn whole_db_sweep_entry_holds_and_is_non_vacuous() {
+        // EXACT values, not floors: every trajectory is bit-exact from its
+        // seed, so the sweep's counters are constants of (seed set, budget)
+        // — and asserting them exactly kills accessor/grammar mutants that
+        // floor checks structurally cannot (a mutated grammar arm shifts
+        // every counter). A divergence here on another machine would itself
+        // be a determinism bug worth failing on. Re-pin the constants when
+        // the grammar deliberately changes.
+        let dir = tempfile::tempdir().expect("tmp");
+        let outcome = super::run_whole_db_harness(dir.path(), Some(4)).expect("whole-db sweep");
+        assert_eq!(outcome.seeds_executed(), 4, "{outcome:?}");
+        assert_eq!(outcome.epochs_executed(), 8, "{outcome:?}");
+        assert_eq!(outcome.crashed_epochs(), 5, "{outcome:?}");
+        assert_eq!(outcome.forks(), 10, "{outcome:?}");
+        assert_eq!(outcome.deletes(), 3, "{outcome:?}");
+        assert_eq!(outcome.temporal_probes_ok(), 12, "{outcome:?}");
+        // Loud allowance: seed 2 dies with the pinned #2820 shape (exactly
+        // once at this budget); the pin test breaks when the bug is fixed
+        // and this constant drops to zero with it.
+        assert_eq!(outcome.pinned_2820_hits(), 1, "{outcome:?}");
+    }
+
+    /// A sweep BELOW the pinned seed (seeds 0-1 only): zero #2820 hits —
+    /// kills the constant-1 mutant on the pin counter and pins that the
+    /// allowance counts only genuine signature matches.
+    #[test]
+    fn whole_db_sweep_below_the_pinned_seed_counts_no_pins() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let outcome = super::run_whole_db_harness(dir.path(), Some(2)).expect("mini sweep");
+        assert_eq!(outcome.seeds_executed(), 2, "{outcome:?}");
+        assert_eq!(outcome.pinned_2820_hits(), 0, "{outcome:?}");
+    }
 
     #[test]
     fn sweep_holds_and_is_non_vacuous() {

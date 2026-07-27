@@ -214,6 +214,21 @@ impl ExpectedState {
         state
     }
 
+    /// TCP4.11b: drop every logged commit for `branch` — the model side of a
+    /// delete-then-recreate cycle (the recreated branch starts with empty
+    /// history; keeping the old log would poison the prefix search).
+    pub(crate) fn forget_branch(&mut self, branch: BranchId) {
+        self.log.retain(|commit| commit.branch != branch);
+    }
+
+    /// TCP4.11b: drop `branch`'s logged commits above `watermark` — adopting a
+    /// lossy crash's surviving prefix so the next epoch's oracle starts from
+    /// what actually recovered.
+    pub(crate) fn truncate_branch_above(&mut self, branch: BranchId, watermark: CommitVersion) {
+        self.log
+            .retain(|commit| commit.branch != branch || commit.version <= watermark);
+    }
+
     /// Live state at `W`: `state_at` with tombstones dropped — exactly what a
     /// `ReadBound::Latest` full scan of the recovered database returns.
     pub(crate) fn live_state_at(

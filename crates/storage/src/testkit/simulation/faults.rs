@@ -107,14 +107,17 @@ impl SimulationFaultOutcome {
 
 /// Deterministic-inline options: the production `Background` scheduling logic on
 /// the inline executor with the manual clock — the same path as the clean driver.
-fn deterministic_options(durability: StorageDurabilityPolicy) -> StorageOpenOptions {
+pub(super) fn deterministic_options(durability: StorageDurabilityPolicy) -> StorageOpenOptions {
     StorageOpenOptions::durable_local(durability)
         .with_maintenance_scheduling_policy(StorageMaintenanceSchedulingPolicy::DeterministicInline)
 }
 
 /// Probe that the just-opened runtime exposes the manual maintenance clock; a
 /// `false` means the deterministic seam is not wired and the case is invalid.
-fn require_manual_clock(runtime: &StorageRuntime<'_>, seed: u64) -> Result<(), TestkitError> {
+pub(super) fn require_manual_clock(
+    runtime: &StorageRuntime<'_>,
+    seed: u64,
+) -> Result<(), TestkitError> {
     if runtime.advance_maintenance_clock_for_test(std::time::Duration::ZERO) {
         Ok(())
     } else {
@@ -127,7 +130,7 @@ fn require_manual_clock(runtime: &StorageRuntime<'_>, seed: u64) -> Result<(), T
 /// Confirmed-only ordering check: a faulted/crashed run never quiesces, so
 /// pending entries are excluded (#2785) — but a CONFIRMED violation is a real
 /// ordering bug regardless of the injected fault.
-fn require_no_confirmed_ordering_violations(
+pub(super) fn require_no_confirmed_ordering_violations(
     backend: &StorageBackend,
     seed: u64,
     label: &str,

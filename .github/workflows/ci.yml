@@ -182,6 +182,10 @@ jobs:
     if: github.event_name == 'pull_request'
     needs: check
     runs-on: ubuntu-latest
+    # 90 minutes (#2770): sized for product diffs. The DST harness modules
+    # are mutation-excluded at saturation (see .cargo/mutants.toml) — their
+    # full-file mutant set outgrew any per-PR budget and their strength
+    # mechanism is their own exact-facts pins.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
