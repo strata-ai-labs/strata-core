@@ -625,20 +625,21 @@ impl ManifestService<'_, TABLE_MANIFEST_SERVICE> {
     /// layer-less fork paths (eager/materialized and empty forks) own no
     /// durable tables, and a DELETED predecessor generation's manifest left
     /// on disk becomes the re-created branch's recovery provenance.
-    /// Idempotent: an already-absent manifest is success.
+    /// Idempotent: an already-absent manifest is success (the backend
+    /// classifies absence as `AlreadyMissing`, an Ok outcome — #2810).
     pub(crate) fn remove_manifest(
         &self,
         branch_id: strata_core::BranchId,
     ) -> ManifestServiceResult<()> {
         let branch_component = branch_id.to_string();
         let object = table_manifest_object(&branch_component)?;
+        // Absence is SUCCESS at the backend layer already: LocalFs classifies
+        // a missing object as `Ok(AlreadyMissing)` (#2810's stat→unlink race
+        // fix), so the Ok arm covers the idempotent case and every Err is a
+        // real failure. (A NotFound-source guard here was dead code on the
+        // shipping backend — the mutation gate proved it.)
         match self.backend.delete_object(&object) {
             Ok(_) => Ok(()),
-            Err(source)
-                if source.source_error().kind() == crate::backend::BackendErrorKind::NotFound =>
-            {
-                Ok(())
-            }
             Err(source) => Err(ManifestServiceError::Delete {
                 role: ManifestRole::Table,
                 source,
