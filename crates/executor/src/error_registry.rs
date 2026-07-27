@@ -233,6 +233,25 @@ const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
         EXECUTOR_SCHEMA,
     ),
     entry(
+        "invalid_argument.executor.wire_request",
+        ErrorClass::InvalidArgument,
+        RetryPolicy::Never,
+        CommitOutcomeStatus::NotStarted,
+        "A command request received over the IPC socket was not a valid wire command.",
+        "Send a well-formed command object (a `type` tag and the fields that command requires).",
+        EXECUTOR_SCHEMA,
+    ),
+    entry(
+        "unavailable.executor.ipc_transport",
+        ErrorClass::Unavailable,
+        RetryPolicy::Unknown,
+        CommitOutcomeStatus::MaybeCommitted,
+        "The IPC connection to the store owner failed while a command was in flight.",
+        "Reopen the database (the owner may have exited or restarted) and, for a write, \
+         confirm whether it applied before retrying.",
+        EXECUTOR_SCHEMA,
+    ),
+    entry(
         "invalid_argument.executor.vector_batch_duplicate_key",
         ErrorClass::InvalidArgument,
         RetryPolicy::Never,
@@ -302,6 +321,15 @@ const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
         CommitOutcomeStatus::NotApplicable,
         "An unregistered executor error code was rendered.",
         "Capture the reference id and report the unregistered executor error code.",
+        EXECUTOR_SCHEMA,
+    ),
+    entry(
+        "internal.executor.wire_response",
+        ErrorClass::Internal,
+        RetryPolicy::Unknown,
+        CommitOutcomeStatus::NotApplicable,
+        "An IPC command result could not be serialized into a wire response.",
+        "Capture the reference id and report the IPC wire response serialization failure.",
         EXECUTOR_SCHEMA,
     ),
 ];

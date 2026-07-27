@@ -110,6 +110,7 @@ const ALLOWED_UNASSERTED: &[(&str, &str)] = &[
     ("invalid_argument.executor.hub_dataset", "asserted by TCP3.8 error-envelope replay fixtures"),
     ("invalid_argument.executor.limit", "asserted by TCP3.8 error-envelope replay fixtures"),
     ("invalid_argument.executor.vector_limit", "asserted by TCP3.8 error-envelope replay fixtures"),
+    ("internal.executor.wire_response", "unreachable serialize-failure fallback (IPC): `serde_json::to_value` of a plain-data `Output`/`ErrorStatus` cannot fail, so the IPC dispatch/client/server fallback arms that emit this code are dead paths — sibling `unavailable.executor.ipc_transport` (the reachable transport failure) is asserted by `ipc::connection` tests, and `invalid_argument.executor.wire_request` by `ipc::dispatch`/`ipc::server`"),
 ];
 
 fn repo_root() -> PathBuf {

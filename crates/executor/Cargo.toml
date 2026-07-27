@@ -10,8 +10,12 @@ publish = false
 description = "Serializable command boundary for the rebuilt engine"
 
 [features]
-default = ["localfs", "arrow", "hub"]
+default = ["localfs", "arrow", "hub", "ipc"]
 arrow = ["dep:arrow", "dep:parquet"]
+# Transparent multi-process IPC over a Unix domain socket (crates/executor/src/ipc).
+# Default-on for native builds; the wasm consumer uses default-features = false
+# and so excludes the socket transport. Unix-only at the module cfg.
+ipc = []
 # StrataHub clone support. Off for targets that cannot carry the native
 # HTTP/tokio client stack (the wasm build consumes the executor with
 # default-features = false).
@@ -41,7 +45,10 @@ arrow = { workspace = true, optional = true }
 base64 = { workspace = true }
 parquet = { workspace = true, optional = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
+# `raw_value` preserves the inner command's original bytes inside the IPC
+# request envelope, so the lossy-integer ingress guard still runs on the raw
+# text (crates/executor/src/ipc).
+serde_json = { workspace = true, features = ["raw_value"] }
 schemars = { workspace = true, optional = true }
 rocksdb = { version = "0.24", optional = true, default-features = false }
 # TCP4.2b: BSON codec for the minimal MongoDB wire client (no full driver).

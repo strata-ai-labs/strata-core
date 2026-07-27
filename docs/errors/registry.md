@@ -577,6 +577,15 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="invalid_argument.executor.json_number"></a>
 - `invalid_argument.executor.json_number`
 
+<a id="invalid_argument.executor.wire_request"></a>
+- `invalid_argument.executor.wire_request`
+
+<a id="internal.executor.wire_response"></a>
+- `internal.executor.wire_response`
+
+<a id="unavailable.executor.ipc_transport"></a>
+- `unavailable.executor.ipc_transport`
+
 <a id="invalid_argument.executor.vector_batch_duplicate_key"></a>
 - `invalid_argument.executor.vector_batch_duplicate_key`
 

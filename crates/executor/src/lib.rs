@@ -18,6 +18,11 @@ pub mod executor;
 #[cfg(feature = "idl-tooling")]
 #[doc(hidden)]
 pub mod idl_tooling;
+// Multi-process IPC over a Unix domain socket. Default-on for native builds;
+// the wasm consumer takes the executor with `default-features = false` and so
+// never compiles the socket transport.
+#[cfg(all(feature = "ipc", unix))]
+pub mod ipc;
 pub mod output;
 mod time_compat;
 pub mod types;
