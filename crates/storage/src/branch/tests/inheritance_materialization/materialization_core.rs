@@ -1291,3 +1291,116 @@ fn branch_materialization_rejects_output_identity_collision_without_mutation() {
 fn visible_rows(rows: &[BranchVisibleRow]) -> Vec<StorageRow> {
     rows.iter().map(|row| row.row().clone()).collect()
 }
+
+/// #2831 / ACID-005: idempotent recovery replay legitimately leaves the SAME
+/// row byte-identical in two sealed tables of one inherited layer; the
+/// materialization merge must collapse the redundancy (an exact-duplicate
+/// skip, like the higher-precedence arm) — only a DIVERGENT duplicate is a
+/// corruption signal.
+#[test]
+fn branch_materialization_collapses_identical_replay_redundancy_within_layer() {
+    let source = branch_id(95);
+    let child = branch_id(96);
+    let row = storage_row_with(
+        source,
+        b"replayed-twice".to_vec(),
+        2,
+        20,
+        Timestamp::EPOCH,
+        b"same-bytes".to_vec(),
+    );
+    let layer = branch_inherited_layer_unchecked_for_fork_gate_tests(
+        source,
+        CommitVersion::new(2),
+        InheritedLayerStatus::Active,
+        vec![vec![
+            branch_owned_table(
+                source,
+                BranchLevel::ZERO,
+                "replayed-copy-a",
+                vec![row.clone()],
+            ),
+            branch_owned_table(
+                source,
+                BranchLevel::ZERO,
+                "replayed-copy-b",
+                vec![row.clone()],
+            ),
+        ]],
+    );
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .expect("attach inherited layer");
+
+    let outcome = child_state
+        .materialize_inherited_layer(
+            &BranchMaterializationRequest::new(child, 0, "materialize-identical-redundancy")
+                .expect("materialization request"),
+        )
+        .expect("byte-identical replay redundancy within a layer materializes");
+    assert_eq!(outcome.rows_materialized(), 1);
+    assert_eq!(outcome.skipped_exact_duplicate_rows(), 1);
+
+    let view = child_state.capture_read_view().expect("read view");
+    let materialized = view
+        .latest(&physical_key(child, b"replayed-twice".to_vec()))
+        .expect("visible")
+        .expect("row present");
+    assert_eq!(materialized.row().value(), b"same-bytes");
+}
+
+/// Direction control: a DIVERGENT within-layer duplicate stays refused.
+#[test]
+fn branch_materialization_refuses_divergent_duplicates_within_layer() {
+    let source = branch_id(97);
+    let child = branch_id(98);
+    let layer = branch_inherited_layer_unchecked_for_fork_gate_tests(
+        source,
+        CommitVersion::new(2),
+        InheritedLayerStatus::Active,
+        vec![vec![
+            branch_owned_table(
+                source,
+                BranchLevel::ZERO,
+                "divergent-copy-a",
+                vec![storage_row_with(
+                    source,
+                    b"divergent".to_vec(),
+                    2,
+                    20,
+                    Timestamp::EPOCH,
+                    b"one".to_vec(),
+                )],
+            ),
+            branch_owned_table(
+                source,
+                BranchLevel::ZERO,
+                "divergent-copy-b",
+                vec![storage_row_with(
+                    source,
+                    b"divergent".to_vec(),
+                    2,
+                    20,
+                    Timestamp::EPOCH,
+                    b"two".to_vec(),
+                )],
+            ),
+        ]],
+    );
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .expect("attach inherited layer");
+
+    let error = child_state
+        .materialize_inherited_layer(
+            &BranchMaterializationRequest::new(child, 0, "materialize-divergent-duplicate")
+                .expect("materialization request"),
+        )
+        .expect_err("divergent within-layer duplicates stay refused");
+    assert!(matches!(
+        error,
+        BranchRuntimeError::InvalidInheritedLayer { .. }
+    ));
+}

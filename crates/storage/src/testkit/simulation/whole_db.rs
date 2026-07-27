@@ -949,30 +949,17 @@ mod tests {
         run_whole_db_sim(dir.path(), 2, 3, 24).expect("the once-refusing seed completes cleanly");
     }
 
-    /// Seed 28 after the #2826 fix: the resurrection is DEAD (no Phantom —
-    /// the replay generation fence holds; the permanent #2826 contracts are
-    /// the api-level `..._does_not_resurrect_predecessor_rows_after_reopen`
-    /// tests), and the trajectory now runs three epochs further into the
-    /// NEXT onion layer. Gate-7 pin for #2831: a live fork at step 66
-    /// refuses with `InvalidInheritedLayer` duplicate internal keys (the
-    /// #2823 replay-redundancy class at the inherited-layer validator).
-    /// Breaks when #2831 is fixed; that PR promotes seed 28 to a
-    /// clean-completion contract.
+    /// Promoted from the #2831 gate-7 pin: the trajectory that once refused
+    /// a live fork (and then the final recovery) on replay-redundant sources
+    /// — byte-identical duplicate internal keys across sealed tables, the
+    /// ACID-005 class at the inherited-layer, compaction-levels, and
+    /// materialization validators — now completes end-to-end: identical
+    /// redundancy collapses everywhere, divergent duplicates still refuse
+    /// (the #2825 boundary, uniformly applied).
     #[test]
-    fn pin_2831_replay_redundant_source_poisons_live_fork() {
+    fn replay_redundant_sources_fork_and_recover_cleanly() {
         let dir = tempfile::tempdir().expect("tmp");
-        let error = run_whole_db_sim(dir.path(), 28, 3, 24)
-            .expect_err("#2831 fixed? promote seed 28 to a clean-completion contract");
-        let message = format!("{error}");
-        assert!(
-            !message.contains("Phantom"),
-            "seed 28 resurrected again — the #2826 fence regressed: {message}"
-        );
-        assert!(
-            message.contains("must not contain duplicate internal keys"),
-            "seed 28 failed with a DIFFERENT signature than the pinned #2831 \
-             fork refusal — investigate before touching the pin: {message}"
-        );
+        run_whole_db_sim(dir.path(), 28, 3, 24).expect("the once-refusing seed completes cleanly");
     }
 
     /// Promoted from the #2827 gate-7 pin: the trajectory that once bricked

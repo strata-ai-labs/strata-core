@@ -15,7 +15,7 @@ use crate::table::{
     TablePointLookupRow, TablePreparedPointLookup, TableRow, TableRuntimeFacts, TableSummaryExtras,
 };
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::sync::Arc;
 use strata_core::{BranchId, CommitVersion, Timestamp};
 
@@ -4536,15 +4536,25 @@ fn validate_inherited_layer_unique_keys(
 fn debug_validate_inherited_layer_unique_keys(
     owned_levels: &[Vec<BranchOwnedTable>],
 ) -> BranchRuntimeResult<()> {
-    let mut keys = BTreeSet::<TableInternalKeyBytes>::new();
+    let mut keys = BTreeMap::<TableInternalKeyBytes, crate::row::StorageRow>::new();
     for table in owned_levels.iter().flatten() {
         try_for_each_reader_row(table.reader(), |row| {
-            if keys.insert(row.key().clone()) {
-                Ok(())
-            } else {
-                Err(BranchRuntimeError::InvalidInheritedLayer {
-                    reason: "inherited layer tables must not contain duplicate internal keys",
-                })
+            match keys.get(row.key()) {
+                // #2831 / ACID-005: idempotent recovery replay legitimately
+                // leaves the SAME row byte-identical in more than one sealed
+                // table (rotated-out source + replayed memtable → re-flush).
+                // Identical redundancy is legal — the read path shadows it —
+                // and only a DIVERGENT duplicate is a corruption signal
+                // (same boundary as the fork-snapshot builder, #2825).
+                Some(existing) if existing == row.row() => Ok(()),
+                Some(_) => Err(BranchRuntimeError::InvalidInheritedLayer {
+                    reason: "inherited layer tables must not contain divergent duplicate \
+                             internal keys",
+                }),
+                None => {
+                    keys.insert(row.key().clone(), row.row().clone());
+                    Ok(())
+                }
             }
         })?;
     }
