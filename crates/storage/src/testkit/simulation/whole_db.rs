@@ -975,22 +975,16 @@ mod tests {
         );
     }
 
-    /// Gate-7 pin for #2827 (fork-object manifest brick): seed 10 currently
-    /// refuses its epoch-2 reopen — the child's table manifest durably lists
-    /// a fork-materialized table object that is missing on disk. Asserts the
-    /// CURRENT broken behavior; breaks on fix; promote in the fix PR.
+    /// Promoted from the #2827 gate-7 pin: the trajectory that once bricked
+    /// its epoch-2 reopen (a child manifest referencing a fork-materialized
+    /// table object the `SplitRename` crash model had ILLEGALLY dropped — the
+    /// production publish discipline dir-fsyncs every file birth, so a
+    /// completed publish cannot vanish on power loss) now completes cleanly:
+    /// the model correction removed the counterfactual damage.
     #[test]
-    fn pin_2827_fork_object_missing_bricks_reopen() {
+    fn fork_object_publishes_survive_power_loss_models() {
         let dir = tempfile::tempdir().expect("tmp");
-        let error = run_whole_db_sim(dir.path(), 10, 3, 24)
-            .expect_err("#2827 fixed? promote this pin to a clean-completion contract");
-        let message = format!("{error}");
-        assert!(
-            message.contains("corruption.lifecycle.table_manifest")
-                && message.contains("table manifest listed table object is missing"),
-            "seed 10 failed with a DIFFERENT signature than the pinned #2827 \
-             missing-object brick — investigate before touching the pin: {message}"
-        );
+        run_whole_db_sim(dir.path(), 10, 3, 24).expect("the once-bricked seed completes cleanly");
     }
 
     /// Sabotage twin: a fork whose model seeding is SKIPPED must fire the

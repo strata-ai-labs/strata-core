@@ -395,6 +395,20 @@ struct CrashCaseFacts {
 /// interleaving (STH-3 substrate), then reopen (lossy) and verify the durability
 /// contract: `Always` loses nothing under any model; `Standard` recovers a clean prefix.
 fn run_one_crash_case(root: &Path, seed: u64) -> Result<CrashCaseRun, TestkitError> {
+    run_one_crash_case_with_damage(root, seed, None)
+}
+
+/// #2827: `extra_damage` plants beyond-crash artifact damage AFTER the
+/// power-loss materialization (the artifact-fault shape) — the regression
+/// contracts that once relied on `SplitRename` fabricating illegal drops now
+/// plant their states explicitly. Returns whether it changed the disk.
+type ExtraDamage<'a> = &'a dyn Fn(&Path) -> Result<bool, TestkitError>;
+
+fn run_one_crash_case_with_damage(
+    root: &Path,
+    seed: u64,
+    extra_damage: Option<ExtraDamage<'_>>,
+) -> Result<CrashCaseRun, TestkitError> {
     let branch = default_branch();
     let durability = if seed & 1 == 0 {
         StorageDurabilityPolicy::Always
@@ -436,7 +450,10 @@ fn run_one_crash_case(root: &Path, seed: u64) -> Result<CrashCaseRun, TestkitErr
         // power cut — exactly the window it must have been clean in.
         let (_confirmed, publishes_checked) =
             require_no_confirmed_ordering_violations(&backend, seed, "crash case")?;
-        let perturbed = backend.reordering_crash(fs_model, seed)?;
+        let mut perturbed = backend.reordering_crash(fs_model, seed)?;
+        if let Some(damage) = extra_damage {
+            perturbed |= damage(root)?;
+        }
         (perturbed, interleave, publishes_checked)
     };
 
@@ -564,6 +581,7 @@ pub fn run_fault_simulation_harness(
 #[cfg(test)]
 mod tests {
     use super::{run_fault_simulation_harness, run_one_crash_case, run_one_fault_case};
+    use crate::testkit::TestkitError;
 
     /// Regression for a silent durability bug the STH-4 DST surfaced (see
     /// `docs/architecture/implementation-plans/storage-testing/sth-4-finding-checkpoint-flush-publish-fault.md`):
@@ -856,12 +874,39 @@ mod tests {
     /// recovers a clean prefix (empty here) recorded as `DataLoss` rather than a gap.
     #[test]
     fn regression_split_rename_power_loss_recovers_clean_prefix() {
+        // #2827: `SplitRename` no longer fabricates the missing-manifest state
+        // (a completed publish cannot vanish under the production publish
+        // discipline), so the contract this seed found — a delta checkpoint
+        // whose table-manifest base is missing must recover a clean prefix
+        // recorded as `DataLoss`, never a `Gap` — now plants the damage
+        // directly (the artifact-fault shape) on the same seed-155 trajectory.
         let dir = tempfile::tempdir().expect("tmp");
-        let run = run_one_crash_case(dir.path(), 155).expect("crash case");
-        assert!(run.perturbed, "crash did not perturb the disk: {run:?}");
+        let damage: super::ExtraDamage<'_> = &|root| {
+            let manifest = crate::layout::ObjectLayout::branch_table_manifest(
+                &crate::testkit::recovery_oracle::workload::default_branch().to_string(),
+            )
+            .map_err(|err| TestkitError::new(format!("manifest layout: {err:?}")))?;
+            let path = root.join(format!("{}.object@", manifest.as_str()));
+            if path.exists() {
+                std::fs::remove_file(&path)
+                    .map_err(|err| TestkitError::new(format!("remove manifest: {err}")))?;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        };
+        let run =
+            super::run_one_crash_case_with_damage(dir.path(), 155, Some(damage)).expect("case");
+        // The perturbation can ONLY come from the planted damage: seed 155's
+        // crash model is `SplitRename`, which is damage-free after #2827 —
+        // so this assert also kills a deleted damage-application arm.
+        assert!(
+            run.perturbed,
+            "the planted manifest-base damage must change the disk: {run:?}"
+        );
         assert!(
             run.violation.is_none(),
-            "SplitRename dropping a delta checkpoint's table-manifest base must recover a \
+            "a missing table-manifest base under a delta checkpoint must recover a \
              clean prefix, not a gap: {run:?}"
         );
     }
@@ -869,9 +914,10 @@ mod tests {
     #[test]
     fn power_loss_during_interleaving_is_oracle_valid() {
         let dir = tempfile::tempdir().expect("tmp");
-        // Seed 3 perturbs under the TCP4.11a step grammar (seed 2 no longer
-        // does) — the perturbation assert keeps this pin non-vacuous.
-        let run = run_one_crash_case(dir.path(), 3).expect("crash case");
+        // Seed 5 (Standard / ReorderedAppends) perturbs under the #2827
+        // model correction (seed 3 was SplitRename, now damage-free) — the
+        // perturbation assert keeps this pin non-vacuous.
+        let run = run_one_crash_case(dir.path(), 5).expect("crash case");
         assert!(run.perturbed, "crash did not perturb the disk: {run:?}");
         assert!(
             run.violation.is_none(),
@@ -901,8 +947,8 @@ mod tests {
     fn crash_case_replays_bit_exact() {
         let dir_a = tempfile::tempdir().expect("tmp");
         let dir_b = tempfile::tempdir().expect("tmp");
-        let first = run_one_crash_case(dir_a.path(), 3).expect("first run");
-        let second = run_one_crash_case(dir_b.path(), 3).expect("second run");
+        let first = run_one_crash_case(dir_a.path(), 5).expect("first run");
+        let second = run_one_crash_case(dir_b.path(), 5).expect("second run");
         assert!(
             first.perturbed && second.perturbed,
             "crash must perturb in both runs"

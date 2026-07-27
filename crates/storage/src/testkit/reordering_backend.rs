@@ -31,7 +31,12 @@ pub enum FsModel {
     ReorderedAppends,
     /// The un-fsync'd tail is present but filled with garbage (a torn write).
     GarbageUnsyncedTail,
-    /// A publish's rename is observed undone — the object's directory entry is gone.
+    /// Historical "rename observed undone" model — now damage-free (#2827):
+    /// every file birth in this backend is a completed durable publish (temp
+    /// fsync → rename → parent-directory fsync), so power loss cannot undo a
+    /// directory entry. Whole-file damage is the artifact-fault lane's job
+    /// (TCP4.9a); the LEGAL power-loss analog — an un-fsync'd DELETE undone,
+    /// resurrecting the file — is tracked as its successor semantics.
     SplitRename,
 }
 
@@ -46,16 +51,10 @@ struct ObjectDurability {
 #[derive(Debug, Default)]
 struct ReorderState {
     objects: HashMap<String, (ObjectName, ObjectDurability)>,
-    publishes: Vec<ObjectName>,
 }
 
 fn as_u64(len: usize) -> u64 {
     u64::try_from(len).unwrap_or(u64::MAX)
-}
-
-fn pick_index(rng: &mut SplitMix64, len: usize) -> usize {
-    let bound = as_u64(len).max(1);
-    usize::try_from(rng.next_u64() % bound).unwrap_or(0)
 }
 
 /// A `Backend` decorator over `LocalFsBackend` that records each object's unsynced
@@ -122,16 +121,12 @@ impl ReorderingBackend {
                     },
                 ),
             );
-            state.publishes.push(name.clone());
         }
     }
 
     fn record_delete(&self, name: &ObjectName) {
         if let Ok(mut state) = self.state.lock() {
             state.objects.remove(name.as_str());
-            state
-                .publishes
-                .retain(|each| each.as_str() != name.as_str());
         }
     }
 
@@ -182,11 +177,10 @@ impl ReorderingBackend {
                 }
             }
             FsModel::SplitRename => {
-                if !state.publishes.is_empty() {
-                    let index = pick_index(&mut rng, state.publishes.len());
-                    crash_sim::drop_object_file(root, &state.publishes[index])?;
-                    perturbed = true;
-                }
+                // #2827: no perturbation — see the variant's doc. The drop this
+                // arm used to perform materialized a state the production
+                // publish discipline makes unreachable, and the whole-DB lane
+                // rightly convicted those states as bricks.
             }
         }
         Ok(perturbed)
@@ -272,6 +266,77 @@ impl Backend for ReorderingBackend {
         let outcome = self.inner.publish_object(name, bytes, mode)?;
         self.record_publish(name, as_u64(bytes.len()));
         Ok(outcome)
+    }
+}
+
+#[cfg(test)]
+mod model_legality_tests {
+    //! #2827: `SplitRename` may only drop files whose DIRECTORY ENTRY is not
+    //! crash-durable. The production publish path fsyncs the temp file, the
+    //! rename, AND the parent directory — a completed publish cannot legally
+    //! vanish whole. The append path (`sync_object` = `sync_all` only) never
+    //! syncs the directory, so an append-created file with no subsequent
+    //! same-directory publish CAN legally vanish — and a later publish into
+    //! the same directory durably commits every earlier entry too.
+    use super::ReorderingBackend;
+    use crate::backend::{Backend, PublishMode};
+    use crate::object::ObjectName;
+    use crate::testkit::FsModel;
+
+    fn object(name: &str) -> ObjectName {
+        ObjectName::new(name).expect("valid object name")
+    }
+
+    /// On-disk path for an object: `LocalFs` stores `<name>.object@` (the
+    /// suffix INCLUDES the `@` — the #2804 triage gotcha).
+    fn object_path(root: &std::path::Path, name: &ObjectName) -> std::path::PathBuf {
+        root.join(format!("{}.object@", name.as_str()))
+    }
+
+    #[test]
+    fn split_rename_never_drops_a_completed_publish() {
+        for seed in 0..16u64 {
+            let dir = tempfile::tempdir().expect("tmp");
+            let backend = ReorderingBackend::local_fs(dir.path());
+            let published = object("tables/branch-a/l0000/table-one");
+            backend
+                .publish_object(&published, b"published-bytes", PublishMode::Create)
+                .expect("publish");
+            let _ = backend
+                .crash(FsModel::SplitRename, seed)
+                .expect("crash materialization");
+            assert!(
+                object_path(dir.path(), &published).exists(),
+                "seed {seed}: a completed publish (temp fsync + rename + parent-dir \
+                 fsync) must survive every crash materialization"
+            );
+        }
+    }
+
+    #[test]
+    fn split_rename_leaves_segment_shaped_objects_intact() {
+        // WAL segments are BORN via a durable publish (header) then extended
+        // by appends — their directory entry is crash-durable from birth.
+        for seed in 0..16u64 {
+            let dir = tempfile::tempdir().expect("tmp");
+            let backend = ReorderingBackend::local_fs(dir.path());
+            let segment = object("wal/segment-one");
+            backend
+                .publish_object(&segment, b"segment-header", PublishMode::Create)
+                .expect("publish header");
+            backend
+                .append_object(&segment, b"appended-tail")
+                .expect("append");
+            backend.sync_object(&segment).expect("sync contents");
+            let _ = backend
+                .crash(FsModel::SplitRename, seed)
+                .expect("crash materialization");
+            assert!(
+                object_path(dir.path(), &segment).exists(),
+                "seed {seed}: a publish-created, append-extended file's \
+                 directory entry is durable — it must survive"
+            );
+        }
     }
 }
 
