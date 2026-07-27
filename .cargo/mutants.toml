@@ -62,6 +62,6 @@ exclude_re = [
     # direction — stale entries KEPT (the fence inversion) — cannot be
     # healed away and IS test-killed
     # (recreated_branch_refuses_dead_generation_timestamps_after_reopen).
-    "replace seed_non_seeded_branch_timelines with \(\)",
-    "replace && with \|\| in seed_non_seeded_branch_timelines",
+    "replace seed_non_seeded_branch_timelines with \\(\\)",
+    "replace && with \\|\\| in seed_non_seeded_branch_timelines",
 ]
