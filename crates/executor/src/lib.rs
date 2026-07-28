@@ -18,6 +18,10 @@ pub mod executor;
 #[cfg(feature = "idl-tooling")]
 #[doc(hidden)]
 pub mod idl_tooling;
+// The multi-process access policy (Host / Client / Off). Always compiled so
+// every frontend can name it; the socket transport that acts on it is unix-only
+// (`ipc` below).
+pub mod ipc_mode;
 // Multi-process IPC over a Unix domain socket. Default-on for native builds;
 // the wasm consumer takes the executor with `default-features = false` and so
 // never compiles the socket transport.
@@ -35,6 +39,7 @@ pub use error::{
 };
 pub use error_registry::{public_error_code_entries, public_error_code_entry};
 pub use executor::Executor;
+pub use ipc_mode::IpcMode;
 pub use output::{Output, RemoteOriginFrontierInfo, RemoteOriginInfo};
 pub use strata_engine::{
     CommitOutcomeStatus, DurabilityMode, DurableLocalOpenOptions, ErrorClass,
