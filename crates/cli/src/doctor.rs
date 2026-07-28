@@ -10,7 +10,8 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
-use strata_executor::{Command, Executor, ExecutorError};
+use strata_executor::ipc::Connection;
+use strata_executor::{Command, DurableLocalOpenOptions, Executor, ExecutorError, IpcMode};
 
 use crate::{init, open, CliError};
 
@@ -120,9 +121,16 @@ fn database_report(
 
 fn probe_database(path: &Path, issues: &mut Vec<Value>) -> Value {
     let display = path.display().to_string();
-    match Executor::open_durable_local(path) {
-        Ok(mut executor) => {
-            let info = match executor.execute(Command::Info { branch: None }) {
+    // Broker as a client: if the store is owned by a live process, probe it
+    // through that owner's socket instead of failing on the writer lock — so
+    // `strata doctor` can inspect a database while an app or REPL holds it.
+    match Connection::open_durable_local_brokered(
+        path,
+        DurableLocalOpenOptions::new(),
+        IpcMode::Client,
+    ) {
+        Ok(connection) => {
+            let info = match connection.execute(Command::Info { branch: None }) {
                 Ok(output) => serde_json::to_value(&output)
                     .ok()
                     .and_then(|mut value| value.get_mut("data").map(Value::take)),
@@ -131,7 +139,7 @@ fn probe_database(path: &Path, issues: &mut Vec<Value>) -> Value {
                     None
                 }
             };
-            if let Err(error) = executor.close() {
+            if let Err(error) = connection.close() {
                 push_executor_issue(issues, &error);
             }
             json!({
