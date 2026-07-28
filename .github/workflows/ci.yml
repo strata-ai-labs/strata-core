@@ -214,8 +214,34 @@ jobs:
         run: |
           git diff "origin/${{ github.base_ref }}"...HEAD > pr.diff
           cargo mutants --in-diff pr.diff --timeout-multiplier 2.5 --minimum-test-timeout 60 || [ $? -eq 3 ]
+          # IPC transport (crates/executor/src/ipc): the --exclude-re set below
+          # is the residual equivalent/plumbing mutants the module's functional
+          # suite (two-process round-trip, per-request scope, idle-timeout,
+          # non-contention propagation, pid liveness, fnv1a goldens, RAII drop
+          # cleanup, frame-cap pin) cannot distinguish. The decision LOGIC is
+          # extracted into pure predicates with truth-table tests and stays
+          # mutated: is_transient_accept_error / is_read_retry_error (accept and
+          # read error classification), open_brokered's contention branch, and
+          # serve_one (dispatch + scope). What is excluded:
+          #  - serialize/panic fallbacks that are unreachable in practice;
+          #  - the raw accept/read event-loop plumbing (connection-cap
+          #    accounting needing 128 live sockets, log-only guards, and
+          #    loop-condition mutants that only manifest as a hang);
+          #  - IpcServer::stop's SIGTERM poll flag;
+          #  - broker_to_owner, the racy owner start/stop retry window (its
+          #    per-iteration branches are timing-dependent and convergent);
+          #  - open_brokered's "any error retries" mutant, which merely defers
+          #    a non-lock error one open attempt before re-surfacing it;
+          #  - read_frame's inclusive-vs-exclusive cap boundary (distinguishing
+          #    it requires a payload of exactly 64 MiB).
           cargo mutants --no-config --in-diff pr.diff --package strata-executor \
             --features idl-tooling,inference,testkit \
+            --exclude-re 'serialize_failure_envelope|internal_panic_error|static_wire_request_error' \
+            --exclude-re 'in (listener_loop|handle_connection)' \
+            --exclude-re 'delete ! in IpcServer::stop' \
+            --exclude-re 'Connection::broker_to_owner' \
+            --exclude-re 'with true in Connection::open_brokered' \
+            --exclude-re 'replace > with >= in read_frame' \
             --timeout-multiplier 2.5 --minimum-test-timeout 60 || [ $? -eq 3 ]
           cargo mutants --no-config --in-diff pr.diff --package strata-inference \
             --features download,testkit \

@@ -7,6 +7,9 @@ errors:
   - invalid_argument.executor.kv_batch_duplicate_key
   - invalid_argument.executor.json_batch_duplicate_key
   - invalid_argument.executor.json_number
+  - invalid_argument.executor.wire_request
+  - internal.executor.wire_response
+  - unavailable.executor.ipc_transport
   - invalid_argument.executor.vector_batch_duplicate_key
   - not_found.engine.branch
   - invalid_argument.engine.vector_collection
