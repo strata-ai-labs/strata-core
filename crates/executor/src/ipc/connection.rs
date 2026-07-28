@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::{
-    Command, DurableLocalOpenOptions, Executor, ExecutorResult, Output, DEFAULT_BRANCH,
+    Command, DurableLocalOpenOptions, Executor, ExecutorResult, IpcMode, Output, DEFAULT_BRANCH,
     DEFAULT_SPACE,
 };
 
@@ -56,14 +56,17 @@ enum ConnectionInner {
 }
 
 impl Connection {
-    /// Open a durable store with transparent multi-process brokering.
+    /// Open a durable store with transparent multi-process brokering, driven by
+    /// `ipc` (a transport policy the executor owns; the engine `options` stay
+    /// IPC-agnostic):
     ///
-    /// - `host`: when we win the lock AND this is a long-lived owner (a REPL,
-    ///   `mcp serve`, `strata start`, an SDK app), host a socket so others can
-    ///   connect. One-shot commands pass `false` — they hold the lock briefly
-    ///   and rely on the client fallback for the rare collision.
-    /// - `ipc`: master switch. `false` opts out entirely: a raw local open with
-    ///   no server and no fallback (hardened single-process deployments).
+    /// - [`IpcMode::Host`]: win the lock and host a socket so other processes
+    ///   can broker to us (a REPL, `mcp serve`, `strata start`, a long-lived SDK
+    ///   app). On contention, broker to the existing owner instead.
+    /// - [`IpcMode::Client`]: win the lock but do not host (a one-shot command
+    ///   that holds the lock briefly); on contention, broker as a client.
+    /// - [`IpcMode::Off`]: opt out entirely — a raw local open with no server
+    ///   and no fallback (hardened single-process deployments).
     ///
     /// # Errors
     ///
@@ -72,15 +75,20 @@ impl Connection {
     pub fn open_durable_local_brokered(
         path: impl Into<PathBuf>,
         options: DurableLocalOpenOptions,
-        host: bool,
-        ipc: bool,
+        ipc: IpcMode,
     ) -> ExecutorResult<Self> {
         let path = path.into();
-        if !ipc {
-            let executor = Executor::open_durable_local_with_options(&path, options)?;
-            return Ok(Self::local(executor, None));
+        match ipc {
+            // Opt out: a raw single-process open, no socket and no fallback.
+            IpcMode::Off => {
+                let executor = Executor::open_durable_local_with_options(&path, options)?;
+                Ok(Self::local(executor, None))
+            }
+            // Host: win the lock and host a socket others can broker to.
+            IpcMode::Host => Self::open_brokered(&path, options, true),
+            // Client: win the lock but do not host; broker only on contention.
+            IpcMode::Client => Self::open_brokered(&path, options, false),
         }
-        Self::open_brokered(&path, options, host)
     }
 
     fn open_brokered(
@@ -278,7 +286,7 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use super::Connection;
-    use crate::{Command, DurableLocalOpenOptions};
+    use crate::{Command, DurableLocalOpenOptions, IpcMode};
 
     fn kv_put(key: &str, value: &str) -> Command {
         serde_json::from_value(serde_json::json!({
@@ -298,12 +306,28 @@ mod tests {
         let conn = Connection::open_durable_local_brokered(
             dir.path(),
             DurableLocalOpenOptions::new(),
-            false,
-            false, // ipc off
+            IpcMode::Off,
         )
         .expect("open");
         assert!(conn.is_local());
         assert!(!conn.is_hosting(), "opt-out never hosts");
+        conn.close().expect("close");
+    }
+
+    #[test]
+    fn client_mode_winning_the_lock_opens_local_without_hosting() {
+        // Client on an uncontended store wins the lock and opens Local — but,
+        // unlike Host, it must NOT host a socket (a one-shot has no business
+        // spinning up a listener). This pins the host=false in the Client arm.
+        let dir = tempfile::tempdir().expect("tmp");
+        let conn = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            IpcMode::Client,
+        )
+        .expect("open");
+        assert!(conn.is_local(), "an uncontended client wins the lock");
+        assert!(!conn.is_hosting(), "client never hosts a socket");
         conn.close().expect("close");
     }
 
@@ -315,8 +339,7 @@ mod tests {
         let owner = Connection::open_durable_local_brokered(
             dir.path(),
             DurableLocalOpenOptions::new(),
-            true, // host
-            true, // ipc on
+            IpcMode::Host,
         )
         .expect("owner open");
         assert!(
@@ -337,8 +360,7 @@ mod tests {
         let client = Connection::open_durable_local_brokered(
             dir.path(),
             DurableLocalOpenOptions::new(),
-            false, // a one-shot: no hosting, fallback only
-            true,
+            IpcMode::Client,
         )
         .expect("client open");
         assert!(
@@ -375,16 +397,14 @@ mod tests {
         let owner = Connection::open_durable_local_brokered(
             dir.path(),
             DurableLocalOpenOptions::new(),
-            true,
-            true,
+            IpcMode::Host,
         )
         .expect("owner open");
 
         let client = Connection::open_durable_local_brokered(
             dir.path(),
             DurableLocalOpenOptions::new(),
-            false,
-            true,
+            IpcMode::Client,
         )
         .expect("client open");
         assert!(!client.is_local(), "brokered as a client");
@@ -408,8 +428,7 @@ mod tests {
         let conn = Connection::open_durable_local_brokered(
             dir.path(),
             DurableLocalOpenOptions::new(),
-            false,
-            false,
+            IpcMode::Off,
         )
         .expect("open");
 
@@ -448,8 +467,7 @@ mod tests {
         let conn = Connection::open_durable_local_brokered(
             dir.path(),
             DurableLocalOpenOptions::new(),
-            false,
-            false,
+            IpcMode::Off,
         )
         .expect("open");
 
@@ -480,9 +498,10 @@ mod tests {
         std::fs::write(&path, b"plain file").expect("write file");
         let refused = Connection::open_durable_local_brokered(
             &path,
+            // Brokering ON (Client) — the fallback path, which must NOT swallow
+            // a non-contention error as if it were a busy owner.
             DurableLocalOpenOptions::new(),
-            false,
-            true, // ipc ON — the fallback path, which must NOT swallow this
+            IpcMode::Client,
         );
         let Err(error) = refused else {
             panic!("a regular file is not a database");
@@ -497,18 +516,16 @@ mod tests {
         let owner = Connection::open_durable_local_brokered(
             dir.path(),
             DurableLocalOpenOptions::new(),
-            true,
-            true,
+            IpcMode::Host,
         )
         .expect("owner open");
 
-        // ipc=false must not fall back to a client — it takes the raw lock path
-        // and fails with the lock-contention error.
+        // IpcMode::Off must not fall back to a client — it takes the raw lock
+        // path and fails with the lock-contention error.
         let refused = Connection::open_durable_local_brokered(
             dir.path(),
             DurableLocalOpenOptions::new(),
-            false,
-            false, // ipc off
+            IpcMode::Off,
         );
         let Err(error) = refused else {
             panic!("opt-out should refuse a held store, not broker");
