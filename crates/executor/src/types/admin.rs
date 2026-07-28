@@ -39,6 +39,25 @@ pub enum AdminControlStatus {
     Unavailable,
 }
 
+/// Multi-process IPC status output.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+pub struct AdminIpcStatus {
+    /// True when this process owns the store (holds the writer lock); false
+    /// when it is a client of another same-machine owner.
+    pub is_owner: bool,
+    /// True when this process is hosting a broker socket for other processes.
+    pub hosting: bool,
+    /// The hosted (or connected) socket path, when one exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket_path: Option<String>,
+    /// The hosting owner's process id, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_pid: Option<u64>,
+    /// Number of clients currently connected to the host (0 when not hosting).
+    pub client_count: u64,
+}
+
 /// Database information output.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]

@@ -11,7 +11,7 @@ use std::io::{self, BufReader, BufWriter};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -39,6 +39,9 @@ pub struct IpcServer {
     pointer_path: Option<PathBuf>,
     pid_path: PathBuf,
     shutdown: Arc<AtomicBool>,
+    /// Live count of connected clients, incremented/decremented by each handler
+    /// thread and read by `ipc_status` through the injected host state.
+    client_count: Arc<AtomicUsize>,
     listener_handle: Option<JoinHandle<()>>,
 }
 
@@ -86,15 +89,27 @@ impl IpcServer {
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let listener_shutdown = shutdown.clone();
-        let listener_handle = thread::Builder::new()
-            .name("ipc-listener".into())
-            .spawn(move || listener_loop(listener, executor, baseline, listener_shutdown))?;
+        let client_count = Arc::new(AtomicUsize::new(0));
+        let listener_client_count = client_count.clone();
+        let listener_handle =
+            thread::Builder::new()
+                .name("ipc-listener".into())
+                .spawn(move || {
+                    listener_loop(
+                        listener,
+                        executor,
+                        baseline,
+                        listener_shutdown,
+                        listener_client_count,
+                    );
+                })?;
 
         Ok(Self {
             socket_path: binding.socket,
             pointer_path: binding.pointer,
             pid_path: pid_file,
             shutdown,
+            client_count,
             listener_handle: Some(listener_handle),
         })
     }
@@ -103,6 +118,12 @@ impl IpcServer {
     #[must_use]
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
+    }
+
+    /// The live connected-client counter, shared with the handler threads.
+    #[must_use]
+    pub fn client_count(&self) -> Arc<AtomicUsize> {
+        self.client_count.clone()
     }
 
     /// Stop the listener, wait for it, and unlink the socket, pointer, and pid
@@ -198,6 +219,7 @@ fn listener_loop(
     executor: Arc<Mutex<Executor>>,
     baseline: Arc<Baseline>,
     shutdown: Arc<AtomicBool>,
+    client_count: Arc<AtomicUsize>,
 ) {
     let mut handlers: Vec<JoinHandle<()>> = Vec::new();
     while !shutdown.load(Ordering::SeqCst) {
@@ -214,10 +236,12 @@ fn listener_loop(
                 let executor = executor.clone();
                 let baseline = baseline.clone();
                 let shutdown = shutdown.clone();
+                let client_count = client_count.clone();
                 match thread::Builder::new()
                     .name("ipc-handler".into())
-                    .spawn(move || handle_connection(stream, &executor, &baseline, &shutdown))
-                {
+                    .spawn(move || {
+                        handle_connection(stream, &executor, &baseline, &shutdown, client_count);
+                    }) {
                     Ok(handle) => handlers.push(handle),
                     Err(error) => tracing::warn!("failed to spawn IPC handler: {error}"),
                 }
@@ -238,12 +262,32 @@ fn listener_loop(
     }
 }
 
+/// RAII connected-client counter: bumps the live count for this handler
+/// thread's whole life and decrements on every exit path (EOF, timeout, error,
+/// or panic), so `ipc_status` never leaks a stale connection.
+struct ConnectionGuard(Arc<AtomicUsize>);
+
+impl ConnectionGuard {
+    fn enter(count: Arc<AtomicUsize>) -> Self {
+        count.fetch_add(1, Ordering::Relaxed);
+        Self(count)
+    }
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 fn handle_connection(
     stream: UnixStream,
     executor: &Arc<Mutex<Executor>>,
     baseline: &Baseline,
     shutdown: &AtomicBool,
+    client_count: Arc<AtomicUsize>,
 ) {
+    let _connected = ConnectionGuard::enter(client_count);
     let Ok(read_half) = stream.try_clone() else {
         return;
     };

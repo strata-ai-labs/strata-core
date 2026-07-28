@@ -13,6 +13,33 @@ impl Executor {
         })
     }
 
+    // Infallible: it only reads the injected transport state, so it returns an
+    // `Output` directly (the dispatch arm wraps it) rather than an always-`Ok`
+    // result.
+    pub(super) fn execute_ipc_status(&self) -> Output {
+        // Transport state, not engine state: read the host handle the owning
+        // `Connection` injected (absent on a client/cache/off open). `is_owner`
+        // is always true here — the responding executor owns the store; a
+        // remote client's `Connection` flips it to false on the way back.
+        let status = match self.ipc_host_state() {
+            Some(state) => crate::types::AdminIpcStatus {
+                is_owner: true,
+                hosting: true,
+                socket_path: Some(state.socket_path().display().to_string()),
+                owner_pid: Some(u64::from(state.owner_pid())),
+                client_count: state.client_count(),
+            },
+            None => crate::types::AdminIpcStatus {
+                is_owner: true,
+                hosting: false,
+                socket_path: None,
+                owner_pid: None,
+                client_count: 0,
+            },
+        };
+        Output::IpcStatus(status)
+    }
+
     pub(super) fn execute_remote_get(&mut self) -> ExecutorResult<Output> {
         let origin = self.database.remote_origin()?;
         Ok(Output::RemoteOriginResult {

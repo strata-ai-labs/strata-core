@@ -138,6 +138,8 @@ pub(crate) enum TopCommand {
     Describe,
     /// Configuration reads.
     Config(ConfigArgs),
+    /// Multi-process IPC status and control.
+    Ipc(IpcArgs),
     /// Show where this database was cloned from (its remote origin).
     Remote,
     /// Clone a dataset from a hub into a new local database.
@@ -212,6 +214,21 @@ pub(crate) struct ConfigArgs {
     /// Config command.
     #[command(subcommand)]
     pub(crate) command: ConfigCommand,
+}
+
+/// IPC command wrapper.
+#[derive(Debug, Args)]
+pub(crate) struct IpcArgs {
+    /// IPC command.
+    #[command(subcommand)]
+    pub(crate) command: IpcSubcommand,
+}
+
+/// Multi-process IPC subcommands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum IpcSubcommand {
+    /// Report this process's multi-process IPC state.
+    Status,
 }
 
 /// MCP command arguments.
@@ -1895,6 +1912,7 @@ mod tests {
         "inference unload",
         "info",
         "init",
+        "ipc status",
         "json count",
         "json delete",
         "json exists",

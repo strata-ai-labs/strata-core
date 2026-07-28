@@ -150,7 +150,21 @@ impl Connection {
         // health-debt posture).
         let server = if host {
             match IpcServer::start(path, executor.clone()) {
-                Ok(server) => Some(server),
+                Ok(server) => {
+                    // Inject the live host state so `ipc_status` (in-process or
+                    // forwarded from a client) can report the socket, pid, and
+                    // connected-client count.
+                    let state = crate::IpcHostState::new(
+                        server.socket_path().to_path_buf(),
+                        std::process::id(),
+                        server.client_count(),
+                    );
+                    executor
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .set_ipc_host_state(state);
+                    Some(server)
+                }
                 Err(error) => {
                     tracing::warn!(
                         "IPC server not started (store usable in-process only): {error}"
@@ -283,10 +297,22 @@ impl Connection {
                 executor.set_default_space(space)?;
                 executor.execute(command)
             }
-            ConnectionInner::Remote { client } => client
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .execute(Some(&branch), Some(&space), &command),
+            ConnectionInner::Remote { client } => {
+                let output = client
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .execute(Some(&branch), Some(&space), &command)?;
+                // The owner answered `ipc_status` as an owner would; from a
+                // remote client's vantage it is not the owner. Every other
+                // command passes through untouched.
+                Ok(match output {
+                    Output::IpcStatus(mut status) => {
+                        status.is_owner = false;
+                        Output::IpcStatus(status)
+                    }
+                    other => other,
+                })
+            }
         }
     }
 
@@ -316,7 +342,92 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use super::Connection;
-    use crate::{Command, DurableLocalOpenOptions, Executor, IpcMode};
+    use crate::{Command, DurableLocalOpenOptions, Executor, IpcMode, Output};
+
+    fn ipc_status(conn: &Connection) -> crate::types::AdminIpcStatus {
+        match conn
+            .execute(Command::IpcStatus {})
+            .expect("ipc_status runs")
+        {
+            Output::IpcStatus(status) => status,
+            other => panic!("expected ipc_status output, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ipc_status_reports_hosting_and_flips_is_owner_for_a_client() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let owner = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            IpcMode::Host,
+        )
+        .expect("owner open");
+
+        let owner_status = ipc_status(&owner);
+        assert!(owner_status.is_owner, "the host owns the store");
+        assert!(owner_status.hosting, "the host is hosting a socket");
+        assert!(
+            owner_status.socket_path.is_some(),
+            "the host reports its socket"
+        );
+        assert_eq!(owner_status.owner_pid, Some(u64::from(std::process::id())));
+        assert_eq!(owner_status.client_count, 0, "no clients connected yet");
+
+        // A client brokers in; its status forwards to the owner but reports the
+        // client's own ownership (false), and the live client count now sees it.
+        let client = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            IpcMode::Client,
+        )
+        .expect("client open");
+        assert!(!client.is_local(), "second opener brokered as a client");
+
+        let client_status = ipc_status(&client);
+        assert!(!client_status.is_owner, "a client is not the owner");
+        assert!(client_status.hosting, "the owner it reached is hosting");
+        assert_eq!(
+            client_status.owner_pid,
+            Some(u64::from(std::process::id())),
+            "reports the same-process owner's pid"
+        );
+        assert_eq!(client_status.client_count, 1, "the live client is counted");
+        assert_eq!(
+            ipc_status(&owner).client_count,
+            1,
+            "the owner sees its client"
+        );
+
+        // When the client leaves, its handler thread exits and the live count
+        // returns to zero (the decrement half of the connection guard).
+        client.close().expect("client close");
+        let mut count = u64::MAX;
+        for _ in 0..200 {
+            count = ipc_status(&owner).client_count;
+            if count == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            count, 0,
+            "the client count returns to zero after the client leaves"
+        );
+        owner.close().expect("owner close");
+    }
+
+    #[test]
+    fn ipc_status_on_a_cache_connection_is_not_hosting() {
+        let conn = Connection::cache(Executor::open_cache().expect("cache"));
+        let status = ipc_status(&conn);
+        assert!(status.is_owner, "a cache handle trivially owns its store");
+        assert!(!status.hosting, "cache mode hosts nothing");
+        assert!(status.socket_path.is_none());
+        assert_eq!(status.owner_pid, None);
+        assert_eq!(status.client_count, 0);
+        conn.close().expect("close");
+    }
 
     #[test]
     fn cache_connection_exposes_and_updates_its_default_scope() {

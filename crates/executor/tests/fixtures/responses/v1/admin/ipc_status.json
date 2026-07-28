@@ -1,0 +1,8 @@
+{
+  "data": {
+    "client_count": 0,
+    "hosting": false,
+    "is_owner": true
+  },
+  "type": "ipc_status"
+}

@@ -61,7 +61,7 @@ fn pin_2704_json_scan_seeks_rather_than_prefix_filters() {
 }
 
 /// PIN #2704: no catalog id (dotted) is executable as a wire `type` tag —
-/// every one of the 125 ids is rejected by the command parser, and the
+/// every one of the 126 ids is rejected by the command parser, and the
 /// executable `snake_case` name appears in no catalog field.
 #[test]
 fn pin_2704_catalog_ids_are_not_executable_wire_names() {
