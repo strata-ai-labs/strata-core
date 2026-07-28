@@ -65,6 +65,15 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
+    fn the_frame_cap_is_exactly_sixty_four_mebibytes() {
+        // Pin the literal cap value. The size-relative tests below reference
+        // MAX_FRAME_SIZE symbolically, so an arithmetic slip in the constant
+        // (a `*` becoming `+`/`/`) would silently resize the DoS bound without
+        // failing any of them — only a literal pin catches that.
+        assert_eq!(MAX_FRAME_SIZE, 67_108_864);
+    }
+
+    #[test]
     fn round_trip_preserves_payload() {
         let data = b"{\"type\":\"ping\"}";
         let mut buf = Vec::new();

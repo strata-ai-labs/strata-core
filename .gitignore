@@ -5,6 +5,10 @@
 target/
 *.rs.bk
 
+# cargo-mutants report output
+mutants.out/
+mutants.out.old/
+
 # IDE
 .vscode/
 .idea/

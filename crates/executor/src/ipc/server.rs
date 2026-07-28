@@ -222,7 +222,7 @@ fn listener_loop(
                     Err(error) => tracing::warn!("failed to spawn IPC handler: {error}"),
                 }
             }
-            Err(ref error) if error.kind() == io::ErrorKind::WouldBlock => {
+            Err(ref error) if is_transient_accept_error(error.kind()) => {
                 thread::sleep(ACCEPT_POLL);
             }
             Err(error) => {
@@ -258,9 +258,7 @@ fn handle_connection(
             Ok(frame) => frame,
             // A read timeout re-checks the shutdown flag and loops; anything
             // else (a clean EOF disconnect included) ends this connection.
-            Err(ref e)
-                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
-            {
+            Err(ref e) if is_read_retry_error(e.kind()) => {
                 continue;
             }
             Err(_) => break,
@@ -305,6 +303,21 @@ fn serve_one(executor: &Arc<Mutex<Executor>>, baseline: &Baseline, frame: &[u8])
             .unwrap_or_else(|_| wire_request_error("session scope rejected")),
         Err(_) => internal_panic_error(),
     }
+}
+
+/// A transient `accept()` outcome (the listener's non-blocking poll expiring)
+/// versus a real listener failure. Transient → re-poll; anything else ends the
+/// listener. Extracted as a pure predicate so its classification is unit-tested
+/// directly (the accept loop itself is OS-timing-driven).
+fn is_transient_accept_error(kind: io::ErrorKind) -> bool {
+    kind == io::ErrorKind::WouldBlock
+}
+
+/// A read error that should keep the connection alive (the per-request read
+/// timeout firing) versus one that ends it (a clean EOF or hard error).
+/// Extracted as a pure predicate for the same reason.
+fn is_read_retry_error(kind: io::ErrorKind) -> bool {
+    matches!(kind, io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
 }
 
 fn wire_request_error(detail: &str) -> String {
@@ -373,6 +386,52 @@ mod tests {
             !super::process_is_alive(i32::MAX),
             "i32::MAX is not a running process"
         );
+    }
+
+    #[test]
+    fn transient_accept_errors_are_exactly_would_block() {
+        use std::io::ErrorKind;
+        // Only a poll-timeout (WouldBlock) re-polls; every other kind ends the
+        // listener. A wrong predicate would either spin on real failures or drop
+        // the listener on a benign timeout.
+        assert!(super::is_transient_accept_error(ErrorKind::WouldBlock));
+        assert!(!super::is_transient_accept_error(ErrorKind::TimedOut));
+        assert!(!super::is_transient_accept_error(
+            ErrorKind::ConnectionAborted
+        ));
+        assert!(!super::is_transient_accept_error(ErrorKind::Other));
+    }
+
+    #[test]
+    fn read_retry_errors_are_the_timeout_kinds_only() {
+        use std::io::ErrorKind;
+        // A read timeout (WouldBlock OR TimedOut, platform-dependent) keeps the
+        // connection alive; a clean EOF or hard error ends it. `&&` instead of
+        // `||`, or dropping either kind, would strand paused clients.
+        assert!(super::is_read_retry_error(ErrorKind::WouldBlock));
+        assert!(super::is_read_retry_error(ErrorKind::TimedOut));
+        assert!(!super::is_read_retry_error(ErrorKind::UnexpectedEof));
+        assert!(!super::is_read_retry_error(ErrorKind::BrokenPipe));
+    }
+
+    #[test]
+    fn dropping_the_server_without_an_explicit_shutdown_still_cleans_up() {
+        // RAII: an owner dropped without an explicit shutdown() — e.g. a panic
+        // unwinds its scope — must still unlink its socket and pid file, or a
+        // crashed owner would strand a dead socket that blocks reconnection.
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let sock;
+        let pid = dir.path().join("strata.pid");
+        {
+            let server = IpcServer::start(dir.path(), executor).expect("start");
+            sock = server.socket_path().to_path_buf();
+            assert!(sock.exists(), "socket present while the owner is alive");
+            assert!(pid.exists(), "pid file present while the owner is alive");
+            // `server` drops here — no explicit shutdown().
+        }
+        assert!(!sock.exists(), "socket unlinked on drop");
+        assert!(!pid.exists(), "pid file unlinked on drop");
     }
 
     #[test]

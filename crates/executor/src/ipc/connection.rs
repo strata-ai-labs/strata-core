@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::{
     Command, DurableLocalOpenOptions, Executor, ExecutorResult, Output, DEFAULT_BRANCH,
@@ -27,11 +27,10 @@ use super::server::IpcServer;
 /// The engine's lock-contention wire code — the signal that another process
 /// owns the store (see the RFC trace: `local_fs` EWOULDBLOCK folds to this).
 const LOCK_CONTENTION_CODE: &str = "unavailable.engine.persistence";
-/// How long the open dance rides the owner start-up / shut-down window before
-/// giving a final answer.
-const OPEN_RETRY_BUDGET: Duration = Duration::from_millis(500);
-/// Poll step while waiting on that window.
+/// Poll step while riding the owner start-up / shut-down window.
 const OPEN_RETRY_STEP: Duration = Duration::from_millis(25);
+/// Number of poll steps (≈ the ~250ms owner-close window, doubled for headroom).
+const OPEN_RETRY_STEPS: u32 = 20;
 
 /// A transport-transparent database connection.
 pub struct Connection {
@@ -90,26 +89,35 @@ impl Connection {
         host: bool,
     ) -> ExecutorResult<Self> {
         match Executor::open_durable_local_with_options(path, options.clone()) {
-            Ok(executor) => return Ok(Self::local_hosting(path, executor, host)),
-            Err(error) if error.code() == LOCK_CONTENTION_CODE => {}
-            Err(error) => return Err(error),
+            Ok(executor) => Ok(Self::local_hosting(path, executor, host)),
+            // Contention: the store is already owned. Ride the owner start-up /
+            // shut-down window, brokering to its socket if one appears.
+            Err(error) if error.code() == LOCK_CONTENTION_CODE => {
+                Self::broker_to_owner(path, options, host)
+            }
+            // A non-contention open error never brokers — propagate it as-is.
+            Err(error) => Err(error),
         }
+    }
 
-        // The store is owned. Ride the start-up / shut-down window: an owner may
-        // be binding its socket (become a client) or releasing the lock (become
-        // the owner). Whichever resolves first within the budget wins.
-        let deadline = Instant::now() + OPEN_RETRY_BUDGET;
-        loop {
+    /// The store was owned when we tried to open it. Ride the short, fixed owner
+    /// start-up / shut-down window (bounded poll iterations, not a wall clock):
+    /// an owner may be binding its socket (we become a client) or releasing the
+    /// lock (we become the owner). Whichever resolves first wins; if neither does
+    /// within the window, a final open returns the definitive lock error.
+    ///
+    /// This is a deliberately racy retry loop — its per-iteration branches are
+    /// timing-dependent and convergent, so it is carved out of the mutation gate.
+    fn broker_to_owner(
+        path: &Path,
+        options: DurableLocalOpenOptions,
+        host: bool,
+    ) -> ExecutorResult<Self> {
+        for _ in 0..OPEN_RETRY_STEPS {
             if let Some(socket) = resolve_connect(path) {
                 if let Ok(client) = IpcClient::connect(&socket) {
                     return Ok(Self::remote(client));
                 }
-            }
-            if Instant::now() >= deadline {
-                // Final attempt to win the lock; on contention this returns the
-                // definitive lock error to the caller.
-                return Executor::open_durable_local_with_options(path, options)
-                    .map(|executor| Self::local_hosting(path, executor, host));
             }
             match Executor::open_durable_local_with_options(path, options.clone()) {
                 Ok(executor) => return Ok(Self::local_hosting(path, executor, host)),
@@ -119,6 +127,8 @@ impl Connection {
                 Err(error) => return Err(error),
             }
         }
+        Executor::open_durable_local_with_options(path, options)
+            .map(|executor| Self::local_hosting(path, executor, host))
     }
 
     fn local_hosting(path: &Path, executor: Executor, host: bool) -> Self {
@@ -387,6 +397,77 @@ mod tests {
             .expect_err("a command with no owner fails");
         assert_eq!(error.code(), "unavailable.executor.ipc_transport");
         assert_eq!(error.class(), crate::ExecutorErrorClass::Unavailable);
+    }
+
+    #[test]
+    fn set_default_branch_scopes_subsequent_commands() {
+        // A local connection's default branch/space must actually apply to
+        // later commands (a no-op setter would silently target the wrong
+        // branch).
+        let dir = tempfile::tempdir().expect("tmp");
+        let conn = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            false,
+            false,
+        )
+        .expect("open");
+
+        let created: serde_json::Value = serde_json::to_value(
+            conn.execute(
+                serde_json::from_value(serde_json::json!({
+                    "type": "branch_create", "branch": "feature",
+                }))
+                .expect("cmd"),
+            )
+            .expect("create branch"),
+        )
+        .expect("json");
+        assert_eq!(created["type"], "branch");
+
+        conn.set_default_branch("feature");
+        conn.execute(kv_put("aw==", "dg=="))
+            .expect("put on default scope");
+        // The write must be visible on `feature` (the connection default),
+        // and absent on the store default.
+        let on_feature = read_branch(&conn, Some("feature"), "aw==");
+        assert_eq!(on_feature["data"]["value"]["value"], "dg==");
+        let on_default = read_branch(&conn, Some(crate::DEFAULT_BRANCH), "aw==");
+        assert_eq!(on_default["data"]["found"], false);
+
+        conn.close().expect("close");
+    }
+
+    #[test]
+    fn set_default_space_applies_to_subsequent_commands() {
+        // A no-op space setter would silently leave commands on the store
+        // default. Observe the setter took effect via validation: an over-long
+        // default space (rejected by ProductSpace) must surface on the NEXT
+        // command, proving `execute` applied the connection's space.
+        let dir = tempfile::tempdir().expect("tmp");
+        let conn = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            false,
+            false,
+        )
+        .expect("open");
+
+        conn.set_default_space("s".repeat(usize::from(u16::MAX) + 1));
+        let Err(error) = conn.execute(kv_put("aw==", "dg==")) else {
+            panic!("an over-long default space must be rejected when applied");
+        };
+        assert_eq!(error.code(), "invalid_argument.engine.product_space");
+        conn.close().expect("close");
+    }
+
+    /// Read a key on an explicit branch (bypasses the connection scope).
+    fn read_branch(conn: &Connection, branch: Option<&str>, key: &str) -> serde_json::Value {
+        let command = serde_json::from_value(serde_json::json!({
+            "type": "kv_get", "branch": branch, "key": key,
+        }))
+        .expect("kv_get");
+        serde_json::to_value(conn.execute(command).expect("get")).expect("json")
     }
 
     #[test]

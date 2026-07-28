@@ -167,8 +167,12 @@ mod path_tests {
     }
 
     #[test]
-    fn fnv1a_mixes_input() {
-        assert_ne!(fnv1a(b""), fnv1a(b"x"));
+    fn fnv1a_matches_the_reference_hash() {
+        // Golden FNV-1a values pin the exact mix (an OR-based or otherwise
+        // altered accumulator would diverge here).
+        assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325, "offset basis");
+        assert_eq!(fnv1a(b"x"), 0xaf63_f54c_8602_1707);
+        assert_eq!(fnv1a(b"strata"), 0x2b58_aad8_d3bb_901c);
         assert_ne!(fnv1a(b"ab"), fnv1a(b"ba"), "order-sensitive");
     }
 
