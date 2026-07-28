@@ -16,6 +16,7 @@ section: admin
 | [Clone hub dataset](/docs/admin/hub_clone) | Clone a dataset from a hub into a new local database. |
 | [Read database info](/docs/admin/info) | Read database identity and a catalog summary. |
 | [Read IPC status](/docs/admin/ipc_status) | Report this process's multi-process IPC state. |
+| [Stop IPC hosting](/docs/admin/ipc_stop) | Stop hosting the multi-process broker socket. |
 | [Read database metrics](/docs/admin/metrics) | Read lightweight database metrics. |
 | [Ping database](/docs/admin/ping) | Check that the database handle is live. |
 | [Read remote origin](/docs/admin/remote) | Read where this database was cloned from. |

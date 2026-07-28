@@ -229,6 +229,8 @@ pub(crate) struct IpcArgs {
 pub(crate) enum IpcSubcommand {
     /// Report this process's multi-process IPC state.
     Status,
+    /// Stop hosting the multi-process broker socket.
+    Stop,
 }
 
 /// MCP command arguments.
@@ -1913,6 +1915,7 @@ mod tests {
         "info",
         "init",
         "ipc status",
+        "ipc stop",
         "json count",
         "json delete",
         "json exists",

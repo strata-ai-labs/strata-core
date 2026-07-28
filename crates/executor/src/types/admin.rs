@@ -39,6 +39,15 @@ pub enum AdminControlStatus {
     Unavailable,
 }
 
+/// Multi-process IPC stop output.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+pub struct AdminIpcStop {
+    /// True when a running host was stopped; false when this process was not
+    /// hosting a socket (nothing to stop).
+    pub stopped: bool,
+}
+
 /// Multi-process IPC status output.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]

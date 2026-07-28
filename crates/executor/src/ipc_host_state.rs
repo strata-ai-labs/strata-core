@@ -14,31 +14,46 @@
 //! unix transport is what populates it.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 /// A handle onto a running IPC host's reportable state.
 ///
 /// `socket_path` and `owner_pid` are fixed at host start; `client_count` is a
 /// live counter shared with the server, so a status read always reflects the
-/// current number of connected clients.
+/// current number of connected clients. `stop_signal` is the server's shutdown
+/// flag — setting it stops the listener (`ipc_stop`).
 #[derive(Clone, Debug)]
 pub struct IpcHostState {
     socket_path: PathBuf,
     owner_pid: u32,
     client_count: Arc<AtomicUsize>,
+    stop_signal: Arc<AtomicBool>,
 }
 
 impl IpcHostState {
-    /// Build a host-state handle from a server's fixed facts and its live
-    /// connection counter.
+    /// Build a host-state handle from a server's fixed facts, its live
+    /// connection counter, and its shutdown flag.
     #[must_use]
-    pub fn new(socket_path: PathBuf, owner_pid: u32, client_count: Arc<AtomicUsize>) -> Self {
+    pub fn new(
+        socket_path: PathBuf,
+        owner_pid: u32,
+        client_count: Arc<AtomicUsize>,
+        stop_signal: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             socket_path,
             owner_pid,
             client_count,
+            stop_signal,
         }
+    }
+
+    /// Signal the hosting server to stop accepting connections (`ipc_stop`).
+    /// The listener exits on its next poll; the socket files are unlinked when
+    /// the owning `Connection` is later closed or dropped.
+    pub fn request_stop(&self) {
+        self.stop_signal.store(true, Ordering::SeqCst);
     }
 
     /// The socket this owner is hosting on.

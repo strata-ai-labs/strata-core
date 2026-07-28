@@ -80,6 +80,7 @@ response_models:
   - StatusResponse<PingInfo>
   - StatusResponse<AdminDatabaseInfo>
   - StatusResponse<AdminIpcStatus>
+  - StatusResponse<AdminIpcStop>
   - StatusResponse<AdminHealth>
   - StatusResponse<AdminMetrics>
   - StatusResponse<AdminDescribe>

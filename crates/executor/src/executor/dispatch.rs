@@ -13,6 +13,7 @@ impl Executor {
             Command::Describe { branch } => self.execute_describe(branch.as_deref()),
             Command::ConfigGet {} => self.execute_config_get(),
             Command::IpcStatus {} => Ok(self.execute_ipc_status()),
+            Command::IpcStop {} => Ok(self.execute_ipc_stop()),
             Command::RemoteGet {} => self.execute_remote_get(),
             Command::HubClone {
                 dataset,

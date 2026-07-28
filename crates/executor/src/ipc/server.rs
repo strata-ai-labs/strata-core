@@ -126,6 +126,12 @@ impl IpcServer {
         self.client_count.clone()
     }
 
+    /// The shutdown flag; setting it stops the listener (`ipc_stop`).
+    #[must_use]
+    pub fn stop_signal(&self) -> Arc<AtomicBool> {
+        self.shutdown.clone()
+    }
+
     /// Stop the listener, wait for it, and unlink the socket, pointer, and pid
     /// files. Idempotent; `Drop` calls the same cleanup.
     pub fn shutdown(&mut self) {

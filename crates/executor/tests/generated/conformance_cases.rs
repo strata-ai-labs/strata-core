@@ -155,6 +155,28 @@ fn admin_ipc_status_replay_observes_a_declared_output() {
     support::replay_observes_declared(&[], "requests/v1/admin/ipc_status.json", &["ipc_status"], false);
 }
 
+// ---- admin.ipc_stop ----
+
+#[test]
+fn admin_ipc_stop_request_wire_roundtrip_is_idempotent() {
+    support::request_roundtrip_idempotent("requests/v1/admin/ipc_stop.json");
+}
+
+#[test]
+fn admin_ipc_stop_response_wire_roundtrip_is_idempotent() {
+    support::response_roundtrip_idempotent("responses/v1/admin/ipc_stop.json");
+}
+
+#[test]
+fn admin_ipc_stop_request_rejects_unknown_keys_at_closed_objects() {
+    support::unknown_keys_rejected("requests/v1/admin/ipc_stop.json", &[""]);
+}
+
+#[test]
+fn admin_ipc_stop_replay_observes_a_declared_output() {
+    support::replay_observes_declared(&[], "requests/v1/admin/ipc_stop.json", &["ipc_stop"], false);
+}
+
 // ---- admin.metrics ----
 
 #[test]

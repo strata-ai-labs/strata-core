@@ -255,6 +255,19 @@ impl Executor {
         self.ipc_host_state.as_ref()
     }
 
+    /// Stop hosting the IPC socket (`ipc_stop`): signal the server to stop and
+    /// forget the host state, so `ipc_status` reports `hosting: false`. Returns
+    /// whether a running host was stopped (`false` when not hosting).
+    pub(crate) fn stop_ipc_hosting(&mut self) -> bool {
+        match self.ipc_host_state.take() {
+            Some(state) => {
+                state.request_stop();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Replaces the inference backend used by inference commands. Accepts any
     /// [`strata_inference::InferenceService`] — the real `InferenceRuntime` or a
     /// deterministic testkit fake.

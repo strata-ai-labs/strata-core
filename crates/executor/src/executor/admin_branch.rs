@@ -40,6 +40,15 @@ impl Executor {
         Output::IpcStatus(status)
     }
 
+    // Infallible: stops the injected host (if any) and returns whether it did.
+    // The dispatch arm wraps it; a remote client's request lands here on the
+    // owner's executor, so a client's `ipc_stop` stops the owner's socket.
+    pub(super) fn execute_ipc_stop(&mut self) -> Output {
+        Output::IpcStop(crate::types::AdminIpcStop {
+            stopped: self.stop_ipc_hosting(),
+        })
+    }
+
     pub(super) fn execute_remote_get(&mut self) -> ExecutorResult<Output> {
         let origin = self.database.remote_origin()?;
         Ok(Output::RemoteOriginResult {

@@ -57,6 +57,9 @@ pub enum Command {
     /// Reports this process's multi-process IPC state (whether it hosts a
     /// broker socket, the socket path, owner pid, and live client count).
     IpcStatus {},
+    /// Stops hosting the multi-process broker socket (a client forwards this to
+    /// the owner). Idempotent; a non-host reports nothing was stopped.
+    IpcStop {},
     /// Reads where this database was cloned from (its remote origin),
     /// when clone recorded one.
     RemoteGet {},
@@ -1753,6 +1756,7 @@ impl Command {
             Self::Describe { .. } => "describe",
             Self::ConfigGet {} => "config_get",
             Self::IpcStatus {} => "ipc_status",
+            Self::IpcStop {} => "ipc_stop",
             Self::RemoteGet {} => "remote_get",
             Self::HubClone { .. } => "hub_clone",
             Self::ConfigureGetKey { .. } => "configure_get_key",
