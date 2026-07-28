@@ -158,6 +158,7 @@ impl Connection {
                         server.socket_path().to_path_buf(),
                         std::process::id(),
                         server.client_count(),
+                        server.stop_signal(),
                     );
                     executor
                         .lock()
@@ -352,6 +353,74 @@ mod tests {
             Output::IpcStatus(status) => status,
             other => panic!("expected ipc_status output, got {other:?}"),
         }
+    }
+
+    fn ipc_stop(conn: &Connection) -> crate::types::AdminIpcStop {
+        match conn.execute(Command::IpcStop {}).expect("ipc_stop runs") {
+            Output::IpcStop(result) => result,
+            other => panic!("expected ipc_stop output, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ipc_stop_halts_hosting_and_is_idempotent() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let owner = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            IpcMode::Host,
+        )
+        .expect("owner open");
+        assert!(ipc_status(&owner).hosting, "hosting before stop");
+
+        assert!(ipc_stop(&owner).stopped, "the running host is stopped");
+        assert!(
+            !ipc_status(&owner).hosting,
+            "the host reports it is no longer hosting after stop"
+        );
+        assert!(!ipc_stop(&owner).stopped, "stopping again is a no-op");
+
+        owner.close().expect("owner close");
+    }
+
+    #[test]
+    fn a_client_ipc_stop_stops_the_owner_hosting() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let owner = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            IpcMode::Host,
+        )
+        .expect("owner open");
+        let client = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            IpcMode::Client,
+        )
+        .expect("client open");
+        assert!(!client.is_local(), "second opener brokered as a client");
+
+        // The client's `ipc_stop` forwards to the owner, which stops hosting.
+        assert!(ipc_stop(&client).stopped, "the client stopped the owner");
+        assert!(
+            !ipc_status(&owner).hosting,
+            "the owner stopped hosting at the client's request"
+        );
+
+        // Stopping actually signals the server (not just clears the state): the
+        // owner's handler sees the shutdown flag and drops this client, so the
+        // client's next command loses its transport.
+        let mut kicked = false;
+        for _ in 0..200 {
+            if client.execute(Command::IpcStatus {}).is_err() {
+                kicked = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(kicked, "the client is dropped once the owner stops hosting");
+
+        owner.close().expect("owner close");
     }
 
     #[test]

@@ -416,6 +416,51 @@ fn writer_lock_is_exclusive_across_processes_and_releases_on_kill() {
     assert_eq!(stdout(&read).trim(), "1", "pre-kill durable data survives");
 }
 
+/// `strata ipc stop`, run against a live `--ipc host` holder, brokers to it and
+/// tells it to stop hosting — a one-shot control command over the socket.
+#[test]
+fn ipc_stop_halts_a_running_host() {
+    use std::io::{BufRead, Write};
+
+    let dir = tempfile::tempdir().expect("tmp");
+    let db = db_arg(dir.path());
+    assert_ok(&strata(&["--db", &db, "kv", "put", "seed", "1"]), "seed");
+
+    let mut holder = Command::new(env!("CARGO_BIN_EXE_strata"))
+        .args(["--db", &db, "--ipc", "host"])
+        .env_remove("STRATA_DB")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn host holder");
+    holder
+        .stdin
+        .as_mut()
+        .expect("holder stdin")
+        .write_all(b"kv put holder 1\n")
+        .expect("command the holder");
+    let mut holder_stdout = std::io::BufReader::new(holder.stdout.take().expect("holder stdout"));
+    let mut line = String::new();
+    holder_stdout
+        .read_line(&mut line)
+        .expect("holder responds once it hosts");
+
+    // A one-shot `ipc stop` brokers to the host and stops its hosting.
+    let stop = strata(&["--db", &db, "--json", "ipc", "stop"]);
+    assert_ok(&stop, "ipc stop");
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout(&stop).trim()).expect("ipc stop --json parses");
+    assert_eq!(parsed["type"], "ipc_stop", "typed envelope: {parsed}");
+    assert_eq!(
+        parsed["data"]["stopped"], true,
+        "the running host was stopped: {parsed}"
+    );
+
+    drop(holder.stdin.take());
+    let _ = holder.wait();
+}
+
 /// `strata ipc status` reports this process's multi-process state. A one-shot
 /// against an uncontended store is a (client-mode) owner that hosts nothing.
 #[test]

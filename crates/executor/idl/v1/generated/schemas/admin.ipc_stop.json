@@ -1,0 +1,51 @@
+{
+  "$defs": {
+    "AdminIpcStop": {
+      "description": "Multi-process IPC stop output.",
+      "properties": {
+        "stopped": {
+          "description": "True when a running host was stopped; false when this process was not\nhosting a socket (nothing to stop).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "stopped"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/admin.ipc_stop.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "admin.ipc_stop",
+  "request": {
+    "additionalProperties": false,
+    "description": "Stops hosting the multi-process broker socket (a client forwards this to\nthe owner). Idempotent; a non-host reports nothing was stopped.",
+    "properties": {
+      "type": {
+        "const": "ipc_stop",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Result of stopping multi-process IPC hosting.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/AdminIpcStop"
+      },
+      "type": {
+        "const": "ipc_stop",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

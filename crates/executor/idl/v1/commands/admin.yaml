@@ -97,6 +97,20 @@ commands:
     fixtures:
       request: requests/v1/admin/ipc_status.json
       response: responses/v1/admin/ipc_status.json
+  - id: admin.ipc_stop
+    kind: action.status
+    title: Stop IPC hosting
+    input: Command::IpcStop
+    output: Output::IpcStop
+    result: AdminIpcStop
+    response_model: StatusResponse<AdminIpcStop>
+    cli_path: ["ipc", "stop"]
+    prose: commands/admin.ipc_stop.md
+    errors-:
+      - not_found.engine.branch
+    fixtures:
+      request: requests/v1/admin/ipc_stop.json
+      response: responses/v1/admin/ipc_stop.json
   - id: admin.remote
     kind: read.get
     title: Read remote origin

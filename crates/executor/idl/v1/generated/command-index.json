@@ -382,6 +382,53 @@
       }
     },
     {
+      "id": "admin.ipc_stop",
+      "family": "admin",
+      "op": "ipc_stop",
+      "kind": "action.status",
+      "title": "Stop IPC hosting",
+      "summary": "Stop hosting the multi-process broker socket.",
+      "description": "Stops hosting the same-machine broker socket for this store: the listener stops accepting connections and the store is no longer reachable by new clients. Run from a client, it forwards to the owner, which stops hosting (ending that client's own connection). The store stays open in this process; the socket files are unlinked when the owner closes. Idempotent — a process that was not hosting reports `stopped: false`.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/ipc_stop",
+      "cli": {
+        "path": [
+          "ipc",
+          "stop"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_ipc_stop",
+        "description": "Use this when the user wants to stop sharing this database across processes — tear down the broker socket so no new clients can attach."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::IpcStop",
+      "output": "Output::IpcStop",
+      "outputs": [
+        "Output::IpcStop"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<AdminIpcStop>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/ipc_stop.json",
+        "response": "responses/v1/admin/ipc_stop.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.ipc_stop.md"
+      }
+    },
+    {
       "id": "admin.metrics",
       "family": "admin",
       "op": "metrics",

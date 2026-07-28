@@ -1,0 +1,6 @@
+{
+  "data": {
+    "stopped": false
+  },
+  "type": "ipc_stop"
+}

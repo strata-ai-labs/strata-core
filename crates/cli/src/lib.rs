@@ -304,6 +304,7 @@ pub(crate) fn execute_parsed_command(
         options::TopCommand::Config(args) => connection.execute(config_command(args.command))?,
         options::TopCommand::Ipc(args) => match args.command {
             options::IpcSubcommand::Status => connection.execute(Command::IpcStatus {})?,
+            options::IpcSubcommand::Stop => connection.execute(Command::IpcStop {})?,
         },
         options::TopCommand::Branch(args) => connection.execute(branch_command(args.command)?)?,
         options::TopCommand::Space(args) => {

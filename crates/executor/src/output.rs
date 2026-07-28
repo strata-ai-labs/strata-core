@@ -1,8 +1,8 @@
 //! Serializable command outputs.
 
 use crate::types::{
-    AdminConfig, AdminDatabaseInfo, AdminDescribe, AdminHealth, AdminIpcStatus, AdminMetrics,
-    ArrowExportResult, ArrowImportResult, BatchExistsItemResult, BatchExistsPresence,
+    AdminConfig, AdminDatabaseInfo, AdminDescribe, AdminHealth, AdminIpcStatus, AdminIpcStop,
+    AdminMetrics, ArrowExportResult, ArrowImportResult, BatchExistsItemResult, BatchExistsPresence,
     BatchGetItemResult, BatchItemResult, BatchResult, BranchCleanupItem, BranchItem, Bytes,
     CommitReceipt, EventBatchAppendItemResult, EventChainVerification, EventVersionedData,
     GraphBatchItemResult, GraphBfsData, GraphBindingHit, GraphCdlpData, GraphEdgeDataOutput,
@@ -29,6 +29,8 @@ pub enum Output {
     DatabaseInfo(AdminDatabaseInfo),
     /// Multi-process IPC state for this process.
     IpcStatus(AdminIpcStatus),
+    /// Result of stopping multi-process IPC hosting.
+    IpcStop(AdminIpcStop),
     /// A completed hub clone.
     HubCloneResult {
         /// Dataset cloned.
