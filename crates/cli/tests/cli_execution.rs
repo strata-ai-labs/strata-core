@@ -416,6 +416,68 @@ fn writer_lock_is_exclusive_across_processes_and_releases_on_kill() {
     assert_eq!(stdout(&read).trim(), "1", "pre-kill durable data survives");
 }
 
+/// With an explicit IPC host, a second process brokers to the first over the
+/// owner's socket instead of being refused — one engine, one store, two OS
+/// processes. This is the multi-process access the writer-lock exclusion
+/// otherwise forbids; only a designated host (here `--ipc host`) enables it.
+#[test]
+fn a_second_process_brokers_to_an_ipc_host_holder() {
+    use std::io::{BufRead, Write};
+
+    let dir = tempfile::tempdir().expect("tmp");
+    let db = db_arg(dir.path());
+    assert_ok(&strata(&["--db", &db, "kv", "put", "seeded", "1"]), "seed");
+
+    // A host holder: a piped session forced to host a socket (a piped session
+    // defaults to Client and would NOT host), kept alive by an open stdin.
+    // Round-trip a command first to prove it holds and hosts before contending.
+    let mut holder = Command::new(env!("CARGO_BIN_EXE_strata"))
+        .args(["--db", &db, "--ipc", "host"])
+        .env_remove("STRATA_DB")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn host holder");
+    holder
+        .stdin
+        .as_mut()
+        .expect("holder stdin")
+        .write_all(b"kv put holder 1\n")
+        .expect("command the holder");
+    let mut holder_stdout = std::io::BufReader::new(holder.stdout.take().expect("holder stdout"));
+    let mut line = String::new();
+    holder_stdout
+        .read_line(&mut line)
+        .expect("holder responds once it holds and hosts the database");
+    assert!(line.contains("holder"), "holder echoes its write: {line:?}");
+
+    // A one-shot contender now BROKERS to the host instead of being refused.
+    let brokered = strata(&["--db", &db, "kv", "put", "contender", "1"]);
+    assert_ok(
+        &brokered,
+        "the second process must broker to the host, not fail on the lock",
+    );
+
+    // The holder — the one and only engine — sees the brokered write, proving
+    // both processes share a single store.
+    holder
+        .stdin
+        .as_mut()
+        .expect("holder stdin")
+        .write_all(b"kv get contender\n")
+        .expect("read the brokered write back through the holder");
+    let mut got = String::new();
+    holder_stdout
+        .read_line(&mut got)
+        .expect("holder responds to the get");
+    assert!(got.contains('1'), "holder sees the brokered write: {got:?}");
+
+    // Closing stdin ends the holder's session and unlinks the socket.
+    drop(holder.stdin.take());
+    let _ = holder.wait();
+}
+
 /// Regression for #2618 (fixed by the creation durability barrier): killing
 /// the FIRST session on a fresh store leaves a usable database, not a
 /// permanent `data_loss.engine.control_plane_missing` brick.

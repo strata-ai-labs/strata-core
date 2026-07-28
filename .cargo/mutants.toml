@@ -64,4 +64,16 @@ exclude_re = [
     # (recreated_branch_refuses_dead_generation_timestamps_after_reopen).
     "replace seed_non_seeded_branch_timelines with \\(\\)",
     "replace && with \\|\\| in seed_non_seeded_branch_timelines",
+    # IPC-CLI (#2842): the `&mut Executor` -> `&Connection` session migration
+    # touched the signatures of three CLI functions that are untestable in CI
+    # by construction, so their mutants survive vacuously (same category as the
+    # loom/DST modules above). The logic they dispatch to IS unit-tested
+    # (handle_message, handle_tool_call, validate_context, execute_parsed_command).
+    #  - `mcp::serve`: a loop over the real process stdin; no seam feeds it lines.
+    #  - `run_repl`: a rustyline editor loop that requires a TTY.
+    #  - `run_clone`: a hub network round-trip (HubClone) no CI lane can reach,
+    #    like the inference `local`-gated files excluded in run C.
+    "replace serve -> Result<i32, CliError>",
+    "run_repl",
+    "run_clone",
 ]

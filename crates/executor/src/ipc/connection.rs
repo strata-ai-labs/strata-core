@@ -181,6 +181,15 @@ impl Connection {
         }
     }
 
+    /// Wrap a cache (non-durable, single-process) executor as a local
+    /// connection. Cache mode has no writer lock and no socket, so there is
+    /// nothing to broker — this is always a plain local handle, letting every
+    /// frontend hold one `Connection` type regardless of the open target.
+    #[must_use]
+    pub fn cache(executor: Executor) -> Self {
+        Self::local(executor, None)
+    }
+
     fn remote(client: IpcClient) -> Self {
         Self {
             inner: ConnectionInner::Remote {
@@ -227,6 +236,27 @@ impl Connection {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .space = space.into();
+    }
+
+    /// This connection's current default branch (the store's default at open,
+    /// or the last value set via [`Self::set_default_branch`]).
+    #[must_use]
+    pub fn default_branch(&self) -> String {
+        self.scope
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .branch
+            .clone()
+    }
+
+    /// This connection's current default space.
+    #[must_use]
+    pub fn default_space(&self) -> String {
+        self.scope
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .space
+            .clone()
     }
 
     /// Execute a command, returning the same typed result whether the store is
@@ -286,7 +316,23 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use super::Connection;
-    use crate::{Command, DurableLocalOpenOptions, IpcMode};
+    use crate::{Command, DurableLocalOpenOptions, Executor, IpcMode};
+
+    #[test]
+    fn cache_connection_exposes_and_updates_its_default_scope() {
+        // The cache constructor yields a plain local handle, and the scope
+        // getters read the store default then track set_default_* — the CLI
+        // relies on this for its prompt and one-shot scope resolution.
+        let conn = Connection::cache(Executor::open_cache().expect("cache"));
+        assert!(conn.is_local() && !conn.is_hosting(), "cache never hosts");
+        assert_eq!(conn.default_branch(), crate::DEFAULT_BRANCH);
+        assert_eq!(conn.default_space(), crate::DEFAULT_SPACE);
+        conn.set_default_branch("feature");
+        conn.set_default_space("docs");
+        assert_eq!(conn.default_branch(), "feature");
+        assert_eq!(conn.default_space(), "docs");
+        conn.close().expect("close");
+    }
 
     fn kv_put(key: &str, value: &str) -> Command {
         serde_json::from_value(serde_json::json!({

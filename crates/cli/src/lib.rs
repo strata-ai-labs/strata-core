@@ -9,7 +9,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use serde_json::Value;
-use strata_executor::{Command, Executor, ExecutorError, GraphPropertyDef};
+use strata_executor::ipc::Connection;
+use strata_executor::{Command, Executor, ExecutorError, GraphPropertyDef, IpcMode};
 
 mod agents;
 #[cfg(test)]
@@ -84,22 +85,27 @@ where
 /// path / `STRATA_DB` / `--cache`; refusal otherwise, like any one-shot
 /// command); this applies the session scope and serves stdio until the
 /// client closes stdin.
-fn serve_mcp(mut executor: Executor, context: &CommandContext) -> Result<i32, CliError> {
+fn serve_mcp(connection: Connection, context: &CommandContext) -> Result<i32, CliError> {
     let scope = context.scope_with_overrides(None, None);
     if let Some(branch) = scope.branch.as_deref() {
-        executor = executor.with_default_branch(branch)?;
+        connection.set_default_branch(branch);
     }
     if let Some(space) = scope.space.as_deref() {
-        executor.set_default_space(space.to_owned())?;
+        connection.set_default_space(space.to_owned());
     }
-    let exit = mcp::serve(&mut executor)?;
-    executor.close()?;
+    // Force the session scope to apply before we touch stdio: a reserved or
+    // malformed branch/space must fail loudly here (the connection validates
+    // the scope when it runs a command), not silently mid-stream.
+    connection.execute(Command::Ping {})?;
+    let exit = mcp::serve(&connection)?;
+    connection.close()?;
     Ok(exit)
 }
 
 fn execute(cli: Cli) -> Result<i32, CliError> {
     let format = cli.output_format();
     let durability = cli.durability.map(options::DurabilityArg::mode);
+    let ipc = cli.ipc.map(options::IpcArg::mode);
     let command = cli.command;
     let mut context = CommandContext::new(cli.branch, cli.space);
 
@@ -124,14 +130,16 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
                 command: options::McpCommand::Serve,
             })
         ) {
-            let opened = open::open_executor(
+            let opened = open::open_connection(
                 cli.cache,
                 cli.db,
                 cli.db_path,
                 durability,
+                // A long-lived owner other processes attach to.
+                ipc.unwrap_or(IpcMode::Host),
                 open::OpenIntent::OneShot,
             )?;
-            return serve_mcp(opened.executor, &context);
+            return serve_mcp(opened.connection, &context);
         }
         if let TopLevelAction::NoDatabase(value) = top_level_without_database(&command)? {
             render_value(&value, format)?;
@@ -139,38 +147,26 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
         }
 
         if let options::TopCommand::Clone(args) = command {
-            // Clone creates a NEW database; it never touches a session
-            // database, so it runs on an ephemeral cache executor.
-            let mut executor = Executor::open_cache()?;
-            let dest = args
-                .dest
-                .unwrap_or_else(|| PathBuf::from(format!("{}.strata", args.dataset)));
-            let output = executor.execute(Command::HubClone {
-                dataset: args.dataset,
-                branch: args.branch,
-                dest: dest.display().to_string(),
-                hub_url: args.hub,
-            })?;
-            render::render_output(&output, format)?;
-            executor.close()?;
-            return Ok(0);
+            return run_clone(args, format);
         }
 
-        let opened = open::open_executor(
+        let opened = open::open_connection(
             cli.cache,
             cli.db,
             cli.db_path,
             durability,
+            // A one-shot holds the lock briefly: broker to an owner, don't host.
+            ipc.unwrap_or(IpcMode::Client),
             open::OpenIntent::OneShot,
         )?;
-        let mut executor = opened.executor;
+        let connection = opened.connection;
         if let Some(branch) = context.scope_with_overrides(None, None).branch.as_deref() {
-            executor = executor.with_default_branch(branch)?;
+            connection.set_default_branch(branch);
         }
 
         let scope = context.scope_with_overrides(None, None);
-        execute_parsed_command(&mut executor, command, &scope, format)?;
-        executor.close()?;
+        execute_parsed_command(&connection, command, &scope, format)?;
+        connection.close()?;
         return Ok(0);
     }
 
@@ -180,7 +176,15 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
     } else {
         open::OpenIntent::Pipe
     };
-    let opened = open::open_executor(cli.cache, cli.db, cli.db_path, durability, intent)?;
+    let session_ipc = ipc.unwrap_or(default_session_ipc(interactive));
+    let opened = open::open_connection(
+        cli.cache,
+        cli.db,
+        cli.db_path,
+        durability,
+        session_ipc,
+        intent,
+    )?;
     if opened.implicit_cache {
         // Bare interactive invocation: an ephemeral session, stated plainly
         // so nobody discovers volatility after typing data in (first-run D2).
@@ -190,23 +194,52 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
         );
         eprintln!("type `help` for commands  |  agents: run `strata agents guide`");
     }
-    let mut executor = opened.executor;
+    let connection = opened.connection;
     if let Some(branch) = context.scope_with_overrides(None, None).branch.as_deref() {
-        executor = executor.with_default_branch(branch)?;
+        connection.set_default_branch(branch);
     }
 
     let saw_pipe_error = if interactive {
-        repl::run_repl(&mut executor, &mut context, format)?;
+        repl::run_repl(&connection, &mut context, format)?;
         false
     } else {
-        repl::run_pipe(&mut executor, &mut context, format)?
+        repl::run_pipe(&connection, &mut context, format)?
     };
-    executor.close()?;
+    connection.close()?;
     Ok(i32::from(saw_pipe_error))
 }
 
+/// The default multi-process mode for a session open when `--ipc` is unset: an
+/// interactive REPL is a long-lived owner others attach to (Host); a piped
+/// stream is a one-shot-like client that brokers to an owner but does not host.
+const fn default_session_ipc(interactive: bool) -> IpcMode {
+    if interactive {
+        IpcMode::Host
+    } else {
+        IpcMode::Client
+    }
+}
+
+/// Clone creates a NEW database from a hub dataset; it never touches a session
+/// database, so it runs on its own ephemeral cache executor.
+fn run_clone(args: options::CloneArgs, format: options::Format) -> Result<i32, CliError> {
+    let mut executor = Executor::open_cache()?;
+    let dest = args
+        .dest
+        .unwrap_or_else(|| PathBuf::from(format!("{}.strata", args.dataset)));
+    let output = executor.execute(Command::HubClone {
+        dataset: args.dataset,
+        branch: args.branch,
+        dest: dest.display().to_string(),
+        hub_url: args.hub,
+    })?;
+    render::render_output(&output, format)?;
+    executor.close()?;
+    Ok(0)
+}
+
 pub(crate) fn execute_parsed_command(
-    executor: &mut Executor,
+    connection: &Connection,
     command: options::TopCommand,
     scope: &Scope,
     format: options::Format,
@@ -215,20 +248,20 @@ pub(crate) fn execute_parsed_command(
         return Err(deferred_command(name));
     }
     // The executor owns branch and space session context (CLI-4). Resolve the
-    // current scope onto the executor so every path — including `command run`,
+    // current scope onto the connection so every path — including `command run`,
     // which executes raw JSON without per-command scope injection — honors
     // --branch/--space and the REPL `use` context uniformly.
-    let executor_branch = executor.default_branch().to_owned();
-    let branch = scope.branch.clone().unwrap_or(executor_branch);
-    executor.set_default_branch(branch)?;
+    let connection_branch = connection.default_branch();
+    let branch = scope.branch.clone().unwrap_or(connection_branch);
+    connection.set_default_branch(branch);
     let space = scope
         .space
         .clone()
         .unwrap_or_else(|| strata_executor::DEFAULT_SPACE.to_owned());
-    executor.set_default_space(space)?;
+    connection.set_default_space(space);
     let output = match command {
-        options::TopCommand::Ping => executor.execute(Command::Ping {})?,
-        options::TopCommand::Remote => executor.execute(Command::RemoteGet {})?,
+        options::TopCommand::Ping => connection.execute(Command::Ping {})?,
+        options::TopCommand::Remote => connection.execute(Command::RemoteGet {})?,
         options::TopCommand::Clone(_) => {
             unreachable!("clone is dispatched before a session database opens")
         }
@@ -256,41 +289,47 @@ pub(crate) fn execute_parsed_command(
                 "`mcp serve` runs as a one-shot command (it owns stdio), not inside a session",
             ));
         }
-        options::TopCommand::Info => executor.execute(Command::Info {
+        options::TopCommand::Info => connection.execute(Command::Info {
             branch: scope.branch.clone(),
         })?,
-        options::TopCommand::Health => executor.execute(Command::Health {
+        options::TopCommand::Health => connection.execute(Command::Health {
             branch: scope.branch.clone(),
         })?,
-        options::TopCommand::Metrics => executor.execute(Command::Metrics {
+        options::TopCommand::Metrics => connection.execute(Command::Metrics {
             branch: scope.branch.clone(),
         })?,
-        options::TopCommand::Describe => executor.execute(Command::Describe {
+        options::TopCommand::Describe => connection.execute(Command::Describe {
             branch: scope.branch.clone(),
         })?,
-        options::TopCommand::Config(args) => executor.execute(config_command(args.command))?,
-        options::TopCommand::Branch(args) => executor.execute(branch_command(args.command)?)?,
-        options::TopCommand::Space(args) => executor.execute(space_command(args.command, scope))?,
-        options::TopCommand::Kv(args) => executor.execute(kv_command(args.command, scope)?)?,
-        options::TopCommand::Json(args) => executor.execute(json_command(args.command, scope)?)?,
+        options::TopCommand::Config(args) => connection.execute(config_command(args.command))?,
+        options::TopCommand::Branch(args) => connection.execute(branch_command(args.command)?)?,
+        options::TopCommand::Space(args) => {
+            connection.execute(space_command(args.command, scope))?
+        }
+        options::TopCommand::Kv(args) => connection.execute(kv_command(args.command, scope)?)?,
+        options::TopCommand::Json(args) => {
+            connection.execute(json_command(args.command, scope)?)?
+        }
         options::TopCommand::Vector(command) => {
-            executor.execute(vector_command(command.command, scope)?)?
+            connection.execute(vector_command(command.command, scope)?)?
         }
         options::TopCommand::Event(args) => {
-            executor.execute(event_command(args.command, scope)?)?
+            connection.execute(event_command(args.command, scope)?)?
         }
         options::TopCommand::Graph(args) => {
-            executor.execute(graph_command(args.command, scope)?)?
+            connection.execute(graph_command(args.command, scope)?)?
         }
-        options::TopCommand::Arrow(args) => executor.execute(arrow_command(args.command, scope))?,
+        options::TopCommand::Arrow(args) => {
+            connection.execute(arrow_command(args.command, scope))?
+        }
         #[cfg(feature = "inference")]
         options::TopCommand::Inference(args) => {
             // Make config-file provider keys visible to the runtime (which reads
             // the environment). Env vars already set win — this only fills gaps.
             load_provider_keys_into_env();
-            executor.execute(inference_command(args.command)?)?
+            connection.execute(inference_command(args.command)?)?
         }
-        options::TopCommand::Command(args) => executor.execute(raw_command(args.command)?)?,
+        options::TopCommand::Command(args) => connection.execute(raw_command(args.command)?)?,
         options::TopCommand::Search(_)
         | options::TopCommand::Recipe(_)
         | options::TopCommand::Txn(_)
@@ -2148,15 +2187,25 @@ mod tests {
         assert_eq!(run(["strata", "--cache", "search"]), 2);
     }
 
+    #[test]
+    fn interactive_sessions_default_to_host_piped_to_client() {
+        // The default session mode when `--ipc` is unset: a TTY REPL hosts so
+        // other processes can attach; a piped stream brokers as a client and
+        // never hosts. (TTY detection can't be faked in-process, so the policy
+        // is pinned here rather than through the binary.)
+        assert_eq!(default_session_ipc(true), IpcMode::Host);
+        assert_eq!(default_session_ipc(false), IpcMode::Client);
+    }
+
     /// The MCP entry applies the session scope before it ever touches
     /// stdio: a reserved session branch must fail the serve loudly (and a
     /// stubbed exit code would sail past this expectation).
     #[test]
     fn serve_mcp_rejects_a_reserved_session_branch_before_serving() {
-        let executor = Executor::open_cache().expect("cache executor opens");
+        let connection = Connection::cache(Executor::open_cache().expect("cache executor opens"));
         let context = CommandContext::new(Some("_reserved".to_owned()), None);
         assert!(
-            serve_mcp(executor, &context).is_err(),
+            serve_mcp(connection, &context).is_err(),
             "a reserved session branch must refuse the MCP serve"
         );
     }
