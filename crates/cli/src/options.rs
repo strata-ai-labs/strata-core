@@ -23,6 +23,11 @@ pub(crate) struct Cli {
     /// `always` syncs every commit before acknowledging it.
     #[arg(long, value_enum, value_name = "MODE", conflicts_with = "cache")]
     pub(crate) durability: Option<DurabilityArg>,
+    /// Multi-process access for a durable database: `host` (default) hosts a
+    /// socket other processes broker to; `client` brokers to an existing owner
+    /// without hosting; `off` opts out (single-process only, no socket).
+    #[arg(long, value_enum, value_name = "MODE", conflicts_with = "cache")]
+    pub(crate) ipc: Option<IpcArg>,
     /// Default branch for commands that accept a branch.
     #[arg(long, global = true)]
     pub(crate) branch: Option<String>,
@@ -57,6 +62,27 @@ impl DurabilityArg {
         match self {
             Self::Standard => strata_executor::DurabilityMode::Standard,
             Self::Always => strata_executor::DurabilityMode::Always,
+        }
+    }
+}
+
+/// Multi-process access mode flag values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum IpcArg {
+    /// Win the lock and host a socket other processes can broker to.
+    Host,
+    /// Win the lock without hosting; broker to an existing owner on contention.
+    Client,
+    /// Single-process only: no socket, no broker fallback.
+    Off,
+}
+
+impl IpcArg {
+    pub(crate) const fn mode(self) -> strata_executor::IpcMode {
+        match self {
+            Self::Host => strata_executor::IpcMode::Host,
+            Self::Client => strata_executor::IpcMode::Client,
+            Self::Off => strata_executor::IpcMode::Off,
         }
     }
 }

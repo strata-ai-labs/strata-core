@@ -7,7 +7,8 @@ use clap::{CommandFactory, Parser};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use serde_json::json;
-use strata_executor::{Command, Executor, Output};
+use strata_executor::ipc::Connection;
+use strata_executor::{Command, Output};
 
 use crate::context::CommandContext;
 use crate::options::{Cli, Format};
@@ -15,7 +16,7 @@ use crate::render::render_value;
 use crate::{execute_parsed_command, CliError};
 
 pub(crate) fn run_repl(
-    executor: &mut Executor,
+    connection: &Connection,
     context: &mut CommandContext,
     format: Format,
 ) -> Result<(), CliError> {
@@ -26,10 +27,10 @@ pub(crate) fn run_repl(
     }
 
     loop {
-        match editor.readline(&context.prompt(executor.default_branch())) {
+        match editor.readline(&context.prompt(&connection.default_branch())) {
             Ok(line) => {
                 let _ = editor.add_history_entry(line.as_str());
-                if handle_line(executor, context, &line, format)? == LineOutcome::Exit {
+                if handle_line(connection, context, &line, format)? == LineOutcome::Exit {
                     break;
                 }
             }
@@ -46,14 +47,14 @@ pub(crate) fn run_repl(
 }
 
 pub(crate) fn run_pipe(
-    executor: &mut Executor,
+    connection: &Connection,
     context: &mut CommandContext,
     format: Format,
 ) -> Result<bool, CliError> {
     let mut saw_error = false;
     for line in io::stdin().lock().lines() {
         let line = line?;
-        match handle_line(executor, context, &line, format) {
+        match handle_line(connection, context, &line, format) {
             Ok(LineOutcome::Continue | LineOutcome::Exit) => {}
             Err(error) => {
                 saw_error = true;
@@ -71,7 +72,7 @@ enum LineOutcome {
 }
 
 fn handle_line(
-    executor: &mut Executor,
+    connection: &Connection,
     context: &mut CommandContext,
     line: &str,
     format: Format,
@@ -90,7 +91,7 @@ fn handle_line(
             Ok(LineOutcome::Continue)
         }
         ParsedLine::Use { branch, space } => {
-            validate_context(executor, &branch, space.as_deref())?;
+            validate_context(connection, &branch, space.as_deref())?;
             context.set_branch(branch.clone());
             context.set_space(space.clone());
             render_value(
@@ -110,7 +111,7 @@ fn handle_line(
             let Some(command) = cli.command else {
                 return Ok(LineOutcome::Continue);
             };
-            execute_parsed_command(executor, command, &scope, format)?;
+            execute_parsed_command(connection, command, &scope, format)?;
             Ok(LineOutcome::Continue)
         }
     }
@@ -171,15 +172,15 @@ fn parse_use(words: &[String]) -> Result<ParsedLine, CliError> {
 }
 
 fn validate_context(
-    executor: &mut Executor,
+    connection: &Connection,
     branch: &str,
     space: Option<&str>,
 ) -> Result<(), CliError> {
-    let _ = executor.execute(Command::BranchGet {
+    let _ = connection.execute(Command::BranchGet {
         branch: branch.to_owned(),
     })?;
     if let Some(space) = space {
-        let output = executor.execute(Command::SpaceExists {
+        let output = connection.execute(Command::SpaceExists {
             branch: Some(branch.to_owned()),
             space: space.to_owned(),
         })?;
@@ -239,5 +240,21 @@ mod tests {
             panic!("expected executor command");
         };
         assert!(cli.command.is_some());
+    }
+
+    #[test]
+    fn validate_context_accepts_an_existing_branch_and_rejects_a_missing_space() {
+        let connection =
+            Connection::cache(strata_executor::Executor::open_cache().expect("cache opens"));
+        // The store default branch exists, with no space override.
+        validate_context(&connection, strata_executor::DEFAULT_BRANCH, None)
+            .expect("the default branch is a valid `use` target");
+        // A space that was never created on that branch is refused.
+        validate_context(
+            &connection,
+            strata_executor::DEFAULT_BRANCH,
+            Some("never-created"),
+        )
+        .expect_err("a missing space must be rejected");
     }
 }

@@ -19,21 +19,22 @@ use std::io::{BufRead, Write};
 
 use base64::Engine as _;
 use serde_json::{json, Map, Value};
-use strata_executor::{Command, Executor};
+use strata_executor::ipc::Connection;
+use strata_executor::Command;
 
 use crate::{agents, CliError};
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// Runs the stdio server loop until stdin closes. Returns the exit code.
-pub(crate) fn serve(executor: &mut Executor) -> Result<i32, CliError> {
+pub(crate) fn serve(connection: &Connection) -> Result<i32, CliError> {
     let stdin = std::io::stdin();
     for line in stdin.lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
-        if let Some(response) = handle_message(executor, &line) {
+        if let Some(response) = handle_message(connection, &line) {
             let mut stdout = std::io::stdout().lock();
             serde_json::to_writer(&mut stdout, &response)?;
             stdout.write_all(b"\n")?;
@@ -43,7 +44,7 @@ pub(crate) fn serve(executor: &mut Executor) -> Result<i32, CliError> {
     Ok(0)
 }
 
-fn handle_message(executor: &mut Executor, line: &str) -> Option<Value> {
+fn handle_message(connection: &Connection, line: &str) -> Option<Value> {
     let message: Value = match serde_json::from_str(line) {
         Ok(message) => message,
         Err(error) => {
@@ -68,7 +69,7 @@ fn handle_message(executor: &mut Executor, line: &str) -> Option<Value> {
         "initialize" => rpc_result(id, initialize_result(&params)),
         "ping" => rpc_result(id, json!({})),
         "tools/list" => rpc_result(id, json!({ "tools": tool_list() })),
-        "tools/call" => handle_tool_call(executor, id, &params),
+        "tools/call" => handle_tool_call(connection, id, &params),
         _ => rpc_error(id, -32601, format!("method `{method}` is not supported")),
     })
 }
@@ -92,7 +93,7 @@ fn initialize_result(params: &Value) -> Value {
     })
 }
 
-fn handle_tool_call(executor: &mut Executor, id: Value, params: &Value) -> Value {
+fn handle_tool_call(connection: &Connection, id: Value, params: &Value) -> Value {
     let Some(name) = params.get("name").and_then(Value::as_str) else {
         return rpc_error(id, -32602, "tools/call requires a `name`".to_owned());
     };
@@ -134,7 +135,7 @@ fn handle_tool_call(executor: &mut Executor, id: Value, params: &Value) -> Value
                     );
                 }
             };
-            match executor.execute(command) {
+            match connection.execute(command) {
                 Ok(output) => {
                     let envelope = serde_json::to_string(&output)
                         .unwrap_or_else(|error| format!("output serialization failed: {error}"));
@@ -671,6 +672,65 @@ mod tests {
             );
             assert_eq!(tool["inputSchema"]["type"], "object", "`{name}` schema");
         }
+    }
+
+    #[test]
+    fn handle_message_lists_tools_and_a_tool_call_round_trips_through_the_connection() {
+        let connection = Connection::cache(
+            strata_executor::Executor::open_cache().expect("cache executor opens"),
+        );
+
+        // tools/list returns the curated set through the request path.
+        let list = handle_message(
+            &connection,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        )
+        .expect("tools/list carries an id");
+        assert_eq!(list["id"], json!(1));
+        let tools = list["result"]["tools"].as_array().expect("tools array");
+        assert!(!tools.is_empty(), "tools/list returns the curated tools");
+
+        // tools/call reaches the executor: a kv put stores, a kv get reads back.
+        let put = handle_message(
+            &connection,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"strata_kv_put","arguments":{"key":"greeting","value":"hello"}}}"#,
+        )
+        .expect("tools/call carries an id");
+        assert_eq!(
+            put["result"]["isError"],
+            json!(false),
+            "put must succeed: {put}"
+        );
+
+        let got = handle_message(
+            &connection,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"strata_kv_get","arguments":{"key":"greeting"}}}"#,
+        )
+        .expect("tools/call carries an id");
+        let text = got["result"]["content"][0]["text"]
+            .as_str()
+            .expect("tool result text");
+        assert!(
+            text.contains("aGVsbG8="),
+            "the get tool sees the put's value (base64 of `hello`): {text}"
+        );
+    }
+
+    #[test]
+    fn tools_call_without_a_name_is_an_invalid_params_error() {
+        let connection = Connection::cache(
+            strata_executor::Executor::open_cache().expect("cache executor opens"),
+        );
+        let response = handle_message(
+            &connection,
+            r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{}}"#,
+        )
+        .expect("a request with an id gets a response");
+        assert_eq!(
+            response["error"]["code"],
+            json!(-32602),
+            "a missing tool name is an invalid-params error: {response}"
+        );
     }
 
     #[test]

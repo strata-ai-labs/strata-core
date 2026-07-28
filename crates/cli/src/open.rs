@@ -1,8 +1,9 @@
-//! Executor open helpers.
+//! Database open helpers.
 
 use std::path::PathBuf;
 
-use strata_executor::Executor;
+use strata_executor::ipc::Connection;
+use strata_executor::{Executor, IpcMode};
 
 use crate::CliError;
 
@@ -18,9 +19,9 @@ pub(crate) enum OpenIntent {
     Pipe,
 }
 
-/// An opened executor plus how its target was chosen.
-pub(crate) struct OpenedExecutor {
-    pub(crate) executor: Executor,
+/// An opened connection plus how its target was chosen.
+pub(crate) struct OpenedConnection {
+    pub(crate) connection: Connection,
     /// True when a bare interactive invocation fell back to cache mode; the
     /// caller prints the nothing-is-persisted banner.
     pub(crate) implicit_cache: bool,
@@ -32,21 +33,25 @@ pub(crate) struct OpenedExecutor {
 /// the current directory implicitly — agents run commands from arbitrary
 /// directories, and an accidental durable database in cwd is data loss
 /// waiting to happen.
-pub(crate) fn open_executor(
+///
+/// `ipc` selects the multi-process access policy for a durable open; cache
+/// opens ignore it (cache mode is single-process by construction).
+pub(crate) fn open_connection(
     cache: bool,
     db_flag: Option<PathBuf>,
     db_path: Option<PathBuf>,
     durability: Option<strata_executor::DurabilityMode>,
+    ipc: IpcMode,
     intent: OpenIntent,
-) -> Result<OpenedExecutor, CliError> {
+) -> Result<OpenedConnection, CliError> {
     if cache {
         if db_flag.is_some() || db_path.is_some() {
             return Err(CliError::usage(
                 "`--cache` cannot be combined with `--db` or a database path",
             ));
         }
-        return Ok(OpenedExecutor {
-            executor: Executor::open_cache()?,
+        return Ok(OpenedConnection {
+            connection: Connection::cache(Executor::open_cache()?),
             implicit_cache: false,
         });
     }
@@ -66,8 +71,8 @@ pub(crate) fn open_executor(
         if let Some(mode) = durability {
             options = options.with_durability(mode);
         }
-        return Ok(OpenedExecutor {
-            executor: Executor::open_durable_local_with_options(path, options)?,
+        return Ok(OpenedConnection {
+            connection: Connection::open_durable_local_brokered(path, options, ipc)?,
             implicit_cache: false,
         });
     }
@@ -79,8 +84,8 @@ pub(crate) fn open_executor(
     }
 
     match intent {
-        OpenIntent::Interactive => Ok(OpenedExecutor {
-            executor: Executor::open_cache()?,
+        OpenIntent::Interactive => Ok(OpenedConnection {
+            connection: Connection::cache(Executor::open_cache()?),
             implicit_cache: true,
         }),
         OpenIntent::OneShot | OpenIntent::Pipe => Err(CliError::usage(
