@@ -201,6 +201,10 @@ pub struct Executor {
     database: Database,
     default_branch: String,
     default_space: String,
+    /// Live IPC host state, injected by the owning `Connection` when it hosts a
+    /// socket, so the `ipc_status` command can report it. `None` on a
+    /// non-hosting executor (client, cache, or `IpcMode::Off`).
+    ipc_host_state: Option<crate::IpcHostState>,
     #[cfg(feature = "inference")]
     inference: Box<dyn strata_inference::InferenceService>,
 }
@@ -234,9 +238,21 @@ impl Executor {
             database,
             default_branch,
             default_space: DEFAULT_SPACE.to_owned(),
+            ipc_host_state: None,
             #[cfg(feature = "inference")]
             inference: Box::new(strata_inference::InferenceRuntime::default()),
         }
+    }
+
+    /// Injects the live IPC host state (called by a hosting `Connection` after
+    /// it starts the socket server) so `ipc_status` can report it.
+    pub fn set_ipc_host_state(&mut self, state: crate::IpcHostState) {
+        self.ipc_host_state = Some(state);
+    }
+
+    /// The injected IPC host state, if this executor is being hosted.
+    pub(crate) const fn ipc_host_state(&self) -> Option<&crate::IpcHostState> {
+        self.ipc_host_state.as_ref()
     }
 
     /// Replaces the inference backend used by inference commands. Accepts any

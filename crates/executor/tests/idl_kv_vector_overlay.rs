@@ -19,6 +19,7 @@ const REQUIRED_ADMIN: &[&str] = &[
     "admin.metrics",
     "admin.describe",
     "admin.config",
+    "admin.ipc_status",
     "admin.remote",
     "admin.config_key",
     "admin.hub_clone",

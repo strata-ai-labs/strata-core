@@ -10,6 +10,7 @@
 - [Read database health](https://stratadb.org/docs/admin/health.md): Read control-plane health facts.
 - [Clone hub dataset](https://stratadb.org/docs/admin/hub_clone.md): Clone a dataset from a hub into a new local database.
 - [Read database info](https://stratadb.org/docs/admin/info.md): Read database identity and a catalog summary.
+- [Read IPC status](https://stratadb.org/docs/admin/ipc_status.md): Report this process's multi-process IPC state.
 - [Read database metrics](https://stratadb.org/docs/admin/metrics.md): Read lightweight database metrics.
 - [Ping database](https://stratadb.org/docs/admin/ping.md): Check that the database handle is live.
 - [Read remote origin](https://stratadb.org/docs/admin/remote.md): Read where this database was cloned from.

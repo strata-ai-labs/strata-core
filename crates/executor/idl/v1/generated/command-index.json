@@ -335,6 +335,53 @@
       }
     },
     {
+      "id": "admin.ipc_status",
+      "family": "admin",
+      "op": "ipc_status",
+      "kind": "read.summary",
+      "title": "Read IPC status",
+      "summary": "Report this process's multi-process IPC state.",
+      "description": "Reports the same-machine multi-process state for this handle: whether this process owns the store (holds the writer lock) or is a client of another owner, whether it is hosting a broker socket, the socket path and owning process id when one exists, and the number of clients currently connected to the host. A single-process open (cache, or a durable open with IPC off) reports `is_owner: true`, `hosting: false`, and no socket.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/ipc_status",
+      "cli": {
+        "path": [
+          "ipc",
+          "status"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_ipc_status",
+        "description": "Use this when the user asks whether this database is being shared across processes — whether this process owns it or is a client, whether a broker socket is hosted, and how many clients are connected."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::IpcStatus",
+      "output": "Output::IpcStatus",
+      "outputs": [
+        "Output::IpcStatus"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<AdminIpcStatus>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/ipc_status.json",
+        "response": "responses/v1/admin/ipc_status.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.ipc_status.md"
+      }
+    },
+    {
       "id": "admin.metrics",
       "family": "admin",
       "op": "metrics",

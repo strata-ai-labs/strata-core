@@ -1,0 +1,79 @@
+{
+  "$defs": {
+    "AdminIpcStatus": {
+      "description": "Multi-process IPC status output.",
+      "properties": {
+        "client_count": {
+          "description": "Number of clients currently connected to the host (0 when not hosting).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hosting": {
+          "description": "True when this process is hosting a broker socket for other processes.",
+          "type": "boolean"
+        },
+        "is_owner": {
+          "description": "True when this process owns the store (holds the writer lock); false\nwhen it is a client of another same-machine owner.",
+          "type": "boolean"
+        },
+        "owner_pid": {
+          "description": "The hosting owner's process id, when known.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "socket_path": {
+          "description": "The hosted (or connected) socket path, when one exists.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "is_owner",
+        "hosting",
+        "client_count"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/admin.ipc_status.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "admin.ipc_status",
+  "request": {
+    "additionalProperties": false,
+    "description": "Reports this process's multi-process IPC state (whether it hosts a\nbroker socket, the socket path, owner pid, and live client count).",
+    "properties": {
+      "type": {
+        "const": "ipc_status",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Multi-process IPC state for this process.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/AdminIpcStatus"
+      },
+      "type": {
+        "const": "ipc_status",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

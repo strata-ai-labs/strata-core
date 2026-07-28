@@ -22,6 +22,10 @@ pub mod idl_tooling;
 // every frontend can name it; the socket transport that acts on it is unix-only
 // (`ipc` below).
 pub mod ipc_mode;
+// Live state of a hosted IPC socket, injected into the executor so `ipc_status`
+// can report it. Always compiled (the executor field is); the unix `ipc`
+// transport populates it.
+pub mod ipc_host_state;
 // Multi-process IPC over a Unix domain socket. Default-on for native builds;
 // the wasm consumer takes the executor with `default-features = false` and so
 // never compiles the socket transport.
@@ -39,6 +43,7 @@ pub use error::{
 };
 pub use error_registry::{public_error_code_entries, public_error_code_entry};
 pub use executor::Executor;
+pub use ipc_host_state::IpcHostState;
 pub use ipc_mode::IpcMode;
 pub use output::{Output, RemoteOriginFrontierInfo, RemoteOriginInfo};
 pub use strata_engine::{

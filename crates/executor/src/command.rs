@@ -54,6 +54,9 @@ pub enum Command {
     },
     /// Returns sanitized configuration facts.
     ConfigGet {},
+    /// Reports this process's multi-process IPC state (whether it hosts a
+    /// broker socket, the socket path, owner pid, and live client count).
+    IpcStatus {},
     /// Reads where this database was cloned from (its remote origin),
     /// when clone recorded one.
     RemoteGet {},
@@ -1749,6 +1752,7 @@ impl Command {
             Self::Metrics { .. } => "metrics",
             Self::Describe { .. } => "describe",
             Self::ConfigGet {} => "config_get",
+            Self::IpcStatus {} => "ipc_status",
             Self::RemoteGet {} => "remote_get",
             Self::HubClone { .. } => "hub_clone",
             Self::ConfigureGetKey { .. } => "configure_get_key",

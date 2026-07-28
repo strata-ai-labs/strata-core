@@ -79,6 +79,7 @@ response_models:
   - MutationAck<GraphDeletePolicyApply>
   - StatusResponse<PingInfo>
   - StatusResponse<AdminDatabaseInfo>
+  - StatusResponse<AdminIpcStatus>
   - StatusResponse<AdminHealth>
   - StatusResponse<AdminMetrics>
   - StatusResponse<AdminDescribe>

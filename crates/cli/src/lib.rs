@@ -302,6 +302,9 @@ pub(crate) fn execute_parsed_command(
             branch: scope.branch.clone(),
         })?,
         options::TopCommand::Config(args) => connection.execute(config_command(args.command))?,
+        options::TopCommand::Ipc(args) => match args.command {
+            options::IpcSubcommand::Status => connection.execute(Command::IpcStatus {})?,
+        },
         options::TopCommand::Branch(args) => connection.execute(branch_command(args.command)?)?,
         options::TopCommand::Space(args) => {
             connection.execute(space_command(args.command, scope))?

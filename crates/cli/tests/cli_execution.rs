@@ -416,6 +416,27 @@ fn writer_lock_is_exclusive_across_processes_and_releases_on_kill() {
     assert_eq!(stdout(&read).trim(), "1", "pre-kill durable data survives");
 }
 
+/// `strata ipc status` reports this process's multi-process state. A one-shot
+/// against an uncontended store is a (client-mode) owner that hosts nothing.
+#[test]
+fn ipc_status_reports_single_process_state() {
+    let dir = tempfile::tempdir().expect("tmp");
+    let db = db_arg(dir.path());
+    assert_ok(&strata(&["--db", &db, "kv", "put", "seed", "1"]), "seed");
+
+    let status = strata(&["--db", &db, "--json", "ipc", "status"]);
+    assert_ok(&status, "ipc status");
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout(&status).trim()).expect("ipc status --json parses");
+    assert_eq!(parsed["type"], "ipc_status", "typed envelope: {parsed}");
+    assert_eq!(
+        parsed["data"]["is_owner"], true,
+        "the one-shot owns the store"
+    );
+    assert_eq!(parsed["data"]["hosting"], false, "a one-shot hosts nothing");
+    assert_eq!(parsed["data"]["client_count"], 0, "no clients");
+}
+
 /// With an explicit IPC host, a second process brokers to the first over the
 /// owner's socket instead of being refused — one engine, one store, two OS
 /// processes. This is the multi-process access the writer-lock exclusion
