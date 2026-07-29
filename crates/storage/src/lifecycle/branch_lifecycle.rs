@@ -178,12 +178,12 @@ impl LifecycleBranchDescriptor {
         self
     }
 
-    fn with_parent(mut self, parent: LifecycleBranchParent) -> Self {
+    pub(crate) fn with_parent(mut self, parent: LifecycleBranchParent) -> Self {
         self.parent = Some(parent);
         self
     }
 
-    fn with_deleted_at(mut self, deleted_at: Option<CommitVersion>) -> Self {
+    pub(crate) fn with_deleted_at(mut self, deleted_at: Option<CommitVersion>) -> Self {
         self.deleted_at = deleted_at;
         self
     }

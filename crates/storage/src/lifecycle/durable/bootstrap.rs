@@ -3447,6 +3447,27 @@ pub(crate) fn record_predates_current_generation(
     created_at.is_some_and(|created| record_version <= created)
 }
 
+/// #2850: the highest commit version a catalog descriptor durably references
+/// — its `created_at` stamp, its fork anchor, and its deletion watermark.
+/// The recovered allocator must resume ABOVE every such anchor, or the
+/// restarted clock re-issues versions the catalog already attributes to
+/// other content. `fork_version` is dominated by `created_at` on catalogs
+/// stamped since #2832 (a child's creation point is at or above its fork
+/// anchor) but stands alone for fork children recorded before the stamp
+/// existed (v1.0.0-era databases), where `created_at` is `None`.
+pub(crate) fn descriptor_version_anchor(
+    descriptor: &crate::lifecycle::LifecycleBranchDescriptor,
+) -> CommitVersion {
+    descriptor
+        .created_at()
+        .unwrap_or(CommitVersion::ZERO)
+        .max(descriptor.parent().map_or(
+            CommitVersion::ZERO,
+            crate::lifecycle::LifecycleBranchParent::fork_version,
+        ))
+        .max(descriptor.deleted_at().unwrap_or(CommitVersion::ZERO))
+}
+
 fn replay_wal_into_catalog<S>(
     branch_catalog: &mut LifecycleBranchCatalog,
     commit_config: &crate::commit::CommitRuntimeConfig,
@@ -3537,9 +3558,26 @@ fn replay_wal_into_catalog<S>(
             CommitVersion::ZERO,
             |max, version: LifecycleResult<CommitVersion>| version.map(|version| max.max(version)),
         )?;
+    // #2850: fold in the catalog's version-domain ANCHORS as well. Branch
+    // lifecycle publishes are durably fenced, so the catalog (with
+    // `created_at`, fork anchors, and deletion watermarks) can survive a
+    // crash that sheds the WAL and every branch state — all three terms
+    // above are then ZERO and the allocator would restart below versions
+    // the catalog durably references. On the restarted clock every anchored
+    // fact silently points at different content: the #2826/#2830 generation
+    // fences eat legitimate new commits, and `rebuild_fork_snapshot_rows`
+    // materializes the parent's NEW-clock slice into fork children. Deleted
+    // descriptors count — a dead generation's anchors are still allocated
+    // versions.
+    let catalog_anchor_max = branch_catalog
+        .list_branches(true)
+        .into_iter()
+        .map(|descriptor| descriptor_version_anchor(&descriptor))
+        .fold(CommitVersion::ZERO, CommitVersion::max);
     let recovered_visible_version = checkpoint_watermark
         .max(replayed_max)
-        .max(restored_catalog_max);
+        .max(restored_catalog_max)
+        .max(catalog_anchor_max);
     allocator.catch_up_to_recovered_version(recovered_visible_version);
     if let Some(timestamp) = recovery.checkpoint().timestamp_max() {
         allocator.catch_up_to_recovered_timestamp(timestamp);
