@@ -84,6 +84,73 @@ fn a_missing_database_target_reports_the_database_path_code() {
 }
 
 #[test]
+fn doctor_probes_a_live_owned_database_by_brokering() {
+    use std::io::{BufRead, Write};
+    use std::process::Stdio;
+
+    let home = tempfile::tempdir().expect("temp home");
+    let db_dir = tempfile::tempdir().expect("db dir");
+    let db = db_dir.path().join("db");
+
+    // Seed the store so it exists durably.
+    let seed = Command::new(bin())
+        .arg("--db")
+        .arg(&db)
+        .args(["kv", "put", "seed", "1"])
+        .env("PATH", bin_dir())
+        .env_remove("STRATA_DB")
+        .output()
+        .expect("seed the database");
+    assert!(
+        seed.status.success(),
+        "seed failed: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    // A live process holds AND hosts the store (a raw hold would only refuse
+    // the doctor; hosting lets it broker in).
+    let mut holder = Command::new(bin())
+        .arg("--db")
+        .arg(&db)
+        .args(["--ipc", "host"])
+        .env("PATH", bin_dir())
+        .env_remove("STRATA_DB")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn host holder");
+    holder
+        .stdin
+        .as_mut()
+        .expect("holder stdin")
+        .write_all(b"kv put holder 1\n")
+        .expect("command the holder");
+    let mut holder_stdout = std::io::BufReader::new(holder.stdout.take().expect("holder stdout"));
+    let mut line = String::new();
+    holder_stdout
+        .read_line(&mut line)
+        .expect("holder responds once it hosts");
+
+    // Doctor brokers to the owner and inspects the DB instead of failing on the
+    // writer lock.
+    let (report, code) = run_doctor(&[("HOME", Some(home.path().as_os_str()))], Some(&db));
+    assert_eq!(report["data"]["database"]["exists"], true);
+    assert_eq!(
+        report["data"]["database"]["open_ok"], true,
+        "the brokered probe succeeds: {report}"
+    );
+    assert!(
+        !issue_codes(&report).contains(&"unavailable.engine.persistence".to_owned()),
+        "brokering means no writer-lock refusal: {report}"
+    );
+    assert_eq!(code, 0, "a database it can probe is not an issue");
+
+    drop(holder.stdin.take());
+    let _ = holder.wait();
+}
+
+#[test]
 fn a_non_directory_strata_home_reports_the_home_not_directory_code() {
     let home = tempfile::tempdir().expect("temp home");
     let file = home.path().join("strata-home-is-a-file");
