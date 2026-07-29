@@ -140,6 +140,11 @@ pub(crate) enum TopCommand {
     Config(ConfigArgs),
     /// Multi-process IPC status and control.
     Ipc(IpcArgs),
+    /// Host a durable database as a persistent broker owner and keep it alive
+    /// (blocks until stopped) so other processes can attach to it.
+    Start,
+    /// Stop a durable database's broker owner.
+    Stop,
     /// Show where this database was cloned from (its remote origin).
     Remote,
     /// Clone a dataset from a hub into a new local database.
@@ -1948,6 +1953,8 @@ mod tests {
         "space delete",
         "space exists",
         "space list",
+        "start",
+        "stop",
         "txn",
         "uninstall",
         "up",

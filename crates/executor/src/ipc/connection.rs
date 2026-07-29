@@ -235,6 +235,22 @@ impl Connection {
         )
     }
 
+    /// Whether this connection is *actively* hosting right now. `is_hosting`
+    /// reports whether a server was started; this also accounts for an
+    /// `ipc_stop` (in-process or brokered from another process) having signaled
+    /// that server to shut down. A headless `strata start` owner polls this to
+    /// block until its hosting is stopped, then exits.
+    #[must_use]
+    pub fn hosting_active(&self) -> bool {
+        match &self.inner {
+            ConnectionInner::Local {
+                server: Some(server),
+                ..
+            } => !server.is_stopped(),
+            _ => false,
+        }
+    }
+
     /// Set this connection's default branch. Applied to every subsequent
     /// command (locally by setting the executor default under the lock,
     /// remotely by sending it in the request envelope).
@@ -484,6 +500,53 @@ mod tests {
             "the client count returns to zero after the client leaves"
         );
         owner.close().expect("owner close");
+    }
+
+    #[test]
+    fn hosting_active_reflects_the_live_stop_signal() {
+        // A host is actively hosting until `ipc_stop` signals its server to
+        // shut down; `hosting_active` then reports false even though the server
+        // struct is still held (`is_hosting` alone would stay true). This is the
+        // exact predicate `strata start` blocks on.
+        let dir = tempfile::tempdir().expect("tmp");
+        let owner = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            IpcMode::Host,
+        )
+        .expect("owner open");
+        assert!(owner.is_hosting(), "the owner started a server");
+        assert!(owner.hosting_active(), "and it is actively hosting");
+
+        assert!(ipc_stop(&owner).stopped, "stop halts the hosting");
+        assert!(
+            owner.is_hosting(),
+            "the server struct is still held after stop"
+        );
+        assert!(
+            !owner.hosting_active(),
+            "but it is no longer actively hosting once stopped"
+        );
+        owner.close().expect("owner close");
+    }
+
+    #[test]
+    fn hosting_active_is_false_for_non_hosting_connections() {
+        // A client-mode local open (won the lock, no socket), an opt-out open,
+        // and a cache handle all host nothing, so none is actively hosting.
+        let dir = tempfile::tempdir().expect("tmp");
+        let client = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            IpcMode::Client,
+        )
+        .expect("client open");
+        assert!(client.is_local() && !client.hosting_active());
+        client.close().expect("close");
+
+        let cache = Connection::cache(Executor::open_cache().expect("cache"));
+        assert!(!cache.hosting_active(), "cache mode hosts nothing");
+        cache.close().expect("close");
     }
 
     #[test]

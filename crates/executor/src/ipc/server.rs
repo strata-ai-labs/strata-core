@@ -132,6 +132,15 @@ impl IpcServer {
         self.shutdown.clone()
     }
 
+    /// Whether shutdown has been signaled (via `shutdown()`/`stop_signal()`, or
+    /// an `ipc_stop` that flipped the shared flag). Unlike the presence of the
+    /// server itself, this reflects the *live* state: a headless `strata start`
+    /// owner polls it to learn when its hosting was stopped so it can exit.
+    #[must_use]
+    pub fn is_stopped(&self) -> bool {
+        self.shutdown.load(Ordering::SeqCst)
+    }
+
     /// Stop the listener, wait for it, and unlink the socket, pointer, and pid
     /// files. Idempotent; `Drop` calls the same cleanup.
     pub fn shutdown(&mut self) {
@@ -482,6 +491,26 @@ mod tests {
         }
         assert!(!sock.exists(), "socket unlinked on drop");
         assert!(!pid.exists(), "pid file unlinked on drop");
+    }
+
+    #[test]
+    fn is_stopped_tracks_the_shutdown_signal() {
+        // A live host reports not-stopped; setting the stop signal (the exact
+        // flag `ipc_stop` flips) makes it report stopped, without dropping the
+        // server. `strata start` polls this to learn when to exit.
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+        assert!(!server.is_stopped(), "a running host is not stopped");
+        server
+            .stop_signal()
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            server.is_stopped(),
+            "flipping the shared stop signal is observed as stopped"
+        );
+        server.shutdown();
+        assert!(server.is_stopped(), "an explicit shutdown reports stopped");
     }
 
     #[test]
