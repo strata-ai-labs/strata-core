@@ -1923,3 +1923,172 @@ fn eager_fork_on_fresh_name_recovers_current_lineage() {
         "fresh-name eager fork keeps its own row"
     );
 }
+
+/// #2850: the recovered commit clock must never regress below the surviving
+/// branch catalog's version anchors. Branch lifecycle ops are durably fenced,
+/// so the catalog (with `created_at` / fork anchors) survives a crash that
+/// sheds the unsynced WAL under Standard durability — the allocator must
+/// resume ABOVE those anchors, or every version-anchored catalog fact
+/// (generation fences, fork re-materialization) silently refers to different
+/// content on the restarted clock.
+#[test]
+fn recovered_commit_clock_stays_above_surviving_catalog_anchors() {
+    use crate::testkit::FsModel;
+
+    let root = temp_dir_for_api_test("clock-above-catalog-anchors");
+    let backend = StorageBackend::reordering_local_fs(root.clone());
+    let anchor = branch_with(0x7f);
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        // Three unsynced commits under Standard's coalescing window.
+        put_at(&mut runtime, branch(), b"shed-a", b"1", 10);
+        put_at(&mut runtime, branch(), b"shed-b", b"2", 20);
+        let last = put_at(&mut runtime, branch(), b"shed-c", b"3", 30);
+        assert_eq!(last.commit_version(), CommitVersion::new(3));
+        // The durably-fenced catalog publish stamps created_at = 3.
+        runtime
+            .branch(&create_request(anchor))
+            .expect("create anchor branch");
+        drop(runtime);
+        // Power loss: unsynced WAL bytes shed; the catalog object survives.
+        backend
+            .reordering_crash(FsModel::OrderedAtomic, 7)
+            .expect("materialize crash");
+    }
+
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("reopen after crash")
+    .into_runtime();
+    // Precondition, not the oracle: the crash must actually shed the
+    // unsynced commits, or this test silently goes vacuous.
+    assert_eq!(
+        read_value(&runtime, branch(), b"shed-a"),
+        None,
+        "precondition: the ordered-atomic crash must shed the unsynced WAL"
+    );
+    let summary = put_at(&mut runtime, branch(), b"fresh", b"f", 40);
+    assert!(
+        summary.commit_version() > CommitVersion::new(3),
+        "recovered clock must resume above the surviving catalog anchor \
+         (created_at=3), got {:?}",
+        summary.commit_version()
+    );
+}
+
+/// #2850, the behavioral half: a commit accepted on the restarted clock at a
+/// version at/below a surviving `created_at` anchor is silently eaten by the
+/// #2830/#2826 generation fences at the NEXT recovery — an acked row
+/// vanishes (the DST's Gap shape). With the clock fixed the fences stay
+/// sound by construction.
+#[test]
+fn post_crash_commits_survive_the_next_reopen_despite_catalog_anchors() {
+    use crate::testkit::FsModel;
+
+    let root = temp_dir_for_api_test("post-crash-commit-survives-fences");
+    let backend = StorageBackend::reordering_local_fs(root.clone());
+    let anchor = branch_with(0x80);
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        put_at(&mut runtime, branch(), b"shed-a", b"1", 10);
+        put_at(&mut runtime, branch(), b"shed-b", b"2", 20);
+        put_at(&mut runtime, branch(), b"shed-c", b"3", 30);
+        runtime
+            .branch(&create_request(anchor))
+            .expect("create anchor branch");
+        drop(runtime);
+        backend
+            .reordering_crash(FsModel::OrderedAtomic, 7)
+            .expect("materialize crash");
+    }
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+            &backend,
+        )
+        .expect("reopen after crash")
+        .into_runtime();
+        // An acked commit on the anchor branch after the lossy reopen.
+        put_at(&mut runtime, anchor, b"kept", b"alive", 40);
+        // Clean close: this row is durable.
+    }
+
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("clean reopen")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, anchor, b"kept"),
+        Some(b"alive".to_vec()),
+        "an acked post-crash commit must survive the next reopen"
+    );
+}
+
+/// #2850, the deleted-descriptor arm: a DEAD branch's anchors (deletion
+/// watermark, creation stamp) are still allocated versions — the recovered
+/// clock must resume above them too, or the acked-deletion fences judge the
+/// restarted clock's commits against a dead generation's era.
+#[test]
+fn recovered_commit_clock_stays_above_deleted_branch_anchors() {
+    use crate::testkit::FsModel;
+
+    let root = temp_dir_for_api_test("clock-above-deleted-anchors");
+    let backend = StorageBackend::reordering_local_fs(root.clone());
+    let victim = branch_with(0x81);
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        put_at(&mut runtime, branch(), b"shed-a", b"1", 10);
+        put_at(&mut runtime, branch(), b"shed-b", b"2", 20);
+        put_at(&mut runtime, branch(), b"shed-c", b"3", 30);
+        // Durably-fenced create THEN delete: the catalog's only surviving
+        // anchor for this name is a Deleted descriptor (created_at=3,
+        // deleted_at=3).
+        runtime
+            .branch(&create_request(victim))
+            .expect("create victim");
+        runtime
+            .branch(&branch_request(victim, BranchAction::Delete))
+            .expect("delete victim");
+        drop(runtime);
+        backend
+            .reordering_crash(FsModel::OrderedAtomic, 7)
+            .expect("materialize crash");
+    }
+
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("reopen after crash")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, branch(), b"shed-a"),
+        None,
+        "precondition: the ordered-atomic crash must shed the unsynced WAL"
+    );
+    let summary = put_at(&mut runtime, branch(), b"fresh", b"f", 40);
+    assert!(
+        summary.commit_version() > CommitVersion::new(3),
+        "recovered clock must resume above the DEAD descriptor's anchors, got {:?}",
+        summary.commit_version()
+    );
+}

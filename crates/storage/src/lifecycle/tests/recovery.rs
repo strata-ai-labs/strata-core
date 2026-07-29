@@ -1958,6 +1958,46 @@ fn recovery_newer_generation_outranks_older_deleted_marker() {
     );
 }
 
+/// #2850: the catalog version-anchor truth table — each arm (`created_at`,
+/// fork anchor, deletion watermark) contributes independently, the maximum
+/// wins, and an anchor-free descriptor contributes ZERO. The fork arm stands
+/// alone when `created_at` is `None` (pre-#2832 catalogs).
+#[test]
+fn descriptor_version_anchor_truth_table() {
+    use crate::lifecycle::{
+        descriptor_version_anchor, LifecycleBranchDescriptor, LifecycleBranchParent,
+    };
+
+    let v = CommitVersion::new;
+    let generation = CommitBranchGeneration::new(1).expect("nonzero generation");
+    let id = branch_id(0x54);
+    let parent_id = branch_id(0x55);
+
+    // Anchor-free: no created_at, no parent, no deletion.
+    let bare = LifecycleBranchDescriptor::active(id, generation, None);
+    assert_eq!(descriptor_version_anchor(&bare), CommitVersion::ZERO);
+
+    // created_at alone.
+    let created = LifecycleBranchDescriptor::active(id, generation, Some(v(7)));
+    assert_eq!(descriptor_version_anchor(&created), v(7));
+
+    // Fork anchor alone (created_at None — the pre-#2832 catalog shape).
+    let forked = LifecycleBranchDescriptor::active(id, generation, None)
+        .with_parent(LifecycleBranchParent::new(parent_id, v(9)));
+    assert_eq!(descriptor_version_anchor(&forked), v(9));
+
+    // Deletion watermark dominates the creation stamp on a dead descriptor.
+    let deleted =
+        LifecycleBranchDescriptor::active(id, generation, Some(v(3))).with_deleted_at(Some(v(12)));
+    assert_eq!(descriptor_version_anchor(&deleted), v(12));
+
+    // Maximum wins across all three arms together.
+    let all = LifecycleBranchDescriptor::active(id, generation, Some(v(15)))
+        .with_parent(LifecycleBranchParent::new(parent_id, v(9)))
+        .with_deleted_at(Some(v(11)));
+    assert_eq!(descriptor_version_anchor(&all), v(15));
+}
+
 #[test]
 fn base_restore_generation_fence_truth_table() {
     // #2830: the base-restore fence — parentless only (fork-inherited rows

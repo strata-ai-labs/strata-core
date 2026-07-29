@@ -260,7 +260,14 @@ same commit_version. Version gaps are acceptable (failed transactions).
 
 **Audit**: Find the version allocation function. Verify it uses `fetch_add(1)` or equivalent
 atomic operation. Verify the overflow check at `u64::MAX`. Verify recovery restores the counter
-to at least the maximum committed version from WAL replay.
+to at least the maximum of: the checkpoint watermark, the replayed WAL max (fenced records
+included), the restored branch states' max committed version, AND the branch catalog's version
+anchors (`descriptor_version_anchor`: `created_at`, fork anchors, deletion watermarks — deleted
+descriptors included). The catalog term is load-bearing: lifecycle publishes are durably fenced,
+so the catalog can survive a crash that sheds the WAL and every state, and a counter restarted
+below its anchors re-issues versions the catalog already attributes to other content (#2850 —
+generation fences then eat legitimate commits and fork rebuilds materialize the wrong parent
+slice).
 
 ### MVCC-004: Snapshot capture happens before version allocation
 

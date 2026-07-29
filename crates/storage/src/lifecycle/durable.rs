@@ -41,10 +41,10 @@ mod maintenance;
 pub(crate) use inflight::{InFlightOutputsGuard, InFlightTableOutputs};
 
 pub(crate) use bootstrap::{
-    combine_non_seeded_checkpoint_rows, parentless_content_predates_generation,
-    record_predates_current_generation, DurableGroupApplyDone, DurableGroupApplyWork,
-    DurableGroupInFlight, DurableGroupMemberResult, LifecycleDurableLocalRuntime,
-    LifecycleRecoveryBootstrapReport,
+    combine_non_seeded_checkpoint_rows, descriptor_version_anchor,
+    parentless_content_predates_generation, record_predates_current_generation,
+    DurableGroupApplyDone, DurableGroupApplyWork, DurableGroupInFlight, DurableGroupMemberResult,
+    LifecycleDurableLocalRuntime, LifecycleRecoveryBootstrapReport,
 };
 pub(crate) use maintenance::{
     DurableBackgroundMaintenanceBuild, DurableBackgroundMaintenanceBuilt,
