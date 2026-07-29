@@ -141,6 +141,12 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             )?;
             return serve_mcp(opened.connection, &context);
         }
+        if matches!(command, options::TopCommand::Start) {
+            return run_ipc_start(cli.cache, cli.db, cli.db_path, durability, ipc, format);
+        }
+        if matches!(command, options::TopCommand::Stop) {
+            return run_ipc_stop(cli.cache, cli.db, cli.db_path, format);
+        }
         if let TopLevelAction::NoDatabase(value) = top_level_without_database(&command)? {
             render_value(&value, format)?;
             return Ok(0);
@@ -236,6 +242,144 @@ fn run_clone(args: options::CloneArgs, format: options::Format) -> Result<i32, C
     render::render_output(&output, format)?;
     executor.close()?;
     Ok(0)
+}
+
+/// `strata start <db>` — open a durable database as a broker owner and block,
+/// keeping the socket alive so other processes can attach, until the hosting is
+/// stopped (`strata stop`, or `ipc stop`). A foreground "keep an owner alive"
+/// wrapper — never a server: it hosts Strata's multi-process substrate, the
+/// moral equivalent of `SQLite`'s file lock, and exits cleanly on stop.
+fn run_ipc_start(
+    cache: bool,
+    db_flag: Option<PathBuf>,
+    db_path: Option<PathBuf>,
+    durability: Option<strata_executor::DurabilityMode>,
+    ipc: Option<IpcMode>,
+    format: options::Format,
+) -> Result<i32, CliError> {
+    if cache {
+        return Err(CliError::usage(
+            "`strata start` hosts a durable database; `--cache` is single-process and hosts nothing",
+        ));
+    }
+    // start exists to host; an explicit `--ipc client|off` contradicts that.
+    if matches!(ipc, Some(IpcMode::Client | IpcMode::Off)) {
+        return Err(CliError::usage(
+            "`strata start` hosts the broker socket; it is incompatible with `--ipc client|off`",
+        ));
+    }
+    let opened = open::open_connection(
+        false,
+        db_flag,
+        db_path,
+        durability,
+        IpcMode::Host,
+        open::OpenIntent::OneShot,
+    )?;
+    let connection = opened.connection;
+    if !connection.is_hosting() {
+        // Host mode either brokered to an existing owner (a Remote handle) or
+        // won the lock but could not bind the socket — either way this process
+        // is not the host it was asked to be, so there is nothing to keep alive.
+        let reason = if connection.is_local() {
+            "could not bind the broker socket for this database"
+        } else {
+            "another process already owns this database (run `strata ipc status` to inspect it)"
+        };
+        connection.close()?;
+        return Err(CliError::usage(reason));
+    }
+    render_value(&started_report(&connection), format)?;
+    // The process now blocks, so the readiness report must reach stdout before
+    // the wait — a human banner rendered with `print!` would otherwise sit in
+    // the buffer until exit, and a supervising script waits on this line.
+    std::io::Write::flush(&mut std::io::stdout())?;
+    block_until_unhosted(&connection);
+    connection.close()?;
+    Ok(0)
+}
+
+/// `strata stop <db>` — tell a durable database's broker owner to stop hosting.
+/// Brokers to the owner as a client and forwards `ipc_stop`: a `strata start`
+/// owner then exits, while an interactive owner (a REPL, `mcp serve`) simply
+/// stops brokering and keeps running. Forgiving — a database with no owner
+/// reports `stopped: false` rather than failing, and never creates a database.
+fn run_ipc_stop(
+    cache: bool,
+    db_flag: Option<PathBuf>,
+    db_path: Option<PathBuf>,
+    format: options::Format,
+) -> Result<i32, CliError> {
+    if cache {
+        return Err(CliError::usage(
+            "`strata stop` stops a durable database's broker owner; `--cache` has none",
+        ));
+    }
+    let path = resolve_durable_target(db_flag, db_path)?;
+    if !path.exists() {
+        // Nothing to stop. Report it plainly without opening (and thereby
+        // creating) a database at a path that does not exist.
+        render_value(
+            &serde_json::json!({
+                "type": "ipc_stop",
+                "data": { "stopped": false, "database": path.display().to_string() },
+            }),
+            format,
+        )?;
+        return Ok(0);
+    }
+    let connection = Connection::open_durable_local_brokered(
+        &path,
+        strata_executor::DurableLocalOpenOptions::new(),
+        IpcMode::Client,
+    )?;
+    let output = connection.execute(Command::IpcStop {})?;
+    render_output(&output, format)?;
+    connection.close()?;
+    Ok(0)
+}
+
+/// Blocks while a `strata start` owner is actively hosting, polling the live
+/// hosting state so an `ipc_stop` (in-process or brokered from `strata stop`)
+/// ends the wait promptly. A timing-only loop — carved out of the mutation gate.
+fn block_until_unhosted(connection: &Connection) {
+    const POLL: std::time::Duration = std::time::Duration::from_millis(200);
+    while connection.hosting_active() {
+        std::thread::sleep(POLL);
+    }
+}
+
+/// The readiness report `strata start` prints once it is hosting: the socket,
+/// owner pid, and client count, drawn from the same `ipc_status` a client would
+/// see. Doubles as the signal a supervising script waits for before attaching.
+fn started_report(connection: &Connection) -> Value {
+    let data = connection
+        .execute(Command::IpcStatus {})
+        .ok()
+        .and_then(|output| serde_json::to_value(&output).ok())
+        .and_then(|mut value| value.get_mut("data").map(Value::take))
+        .unwrap_or(Value::Null);
+    serde_json::json!({ "type": "ipc_started", "data": data })
+}
+
+/// Resolves the durable database target for `start`/`stop` from the explicit
+/// flag/positional path, then `STRATA_DB`. These commands act on a specific
+/// database, so an unspecified target is a usage error — never an implicit cwd.
+fn resolve_durable_target(
+    db_flag: Option<PathBuf>,
+    db_path: Option<PathBuf>,
+) -> Result<PathBuf, CliError> {
+    match (db_flag, db_path) {
+        (Some(_), Some(_)) => Err(CliError::usage(
+            "provide either `--db <path>` or positional database path, not both",
+        )),
+        (Some(path), None) | (None, Some(path)) => Ok(path),
+        (None, None) => open::env_database_path().ok_or_else(|| {
+            CliError::usage(
+                "`strata start`/`stop` require a database path (a positional path, `--db`, or STRATA_DB)",
+            )
+        }),
+    }
 }
 
 pub(crate) fn execute_parsed_command(
@@ -345,6 +489,9 @@ pub(crate) fn execute_parsed_command(
         | options::TopCommand::Up(_)
         | options::TopCommand::Down(_)
         | options::TopCommand::Uninstall(_) => unreachable!("deferred top commands handled above"),
+        options::TopCommand::Start | options::TopCommand::Stop => {
+            unreachable!("start/stop own their open and are handled before a session opens")
+        }
     };
 
     render_output(&output, format)?;

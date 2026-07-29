@@ -12,6 +12,10 @@
 #     agents {guide,commands,errors,init,skill}, mcp serve, config
 #     {path,set,unset,show} (config get/get-key ARE wire commands and are
 #     covered), command {run,print} (the generic escape hatch itself).
+#   - broker-owner lifecycle wrappers: start blocks hosting a socket until
+#     stopped (it serves, so it cannot be a request/response command); stop
+#     orchestrates a client open and forwards the ipc_stop wire command, so
+#     the verb itself maps to no single catalog entry.
 #   - event by-type: a curated clap alias of event.list (EventList) with a
 #     type filter. One catalog entry owns one cli_path today, so the alias
 #     stays here until the overlay grows explicit alias paths (strategy
@@ -32,3 +36,5 @@ uncovered:
   - event by-type
   - init
   - mcp serve
+  - start
+  - stop
