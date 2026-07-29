@@ -1574,6 +1574,178 @@ fn fork_child_keeps_inherited_era_timestamps_after_reopen() {
     let _ = outcome;
 }
 
+/// #2847: a checkpoint records a non-seeded branch's memtable rows while the
+/// branch holds no durable base (the structural guard correctly passes);
+/// a LATER flush publishes that branch's table manifest, durably violating
+/// the "snapshot never coexists with a non-seeded durable base" invariant
+/// from the flush side, where no guard exists. Reopen must COMBINE the
+/// manifest base with the checkpoint's (byte-identical) rows — pre-fix it
+/// refused with `InvalidSnapshotInstall` and the store was permanently
+/// unopenable.
+#[test]
+fn checkpoint_then_flush_of_non_seeded_branch_survives_reopen() {
+    use crate::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
+
+    let root = temp_dir_for_api_test("branch-ckpt-then-flush-combine");
+    let backend = StorageBackend::local_fs(root.clone());
+    let victim = branch_with(0x7c);
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always)
+                .with_maintenance_scheduling_policy(
+                    crate::api::StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+                ),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        put_at(&mut runtime, branch(), b"seeded-row", b"base", 5);
+        runtime
+            .branch(&create_request(victim))
+            .expect("create victim");
+        put_at(&mut runtime, victim, b"covered", b"both", 10);
+        put_at(&mut runtime, victim, b"covered-two", b"both-too", 15);
+        // Checkpoint FIRST: victim has no owned tables, so the structural
+        // guard passes and the snapshot records victim's memtable rows.
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Checkpoint,
+                MaintenanceScope::Global,
+            ))
+            .expect("enqueue checkpoint");
+        runtime.drain_maintenance().expect("drain checkpoint");
+        // Flush AFTER: victim gains a durable table-manifest base covering
+        // the same rows the live snapshot already carries.
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Flush,
+                MaintenanceScope::Branch(victim),
+            ))
+            .expect("enqueue flush");
+        runtime.drain_maintenance().expect("drain flush");
+        // A WAL-tail row above the flush: replay must still land it.
+        put_at(&mut runtime, victim, b"tail", b"walled", 20);
+    }
+
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always),
+        &backend,
+    )
+    .expect("reopen must combine the checkpoint with the flushed base, not refuse")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, victim, b"covered"),
+        Some(b"both".to_vec()),
+        "manifest-and-checkpoint row survives the combine"
+    );
+    assert_eq!(
+        read_value(&runtime, victim, b"covered-two"),
+        Some(b"both-too".to_vec()),
+        "second overlapping row survives the combine"
+    );
+    assert_eq!(
+        read_value(&runtime, victim, b"tail"),
+        Some(b"walled".to_vec()),
+        "the WAL-tail row above the flush replays"
+    );
+    assert_eq!(
+        read_value(&runtime, branch(), b"seeded-row"),
+        Some(b"base".to_vec()),
+        "the seeded branch is untouched"
+    );
+    // The combined state must be fork-visible: a fresh fork of the victim
+    // sees every row the combine reassembled.
+    let child = branch_with(0x7e);
+    runtime
+        .branch(&branch_request(
+            child,
+            BranchAction::ForkCurrent { source: victim },
+        ))
+        .expect("fork the combined branch");
+    assert_eq!(
+        read_value(&runtime, child, b"covered"),
+        Some(b"both".to_vec()),
+        "fork of the combined branch inherits the manifest-covered row"
+    );
+    assert_eq!(
+        read_value(&runtime, child, b"tail"),
+        Some(b"walled".to_vec()),
+        "fork of the combined branch inherits the WAL-tail row"
+    );
+}
+
+/// #2847, the DST seed-52 shape: the non-seeded branch is an eager
+/// (fork-at-version) child whose materialized rows live in its memtable.
+/// Checkpoint captures them, a later flush makes them durable, and reopen
+/// must combine rather than refuse.
+#[test]
+fn eager_fork_checkpoint_then_flush_survives_reopen() {
+    use crate::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
+
+    let root = temp_dir_for_api_test("branch-fork-ckpt-then-flush-combine");
+    let backend = StorageBackend::local_fs(root.clone());
+    let child = branch_with(0x7d);
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always)
+                .with_maintenance_scheduling_policy(
+                    crate::api::StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+                ),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        let first = put_at(&mut runtime, branch(), b"lineage", b"one", 10);
+        put_at(&mut runtime, branch(), b"lineage", b"two", 20);
+        runtime
+            .branch(&branch_request(
+                child,
+                BranchAction::ForkAtVersion {
+                    source: branch(),
+                    version: first.commit_version(),
+                },
+            ))
+            .expect("eager fork at version");
+        put_at(&mut runtime, child, b"own", b"mine", 30);
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Checkpoint,
+                MaintenanceScope::Branch(child),
+            ))
+            .expect("enqueue checkpoint");
+        runtime.drain_maintenance().expect("drain checkpoint");
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Flush,
+                MaintenanceScope::Branch(child),
+            ))
+            .expect("enqueue flush");
+        runtime.drain_maintenance().expect("drain flush");
+    }
+
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always),
+        &backend,
+    )
+    .expect("reopen must combine the checkpoint with the flushed fork base")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, child, b"lineage"),
+        Some(b"one".to_vec()),
+        "the fork-materialized pre-fork row survives"
+    );
+    assert_eq!(
+        read_value(&runtime, child, b"own"),
+        Some(b"mine".to_vec()),
+        "the child's own post-fork row survives"
+    );
+    assert_eq!(
+        read_value(&runtime, branch(), b"lineage"),
+        Some(b"two".to_vec()),
+        "the source branch stays at its own head"
+    );
+}
+
 /// #2833: re-fork a deleted name from a source that ITSELF has inherited
 /// layers (the EAGER fork path). The dead generation's flushed manifest must
 /// not survive as the new generation's recovery provenance — pre-fix, the

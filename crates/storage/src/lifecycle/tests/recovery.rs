@@ -1988,6 +1988,76 @@ fn base_restore_generation_fence_truth_table() {
     assert!(!parentless_content_predates_generation(false, None, v(1)));
 }
 
+/// #2847: the non-seeded COMBINE arm's three behaviors on an occupied
+/// (manifest-recovered) branch state — byte-identical checkpoint rows drop
+/// as duplicates, uncovered rows append to the active memtable, and
+/// divergent bytes at the same internal key fail closed.
+#[test]
+fn non_seeded_checkpoint_combine_dedups_appends_and_fails_closed() {
+    use crate::branch::state::snapshot::{
+        install_snapshot_rows_into_branches, BranchSnapshotInstallRequest,
+    };
+    use crate::branch::state::BranchLocalState;
+    use crate::lifecycle::combine_non_seeded_checkpoint_rows;
+
+    let branch = branch_id(0x53);
+    let row = |key: &'static [u8], version: u64, value: u8| {
+        StorageRow::put(
+            physical_key(branch, key),
+            CommitVersion::new(version),
+            Timestamp::from_micros(version),
+            Timestamp::EPOCH,
+            vec![value],
+        )
+    };
+    // Stand-in for the manifest-recovered base: snapshot-install two rows
+    // into an empty state so they land as owned L0 tables.
+    let mut states = vec![BranchLocalState::new(
+        branch,
+        crate::branch::config::BranchRuntimeConfig::default(),
+    )
+    .expect("empty state")];
+    let request = BranchSnapshotInstallRequest::from_rows(
+        "combine-arm-test-seed",
+        vec![row(b"covered", 5, 1), row(b"covered-two", 6, 2)],
+    )
+    .expect("install request");
+    install_snapshot_rows_into_branches(&mut states, &request).expect("build the occupied base");
+    let staged = states.pop().expect("staged state");
+    assert!(!staged.is_empty(), "base must be occupied");
+
+    // Duplicate + fresh: the duplicate drops, the fresh row appends.
+    let mut combined = staged.clone();
+    combine_non_seeded_checkpoint_rows(
+        &mut combined,
+        vec![row(b"covered", 5, 1), row(b"tail", 7, 3)],
+    )
+    .expect("byte-identical overlap combines");
+    let view = combined.capture_read_view().expect("view");
+    let tail = view
+        .at_version(&physical_key(branch, b"tail"), CommitVersion::new(7))
+        .expect("read tail")
+        .expect("tail row present");
+    assert_eq!(tail.row().value(), &[3], "uncovered row appended");
+    let covered = view
+        .at_version(&physical_key(branch, b"covered"), CommitVersion::new(5))
+        .expect("read covered")
+        .expect("covered row present");
+    assert_eq!(covered.row().value(), &[1], "base row intact after dedup");
+
+    // Divergent bytes at the same internal key fail closed.
+    let mut poisoned = staged.clone();
+    let error = combine_non_seeded_checkpoint_rows(&mut poisoned, vec![row(b"covered", 5, 9)])
+        .expect_err("divergent bytes at the same internal key must fail closed");
+    assert!(
+        matches!(
+            error,
+            LifecycleError::TableManifestCheckpointConflict { .. }
+        ),
+        "unexpected error: {error:?}"
+    );
+}
+
 #[test]
 fn generation_fence_truth_table() {
     // #2826: the WAL-replay generation fence. `<=` is the boundary — a

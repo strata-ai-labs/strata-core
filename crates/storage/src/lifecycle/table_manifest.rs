@@ -533,7 +533,7 @@ pub(crate) fn preflight_table_manifest_with_checkpoint(
 /// C2: no-fill cursor (BS4.4g) — a one-shot recovery-time validation walk
 /// must not seed the block cache in scan order; deliberate fill is the
 /// preheat's job.
-fn try_for_each_reader_row(
+pub(crate) fn try_for_each_reader_row(
     reader: &ImmutableTableReader<'_>,
     mut f: impl FnMut(&TableRow) -> LifecycleResult<()>,
 ) -> LifecycleResult<()> {
