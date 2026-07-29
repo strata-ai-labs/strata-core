@@ -714,6 +714,26 @@ private — a divergent consumer must be uncompilable); `scheduling_composition_
 pins the shape and the anti-churn oracle. New task kinds add registry variants, never
 ad-hoc arms.
 
+### DUR-010: Recovery combines a non-seeded checkpoint with a flush-published base
+
+A snapshot MAY legitimately coexist with a non-seeded branch's durable table-manifest
+base: the checkpoint-side guard (`non_seeded_branch_has_durable_base`) defers a
+checkpoint over an existing base, but it cannot defer a FUTURE flush — a flush that
+runs after the checkpoint publishes the branch's manifest and creates the coexistence
+(#2847). Recovery MUST therefore COMBINE, never refuse: an occupied non-seeded target
+dedups the checkpoint's rows against its manifest-recovered owned levels by internal
+key (byte-identical duplicates drop; divergent bytes fail closed), and appends only the
+uncovered remainder — Recovery Protocol rule 9 extended beyond the seeded branch. A
+leftover row is always strictly newer than any manifest row at its physical key (the
+flush covered a superset of the snapshot's rows), so active-first newest-wins holds.
+
+**Audit**: `combine_non_seeded_checkpoint_rows` and the partition in
+`install_non_seeded_checkpoint_rows` (`lifecycle/durable/bootstrap.rs`);
+`checkpoint_then_flush_of_non_seeded_branch_survives_reopen` (api/tests/branch.rs) pins
+the choreography end to end, `non_seeded_checkpoint_combine_dedups_appends_and_fails_closed`
+(lifecycle/tests/recovery.rs) pins the dedup/append/fail-closed truth table. The whole-DB
+DST sweep (seeds 52 72 76 86 120 150 152 162 176 188) is the volume lane.
+
 ## How to Use This Catalog
 
 ### After a code change

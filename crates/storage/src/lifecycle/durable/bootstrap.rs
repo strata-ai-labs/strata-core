@@ -3214,12 +3214,17 @@ pub(crate) fn combine_non_seeded_checkpoint_rows(
 ) -> LifecycleResult<()> {
     let mut pending = std::collections::BTreeMap::<Vec<u8>, crate::row::StorageRow>::new();
     for row in rows {
-        pending.insert(
-            crate::table::TableInternalKeyBytes::from_row(&row)
-                .as_slice()
-                .to_vec(),
-            row,
-        );
+        let key = crate::table::TableInternalKeyBytes::from_row(&row)
+            .as_slice()
+            .to_vec();
+        // Fail closed on a duplicated internal key in the snapshot itself,
+        // matching the empty-target path (the table builder rejects it) —
+        // silent last-wins would drop a row from a corrupt checkpoint.
+        if pending.insert(key, row).is_some() {
+            return Err(LifecycleError::RecoveryFailed {
+                reason: "non-seeded checkpoint rows carry a duplicate internal key",
+            });
+        }
     }
     for table in staged.owned_levels().iter().flatten() {
         if pending.is_empty() {

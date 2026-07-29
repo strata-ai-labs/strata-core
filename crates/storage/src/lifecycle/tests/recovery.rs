@@ -2056,6 +2056,34 @@ fn non_seeded_checkpoint_combine_dedups_appends_and_fails_closed() {
         ),
         "unexpected error: {error:?}"
     );
+
+    // A fully-covered input is a legal no-op: nothing appends, state intact.
+    let mut untouched = staged.clone();
+    combine_non_seeded_checkpoint_rows(
+        &mut untouched,
+        vec![row(b"covered", 5, 1), row(b"covered-two", 6, 2)],
+    )
+    .expect("fully-covered input combines as a no-op");
+    let view = untouched.capture_read_view().expect("view");
+    assert!(
+        view.at_version(&physical_key(branch, b"covered"), CommitVersion::new(5))
+            .expect("read covered")
+            .is_some(),
+        "base rows survive the no-op combine"
+    );
+
+    // A duplicated internal key WITHIN the checkpoint's own rows fails
+    // closed (silent last-wins would drop a row from a corrupt snapshot).
+    let mut duplicated = staged.clone();
+    let error = combine_non_seeded_checkpoint_rows(
+        &mut duplicated,
+        vec![row(b"tail", 7, 3), row(b"tail", 7, 4)],
+    )
+    .expect_err("duplicate internal key in the checkpoint rows must fail closed");
+    assert!(
+        matches!(error, LifecycleError::RecoveryFailed { .. }),
+        "unexpected error: {error:?}"
+    );
 }
 
 #[test]
