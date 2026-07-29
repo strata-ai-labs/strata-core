@@ -3133,42 +3133,118 @@ fn install_non_seeded_checkpoint_rows(
             reason: "non-seeded checkpoint rows require an install identity seed",
         });
     };
-    let mut staged: Vec<BranchLocalState> = active_affected
-        .iter()
-        .map(|id| branch_catalog.branch_state(*id).cloned())
-        .collect::<LifecycleResult<Vec<_>>>()?;
-    let active_rows = rows
-        .iter()
-        .filter(|row| {
-            let id = row.physical_key().branch_id();
-            if !active_affected.contains(&id) {
-                return false;
-            }
-            // #2830: a re-created (parentless) branch installs nothing at or
-            // below its creation point — those checkpoint rows belong to the
-            // dead predecessor generation.
-            !fences.iter().any(|(fence_id, has_parent, created_at)| {
-                *fence_id == id
-                    && parentless_content_predates_generation(
+    // #2847: partition the affected branches by what recovery already holds
+    // for them. A branch recovered EMPTY takes the snapshot-install path
+    // (its checkpoint rows become fresh owned L0 tables). A branch recovered
+    // OCCUPIED — a flush published its table manifest AFTER the live
+    // snapshot recorded the same rows, the direction the checkpoint-side
+    // `non_seeded_branch_has_durable_base` guard cannot see — takes the
+    // COMBINE arm instead: Recovery Protocol rule 9 extended to non-seeded
+    // branches. Refusing (the old behavior) left the store permanently
+    // unopenable.
+    let mut snapshot_states: Vec<BranchLocalState> = Vec::new();
+    let mut snapshot_rows: Vec<crate::row::StorageRow> = Vec::new();
+    for (id, has_parent, created_at) in &fences {
+        // #2830: a re-created (parentless) branch installs nothing at or
+        // below its creation point — those checkpoint rows belong to the
+        // dead predecessor generation.
+        let branch_rows: Vec<crate::row::StorageRow> = rows
+            .iter()
+            .filter(|row| {
+                row.physical_key().branch_id() == *id
+                    && !parentless_content_predates_generation(
                         *has_parent,
                         *created_at,
                         row.commit_version(),
                     )
             })
-        })
-        .cloned()
-        .collect();
-    let request = crate::branch::state::snapshot::BranchSnapshotInstallRequest::from_rows(
-        identity_seed.as_str(),
-        active_rows,
-    )
-    .map_err(branch_error)?;
-    crate::branch::state::snapshot::install_snapshot_rows_into_branches(&mut staged, &request)
+            .cloned()
+            .collect();
+        if branch_rows.is_empty() {
+            continue;
+        }
+        let staged = branch_catalog.branch_state(*id)?.clone();
+        if staged.is_empty() {
+            snapshot_states.push(staged);
+            snapshot_rows.extend(branch_rows);
+        } else {
+            let mut combined = staged;
+            combine_non_seeded_checkpoint_rows(&mut combined, branch_rows)?;
+            let descriptor = branch_catalog.lookup(*id)?;
+            branch_catalog.replace_active_branch_state_with_descriptor(descriptor, combined)?;
+        }
+    }
+    if !snapshot_rows.is_empty() {
+        let request = crate::branch::state::snapshot::BranchSnapshotInstallRequest::from_rows(
+            identity_seed.as_str(),
+            snapshot_rows,
+        )
         .map_err(branch_error)?;
-    for branch in staged {
-        let branch_id = branch.branch_id();
-        let descriptor = branch_catalog.lookup(branch_id)?;
-        branch_catalog.replace_active_branch_state_with_descriptor(descriptor, branch)?;
+        crate::branch::state::snapshot::install_snapshot_rows_into_branches(
+            &mut snapshot_states,
+            &request,
+        )
+        .map_err(branch_error)?;
+        for branch in snapshot_states {
+            let branch_id = branch.branch_id();
+            let descriptor = branch_catalog.lookup(branch_id)?;
+            branch_catalog.replace_active_branch_state_with_descriptor(descriptor, branch)?;
+        }
+    }
+    Ok(())
+}
+
+/// #2847: COMBINE arm for a non-seeded branch that recovery found occupied.
+/// The occupied state exists because a flush published the branch's table
+/// manifest after a live snapshot had already recorded the branch's rows —
+/// the reverse direction of the checkpoint's structural guard, which can
+/// defer a checkpoint over an existing base but cannot defer a future
+/// flush. Mirrors the seeded branch's rule-9 COMBINE: checkpoint rows
+/// byte-identical to a manifest-recovered row at the same internal key are
+/// duplicates and drop; rows the manifest does not cover append to the
+/// active memtable. A leftover row is always strictly newer than any
+/// manifest row at its physical key — the flush that published the manifest
+/// covered every memtable row of its time, a superset of the snapshot's —
+/// so active-first newest-wins reads stay correct. Divergent bytes at the
+/// same internal key fail closed, matching
+/// `preflight_table_manifest_with_checkpoint`.
+pub(crate) fn combine_non_seeded_checkpoint_rows(
+    staged: &mut BranchLocalState,
+    rows: Vec<crate::row::StorageRow>,
+) -> LifecycleResult<()> {
+    let mut pending = std::collections::BTreeMap::<Vec<u8>, crate::row::StorageRow>::new();
+    for row in rows {
+        let key = crate::table::TableInternalKeyBytes::from_row(&row)
+            .as_slice()
+            .to_vec();
+        // Fail closed on a duplicated internal key in the snapshot itself,
+        // matching the empty-target path (the table builder rejects it) —
+        // silent last-wins would drop a row from a corrupt checkpoint.
+        if pending.insert(key, row).is_some() {
+            return Err(LifecycleError::RecoveryFailed {
+                reason: "non-seeded checkpoint rows carry a duplicate internal key",
+            });
+        }
+    }
+    for table in staged.owned_levels().iter().flatten() {
+        if pending.is_empty() {
+            break;
+        }
+        crate::lifecycle::try_for_each_reader_row(table.reader(), |table_row| {
+            if let Some(candidate) = pending.remove(table_row.key().as_slice()) {
+                if &candidate != table_row.row() {
+                    return Err(LifecycleError::table_manifest_checkpoint_conflict(
+                        "non-seeded checkpoint row bytes diverge from the manifest-recovered base",
+                    ));
+                }
+            }
+            Ok(())
+        })?;
+    }
+    if !pending.is_empty() {
+        staged
+            .append_committed_rows_atomically(pending.into_values())
+            .map_err(branch_error)?;
     }
     Ok(())
 }

@@ -142,12 +142,13 @@ pub(crate) use config::{
     reason = "durable lifecycle assembly exports define the local surface for recovery slices"
 )]
 pub(crate) use durable::{
-    parentless_content_predates_generation, record_predates_current_generation,
-    DurableBackgroundMaintenanceBuild, DurableBackgroundMaintenanceBuilt,
-    DurableBackgroundMaintenanceStep, DurableGroupApplyDone, DurableGroupApplyWork,
-    DurableGroupInFlight, DurableGroupMemberResult, LifecycleDurableAssemblyFacts,
-    LifecycleDurableLocalOpenRequest, LifecycleDurableLocalRuntime, LifecycleDurableLocalServices,
-    LifecycleDurableLocalShell, LifecycleRecoveryBootstrapReport, PreparedPublishStep,
+    combine_non_seeded_checkpoint_rows, parentless_content_predates_generation,
+    record_predates_current_generation, DurableBackgroundMaintenanceBuild,
+    DurableBackgroundMaintenanceBuilt, DurableBackgroundMaintenanceStep, DurableGroupApplyDone,
+    DurableGroupApplyWork, DurableGroupInFlight, DurableGroupMemberResult,
+    LifecycleDurableAssemblyFacts, LifecycleDurableLocalOpenRequest, LifecycleDurableLocalRuntime,
+    LifecycleDurableLocalServices, LifecycleDurableLocalShell, LifecycleRecoveryBootstrapReport,
+    PreparedPublishStep,
 };
 #[allow(
     unused_imports,
@@ -272,7 +273,7 @@ pub(crate) use state::{
 pub(crate) use table_manifest::{
     apply_loaded_table_manifest_to_branch, preflight_table_manifest_with_checkpoint,
     publish_table_manifest_for_branch_with_budget, stage_table_manifest_for_branch,
-    table_manifest_debt_outcome, LifecycleDurableTableCatalog,
+    table_manifest_debt_outcome, try_for_each_reader_row, LifecycleDurableTableCatalog,
     LifecycleTableManifestRecoveryOutcome, LifecycleTableManifestRecoveryStage,
 };
 #[allow(
