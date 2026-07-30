@@ -734,12 +734,24 @@ uncovered remainder — Recovery Protocol rule 9 extended beyond the seeded bran
 leftover row is always strictly newer than any manifest row at its physical key (the
 flush covered a superset of the snapshot's rows), so active-first newest-wins holds.
 
-**Audit**: `combine_non_seeded_checkpoint_rows` and the partition in
+Before any install, checkpoint rows are generation-fenced exactly like WAL records
+(#2826/#2833): NO branch — parentless or fork child — installs a row at
+`version <= created_at`. A stale pre-delete checkpoint for a re-created name is
+indistinguishable from legitimate inheritance by (branch, key, version) alone; the
+checkpoint is never the authority for a fork child's inherited content
+(`rebuild_fork_snapshot_rows` re-materializes it from the live parent, and covered
+children ride their manifest layers), so the whole `<= created_at` band drops.
+
+**Audit**: `combine_non_seeded_checkpoint_rows`, the partition, and the
+`record_predates_current_generation` row fence in
 `install_non_seeded_checkpoint_rows` (`lifecycle/durable/bootstrap.rs`);
 `checkpoint_then_flush_of_non_seeded_branch_survives_reopen` (api/tests/branch.rs) pins
 the choreography end to end, `non_seeded_checkpoint_combine_dedups_appends_and_fails_closed`
-(lifecycle/tests/recovery.rs) pins the dedup/append/fail-closed truth table. The whole-DB
-DST sweep (seeds 52 72 76 86 120 150 152 162 176 188) is the volume lane.
+(lifecycle/tests/recovery.rs) pins the dedup/append/fail-closed truth table.
+`refork_of_a_deleted_name_does_not_resurrect_dead_generation_checkpoint_rows` and
+`fork_child_own_rows_survive_reopen_through_the_checkpoint` (api/tests/branch.rs) pin
+both directions of the fence. The whole-DB DST sweep (seeds 52 72 76 86 120 150 152
+162 176 188; fence seeds 94 142 180) is the volume lane.
 
 ### DUR-011: Durable content is authoritative over retained-timeline coverage
 

@@ -3099,8 +3099,8 @@ fn install_non_seeded_checkpoint_rows(
     }
     affected.sort_by_key(|id| *id.as_bytes());
     let mut active_affected = Vec::new();
-    // #2830 fence inputs per active branch: (id, has_parent, created_at).
-    let mut fences: Vec<(BranchId, bool, Option<CommitVersion>)> = Vec::new();
+    // #2830/#2833 fence inputs per active branch: (id, created_at).
+    let mut fences: Vec<(BranchId, Option<CommitVersion>)> = Vec::new();
     for id in &affected {
         let descriptor =
             branch_catalog
@@ -3123,7 +3123,7 @@ fn install_non_seeded_checkpoint_rows(
             });
         }
         active_affected.push(*id);
-        fences.push((*id, descriptor.parent().is_some(), descriptor.created_at()));
+        fences.push((*id, descriptor.created_at()));
     }
     if active_affected.is_empty() {
         return Ok(());
@@ -3144,19 +3144,22 @@ fn install_non_seeded_checkpoint_rows(
     // unopenable.
     let mut snapshot_states: Vec<BranchLocalState> = Vec::new();
     let mut snapshot_rows: Vec<crate::row::StorageRow> = Vec::new();
-    for (id, has_parent, created_at) in &fences {
-        // #2830: a re-created (parentless) branch installs nothing at or
-        // below its creation point — those checkpoint rows belong to the
-        // dead predecessor generation.
+    for (id, created_at) in &fences {
+        // #2830/#2833: NO branch installs checkpoint rows at or below its
+        // creation point — the same band the WAL fence drops (#2826). For a
+        // re-created (parentless) branch those rows belong to the dead
+        // predecessor generation. For a fork child the band also covers its
+        // legitimate inherited content, but the checkpoint is never the
+        // authority for it: `rebuild_fork_snapshot_rows` re-materializes a
+        // layer-less child from its live parent, and a covered child rides
+        // its manifest layers — while a stale pre-delete checkpoint for a
+        // re-created-BY-FORK name is indistinguishable from inheritance by
+        // (branch, key, version) alone and resurrected dead generations.
         let branch_rows: Vec<crate::row::StorageRow> = rows
             .iter()
             .filter(|row| {
                 row.physical_key().branch_id() == *id
-                    && !parentless_content_predates_generation(
-                        *has_parent,
-                        *created_at,
-                        row.commit_version(),
-                    )
+                    && !record_predates_current_generation(row.commit_version(), *created_at)
             })
             .cloned()
             .collect();
