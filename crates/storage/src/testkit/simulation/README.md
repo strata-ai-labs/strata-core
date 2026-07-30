@@ -30,7 +30,12 @@ STRATA_SIM_SEED=<n> cargo test -p strata-storage --features fault-injection \
     --test simulation_whole_db -- replay_single_seed --ignored --nocapture
 ```
 
-Replay is bit-exact at the canonical trajectory shape: the same seed produces
+Replay is bit-exact only at the shape the failure ran at. The canonical shape
+(3 epochs × 24 steps) is the default; the nightly soak's DEEP pass runs a
+larger shape via `STRATA_SIM_EPOCHS` / `STRATA_SIM_STEPS_PER_EPOCH`
+(TCP4.11c), and a failure at a non-canonical shape prints those knobs as part
+of its repro line — paste the whole line, shape prefix included. The same
+seed at the same shape produces
 the same action stream, the same commit versions AND timestamps
 (`ApiTimestampSource` is a +1µs counter — no wall clock anywhere on the
 committed path), the same content-derived identities, and the same crash
