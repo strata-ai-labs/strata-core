@@ -704,11 +704,24 @@ inherited-layer manifests) and empty forks keep their parent deletable. Cache mo
 recovery) and WAL replay (history re-application) are exempt. The recovery rebuild skips
 Deleted sources — sound only because of this refusal.
 
+The layered exemption's premise — a layered child IS durably manifest-covered — is
+enforced at fork time (#2855): the durable runtime's COW eligibility requires every
+in-fork sealed table to be durably cataloged (`ForkSealedTableDurability`), so a child
+layer never references a volatile table (whose manifest publish is guaranteed to fail
+best-effort, leaving a child that LOOKS layered without durable coverage). Volatile
+sources take the eager path, whose layer-less child this refusal protects.
+
 **Audit**: `require_no_recovery_dependent_children` (branch catalog) called from the
 durable delete only; `branch_delete_refused_while_layerless_fork_children_live`,
 `branch_delete_of_layered_fork_source_stays_allowed`,
 `fork_parent_deletion_cannot_brick_recovery` (api tests) pin all three directions;
-`branch_dag_model` (engine, cache) pins the cache exemption. Origin: #2820.
+`branch_dag_model` (engine, cache) pins the cache exemption. The durability gate:
+`in_fork_sealed_durable` in `fork_at_retained_version_with_unsealed_builder` with the
+table-catalog predicate passed by both durable fork wrappers (`bootstrap.rs`);
+`cow_fork_over_a_volatile_source_keeps_inheritance_across_reopen` and
+`refork_over_a_deleted_name_does_not_adopt_the_dead_generations_manifest` (api tests)
+pin the two failure legs, the layered-delete test above pins the durable-COW keep
+direction. Origin: #2820; durability gate: #2855 (DST seeds 183, 134).
 
 ### DUR-009: Enqueue mirrors execution
 
