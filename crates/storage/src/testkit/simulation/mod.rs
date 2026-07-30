@@ -309,6 +309,35 @@ pub fn run_simulation_harness(
 mod tests {
     use super::run_simulation_harness;
 
+    /// Truth table for the reopen version-domain bound: only a lossy crash
+    /// family adopts the runtime's recovered visible version as the model's
+    /// ack ceiling; zero-loss reopens keep the full acked history so real
+    /// losses stay detectable, and an absent recovered version bounds nothing.
+    #[test]
+    fn reopen_version_domain_bound_applies_only_to_lossy_reopens() {
+        use super::whole_db::reopen_version_domain_bound;
+        use crate::testkit::recovery_oracle::verify::CrashFamily;
+        use strata_core::CommitVersion;
+
+        let visible = Some(CommitVersion::new(19));
+        assert_eq!(
+            reopen_version_domain_bound(CrashFamily::OnDiskDamage, visible),
+            Some(CommitVersion::new(19)),
+        );
+        assert_eq!(
+            reopen_version_domain_bound(CrashFamily::OnDiskDamage, None),
+            None,
+        );
+        assert_eq!(
+            reopen_version_domain_bound(CrashFamily::ZeroLoss, visible),
+            None
+        );
+        assert_eq!(
+            reopen_version_domain_bound(CrashFamily::ZeroLoss, None),
+            None
+        );
+    }
+
     #[test]
     fn whole_db_sweep_entry_holds_and_is_non_vacuous() {
         // EXACT values, not floors: every trajectory is bit-exact from its
@@ -326,6 +355,20 @@ mod tests {
         assert_eq!(outcome.forks(), 16, "{outcome:?}");
         assert_eq!(outcome.deletes(), 5, "{outcome:?}");
         assert_eq!(outcome.temporal_probes_ok(), 19, "{outcome:?}");
+    }
+
+    /// #2859 family B regression pin: seed 289 at the 6x48 deep shape crosses
+    /// a lossy reopen whose recovered clock legally re-issues version numbers.
+    /// Without the model's version-domain truncation the stale acked facts
+    /// collide with the re-issue and the zero-loss step probe reports a
+    /// phantom `LostAck`; the trajectory must replay clean end to end.
+    #[test]
+    fn whole_db_version_domain_reconciliation_survives_reissue_seed() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let facts = super::whole_db::run_whole_db_sim(dir.path(), 289, 6, 48)
+            .expect("seed 289 must survive the re-issue reopen");
+        assert!(facts.epochs() > 1, "{facts:?}");
+        assert!(facts.crashed_epochs() > 0, "{facts:?}");
     }
 
     /// A second exact-constants config (seeds 0-1): distinct pinned values

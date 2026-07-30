@@ -343,4 +343,61 @@ mod tests {
             })
         );
     }
+
+    /// #2859 family B (harness leg): after a lossy reopen the runtime legally
+    /// re-issues version numbers above its recovered visible version. A
+    /// state-only watermark adoption can keep a stale acked fact ABOVE that
+    /// bound when the shed commit was a live-state no-op (its cut is
+    /// state-identical to the true surviving one). A new ack at a re-issued
+    /// version then collides: the stale higher-version mutation shadows the
+    /// new row inside the model, and the zero-loss classify reports a loss
+    /// that never happened. Truncating the model at the recovered version
+    /// domain first keeps classify truthful.
+    #[test]
+    fn version_domain_truncation_prevents_reissue_poisoning() {
+        let build_shed_model = || {
+            let mut model = ExpectedState::new(OracleDurability::Standard);
+            model.record_ack(branch(), CommitVersion::new(1), vec![put(0, 10)]);
+            // Shed by the crash; k1 never existed, so the cut at 3 is
+            // state-identical to the cut at 1 — the adoption trap.
+            model.record_ack(branch(), CommitVersion::new(3), vec![del(1)]);
+            model
+        };
+        let surviving = recovered(&[(0, 10, 1)]);
+
+        // The trap's precondition: state-only adoption matches the GREATEST
+        // cut (3), above the runtime's recovered version domain (1).
+        let model = build_shed_model();
+        let adopted = model
+            .candidate_watermarks(branch(), CommitVersion::new(3))
+            .into_iter()
+            .find(|w| model.live_state_at(branch(), *w) == surviving);
+        assert_eq!(adopted, Some(CommitVersion::new(3)));
+
+        // WITHOUT the version-domain truncation: the runtime re-issues v2 for
+        // a new acked commit; the stale del@3 shadows it inside the model and
+        // zero-loss classify reports a phantom LostAck.
+        let mut poisoned = build_shed_model();
+        poisoned.record_ack(branch(), CommitVersion::new(2), vec![put(1, 22)]);
+        let after_reissue = recovered(&[(0, 10, 1), (1, 22, 2)]);
+        assert!(matches!(
+            classify_recovered(&poisoned, branch(), &after_reissue, CrashFamily::ZeroLoss),
+            Err(RecoveryOracleViolation::LostAck {
+                expected_through,
+                recovered_watermark,
+                ..
+            }) if expected_through == CommitVersion::new(3)
+                && recovered_watermark == CommitVersion::new(2)
+        ));
+
+        // WITH the truncation at the recovered version domain (bound 1): the
+        // stale fact drops, the re-issued ack records cleanly, and the same
+        // recovered state classifies as zero-loss.
+        let mut truncated = build_shed_model();
+        truncated.truncate_branch_above(branch(), CommitVersion::new(1));
+        truncated.record_ack(branch(), CommitVersion::new(2), vec![put(1, 22)]);
+        assert!(
+            classify_recovered(&truncated, branch(), &after_reissue, CrashFamily::ZeroLoss).is_ok()
+        );
+    }
 }

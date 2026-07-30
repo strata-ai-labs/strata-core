@@ -12,10 +12,13 @@
 //! branch-keyed). Forks seed the target branch by replaying the source's
 //! surviving history compressed per original commit version, so the
 //! version-strict prefix oracle holds on inherited rows. After a lossy
-//! crash each branch adopts its own surviving watermark (the model
-//! truncates above it); an acknowledged branch deletion must stay dead
-//! under `ZeroLoss` and may resurrect only under `OnDiskDamage`, where the
-//! resurrected content must itself be a valid prefix.
+//! crash the model first drops every ack above the runtime's recovered
+//! visible version (the clock legally re-issues those versions — a stale
+//! model ack there would collide with the re-issue), then each branch
+//! adopts its own surviving watermark (the model truncates above it); an
+//! acknowledged branch deletion must stay dead under `ZeroLoss` and may
+//! resurrect only under `OnDiskDamage`, where the resurrected content must
+//! itself be a valid prefix.
 //!
 //! Continuous oracles: the per-branch prefix-of-history scan (every step,
 //! on the touched branch), seeded **temporal probes** (`ReadBound::
@@ -34,7 +37,7 @@ use strata_core::{BranchId, CommitVersion};
 use crate::api::{
     BranchAction, BranchGeneration, BranchRequest, BranchStatus, CommitBatch, CommitOptions,
     MaintenanceRequest, MaintenanceScope, MaintenanceTask, PrefixScanReadRequest, ReadBound,
-    StorageBackend, StorageDurabilityPolicy, StorageRuntime,
+    StorageBackend, StorageDurabilityPolicy, StorageOpenSummary, StorageRuntime,
 };
 use crate::testkit::recovery_oracle::model::{ExpectedState, OracleDurability, RecordedMutation};
 use crate::testkit::recovery_oracle::verify::{
@@ -97,6 +100,21 @@ impl DbAction {
             DbAction::EnqueueCheckpoint => "enqueue_checkpoint",
             DbAction::AdvanceClock(_) => "advance_clock",
         }
+    }
+}
+
+/// The version-domain bound the model adopts at a reopen. Under a lossy crash
+/// family every ack above the runtime's recovered visible version was shed and
+/// the recovered clock may legally re-issue those versions; the model must drop
+/// its facts above the bound or the re-issue collides with them. Zero-loss
+/// reopens keep the full acked history so real losses stay detectable.
+pub(super) fn reopen_version_domain_bound(
+    family: CrashFamily,
+    recovered_visible: Option<CommitVersion>,
+) -> Option<CommitVersion> {
+    match family {
+        CrashFamily::OnDiskDamage => recovered_visible,
+        CrashFamily::ZeroLoss => None,
     }
 }
 
@@ -630,7 +648,21 @@ impl WholeDbSim {
         runtime: &StorageRuntime<'_>,
         family: CrashFamily,
         epoch: usize,
+        recovered_visible: Option<CommitVersion>,
     ) -> Result<(), TestkitError> {
+        // Version-domain adoption FIRST: a lossy crash sheds every ack above the
+        // runtime's recovered visible version — by content AND by version domain.
+        // The recovered clock legally RE-ISSUES those version numbers for new
+        // commits, so a stale model ack above the bound collides with the
+        // re-issue and poisons every later classify on the branch (a state-only
+        // adoption can miss this: legally-shed commits that are live-state
+        // no-ops make a higher cut state-identical to the true surviving one).
+        if let Some(bound) = reopen_version_domain_bound(family, recovered_visible) {
+            let ids: Vec<BranchId> = self.books.iter().map(|(branch, _)| *branch).collect();
+            for branch in ids {
+                self.model.truncate_branch_above(branch, bound);
+            }
+        }
         let books: Vec<(BranchId, BranchBook)> = self.books.clone();
         for (branch, book) in books {
             if book.alive {
@@ -767,6 +799,10 @@ fn is_degraded_admission_block(error: &TestkitError) -> bool {
 /// Run one whole-DB trajectory: `epochs` epochs of `steps_per_epoch` seeded
 /// actions, each epoch ending in a seeded clean drop or filesystem-model
 /// crash, with the model carried across reopens.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear trajectory driver: open, reconcile, steps, seeded ending per epoch"
+)]
 pub(super) fn run_whole_db_sim(
     root: &Path,
     seed: u64,
@@ -783,8 +819,11 @@ pub(super) fn run_whole_db_sim(
             super::faults::deterministic_options(sim.durability).with_strict_recovery(false),
             &backend,
         );
-        let mut runtime = match opened {
-            Ok(outcome) => outcome.into_runtime(),
+        let (mut runtime, open_summary) = match opened {
+            Ok(outcome) => {
+                let (runtime, summary) = outcome.into_parts();
+                (runtime, Some(summary))
+            }
             Err(error) => {
                 // Only a garbage-tail crash may refuse the reopen (fail-loud
                 // CRC rejection); anything else is a real failure.
@@ -801,7 +840,12 @@ pub(super) fn run_whole_db_sim(
         super::faults::require_manual_clock(&runtime, seed)?;
 
         if epoch > 0 {
-            sim.reconcile_after_reopen(&runtime, family_next_open, epoch)?;
+            sim.reconcile_after_reopen(
+                &runtime,
+                family_next_open,
+                epoch,
+                open_summary.and_then(StorageOpenSummary::recovered_visible_version),
+            )?;
         }
 
         let mut degraded = false;
@@ -855,8 +899,11 @@ pub(super) fn run_whole_db_sim(
             .with_strict_recovery(false),
         &backend,
     );
-    let runtime = match opened {
-        Ok(outcome) => outcome.into_runtime(),
+    let (runtime, open_summary) = match opened {
+        Ok(outcome) => {
+            let (runtime, summary) = outcome.into_parts();
+            (runtime, Some(summary))
+        }
         Err(_error) if matches!(family_next_open, CrashFamily::OnDiskDamage) => {
             sim.facts.fail_loud_epochs += 1;
             sim.facts.epoch_endings.push("fail_loud_open");
@@ -868,7 +915,12 @@ pub(super) fn run_whole_db_sim(
             )));
         }
     };
-    sim.reconcile_after_reopen(&runtime, family_next_open, epochs)?;
+    sim.reconcile_after_reopen(
+        &runtime,
+        family_next_open,
+        epochs,
+        open_summary.and_then(StorageOpenSummary::recovered_visible_version),
+    )?;
     for branch in sim.live_branches() {
         let state = scan_recovered(
             &runtime,
