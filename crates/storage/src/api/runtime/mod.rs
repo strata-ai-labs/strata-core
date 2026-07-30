@@ -882,12 +882,12 @@ impl<'a> StorageRuntime<'a> {
             BranchAction::ForkCurrent { source } => {
                 require_valid_branch_identifier(request.branch_id(), "branch_id")?;
                 require_valid_branch_identifier(source, "source_branch_id")?;
-                // #2521: a source with NO commit history forks at version
-                // zero — the legitimate empty-fork case (empty child, parent
-                // linkage intact). Callers must never paper over other fork
-                // errors by fabricating an unparented empty branch: recovery
-                // now rebuilds forked timeline coverage, so a populated
-                // source always resolves a real version here.
+                // #2521: a source with NO rows forks at version zero — the
+                // legitimate empty-fork case (empty child, parent linkage
+                // intact). Callers must never paper over other fork errors
+                // by fabricating an unparented empty branch: `current_branch_
+                // version` resolves from content facts (#2852), so a
+                // populated source always resolves a real version here.
                 let version = match self.current_branch_version(source) {
                     Ok(version) => version,
                     Err(StorageApiError::RetainedHistoryUnavailable { .. }) => CommitVersion::ZERO,
@@ -2051,13 +2051,23 @@ impl<'a> StorageRuntime<'a> {
         )
     }
 
+    /// #2852: the branch's current visible CONTENT watermark — the max commit
+    /// version across every row source (active/frozen/owned/inherited), the
+    /// same facts the lifecycle fork validates fork versions against. The
+    /// retained TIMELINE is deliberately not consulted: after a lossy crash,
+    /// flush-published content outlives timeline coverage (the
+    /// version→timestamp facts shed with the WAL), and resolving "current"
+    /// from the timeline silently forked an empty child over a populated
+    /// source. Fork-current is a content operation; only the timestamp-based
+    /// fork needs temporal coverage.
     fn current_branch_version(&self, branch_id: BranchId) -> StorageApiResult<CommitVersion> {
-        self.timeline_view(branch_id)?.bounds().max_version().ok_or(
-            StorageApiError::RetainedHistoryUnavailable {
+        self.read_view_for_branch(branch_id)?
+            .facts()
+            .max_commit_version()
+            .ok_or(StorageApiError::RetainedHistoryUnavailable {
                 branch_id,
                 reason: "branch has no retained commit history",
-            },
-        )
+            })
     }
 
     fn require_retained_version_watermark(
@@ -2114,13 +2124,16 @@ impl<'a> StorageRuntime<'a> {
         let generation = branch_generation_or_default(request.expected_generation())?;
         // #2521: a history-less source (the legitimate empty-fork case) has
         // no retained floor; zero matches its zero fork version.
+        // #2852: a source whose timeline degraded after a lossy crash (content
+        // outlives timeline coverage) has no provable floor either — ZERO is
+        // safe for every caller that reaches here: fork-current anchors at the
+        // content watermark (≥ any true floor), and the at-version/at-timestamp
+        // arms validate retained timeline coverage BEFORE this call, so a
+        // degraded timeline never gets this far with a below-floor version.
+        // The lifecycle still validates the version against content facts.
         let retained_floor = match self.retained_floor(source) {
             Ok(floor) => floor,
-            Err(StorageApiError::RetainedHistoryUnavailable { .. })
-                if version == CommitVersion::ZERO =>
-            {
-                CommitVersion::ZERO
-            }
+            Err(StorageApiError::RetainedHistoryUnavailable { .. }) => CommitVersion::ZERO,
             Err(error) => return Err(error),
         };
         // #2826: stamp the fork's `created_at` with the CURRENT visible

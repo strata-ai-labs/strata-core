@@ -2092,3 +2092,137 @@ fn recovered_commit_clock_stays_above_deleted_branch_anchors() {
         summary.commit_version()
     );
 }
+
+/// #2852: `fork_current` must anchor on the source's current CONTENT
+/// watermark, not on retained-timeline coverage. After a lossy crash,
+/// flush-published tables recover content whose (version→timestamp)
+/// timeline facts shed with the WAL — the checkpoint's timeline groups
+/// cover only their own watermark. The timeline-based resolution degraded
+/// to "no retained history" and silently forked an EMPTY child over a
+/// fully-populated source (the DST's live-step `LostAck` shape: seeds
+/// 83/154/164/178 on tracker #2828).
+#[test]
+fn fork_current_captures_content_that_outlives_timeline_coverage() {
+    use crate::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
+    use crate::testkit::FsModel;
+
+    let root = temp_dir_for_api_test("fork-current-content-beyond-timeline");
+    let backend = StorageBackend::reordering_local_fs(root.clone());
+    let expected_watermark;
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+                .with_maintenance_scheduling_policy(
+                    crate::api::StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+                ),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        put_at(&mut runtime, branch(), b"early", b"e", 10);
+        // Checkpoint: persisted timeline coverage ends HERE.
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Checkpoint,
+                MaintenanceScope::Global,
+            ))
+            .expect("enqueue checkpoint");
+        runtime.drain_maintenance().expect("drain checkpoint");
+        // Post-checkpoint commits, then a flush: the rows become durable
+        // through the table manifest while their timeline facts live only
+        // in the (unsynced) WAL.
+        put_at(&mut runtime, branch(), b"late-a", b"1", 20);
+        let last = put_at(&mut runtime, branch(), b"late-b", b"2", 30);
+        expected_watermark = last.commit_version();
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Flush,
+                MaintenanceScope::Branch(branch()),
+            ))
+            .expect("enqueue flush");
+        runtime.drain_maintenance().expect("drain flush");
+        drop(runtime);
+        backend
+            .reordering_crash(FsModel::OrderedAtomic, 7)
+            .expect("materialize crash");
+    }
+
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("reopen after crash")
+    .into_runtime();
+    // Precondition, not the oracle: the flushed post-checkpoint content must
+    // recover, or the choreography failed to produce content-beyond-timeline.
+    assert_eq!(
+        read_value(&runtime, branch(), b"late-b"),
+        Some(b"2".to_vec()),
+        "precondition: flush-published post-checkpoint content must recover"
+    );
+    let child = branch_with(0x82);
+    let outcome = runtime
+        .branch(&branch_request(
+            child,
+            BranchAction::ForkCurrent { source: branch() },
+        ))
+        .expect("fork_current of a populated source");
+    assert_eq!(
+        outcome.fork_version(),
+        Some(expected_watermark),
+        "fork_current must anchor on the source's content watermark"
+    );
+    assert_eq!(
+        read_value(&runtime, child, b"late-b"),
+        Some(b"2".to_vec()),
+        "the child must serve content that outlived timeline coverage"
+    );
+    assert_eq!(
+        read_value(&runtime, child, b"early"),
+        Some(b"e".to_vec()),
+        "the child must serve the checkpoint-covered content too"
+    );
+}
+
+/// #2852 direction control: the #2521 legitimate-empty-fork case — a source
+/// with NO rows at all — must keep forking an empty child (parent linkage,
+/// fork version zero) rather than start refusing.
+#[test]
+fn fork_current_of_a_rowless_source_stays_a_legitimate_empty_fork() {
+    let root = temp_dir_for_api_test("fork-current-rowless-source");
+    let backend = StorageBackend::local_fs(root);
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("durable open")
+    .into_runtime();
+    let empty_source = branch_with(0x83);
+    runtime
+        .branch(&create_request(empty_source))
+        .expect("create empty source");
+    let child = branch_with(0x84);
+    let outcome = runtime
+        .branch(&branch_request(
+            child,
+            BranchAction::ForkCurrent {
+                source: empty_source,
+            },
+        ))
+        .expect("fork_current of a rowless source is the legitimate empty fork");
+    assert_eq!(
+        outcome.fork_version(),
+        Some(CommitVersion::ZERO),
+        "a rowless source forks at version zero"
+    );
+    assert_eq!(
+        outcome.source_branch_id(),
+        Some(empty_source),
+        "the empty fork keeps its parent linkage"
+    );
+    assert_eq!(
+        read_value(&runtime, child, b"anything"),
+        None,
+        "the empty fork serves no rows"
+    );
+}

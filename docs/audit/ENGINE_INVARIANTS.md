@@ -741,6 +741,27 @@ the choreography end to end, `non_seeded_checkpoint_combine_dedups_appends_and_f
 (lifecycle/tests/recovery.rs) pins the dedup/append/fail-closed truth table. The whole-DB
 DST sweep (seeds 52 72 76 86 120 150 152 162 176 188) is the volume lane.
 
+### DUR-011: Durable content is authoritative over retained-timeline coverage
+
+After a lossy recovery, flush-published content legally outlives retained-timeline
+coverage: rows recover from durable tables while their (version→timestamp) facts shed
+with the WAL, and a checkpoint's timeline groups cover only their own watermark — so a
+branch's content watermark may permanently exceed its timeline tip. Operations anchored
+on CONTENT (fork-current above all) MUST resolve from row-source facts
+(`max_commit_version` across active/frozen/owned/inherited), never from timeline bounds
+(#2852: the timeline-based resolution silently forked an EMPTY child over a populated
+source). Temporal operations (fork-at-version/at-timestamp, at-timestamp reads) may
+refuse on missing coverage, but must not deny coverage the index provably retains
+(#2853 tracks that availability leg).
+
+**Audit**: `current_branch_version` (`api/runtime/mod.rs`, the fork-current anchor)
+reads branch read-view facts, not `timeline_view` bounds; the `retained_floor` fallback
+maps a degraded timeline to a ZERO floor only where content or prior timeline validation
+bounds the fork version. `fork_current_captures_content_that_outlives_timeline_coverage`
+(api/tests/branch.rs) pins the choreography;
+`fork_current_of_a_rowless_source_stays_a_legitimate_empty_fork` pins the #2521 empty-fork
+direction control. The whole-DB DST sweep (seeds 83 154 164 178) is the volume lane.
+
 ## How to Use This Catalog
 
 ### After a code change
