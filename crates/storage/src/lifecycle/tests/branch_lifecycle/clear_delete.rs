@@ -1054,3 +1054,40 @@ fn shared_table_delete_candidate_is_blocked_by_other_branch() {
     assert!(outcome.release_plan().releasable_tables().is_empty());
     assert!(!outcome.release_plan().protected_tables().is_empty());
 }
+
+/// Truth table for `branch_is_deleted` — the predicate behind the maintenance
+/// enqueue/delete race cancels: only a surviving descriptor with status Deleted
+/// answers true; live and absent branches answer false (their errors keep their
+/// own semantics at whichever accessor hits them).
+#[test]
+fn branch_is_deleted_answers_only_for_surviving_deleted_descriptors() {
+    let branch = branch_id(6);
+    let absent = branch_id(7);
+    let mut catalog = catalog_with_branch(branch, generation(1));
+
+    assert!(
+        !catalog.branch_is_deleted(branch),
+        "a live branch is not deleted",
+    );
+    assert!(
+        !catalog.branch_is_deleted(absent),
+        "an absent branch is not deleted",
+    );
+
+    catalog
+        .delete_branch(
+            branch,
+            CommitBranchGenerationGuard::exact(generation(1)),
+            Some(CommitVersion::new(3)),
+        )
+        .expect("delete");
+
+    assert!(
+        catalog.branch_is_deleted(branch),
+        "a surviving Deleted descriptor answers true",
+    );
+    assert!(
+        !catalog.branch_is_deleted(absent),
+        "absence stays false after unrelated deletes",
+    );
+}

@@ -906,6 +906,92 @@ fn durable_layerless_fork_rebuild_elides_rows_already_flushed_durable() {
     );
 }
 
+/// A branch-scoped compaction task legally races a branch delete: enqueued while the
+/// branch was live, drained after it was deleted. The stale task's target is gone —
+/// the drain must consume it as Canceled, not fail the drain and not record a
+/// maintenance failure: the branch's tables are reclaimed by delete cleanup, so the
+/// task's work is vacuously complete. (A Deferred task would be wrong too: a re-created
+/// name shares the branch id under a new generation, and the stale task must never run
+/// against it.)
+#[cfg(feature = "localfs")]
+#[test]
+fn drain_cancels_branch_scoped_compaction_enqueued_before_the_branch_was_deleted() {
+    use crate::api::{
+        MaintenanceRequest, MaintenanceScope, MaintenanceSummaryStatus, MaintenanceTask,
+    };
+
+    let root = temp_dir_for_api_test("branch-drain-cancel-deleted-scope");
+    let backend = StorageBackend::local_fs(root);
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("durable open")
+    .into_runtime();
+    let victim = branch_with(0x5f);
+    runtime.branch(&create_request(victim)).expect("create");
+    // Two flushed tables make the branch a genuine compaction candidate before the race.
+    put_at(&mut runtime, victim, b"cancel-a", b"row", 10);
+    runtime
+        .enqueue_maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Flush,
+            MaintenanceScope::Branch(victim),
+        ))
+        .expect("enqueue first flush");
+    runtime.drain_maintenance().expect("first flush");
+    put_at(&mut runtime, victim, b"cancel-b", b"row", 20);
+    runtime
+        .enqueue_maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Flush,
+            MaintenanceScope::Branch(victim),
+        ))
+        .expect("enqueue second flush");
+    runtime.drain_maintenance().expect("second flush");
+
+    // Put an unflushed row in the memtable, then enqueue BOTH branch-scoped task kinds
+    // the race can strand: a flush and a compaction. Both must cancel after the delete.
+    put_at(&mut runtime, victim, b"cancel-c", b"row", 30);
+    runtime
+        .enqueue_maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Flush,
+            MaintenanceScope::Branch(victim),
+        ))
+        .expect("enqueue flush while the branch is live");
+    runtime
+        .enqueue_maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Compact,
+            MaintenanceScope::Branch(victim),
+        ))
+        .expect("enqueue compaction while the branch is live");
+    runtime
+        .branch(&branch_request(victim, BranchAction::Delete))
+        .expect("delete the branch after the tasks were enqueued");
+
+    let drain = runtime
+        .drain_maintenance()
+        .expect("draining a stale branch-scoped task must not fail the drain");
+    for outcome in drain.outcomes() {
+        assert_ne!(
+            outcome.status(),
+            MaintenanceSummaryStatus::Failed,
+            "a deleted task target is a legal race, not a maintenance failure: task {:?} reported {:?}",
+            outcome.task(),
+            outcome.source_error_code(),
+        );
+    }
+    let status = runtime.maintenance_status().expect("maintenance status");
+    assert!(
+        status.recent_failures().is_empty(),
+        "the failure ring must stay silent for the enqueue/delete race: {:?}",
+        status.recent_failures(),
+    );
+    assert_eq!(
+        status.pending_tasks(),
+        0,
+        "the stale task must be consumed, not left to churn in the queue",
+    );
+}
+
 #[cfg(feature = "localfs")]
 #[test]
 fn durable_branch_delete_allows_reopen_after_process_drop() {
