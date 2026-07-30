@@ -170,3 +170,59 @@ fn frozen_rows_match_tables_rejects_mutated_and_duplicated_rows() {
         frozen
     ));
 }
+
+/// Truth table for `contains_internal_key` — the probe behind both install
+/// validation and the recovery fork-rebuild elision. One quadrant per home the
+/// key can live in (active, frozen, owned) plus the absent case, and an
+/// absent-key control against a populated stack.
+#[test]
+fn contains_internal_key_probes_the_whole_local_stack() {
+    let branch = branch_id(235);
+    let (low, high) = two_disjoint_rows(branch);
+    let low_key = crate::table::TableInternalKeyBytes::from_row(&low);
+    let high_key = crate::table::TableInternalKeyBytes::from_row(&high);
+
+    let mut state = BranchLocalState::empty(branch);
+    assert!(
+        !state.contains_internal_key(&low_key).expect("probe empty"),
+        "an empty stack holds nothing",
+    );
+
+    state.append_committed_row(low.clone()).expect("append");
+    assert!(
+        state.contains_internal_key(&low_key).expect("probe active"),
+        "the active memtable hit must be seen",
+    );
+
+    assert!(matches!(
+        state.rotate_active(),
+        BranchRotationOutcome::Rotated { .. }
+    ));
+    assert!(
+        state.contains_internal_key(&low_key).expect("probe frozen"),
+        "the frozen memtable hit must be seen",
+    );
+
+    let identity = state.frozen()[0].memory_state_identity();
+    state
+        .replace_frozen_with_level_zero_tables_by_identity(
+            identity,
+            vec![branch_owned_table(
+                branch,
+                BranchLevel::ZERO,
+                "probe-owned",
+                vec![low],
+            )],
+        )
+        .expect("install the owned table");
+    assert!(
+        state.contains_internal_key(&low_key).expect("probe owned"),
+        "the owned-table hit must be seen",
+    );
+    assert!(
+        !state
+            .contains_internal_key(&high_key)
+            .expect("probe absent"),
+        "a key absent from every home must probe false",
+    );
+}

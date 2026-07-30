@@ -4,7 +4,6 @@ use super::{
     branch_error, commit_error, require_admitted, LifecycleDurableLocalServices,
     LifecycleDurableLocalShell,
 };
-use crate::branch::error::BranchRuntimeError;
 use crate::branch::read::{BranchHistoryRow, BranchReadBound, BranchReadView, BranchScanBounds};
 use crate::branch::snapshot::{BranchSnapshotPublisher, BranchSnapshotRegistry};
 use crate::branch::state::BranchLocalState;
@@ -39,7 +38,6 @@ use crate::observability::perf_trace;
 use crate::row::PhysicalKey;
 use crate::service::WalGrowthFacts;
 use crate::service::{WalGroupSyncTicket, WalServiceError};
-use crate::table::TableRuntimeError;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -3421,13 +3419,20 @@ fn rebuild_fork_snapshot_rows(branch_catalog: &mut LifecycleBranchCatalog) -> Li
             let mut staged = branch_catalog.branch_state(descriptor.branch_id())?.clone();
             let mut appended_for_branch = 0;
             for row in rows {
-                match staged.append_committed_row(row) {
-                    Ok(_) => appended_for_branch += 1,
-                    Err(BranchRuntimeError::TableRuntime {
-                        source: TableRuntimeError::DuplicateInternalKey { .. },
-                    }) => {}
-                    Err(error) => return Err(branch_error(error)),
+                // A previous reopen's rebuild may already sit durably in the child's
+                // owned tables (a flush seals the re-materialized memtable), and WAL
+                // replay or checkpoint installs may have re-applied rows to the active
+                // memtable. Re-appending any of those would put a second copy of the
+                // internal key into the branch stack — the next flush seals it and the
+                // next compaction fails on the duplicate. Elide by key across the whole
+                // local stack; a duplicate that still surfaces past this probe is real
+                // corruption and fails recovery loudly.
+                let key = crate::table::TableInternalKeyBytes::from_row(&row);
+                if staged.contains_internal_key(&key).map_err(branch_error)? {
+                    continue;
                 }
+                staged.append_committed_row(row).map_err(branch_error)?;
+                appended_for_branch += 1;
             }
             if appended_for_branch > 0 {
                 let current_descriptor = branch_catalog.lookup(descriptor.branch_id())?;

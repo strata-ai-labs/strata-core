@@ -711,6 +711,16 @@ layer never references a volatile table (whose manifest publish is guaranteed to
 best-effort, leaving a child that LOOKS layered without durable coverage). Volatile
 sources take the eager path, whose layer-less child this refusal protects.
 
+The rebuild itself is IDEMPOTENT against every earlier re-materializer (#2859): it
+runs on EVERY reopen of a layer-less child as the last row-installing recovery step,
+and a previous reopen's rebuild may already sit durably in the child's owned tables
+(a flush seals the re-materialized memtable). Each snapshot row is elided when its
+internal key is already present anywhere in the child's local stack
+(`contains_internal_key`: active, frozen, owned — layers excluded); a duplicate that
+surfaces past the probe fails recovery loudly. Without the elision, the re-flush
+seals a second durable copy of the internal key and the next compaction of the
+child's tables fails on the duplicate (drain error or failure-ring entry).
+
 **Audit**: `require_no_recovery_dependent_children` (branch catalog) called from the
 durable delete only; `branch_delete_refused_while_layerless_fork_children_live`,
 `branch_delete_of_layered_fork_source_stays_allowed`,
@@ -721,7 +731,14 @@ table-catalog predicate passed by both durable fork wrappers (`bootstrap.rs`);
 `cow_fork_over_a_volatile_source_keeps_inheritance_across_reopen` and
 `refork_over_a_deleted_name_does_not_adopt_the_dead_generations_manifest` (api tests)
 pin the two failure legs, the layered-delete test above pins the durable-COW keep
-direction. Origin: #2820; durability gate: #2855 (DST seeds 183, 134).
+direction. Rebuild idempotence: the elision loop in `rebuild_fork_snapshot_rows`
+(`lifecycle/durable/bootstrap.rs`) over `contains_internal_key`
+(`branch/state.rs`); `durable_layerless_fork_rebuild_elides_rows_already_flushed_durable`
+(api/tests/branch.rs) pins the reopen/flush/compact choreography end to end,
+`contains_internal_key_probes_the_whole_local_stack` (branch/tests/flush_install.rs)
+pins the probe truth table. Origin: #2820; durability gate: #2855 (DST seeds 183,
+134); rebuild idempotence: #2859 family A (DST seed 794 canonical, 29 deep-shape
+seeds incl. 116/22).
 
 ### DUR-009: Enqueue mirrors execution
 
