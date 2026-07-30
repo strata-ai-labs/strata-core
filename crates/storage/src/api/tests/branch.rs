@@ -2226,3 +2226,174 @@ fn fork_current_of_a_rowless_source_stays_a_legitimate_empty_fork() {
         "the empty fork serves no rows"
     );
 }
+
+/// #2833: a checkpoint captured while gen-1 of a branch name lived survives
+/// that name's delete + re-creation BY FORK. The dead generation's rows all
+/// sit at `version <= created_at` of the new generation (#2826/#2850), the
+/// same band the WAL fence already drops unconditionally — but the
+/// checkpoint-row fence exempted fork children, so the dead rows installed
+/// into the re-created name at the next reopen (the DST's reopen-Phantom
+/// shape: seeds 94/134/142/180 on tracker #2828). Inherited content is NOT
+/// the checkpoint's job: the fork rebuild re-materializes it from the live
+/// parent.
+#[test]
+fn refork_of_a_deleted_name_does_not_resurrect_dead_generation_checkpoint_rows() {
+    use crate::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
+
+    let root = temp_dir_for_api_test("refork-no-dead-checkpoint-rows");
+    let backend = StorageBackend::local_fs(root);
+    let victim = branch_with(0x85);
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        put_at(&mut runtime, branch(), b"base", b"b", 5);
+        put_at(&mut runtime, branch(), b"base-two", b"b2", 10);
+        // Gen-1 life: an eager fork child with a distinctive own row.
+        runtime
+            .branch(&branch_request(
+                victim,
+                BranchAction::ForkCurrent { source: branch() },
+            ))
+            .expect("fork gen-1 victim");
+        put_at(&mut runtime, victim, b"dead-own", b"gone", 15);
+        // Clean close: the reopen below rebuilds the victim's rows as plain
+        // recovered rows (a live eager fork holds volatile tables, which
+        // defer checkpoints as manifest-publish debt).
+    }
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always)
+                .with_maintenance_scheduling_policy(
+                    crate::api::StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+                ),
+            &backend,
+        )
+        .expect("first reopen")
+        .into_runtime();
+        // The checkpoint records the victim's gen-1 rows (inherited + own).
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Checkpoint,
+                MaintenanceScope::Global,
+            ))
+            .expect("enqueue checkpoint");
+        runtime.drain_maintenance().expect("drain checkpoint");
+        // Kill gen-1, re-create the SAME name by fork (gen 2). Its
+        // `created_at` upper-bounds every gen-1 version.
+        runtime
+            .branch(&branch_request(victim, BranchAction::Delete))
+            .expect("delete gen-1 victim");
+        runtime
+            .branch(&BranchRequest::new(
+                victim,
+                BranchAction::ForkCurrent { source: branch() },
+                Some(BranchGeneration::new(2)),
+            ))
+            .expect("re-fork victim as gen 2");
+        put_at(&mut runtime, victim, b"new-own", b"alive", 20);
+        // Clean close: the stale checkpoint is the latest one on disk.
+    }
+
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always),
+        &backend,
+    )
+    .expect("reopen")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, victim, b"dead-own"),
+        None,
+        "a dead generation's checkpoint row must not resurrect into the re-forked name"
+    );
+    assert_eq!(
+        read_value(&runtime, victim, b"base"),
+        Some(b"b".to_vec()),
+        "gen-2's inherited content re-materializes from the live parent"
+    );
+    assert_eq!(
+        read_value(&runtime, victim, b"base-two"),
+        Some(b"b2".to_vec()),
+        "the full inherited slice survives the fence"
+    );
+    assert_eq!(
+        read_value(&runtime, victim, b"new-own"),
+        Some(b"alive".to_vec()),
+        "gen-2's own post-fork row survives"
+    );
+    assert_eq!(
+        read_value(&runtime, branch(), b"base"),
+        Some(b"b".to_vec()),
+        "the parent is untouched"
+    );
+}
+
+/// #2833 direction control: the fence keeps a fork child's OWN rows
+/// (`version > created_at`). Recovery does not replay the WAL below the
+/// snapshot watermark for non-seeded branches, so the checkpoint is the
+/// child's own row's sole source here — a fence that over-drops loses it.
+#[test]
+fn fork_child_own_rows_survive_reopen_through_the_checkpoint() {
+    use crate::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
+
+    let root = temp_dir_for_api_test("fork-child-own-rows-via-checkpoint");
+    let backend = StorageBackend::local_fs(root);
+    let child = branch_with(0x86);
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        put_at(&mut runtime, branch(), b"base", b"b", 5);
+        runtime
+            .branch(&branch_request(
+                child,
+                BranchAction::ForkCurrent { source: branch() },
+            ))
+            .expect("fork child");
+        // Close and reopen so the child's rebuilt rows carry no
+        // manifest-publish debt (a live eager fork defers checkpoints).
+    }
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always)
+                .with_maintenance_scheduling_policy(
+                    crate::api::StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+                ),
+            &backend,
+        )
+        .expect("first reopen")
+        .into_runtime();
+        // An own row ABOVE created_at, then a checkpoint covering it.
+        put_at(&mut runtime, child, b"own", b"kept", 10);
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Checkpoint,
+                MaintenanceScope::Global,
+            ))
+            .expect("enqueue checkpoint");
+        runtime.drain_maintenance().expect("drain checkpoint");
+    }
+
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always),
+        &backend,
+    )
+    .expect("reopen")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, child, b"own"),
+        Some(b"kept".to_vec()),
+        "the child's own above-created_at row must install from the checkpoint"
+    );
+    assert_eq!(
+        read_value(&runtime, child, b"base"),
+        Some(b"b".to_vec()),
+        "the child's inherited content survives"
+    );
+}
