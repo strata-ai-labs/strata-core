@@ -258,6 +258,16 @@ The global version counter (`TransactionManager::version`) MUST be monotonically
 `allocate_version()` MUST return unique, increasing values. No two transactions may receive the
 same commit_version. Version gaps are acceptable (failed transactions).
 
+Monotonicity is WITHIN a durable lineage: after a crash that legally sheds unsynced
+acks (Standard mode), recovery resumes the counter above every DURABLE reference and
+may re-issue version numbers the shed acks once carried — by design, since the shed
+versions left no durable trace. The reopen publishes `recovered_visible_version`
+(the open outcome); any consumer holding pre-crash version handles above it must
+rebase on that anchor (#2859 family B: the whole-DB DST's model adopted a
+state-matched watermark above the recovered domain and its stale acks collided with
+re-issued versions — a phantom `LostAck`; the harness now truncates its model at the
+reopen's recovered visible version under lossy families).
+
 **Audit**: Find the version allocation function. Verify it uses `fetch_add(1)` or equivalent
 atomic operation. Verify the overflow check at `u64::MAX`. Verify recovery restores the counter
 to at least the maximum of: the checkpoint watermark, the replayed WAL max (fenced records
@@ -267,7 +277,12 @@ descriptors included). The catalog term is load-bearing: lifecycle publishes are
 so the catalog can survive a crash that sheds the WAL and every state, and a counter restarted
 below its anchors re-issues versions the catalog already attributes to other content (#2850 —
 generation fences then eat legitimate commits and fork rebuilds materialize the wrong parent
-slice).
+slice). Re-issue contract: `reopen_version_domain_bound` + the model truncation in
+`reconcile_after_reopen` (`testkit/simulation/whole_db.rs`);
+`version_domain_truncation_prevents_reissue_poisoning`
+(recovery_oracle/verify.rs) pins both directions,
+`reopen_version_domain_bound_applies_only_to_lossy_reopens` (simulation/mod.rs) pins
+the family gate.
 
 ### MVCC-004: Snapshot capture happens before version allocation
 
