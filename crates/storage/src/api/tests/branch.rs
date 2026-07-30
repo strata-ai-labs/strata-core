@@ -787,6 +787,125 @@ fn durable_fork_child_manifest_crash_window_recovers_via_rebuild() {
     );
 }
 
+/// A layer-less fork child's reopen rebuild runs on EVERY reopen, but its inherited rows can
+/// already be durable in the child's OWNED tables — a previous reopen's rebuild followed by a
+/// flush seals them. Re-materializing those rows again puts a second copy into the memtable; the
+/// next flush seals a second durable copy of the same internal key, and the next compaction of
+/// the child's tables fails loudly with `DuplicateInternalKey`. The rebuild must elide rows that
+/// are already present anywhere in the child's recovered state, not just in its active memtable.
+#[cfg(feature = "localfs")]
+#[test]
+fn durable_layerless_fork_rebuild_elides_rows_already_flushed_durable() {
+    use crate::api::{
+        MaintenanceRequest, MaintenanceScope, MaintenanceSummaryStatus, MaintenanceTask,
+    };
+
+    let root = temp_dir_for_api_test("branch-durable-rebuild-elision");
+    let child = branch_with(0x5e);
+    {
+        let backend = StorageBackend::local_fs(root.clone());
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        put_at(&mut runtime, branch(), b"rebuild-a", b"parent-a", 10);
+        put_at(&mut runtime, branch(), b"rebuild-b", b"parent-b", 20);
+        // No parent flush: the volatile source makes the fork eager, so the child stays
+        // layer-less and recovers through the rebuild fallback on every reopen.
+        runtime
+            .branch(&branch_request(
+                child,
+                BranchAction::ForkCurrent { source: branch() },
+            ))
+            .expect("fork the unflushed parent");
+        // The child's own commit makes the first flush's content differ from the second
+        // reopen's re-materialized slice — without it, the redundant re-flush would collapse
+        // into the first table's content-derived identity and hide the duplicate.
+        put_at(&mut runtime, child, b"rebuild-own", b"child", 30);
+        runtime.close().expect("close durable runtime");
+    }
+    {
+        // Reopen #1: the rebuild re-materializes the parent's rows into the child's memtable.
+        // Flushing the child seals that inherited content into a durable owned table.
+        let backend = StorageBackend::local_fs(root.clone());
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+            &backend,
+        )
+        .expect("first durable reopen")
+        .into_runtime();
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Flush,
+                MaintenanceScope::Branch(child),
+            ))
+            .expect("enqueue child flush");
+        runtime
+            .drain_maintenance()
+            .expect("flush the child's rebuilt rows into a durable owned table");
+        runtime.close().expect("close after child flush");
+    }
+
+    // Reopen #2: the child is still layer-less (owned tables, no inherited layers), so the
+    // rebuild runs again — it must elide the rows the first flush already made durable.
+    let backend = StorageBackend::local_fs(root);
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("second durable reopen")
+    .into_runtime();
+    runtime
+        .enqueue_maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Flush,
+            MaintenanceScope::Branch(child),
+        ))
+        .expect("enqueue second child flush");
+    runtime
+        .enqueue_maintenance(&MaintenanceRequest::new(
+            MaintenanceTask::Compact,
+            MaintenanceScope::Branch(child),
+        ))
+        .expect("enqueue child compaction");
+    let drain = runtime
+        .drain_maintenance()
+        .expect("maintenance drain must run to completion");
+    for outcome in drain.outcomes() {
+        assert_ne!(
+            outcome.status(),
+            MaintenanceSummaryStatus::Failed,
+            "maintenance must not fail after fork-rebuild reopen cycles: task {:?} reported {:?}",
+            outcome.task(),
+            outcome.source_error_code(),
+        );
+    }
+    // The best-effort chained compaction reports through the failure ring, not the drain
+    // outcomes — the ring must stay silent (the whole-DB sim's maintenance oracle).
+    let status = runtime.maintenance_status().expect("maintenance status");
+    assert!(
+        status.recent_failures().is_empty(),
+        "the maintenance failure ring must stay silent after fork-rebuild reopen cycles: {:?}",
+        status.recent_failures(),
+    );
+    assert_eq!(
+        read_value(&runtime, child, b"rebuild-a"),
+        Some(b"parent-a".to_vec()),
+        "the child keeps its inherited rows across reopen/flush/compact cycles",
+    );
+    assert_eq!(
+        read_value(&runtime, child, b"rebuild-b"),
+        Some(b"parent-b".to_vec()),
+        "the child keeps its inherited rows across reopen/flush/compact cycles",
+    );
+    assert_eq!(
+        read_value(&runtime, child, b"rebuild-own"),
+        Some(b"child".to_vec()),
+        "the child keeps its own post-fork row across reopen/flush/compact cycles",
+    );
+}
+
 #[cfg(feature = "localfs")]
 #[test]
 fn durable_branch_delete_allows_reopen_after_process_drop() {
