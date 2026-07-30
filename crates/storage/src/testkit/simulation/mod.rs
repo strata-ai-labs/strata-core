@@ -68,13 +68,16 @@ impl WholeDbOutcome {
 
 /// Sweep seeded whole-DB trajectories (multi-branch, multi-epoch, seeded
 /// crashes), each continuously oracle-checked. `case_limit` caps seeds for
-/// CI budgets; `None` runs the default set.
+/// CI budgets; `None` runs the default set. The trajectory shape is the
+/// canonical 3×24 unless `STRATA_SIM_EPOCHS` / `STRATA_SIM_STEPS_PER_EPOCH`
+/// deepen it (TCP4.11c, the nightly soak).
 pub fn run_whole_db_harness(
     root: &Path,
     case_limit: Option<usize>,
 ) -> Result<WholeDbOutcome, TestkitError> {
     const DEFAULT_WHOLE_DB_SEEDS: u64 = 6;
     assert_deterministic_environment()?;
+    let (epochs, steps_per_epoch) = whole_db_shape()?;
     let mut outcome = WholeDbOutcome::default();
     let seed_budget = if case_limit.is_some() {
         u64::MAX
@@ -88,8 +91,8 @@ pub fn run_whole_db_harness(
         match whole_db::run_whole_db_sim(
             &case_dir(root, &format!("whole-db-{seed}"))?,
             seed,
-            WHOLE_DB_EPOCHS,
-            WHOLE_DB_STEPS_PER_EPOCH,
+            epochs,
+            steps_per_epoch,
         ) {
             Ok(facts) => {
                 outcome.epochs_executed += facts.epochs();
@@ -98,7 +101,7 @@ pub fn run_whole_db_harness(
                 outcome.deletes += facts.deletes();
                 outcome.temporal_probes_ok += facts.temporal_probes_ok();
             }
-            Err(error) => return Err(whole_db_replay_error(seed, &error)),
+            Err(error) => return Err(whole_db_replay_error(seed, epochs, steps_per_epoch, &error)),
         }
         outcome.seeds_executed += 1;
     }
@@ -111,28 +114,80 @@ pub fn run_whole_db_harness(
 const WHOLE_DB_EPOCHS: usize = 3;
 const WHOLE_DB_STEPS_PER_EPOCH: usize = 24;
 
+/// TCP4.11c: the trajectory shape for this process — canonical unless the
+/// soak deepens it. Both the sweep and `replay_whole_db_seed` read the same
+/// knobs, so a repro line that carries the shape replays bit-exact.
+fn whole_db_shape() -> Result<(usize, usize), TestkitError> {
+    let epochs = parse_shape_knob(
+        "STRATA_SIM_EPOCHS",
+        std::env::var("STRATA_SIM_EPOCHS").ok().as_deref(),
+        WHOLE_DB_EPOCHS,
+    )?;
+    let steps_per_epoch = parse_shape_knob(
+        "STRATA_SIM_STEPS_PER_EPOCH",
+        std::env::var("STRATA_SIM_STEPS_PER_EPOCH").ok().as_deref(),
+        WHOLE_DB_STEPS_PER_EPOCH,
+    )?;
+    Ok((epochs, steps_per_epoch))
+}
+
+/// One shape knob: absent → the canonical default; present → a positive
+/// integer, anything else fails loudly (a silently-ignored typo would run
+/// the wrong shape and break the replay contract).
+fn parse_shape_knob(name: &str, raw: Option<&str>, default: usize) -> Result<usize, TestkitError> {
+    match raw {
+        None => Ok(default),
+        Some(value) => match value.trim().parse::<usize>() {
+            Ok(parsed) if parsed > 0 => Ok(parsed),
+            _ => Err(TestkitError::new(format!(
+                "{name} must be a positive integer trajectory-shape override, got {value:?}"
+            ))),
+        },
+    }
+}
+
 /// The replay contract: every sweep failure names its seed and prints the
 /// one-line local repro, so a nightly finding becomes a deterministic local
-/// run instead of a flake hunt.
-fn whole_db_replay_error(seed: u64, error: &TestkitError) -> TestkitError {
+/// run instead of a flake hunt. Replay is bit-exact only at the shape the
+/// failure ran at, so a non-canonical shape rides the repro line.
+fn whole_db_replay_error(
+    seed: u64,
+    epochs: usize,
+    steps_per_epoch: usize,
+    error: &TestkitError,
+) -> TestkitError {
     TestkitError::new(format!(
-        "whole-db simulation failed [seed={seed}]: {error}\n  replay: \
-         STRATA_SIM_SEED={seed} cargo test -p strata-storage --features fault-injection \
-         --test simulation_whole_db -- replay_single_seed --ignored --nocapture"
+        "whole-db simulation failed [seed={seed} shape={epochs}x{steps_per_epoch}]: {error}\n  \
+         replay: {shape}STRATA_SIM_SEED={seed} cargo test -p strata-storage \
+         --features fault-injection --test simulation_whole_db -- replay_single_seed \
+         --ignored --nocapture",
+        shape = whole_db_shape_prefix(epochs, steps_per_epoch),
     ))
 }
 
-/// Replay exactly one whole-DB seed at the canonical trajectory shape — the
-/// deterministic local repro for a sweep failure (`STRATA_SIM_SEED=n`).
+/// The env prefix a repro line needs to re-run at a non-canonical shape;
+/// empty at the canonical shape (the corpus documents that default).
+fn whole_db_shape_prefix(epochs: usize, steps_per_epoch: usize) -> String {
+    if (epochs, steps_per_epoch) == (WHOLE_DB_EPOCHS, WHOLE_DB_STEPS_PER_EPOCH) {
+        String::new()
+    } else {
+        format!("STRATA_SIM_EPOCHS={epochs} STRATA_SIM_STEPS_PER_EPOCH={steps_per_epoch} ")
+    }
+}
+
+/// Replay exactly one whole-DB seed — the deterministic local repro for a
+/// sweep failure (`STRATA_SIM_SEED=n`, plus the shape knobs when the failure
+/// named a non-canonical shape).
 pub fn replay_whole_db_seed(root: &Path, seed: u64) -> Result<WholeDbOutcome, TestkitError> {
     assert_deterministic_environment()?;
+    let (epochs, steps_per_epoch) = whole_db_shape()?;
     let facts = whole_db::run_whole_db_sim(
         &case_dir(root, &format!("whole-db-{seed}"))?,
         seed,
-        WHOLE_DB_EPOCHS,
-        WHOLE_DB_STEPS_PER_EPOCH,
+        epochs,
+        steps_per_epoch,
     )
-    .map_err(|error| whole_db_replay_error(seed, &error))?;
+    .map_err(|error| whole_db_replay_error(seed, epochs, steps_per_epoch, &error))?;
     Ok(WholeDbOutcome {
         seeds_executed: 1,
         epochs_executed: facts.epochs(),
@@ -298,6 +353,43 @@ mod tests {
         assert!(
             outcome.clock_advances() > 0,
             "manual clock never advanced: {outcome:?}"
+        );
+    }
+
+    /// TCP4.11c shape-knob truth table: absent → canonical default; a
+    /// positive integer overrides; zero, negatives, junk, and empty fail
+    /// loudly (a silently-ignored typo would run the wrong shape and break
+    /// the replay contract).
+    #[test]
+    fn shape_knob_parses_or_fails_loudly() {
+        use super::parse_shape_knob;
+        assert_eq!(parse_shape_knob("K", None, 3).expect("default"), 3);
+        assert_eq!(parse_shape_knob("K", Some("6"), 3).expect("override"), 6);
+        assert_eq!(parse_shape_knob("K", Some(" 48 "), 24).expect("trims"), 48);
+        assert!(parse_shape_knob("K", Some("0"), 3).is_err());
+        assert!(parse_shape_knob("K", Some("-1"), 3).is_err());
+        assert!(parse_shape_knob("K", Some("deep"), 3).is_err());
+        assert!(parse_shape_knob("K", Some(""), 3).is_err());
+    }
+
+    /// The repro line carries the shape exactly when it is non-canonical:
+    /// canonical failures keep the corpus-documented one-liner, deepened
+    /// failures replay bit-exact only with the shape env prefix.
+    #[test]
+    fn shape_prefix_rides_only_non_canonical_repro_lines() {
+        use super::whole_db_shape_prefix;
+        assert_eq!(whole_db_shape_prefix(3, 24), "");
+        assert_eq!(
+            whole_db_shape_prefix(6, 48),
+            "STRATA_SIM_EPOCHS=6 STRATA_SIM_STEPS_PER_EPOCH=48 "
+        );
+        assert_eq!(
+            whole_db_shape_prefix(3, 48),
+            "STRATA_SIM_EPOCHS=3 STRATA_SIM_STEPS_PER_EPOCH=48 "
+        );
+        assert_eq!(
+            whole_db_shape_prefix(6, 24),
+            "STRATA_SIM_EPOCHS=6 STRATA_SIM_STEPS_PER_EPOCH=24 "
         );
     }
 }
