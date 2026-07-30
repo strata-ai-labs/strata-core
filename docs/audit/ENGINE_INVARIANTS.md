@@ -746,10 +746,29 @@ Every maintenance scheduling site (enqueue, pacing, growth policy) consults the 
 structural-deferral predicate registry as the execution-time deferral arms. A task kind
 whose scheduling and execution disagree churns (#2792) or hard-fails (#2798).
 
+A branch-scoped task legally races a branch delete (#2859 family F): the target's
+descriptor survives with status Deleted. Every consumption point cancels such a task
+terminally — Canceled, consumed, ring-silent — never Failed (a legal race is not a
+failure), never Deferred (a re-created name shares the branch id under a new
+generation, and the stale task must not run against it), never propagated (the old
+foreground behavior failed the whole drain). The race has three windows, all covered:
+the foreground runner (started after delete), the background starter (started after
+delete), and the background publish phase (deleted between the off-lock build and the
+install — the built objects are unreferenced and the sweep reclaims them).
+
 **Audit**: `checkpoint_structural_deferral` is the single authority (raw predicates are
 private — a divergent consumer must be uncompilable); `scheduling_composition_guard.rs`
 pins the shape and the anti-churn oracle. New task kinds add registry variants, never
-ad-hoc arms.
+ad-hoc arms. Deleted-scope cancel: `branch_is_deleted` (`branch_lifecycle.rs`) +
+`deleted_scope_canceled_outcome` arms in `run_compaction_maintenance_task`,
+`start_background_compaction_task`, `run_flush_maintenance_task`, the background flush
+starter, `begin_flush_publish`, and `begin_compaction_publish`
+(`lifecycle/durable/maintenance.rs`);
+`drain_cancels_branch_scoped_compaction_enqueued_before_the_branch_was_deleted`
+(api/tests/branch.rs) pins the drain surface across the race,
+`branch_is_deleted_answers_only_for_surviving_deleted_descriptors`
+(lifecycle/tests/branch_lifecycle/clear_delete.rs) pins the predicate truth table. The
+whole-DB DST deep seeds 24 30 38 88 122 220 237 332 364 are the volume lane.
 
 ### DUR-010: Recovery combines a non-seeded checkpoint with a flush-published base
 

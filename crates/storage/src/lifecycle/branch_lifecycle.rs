@@ -527,6 +527,15 @@ impl LifecycleBranchCatalog {
         Ok(self.entry(branch_id)?.descriptor)
     }
 
+    /// Whether the branch's descriptor survives with status Deleted — the state a
+    /// branch-scoped maintenance task's target is left in when a delete races the
+    /// queue between enqueue and run. Absent or live entries are NOT "deleted":
+    /// their errors keep their own semantics at the accessor that hits them.
+    pub(crate) fn branch_is_deleted(&self, branch_id: BranchId) -> bool {
+        self.lookup(branch_id)
+            .is_ok_and(|descriptor| descriptor.status() == LifecycleBranchStatus::Deleted)
+    }
+
     pub(crate) fn branch_state(&self, branch_id: BranchId) -> LifecycleResult<&BranchLocalState> {
         self.active_entry(branch_id)?
             .state

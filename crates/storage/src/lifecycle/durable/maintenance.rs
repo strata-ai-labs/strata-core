@@ -1636,6 +1636,22 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         }) else {
             return Ok(None);
         };
+        // A branch-scoped flush legally races a branch delete (same as the compaction
+        // arms): a Deleted target cancels the task instead of failing the drain.
+        if let MaintenanceTaskScope::Branch(branch_id) = task.scope() {
+            if self.branch_catalog.branch_is_deleted(branch_id) {
+                let Some(task) = self
+                    .maintenance
+                    .start_next_matching(state, |queued| queued.id() == task_id)?
+                else {
+                    return Ok(None);
+                };
+                let outcome = deleted_scope_canceled_outcome(task.kind());
+                let outcome = self.maintenance.finish_started(task, outcome, false)?;
+                self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+                return Ok(Some(outcome));
+            }
+        }
         // Hold the per-branch publish slot for every branch this flush will publish, so its
         // manifest fsync(s) cannot run concurrently with a background off-lock fsync for the same
         // branch. A global flush publishes each active branch; defer the whole task if any slot is
@@ -1700,6 +1716,14 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         else {
             return Ok(None);
         };
+        // Same enqueue/delete race as the foreground flush runner: a Deleted target
+        // cancels the task instead of failing it into the ring.
+        if self.branch_catalog.branch_is_deleted(branch_id) {
+            let outcome = deleted_scope_canceled_outcome(task.kind());
+            let outcome = self.maintenance.finish_started(task, outcome, false)?;
+            self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+            return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+        }
         let request = flush_drain_request_for_branch_from_maintenance_task(&task, branch_id)?;
         let generation = match self.branch_catalog.registry().lookup(branch_id) {
             Ok(descriptor) => descriptor.generation(),
@@ -2164,6 +2188,12 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         prepared: PreparedDurableFlushDrain,
         _elapsed: std::time::Duration,
     ) -> PreparedPublishStep<'a> {
+        // The branch was deleted between the off-lock build and this publish —
+        // the same enqueue/delete race as the starter arms, one phase later.
+        // Cancel; the built objects are unreferenced and the sweep reclaims them.
+        if self.branch_catalog.branch_is_deleted(branch_id) {
+            return self.finish_locked_publish(task, deleted_scope_canceled_outcome(task.kind()));
+        }
         let install: LifecycleResult<(MaintenanceOutcome, bool)> = (|| {
             let generation = self
                 .branch_catalog
@@ -2243,6 +2273,10 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         level: u8,
         prepared: PreparedDurableCompaction,
     ) -> PreparedPublishStep<'a> {
+        // Same mid-flight enqueue/delete race as the flush publish above.
+        if self.branch_catalog.branch_is_deleted(branch_id) {
+            return self.finish_locked_publish(task, deleted_scope_canceled_outcome(task.kind()));
+        }
         let install: LifecycleResult<LifecycleCompactionOutcome> = (|| {
             let generation = self
                 .branch_catalog
@@ -3146,6 +3180,24 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             return Ok(None);
         };
         let (branch_id, level) = table_level_scope_from_task(task)?;
+        // A branch-scoped task legally races a branch delete: the target's descriptor
+        // survives with status Deleted and every state accessor below would refuse.
+        // The work is vacuously complete (delete cleanup reclaims the tables) —
+        // consume the task as Canceled. Deferred would re-run it against a re-created
+        // name's new generation; Failed would ring a legal race; propagating (the old
+        // behavior) failed the whole drain.
+        if self.branch_catalog.branch_is_deleted(branch_id) {
+            let Some(task) = self
+                .maintenance
+                .start_next_matching(state, |queued| queued.id() == task_id)?
+            else {
+                return Ok(None);
+            };
+            let outcome = deleted_scope_canceled_outcome(task.kind());
+            let outcome = self.maintenance.finish_started(task, outcome, false)?;
+            self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+            return Ok(Some(outcome));
+        }
         // Hold the per-branch publish slot across this foreground rewrite so its manifest fsync
         // cannot run concurrently with a background off-lock fsync for the same branch. Defer
         // (try-lock only) if the slot is busy rather than block the global lock.
@@ -3223,6 +3275,14 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         else {
             return Ok(None);
         };
+        // Same enqueue/delete race as the foreground runner: a Deleted target
+        // cancels the task instead of failing it into the ring.
+        if self.branch_catalog.branch_is_deleted(branch_id) {
+            let outcome = deleted_scope_canceled_outcome(task.kind());
+            let outcome = self.maintenance.finish_started(task, outcome, false)?;
+            self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+            return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+        }
         let generation = match self.branch_catalog.registry().lookup(branch_id) {
             Ok(descriptor) => descriptor.generation(),
             Err(error) => {
@@ -5470,6 +5530,15 @@ const fn retention_scope_is_telemetry_only(scope: LifecycleRetentionScope) -> bo
             | LifecycleRetentionScope::QuarantineObjects
             | LifecycleRetentionScope::TableObjects { .. }
     )
+}
+
+/// Terminal outcome for a branch-scoped task whose target branch was deleted
+/// after enqueue. Canceled deliberately: the task is consumed (no queue churn,
+/// no re-run against a re-created name's new generation) and Canceled outcomes
+/// never enter the maintenance failure ring — a legal race is not a failure.
+fn deleted_scope_canceled_outcome(kind: MaintenanceTaskKind) -> MaintenanceOutcome {
+    MaintenanceOutcome::new(kind, MaintenanceOutcomeStatus::Canceled)
+        .with_reason("maintenance target branch was deleted after enqueue")
 }
 
 fn global_retention_maintenance_outcome(

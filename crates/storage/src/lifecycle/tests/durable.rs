@@ -4565,3 +4565,77 @@ fn adopted_rewrite_output_defers_while_its_object_is_sweep_staged() {
         .expect("recovery after adoption race resolves");
     shell.complete_recovery(&recovery).expect("reopen runtime");
 }
+
+/// Foreground kill for the enqueue/delete race (#2859 family F): drive the two
+/// foreground maintenance lanes DIRECTLY (no background controller exists on the
+/// lifecycle runtime), so the deleted-scope cancel arms — and specifically their
+/// task-selection closures — are deterministically exercised. Each lane must
+/// consume its stale task as Canceled; a wrong-task selection strands the stale
+/// task and the lane returns nothing.
+#[test]
+fn foreground_lanes_cancel_tasks_whose_branch_was_deleted_after_enqueue() {
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
+    let seeded = branch_id(0x8c);
+    let victim = branch_id(0x8d);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, seeded, backend);
+    runtime
+        .create_branch(
+            victim,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create victim branch");
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(victim, b"deleted-scope-row", b"value"),
+            generation_guard(),
+        )
+        .expect("victim durable commit");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(victim))
+        .expect("enqueue victim flush");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(victim, 0))
+        .expect("enqueue victim compaction");
+    runtime
+        .delete_branch(victim, generation_guard(), None)
+        .expect("delete victim after enqueue");
+
+    let mut flush_lane_canceled = 0;
+    while let Some(outcome) = runtime.run_next_flush_maintenance().expect("flush lane") {
+        assert_ne!(
+            outcome.status(),
+            MaintenanceOutcomeStatus::Failed,
+            "the flush lane must not fail on the enqueue/delete race",
+        );
+        if outcome.status() == MaintenanceOutcomeStatus::Canceled {
+            assert_eq!(outcome.task_kind(), MaintenanceTaskKind::Flush);
+            flush_lane_canceled += 1;
+        }
+    }
+    assert_eq!(
+        flush_lane_canceled, 1,
+        "the stale flush task must be consumed as Canceled by its own lane",
+    );
+
+    let mut rewrite_lane_canceled = 0;
+    while let Some(outcome) = runtime
+        .run_next_table_rewrite_maintenance()
+        .expect("rewrite lane")
+    {
+        assert_ne!(
+            outcome.status(),
+            MaintenanceOutcomeStatus::Failed,
+            "the rewrite lane must not fail on the enqueue/delete race",
+        );
+        if outcome.status() == MaintenanceOutcomeStatus::Canceled {
+            assert_eq!(outcome.task_kind(), MaintenanceTaskKind::Compaction);
+            rewrite_lane_canceled += 1;
+        }
+    }
+    assert_eq!(
+        rewrite_lane_canceled, 1,
+        "the stale compaction task must be consumed as Canceled by its own lane",
+    );
+}
