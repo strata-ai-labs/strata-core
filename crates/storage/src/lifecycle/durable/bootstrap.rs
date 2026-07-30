@@ -1343,6 +1343,12 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                     published_slice,
                 )
             };
+            // #2855: COW only over durably cataloged tables — a volatile
+            // layer target guarantees the child-manifest publish fails.
+            let table_catalog = &self.table_catalog;
+            let is_durable = |identity: &crate::table::TableIdentity| {
+                table_catalog.object_for_identity(identity).is_some()
+            };
             self.branch_catalog
                 .fork_at_retained_version_with_unsealed_builder(
                     source,
@@ -1352,6 +1358,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                     retained_floor,
                     created_at,
                     Some(&mut builder),
+                    Some(&is_durable),
                 )?
         };
         self.record_fork_unsealed_slice(published_slice);
@@ -1391,6 +1398,12 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                     published_slice,
                 )
             };
+            // #2855: COW only over durably cataloged tables — a volatile
+            // layer target guarantees the child-manifest publish fails.
+            let table_catalog = &self.table_catalog;
+            let is_durable = |identity: &crate::table::TableIdentity| {
+                table_catalog.object_for_identity(identity).is_some()
+            };
             self.branch_catalog
                 .fork_at_retained_timestamp_with_unsealed_builder(
                     source,
@@ -1400,6 +1413,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
                     retained_floor,
                     created_at,
                     Some(&mut builder),
+                    Some(&is_durable),
                 )?
         };
         self.record_fork_unsealed_slice(published_slice);

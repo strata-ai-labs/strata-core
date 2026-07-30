@@ -18,6 +18,14 @@ pub(crate) type ForkUnsealedTableBuilder<'a> =
         strata_core::CommitVersion,
         Vec<crate::row::StorageRow>,
     ) -> LifecycleResult<Option<BranchOwnedTable>>;
+
+/// #2855: whether a sealed table is durably cataloged — the COW fork's layer
+/// premise. The durable runtime passes its table-catalog lookup; `None`
+/// (cache mode, no recovery) trusts every table. A layer over a VOLATILE
+/// table cannot be manifest-covered, which silently broke every downstream
+/// durability contract (delete-guard exemption, stale-manifest removal,
+/// recovery rebuild skip).
+pub(crate) type ForkSealedTableDurability<'a> = &'a dyn Fn(&crate::table::TableIdentity) -> bool;
 use crate::branch::read::BranchOwnedTable;
 use crate::branch::state::snapshot::{
     install_snapshot_rows_into_branches, BranchSnapshotInstallRequest,
@@ -960,6 +968,7 @@ impl LifecycleBranchCatalog {
             retained_floor,
             created_at,
             None,
+            None,
         )
     }
 
@@ -968,6 +977,14 @@ impl LifecycleBranchCatalog {
     /// runtime publishes a real table object so the fork-time child manifest
     /// covers it across restarts); returning `None` — or passing no builder —
     /// falls back to the eager whole-state materialization.
+    /// #2855: `sealed_table_is_durable` gates COW eligibility — every in-fork
+    /// sealed table must be durably cataloged, or the fork falls back to the
+    /// eager path (whose layer-less child keeps the delete guard and the
+    /// recovery rebuild sound).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the fork parameter set is fixed by the lifecycle contract; both trailing hooks are optional capabilities"
+    )]
     pub(crate) fn fork_at_retained_version_with_unsealed_builder(
         &mut self,
         source_branch_id: BranchId,
@@ -977,6 +994,7 @@ impl LifecycleBranchCatalog {
         retained_floor: CommitVersion,
         created_at: Option<CommitVersion>,
         unsealed_table_builder: Option<ForkUnsealedTableBuilder<'_>>,
+        sealed_table_is_durable: Option<ForkSealedTableDurability<'_>>,
     ) -> LifecycleResult<LifecycleBranchForkOutcome> {
         self.require_destination_available(destination_branch_id, destination_generation)?;
         if fork_version < retained_floor {
@@ -1044,12 +1062,7 @@ impl LifecycleBranchCatalog {
         // install remains for: sources that are themselves forks, sources whose `<= V` rows are
         // entirely unsealed (no table to reference), and callers without a builder.
         let has_unsealed = source.has_in_fork_unsealed_rows(fork_version);
-        let has_sealed_in_fork = source
-            .owned_levels()
-            .iter()
-            .flatten()
-            .any(|table| table.facts().commit_range().min().as_u64() <= fork_version.as_u64());
-        let cow_structural = source.inherited_layers().is_empty() && has_sealed_in_fork;
+        let cow_structural = cow_fork_structural(source, fork_version, sealed_table_is_durable);
         let unsealed_table = match (cow_structural && has_unsealed, unsealed_table_builder) {
             (true, Some(builder)) => {
                 let rows = source
@@ -1121,10 +1134,15 @@ impl LifecycleBranchCatalog {
             retained_floor,
             created_at,
             None,
+            None,
         )
     }
 
     /// #2527: see [`Self::fork_at_retained_version_with_unsealed_builder`].
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the fork parameter set is fixed by the lifecycle contract; both trailing hooks are optional capabilities"
+    )]
     pub(crate) fn fork_at_retained_timestamp_with_unsealed_builder(
         &mut self,
         source_branch_id: BranchId,
@@ -1134,6 +1152,7 @@ impl LifecycleBranchCatalog {
         retained_floor: CommitVersion,
         created_at: Option<CommitVersion>,
         unsealed_table_builder: Option<ForkUnsealedTableBuilder<'_>>,
+        sealed_table_is_durable: Option<ForkSealedTableDurability<'_>>,
     ) -> LifecycleResult<LifecycleBranchForkOutcome> {
         self.require_destination_available(destination_branch_id, destination_generation)?;
         let source = self.branch_state(source_branch_id)?;
@@ -1169,6 +1188,7 @@ impl LifecycleBranchCatalog {
             retained_floor,
             created_at,
             unsealed_table_builder,
+            sealed_table_is_durable,
         )
     }
 
@@ -1400,6 +1420,40 @@ struct LifecycleTableRefDedupKey {
     layer_index: usize,
     level: u8,
     table_index: usize,
+}
+
+/// #2527/#2855: whether the source qualifies for the hybrid COW fork at
+/// `fork_version` — no inherited layers, at least one in-fork sealed table
+/// (any table with a `<= V` row participates), and every in-fork sealed
+/// table durably cataloged. The durability premise is #2855's: a COW layer
+/// over a VOLATILE table (an eager fork child's materialized table, a
+/// checkpoint-recovered base) guarantees the child's fork-time manifest
+/// publish fails ("volatile rewrite output without durable catalog entry"),
+/// leaving a child that LOOKS layered without durable coverage — the eager
+/// path handles those sources instead. `None` (cache mode, no recovery)
+/// trusts every table.
+fn cow_fork_structural(
+    source: &BranchLocalState,
+    fork_version: CommitVersion,
+    sealed_table_is_durable: Option<ForkSealedTableDurability<'_>>,
+) -> bool {
+    if !source.inherited_layers().is_empty() {
+        return false;
+    }
+    let in_fork_sealed: Vec<&BranchOwnedTable> = source
+        .owned_levels()
+        .iter()
+        .flatten()
+        .filter(|table| table.facts().commit_range().min().as_u64() <= fork_version.as_u64())
+        .collect();
+    if in_fork_sealed.is_empty() {
+        return false;
+    }
+    sealed_table_is_durable.is_none_or(|is_durable| {
+        in_fork_sealed
+            .iter()
+            .all(|table| is_durable(table.descriptor().identity()))
+    })
 }
 
 fn table_ref_dedup_key(table_ref: &BranchTableRef) -> LifecycleTableRefDedupKey {

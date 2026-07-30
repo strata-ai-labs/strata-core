@@ -2397,3 +2397,154 @@ fn fork_child_own_rows_survive_reopen_through_the_checkpoint() {
         "the child's inherited content survives"
     );
 }
+
+/// #2855, the seed-183 Gap shape: a COW fork built over a source whose
+/// in-fork sealed tables are VOLATILE (an eager fork child's materialized
+/// table has no durable catalog entry) yields a child whose fork-time
+/// manifest publish fails best-effort. The child then LOOKS layered, the
+/// #2820 delete guard exempts it, the parent delete is allowed — and at the
+/// next reopen the child recovers layer-less, the fork rebuild skips its
+/// Deleted parent, and the entire inherited slice silently vanishes.
+#[test]
+fn cow_fork_over_a_volatile_source_keeps_inheritance_across_reopen() {
+    let root = temp_dir_for_api_test("cow-over-volatile-keeps-inheritance");
+    let backend = StorageBackend::local_fs(root);
+    let mid = branch_with(0x87);
+    let leaf = branch_with(0x88);
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        put_at(&mut runtime, branch(), b"base", b"b", 5);
+        // Eager fork child: `mid` holds a volatile materialized table.
+        runtime
+            .branch(&branch_request(
+                mid,
+                BranchAction::ForkCurrent { source: branch() },
+            ))
+            .expect("eager fork of an unflushed source");
+        put_at(&mut runtime, mid, b"mid-own", b"m", 10);
+        // The trigger: a fork whose COW eligibility sees mid's volatile table.
+        runtime
+            .branch(&branch_request(
+                leaf,
+                BranchAction::ForkCurrent { source: mid },
+            ))
+            .expect("fork of the eager child");
+        // Whether this delete succeeds is exactly what the fix changes
+        // (pre-fix: allowed, the leaf looks layered; post-fix: refused, the
+        // leaf is layer-less and recovery-depends on mid). The oracle below
+        // is the leaf's CONTENT after reopen, so the outcome is recorded
+        // and deliberately not asserted here.
+        let _version_dependent = runtime.branch(&branch_request(mid, BranchAction::Delete));
+    }
+
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always),
+        &backend,
+    )
+    .expect("reopen")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, leaf, b"base"),
+        Some(b"b".to_vec()),
+        "the leaf must keep its transitively inherited row across reopen"
+    );
+    assert_eq!(
+        read_value(&runtime, leaf, b"mid-own"),
+        Some(b"m".to_vec()),
+        "the leaf must keep the mid-generation row across reopen"
+    );
+}
+
+/// #2855, the seed-134 Phantom shape: a branch name whose gen-1 was a COW
+/// child WITH a published manifest is deleted, then re-created by forking a
+/// VOLATILE source. Pre-fix the gen-2 publish fails (volatile layer target),
+/// the `layers == 0` stale-manifest removal never runs, and the next reopen
+/// adopts the DEAD gen-1's manifest as the re-created name's provenance —
+/// serving content the gen-2 lineage never had.
+#[test]
+fn refork_over_a_deleted_name_does_not_adopt_the_dead_generations_manifest() {
+    use crate::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
+
+    let root = temp_dir_for_api_test("refork-no-dead-manifest-adoption");
+    let backend = StorageBackend::local_fs(root);
+    let victim = branch_with(0x89);
+    let aux = branch_with(0x8a);
+    let helper = branch_with(0x8b);
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always)
+                .with_maintenance_scheduling_policy(
+                    crate::api::StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+                ),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        // Gen-1 life: COW child over the seeded branch's FLUSHED (durable)
+        // tables — its manifest publish succeeds and lands on disk.
+        put_at(&mut runtime, branch(), b"dead-marker", b"gone", 5);
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Flush,
+                MaintenanceScope::Branch(branch()),
+            ))
+            .expect("enqueue flush");
+        runtime.drain_maintenance().expect("drain flush");
+        runtime
+            .branch(&branch_request(
+                victim,
+                BranchAction::ForkCurrent { source: branch() },
+            ))
+            .expect("gen-1 COW fork over durable tables");
+        runtime
+            .branch(&branch_request(victim, BranchAction::Delete))
+            .expect("delete gen-1 victim");
+        // A volatile source for gen-2: an eager child of an unflushed branch.
+        runtime
+            .branch(&create_request(aux))
+            .expect("create aux source");
+        put_at(&mut runtime, aux, b"aux-row", b"a", 10);
+        runtime
+            .branch(&branch_request(
+                helper,
+                BranchAction::ForkCurrent { source: aux },
+            ))
+            .expect("eager fork of the unflushed aux");
+        put_at(&mut runtime, helper, b"helper-own", b"h", 15);
+        // Re-create the victim NAME by forking the volatile-backed helper.
+        runtime
+            .branch(&BranchRequest::new(
+                victim,
+                BranchAction::ForkCurrent { source: helper },
+                Some(BranchGeneration::new(2)),
+            ))
+            .expect("re-fork victim as gen 2 over a volatile source");
+    }
+
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always),
+        &backend,
+    )
+    .expect("reopen")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, victim, b"dead-marker"),
+        None,
+        "the re-forked name must not serve the dead generation's manifest lineage"
+    );
+    assert_eq!(
+        read_value(&runtime, victim, b"aux-row"),
+        Some(b"a".to_vec()),
+        "gen-2's real transitive inheritance survives reopen"
+    );
+    assert_eq!(
+        read_value(&runtime, victim, b"helper-own"),
+        Some(b"h".to_vec()),
+        "gen-2's direct inheritance survives reopen"
+    );
+}
