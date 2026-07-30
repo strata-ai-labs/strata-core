@@ -9,8 +9,8 @@ use crate::commit::{
 };
 use crate::format::TableManifest;
 use crate::lifecycle::checkpoint::{
-    branch_checkpoint_flush_boundary, branch_has_unflushed_rows_at_or_below,
-    checkpoint_durable_rows_with_budget, checkpoint_durable_runtime_with_budget,
+    branch_has_unflushed_rows_at_or_below, checkpoint_durable_rows_with_budget,
+    checkpoint_durable_runtime_with_budget,
     checkpoint_request_from_maintenance_task_with_snapshot_id, checkpoint_structural_deferral,
     persist_flush_watermark, persist_flush_watermark_with_table_manifest_proof,
     recovery_health_epoch, truncate_wal, wal_truncation_request_from_maintenance_task,
@@ -176,7 +176,13 @@ pub(crate) enum DurableBackgroundMaintenanceBuild<'a> {
         task: MaintenanceTask,
         request: LifecycleCheckpointRequest,
         visible_version: CommitVersion,
-        branches: Vec<BranchLocalState>,
+        /// Each branch's cloned state plus the identities of its owned tables
+        /// that were DURABLY cataloged at start time (#2863) — the off-lock
+        /// build has no catalog access, so the durability facts ride along.
+        branches: Vec<(
+            BranchLocalState,
+            std::collections::HashSet<crate::table::TableIdentity>,
+        )>,
     },
     WalTruncation {
         task: MaintenanceTask,
@@ -292,24 +298,23 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                 let mut has_durable_rows = false;
                 let mut flush_boundary: Option<CommitVersion> = None;
                 let mut timeline_groups = Vec::new();
-                for branch in &branches {
-                    has_durable_rows |= branch.owned_table_count() > 0;
+                for (branch, durable_identities) in &branches {
                     if let Some(group) = crate::lifecycle::checkpoint::timeline_group_for_branch(
                         branch,
                         visible_version,
                     ) {
                         timeline_groups.push(group);
                     }
-                    if let Some(boundary) = branch_checkpoint_flush_boundary(
-                        branch.owned_levels(),
-                        branch.inherited_layers(),
-                        visible_version,
-                    ) {
+                    let (mut branch_rows, branch_has_durable, branch_boundary) =
+                        crate::lifecycle::checkpoint::branch_checkpoint_collection(
+                            branch,
+                            visible_version,
+                            &|identity| durable_identities.contains(identity),
+                        )?;
+                    has_durable_rows |= branch_has_durable;
+                    if let Some(boundary) = branch_boundary {
                         flush_boundary = Some(flush_boundary.map_or(boundary, |f| f.max(boundary)));
                     }
-                    let mut branch_rows = branch
-                        .checkpoint_rows(visible_version)
-                        .map_err(branch_error)?;
                     rows.append(&mut branch_rows);
                 }
                 Ok(DurableBackgroundMaintenanceBuilt::Checkpoint {
@@ -1068,6 +1073,10 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         request: &LifecycleCheckpointRequest,
     ) -> LifecycleResult<LifecycleCheckpointOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let table_catalog = &self.table_catalog;
+        let table_is_durable = |identity: &crate::table::TableIdentity| {
+            table_catalog.object_for_identity(identity).is_some()
+        };
         let outcome = checkpoint_durable_runtime_with_budget(
             &self.branch_catalog,
             &self.services,
@@ -1076,6 +1085,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             request,
             self.initial_branch_id,
             Some(&self.budget),
+            &table_is_durable,
         )?;
         // A checkpoint advances the manifest snapshot watermark.
         self.invalidate_retention_watermark_cache();
@@ -1836,6 +1846,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         let guard_set = &self.guard_set;
         let visible = &self.visible;
         let budget = &self.budget;
+        let table_catalog = &self.table_catalog;
         let next_snapshot_id = &mut self.next_checkpoint_snapshot_id;
         let created_at = checkpoint_created_at(
             self.allocator.timestamp_guard().last_allocated(),
@@ -1851,6 +1862,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             next_snapshot_id,
             budget,
             manifest_debt,
+            table_catalog,
         };
         let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
             task.kind() == MaintenanceTaskKind::Checkpoint
@@ -1905,11 +1917,25 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         let visible_version = self.visible.visible_version();
         let mut branches = Vec::new();
         for descriptor in self.branch_catalog.list_branches(false) {
-            branches.push(
-                self.branch_catalog
-                    .branch_state(descriptor.branch_id())?
-                    .clone(),
-            );
+            let branch = self
+                .branch_catalog
+                .branch_state(descriptor.branch_id())?
+                .clone();
+            // #2863: capture which owned tables are DURABLY cataloged now, under
+            // the lock — the off-lock build uses this to keep the snapshot
+            // self-contained over volatile tables.
+            let durable_identities: std::collections::HashSet<crate::table::TableIdentity> = branch
+                .owned_levels()
+                .iter()
+                .flatten()
+                .filter(|table| {
+                    self.table_catalog
+                        .object_for_identity(table.descriptor().identity())
+                        .is_some()
+                })
+                .map(|table| table.descriptor().identity().clone())
+                .collect();
+            branches.push((branch, durable_identities));
         }
         // A checkpoint advances the WAL-replay floor (active WAL segment) trusting that
         // every flushed table is covered by a durably-published table manifest. An off-lock
@@ -4434,6 +4460,7 @@ struct DurableCheckpointMaintenanceRunner<'a, 'b> {
     next_snapshot_id: &'a mut u64,
     budget: &'a crate::lifecycle::StorageBudgetLedger,
     manifest_debt: bool,
+    table_catalog: &'a crate::lifecycle::LifecycleDurableTableCatalog,
 }
 
 impl MaintenanceTaskRunner for DurableCheckpointMaintenanceRunner<'_, '_> {
@@ -4460,6 +4487,10 @@ impl MaintenanceTaskRunner for DurableCheckpointMaintenanceRunner<'_, '_> {
             self.created_at,
             Some(*self.next_snapshot_id),
         )?;
+        let table_catalog = self.table_catalog;
+        let table_is_durable = |identity: &crate::table::TableIdentity| {
+            table_catalog.object_for_identity(identity).is_some()
+        };
         let outcome = checkpoint_durable_runtime_with_budget(
             self.branch_catalog,
             self.services,
@@ -4468,6 +4499,7 @@ impl MaintenanceTaskRunner for DurableCheckpointMaintenanceRunner<'_, '_> {
             &request,
             self.initial_branch_id,
             Some(self.budget),
+            &table_is_durable,
         )?;
         if let Some(snapshot_id) = outcome.snapshot_id() {
             *self.next_snapshot_id =
