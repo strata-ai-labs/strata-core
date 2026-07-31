@@ -158,7 +158,7 @@ jobs:
     # finding; this job is their tier. Soaks use their own in-file nightly
     # defaults unless the env below overrides them.
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
       - name: Authorize private git dependencies
@@ -184,14 +184,25 @@ jobs:
         timeout-minutes: 45
         # No env override: simulation cases are ~10x costlier per case, and
         # the in-file soak default (2,000) is the calibrated nightly budget.
-        # The whole-DB target runs its SMOKE tier (seeds 0-5) only: the deep
-        # soak line (`--test simulation_whole_db -- --ignored`) lands when
-        # the #2828 tracker closes — the first deepened sweep found 66/200
-        # seeds failing (#2826/#2827/#2828), and lanes are never born red.
+        # The whole-DB target runs its SMOKE tier (seeds 0-5) here; the deep
+        # whole-DB soak is the dedicated TCP4.11c step below.
         run: |
           cargo test --locked -p strata-storage --features fault-injection --test simulation_smoke -- --ignored
           cargo test --locked -p strata-storage --features fault-injection --test simulation_faults -- --ignored
           cargo test --locked -p strata-storage --features fault-injection --test simulation_whole_db
+      # TCP4.11c: the whole-DB soak — WIDE (2,000 canonical 3x24 seeds,
+      # ~0.4 s/seed) then DEEP (400 seeds at the 6x48 geometry, ~1.4 s/seed;
+      # the deepened shape reaches recovery/maintenance interleavings the
+      # canonical shape practically cannot — its first preflight multiplied
+      # the failure rate 12x). Landed born-green after the #2828 and #2859
+      # fix waves: canonical 0-1999 and deep 0-399 all clean on the exact
+      # invocations below. A failure prints a one-line seeded repro carrying
+      # the shape knobs — paste it verbatim to reproduce bit-exact locally.
+      - name: Whole-DB soak (TCP4.11c)
+        timeout-minutes: 90
+        run: |
+          STRATA_STORAGE_FAULT_CASES=2000 cargo test --locked -p strata-storage --features fault-injection --test simulation_whole_db -- whole_db_simulation_soak_deepens_across_many_seeds --ignored
+          STRATA_SIM_EPOCHS=6 STRATA_SIM_STEPS_PER_EPOCH=48 STRATA_STORAGE_FAULT_CASES=400 cargo test --locked -p strata-storage --features fault-injection --test simulation_whole_db -- whole_db_simulation_soak_deepens_across_many_seeds --ignored
       - name: Crash-recovery deep grids
         timeout-minutes: 60
         env:
