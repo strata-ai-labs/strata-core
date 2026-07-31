@@ -4716,3 +4716,86 @@ fn sync_checkpoint_captures_volatile_base_rows_and_records_no_flush_floor() {
         "the snapshot must be self-contained: volatile-base rows captured alongside the delta",
     );
 }
+
+/// #2863 background-lane kill: an EMPTY delta over a DURABLE flushed base must
+/// still publish through the background checkpoint pipeline (the watermark
+/// advance depends on `has_durable_rows`), and the published snapshot must
+/// carry no rows (durable-base content is deltaed over, never re-captured).
+#[test]
+fn background_checkpoint_publishes_empty_delta_over_durable_base() {
+    use crate::format::SNAPSHOT_ROW_SECTION_KIND;
+    use crate::service::{DatabaseManifestService, SnapshotService};
+
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
+    let branch = branch_id(0x90);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"empty-delta-base", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+        .expect("enqueue flush");
+    let flush = runtime
+        .run_next_flush_maintenance()
+        .expect("flush lane")
+        .expect("flush outcome");
+    assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
+
+    // Memtable empty, durable base present: the background checkpoint must
+    // publish the watermark advance.
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::checkpoint())
+        .expect("enqueue checkpoint");
+    let step = runtime
+        .start_next_background_checkpoint_maintenance()
+        .expect("start background checkpoint")
+        .expect("background checkpoint step");
+    let DurableBackgroundMaintenanceStep::Build(pending) = step else {
+        panic!("expected a checkpoint build step, got a completed outcome");
+    };
+    let built = (*pending).build().expect("build checkpoint");
+    let publish = runtime
+        .begin_publish_phase(built)
+        .expect("begin publish phase");
+    let outcome = match publish {
+        PreparedPublishStep::Done(result) => result.expect("publish done"),
+        PreparedPublishStep::OffLock(prepared) => {
+            let (prepared, write_result) = prepared.persist_off_lock();
+            runtime
+                .finish_publish_phase(prepared, write_result)
+                .expect("finish publish phase")
+        }
+    };
+    assert_eq!(
+        outcome.status(),
+        MaintenanceOutcomeStatus::Completed,
+        "an empty delta over a durable base advances the snapshot watermark",
+    );
+
+    let manifest = DatabaseManifestService::new(backend)
+        .load_required()
+        .expect("database manifest");
+    let snapshot_id = manifest.snapshot_id().expect("published snapshot id");
+    let container = SnapshotService::new(backend)
+        .load_required(snapshot_id)
+        .expect("published snapshot");
+    let mut row_count = 0usize;
+    for section in container.sections() {
+        if section.section_kind() == SNAPSHOT_ROW_SECTION_KIND {
+            row_count += crate::format::decode_snapshot_row_payload(section.payload())
+                .expect("decode snapshot rows")
+                .len();
+        }
+    }
+    assert_eq!(
+        row_count, 0,
+        "durable-base rows are deltaed over, not re-captured",
+    );
+}
