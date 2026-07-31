@@ -1047,28 +1047,38 @@ fn drain_cancels_branch_scoped_compaction_enqueued_before_the_branch_was_deleted
         .branch(&branch_request(victim, BranchAction::Delete))
         .expect("delete the branch after the tasks were enqueued");
 
-    let drain = runtime
-        .drain_maintenance()
-        .expect("draining a stale branch-scoped task must not fail the drain");
-    for outcome in drain.outcomes() {
-        assert_ne!(
-            outcome.status(),
-            MaintenanceSummaryStatus::Failed,
-            "a deleted task target is a legal race, not a maintenance failure: task {:?} reported {:?}",
-            outcome.task(),
-            outcome.source_error_code(),
+    // #2867: a drain's background rounds may chain follow-up enqueues (e.g. the
+    // table-object retention that follows a completed task) that land after the
+    // drain's queue snapshot — drain to a fixed point before judging the queue.
+    // Every round still requires no Failed outcome and a silent failure ring.
+    let mut pending = usize::MAX;
+    for _ in 0..5 {
+        let drain = runtime
+            .drain_maintenance()
+            .expect("draining a stale branch-scoped task must not fail the drain");
+        for outcome in drain.outcomes() {
+            assert_ne!(
+                outcome.status(),
+                MaintenanceSummaryStatus::Failed,
+                "a deleted task target is a legal race, not a maintenance failure: task {:?} reported {:?}",
+                outcome.task(),
+                outcome.source_error_code(),
+            );
+        }
+        let status = runtime.maintenance_status().expect("maintenance status");
+        assert!(
+            status.recent_failures().is_empty(),
+            "the failure ring must stay silent for the enqueue/delete race: {:?}",
+            status.recent_failures(),
         );
+        pending = status.pending_tasks();
+        if pending == 0 {
+            break;
+        }
     }
-    let status = runtime.maintenance_status().expect("maintenance status");
-    assert!(
-        status.recent_failures().is_empty(),
-        "the failure ring must stay silent for the enqueue/delete race: {:?}",
-        status.recent_failures(),
-    );
     assert_eq!(
-        status.pending_tasks(),
-        0,
-        "the stale task must be consumed, not left to churn in the queue",
+        pending, 0,
+        "the queue must drain to a fixed point: the stale tasks are consumed, not churning",
     );
 }
 
