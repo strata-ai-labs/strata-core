@@ -806,9 +806,31 @@ checkpoint is never the authority for a fork child's inherited content
 (`rebuild_fork_snapshot_rows` re-materializes it from the live parent, and covered
 children ride their manifest layers), so the whole `<= created_at` band drops.
 
+The checkpoint's delta premise — "owned-table rows may be skipped because a durable
+manifest covers them" — is enforced at CAPTURE time (#2863): a VOLATILE owned table
+(a snapshot-install L0, no durable catalog entry) is not a base. Its rows are
+captured into the snapshot (their only durable home is the snapshot being
+superseded), and it contributes to neither `has_durable_rows` nor the recorded
+`flushed_through` floor. Without this, a checkpoint over a snapshot-recovered
+branch deltas over coverage no manifest holds, the WAL truncates, and the rows are
+durably lost — the reopen then correctly refuses the orphaned delta (strict) or
+recovers an empty prefix (lossy). Because the structural-deferral guard keeps
+non-seeded durable bases out of published snapshots, the durable-only floor is
+also exactly the seeded branch's own — restoring the seeded-only orphan
+heuristic's single-branch premise.
+
 **Audit**: `combine_non_seeded_checkpoint_rows`, the partition, and the
 `record_predates_current_generation` row fence in
 `install_non_seeded_checkpoint_rows` (`lifecycle/durable/bootstrap.rs`);
+capture-side: `branch_checkpoint_collection` + the durability predicate on
+`branch_checkpoint_flush_boundary` (`lifecycle/checkpoint.rs`), threaded from the
+table catalog by all three collectors (sync runtime, close drain, background
+starter's per-branch durable-identity sets);
+`checkpoint_over_a_snapshot_recovered_base_stays_self_contained` (api/tests/branch.rs)
+pins the strict-reopen choreography end to end,
+`sync_checkpoint_captures_volatile_base_rows_and_records_no_flush_floor`
+(lifecycle/tests/durable.rs) pins both capture halves through the foreground lane;
+the whole-DB DST seeds 483/1655 are the volume lane;
 `checkpoint_then_flush_of_non_seeded_branch_survives_reopen` (api/tests/branch.rs) pins
 the choreography end to end, `non_seeded_checkpoint_combine_dedups_appends_and_fails_closed`
 (lifecycle/tests/recovery.rs) pins the dedup/append/fail-closed truth table.

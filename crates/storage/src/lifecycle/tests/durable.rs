@@ -4639,3 +4639,163 @@ fn foreground_lanes_cancel_tasks_whose_branch_was_deleted_after_enqueue() {
         "the stale compaction task must be consumed as Canceled by its own lane",
     );
 }
+
+/// #2863 foreground-lane kill: a checkpoint over a snapshot-recovered base —
+/// whose rows live in a VOLATILE owned L0 with no durable catalog entry — must
+/// publish a SELF-CONTAINED snapshot (the volatile rows captured) and must not
+/// record the volatile coverage as a flushed base. Driven through the sync
+/// checkpoint lane so the arm is deterministically exercised.
+#[test]
+fn sync_checkpoint_captures_volatile_base_rows_and_records_no_flush_floor() {
+    use crate::format::SNAPSHOT_ROW_SECTION_KIND;
+    use crate::service::{DatabaseManifestService, SnapshotService};
+
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
+    let branch = branch_id(0x8f);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"vol-a", b"one"),
+            generation_guard(),
+        )
+        .expect("commit a");
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"vol-b", b"two"),
+            generation_guard(),
+        )
+        .expect("commit b");
+    // The close writes a delta checkpoint carrying both rows.
+    runtime.close().expect("first close");
+
+    // The reopen installs the snapshot's rows as a volatile owned L0 (no table
+    // manifest exists), then one more commit lands in the memtable.
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"vol-c", b"three"),
+            generation_guard(),
+        )
+        .expect("commit c");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::checkpoint())
+        .expect("enqueue checkpoint");
+    let outcome = runtime
+        .run_next_checkpoint_maintenance()
+        .expect("checkpoint lane")
+        .expect("checkpoint outcome");
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+
+    let manifest = DatabaseManifestService::new(backend)
+        .load_required()
+        .expect("database manifest");
+    assert_eq!(
+        manifest.flushed_through_commit_id(),
+        None,
+        "a volatile snapshot-install L0 is not a flushed base",
+    );
+    let snapshot_id = manifest.snapshot_id().expect("published snapshot id");
+    let container = SnapshotService::new(backend)
+        .load_required(snapshot_id)
+        .expect("published snapshot");
+    let mut versions: Vec<u64> = Vec::new();
+    for section in container.sections() {
+        if section.section_kind() == SNAPSHOT_ROW_SECTION_KIND {
+            for row in crate::format::decode_snapshot_row_payload(section.payload())
+                .expect("decode snapshot rows")
+            {
+                versions.push(row.commit_version().as_u64());
+            }
+        }
+    }
+    versions.sort_unstable();
+    assert_eq!(
+        versions,
+        vec![1, 2, 3],
+        "the snapshot must be self-contained: volatile-base rows captured alongside the delta",
+    );
+}
+
+/// #2863 background-lane kill: an EMPTY delta over a DURABLE flushed base must
+/// still publish through the background checkpoint pipeline (the watermark
+/// advance depends on `has_durable_rows`), and the published snapshot must
+/// carry no rows (durable-base content is deltaed over, never re-captured).
+#[test]
+fn background_checkpoint_publishes_empty_delta_over_durable_base() {
+    use crate::format::SNAPSHOT_ROW_SECTION_KIND;
+    use crate::service::{DatabaseManifestService, SnapshotService};
+
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
+    let branch = branch_id(0x90);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"empty-delta-base", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+        .expect("enqueue flush");
+    let flush = runtime
+        .run_next_flush_maintenance()
+        .expect("flush lane")
+        .expect("flush outcome");
+    assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
+
+    // Memtable empty, durable base present: the background checkpoint must
+    // publish the watermark advance.
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::checkpoint())
+        .expect("enqueue checkpoint");
+    let step = runtime
+        .start_next_background_checkpoint_maintenance()
+        .expect("start background checkpoint")
+        .expect("background checkpoint step");
+    let DurableBackgroundMaintenanceStep::Build(pending) = step else {
+        panic!("expected a checkpoint build step, got a completed outcome");
+    };
+    let built = (*pending).build().expect("build checkpoint");
+    let publish = runtime
+        .begin_publish_phase(built)
+        .expect("begin publish phase");
+    let outcome = match publish {
+        PreparedPublishStep::Done(result) => result.expect("publish done"),
+        PreparedPublishStep::OffLock(prepared) => {
+            let (prepared, write_result) = prepared.persist_off_lock();
+            runtime
+                .finish_publish_phase(prepared, write_result)
+                .expect("finish publish phase")
+        }
+    };
+    assert_eq!(
+        outcome.status(),
+        MaintenanceOutcomeStatus::Completed,
+        "an empty delta over a durable base advances the snapshot watermark",
+    );
+
+    let manifest = DatabaseManifestService::new(backend)
+        .load_required()
+        .expect("database manifest");
+    let snapshot_id = manifest.snapshot_id().expect("published snapshot id");
+    let container = SnapshotService::new(backend)
+        .load_required(snapshot_id)
+        .expect("published snapshot");
+    let mut row_count = 0usize;
+    for section in container.sections() {
+        if section.section_kind() == SNAPSHOT_ROW_SECTION_KIND {
+            row_count += crate::format::decode_snapshot_row_payload(section.payload())
+                .expect("decode snapshot rows")
+                .len();
+        }
+    }
+    assert_eq!(
+        row_count, 0,
+        "durable-base rows are deltaed over, not re-captured",
+    );
+}

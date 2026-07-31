@@ -906,6 +906,86 @@ fn durable_layerless_fork_rebuild_elides_rows_already_flushed_durable() {
     );
 }
 
+/// A checkpoint over a snapshot-recovered base must stay self-contained. Reopening from a
+/// checkpoint (with no table manifest) installs the snapshot's rows as a VOLATILE owned
+/// table — no durable catalog entry backs it. A later checkpoint must capture those rows
+/// (they have no durable home outside the superseded snapshot) and must not record the
+/// volatile table as a flushed base; deltaing over it and truncating the WAL durably
+/// loses the rows, and the next recovery either gaps or (correctly) refuses the orphaned
+/// delta and recovers an empty prefix.
+#[cfg(feature = "localfs")]
+#[test]
+fn checkpoint_over_a_snapshot_recovered_base_stays_self_contained() {
+    use crate::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
+
+    let root = temp_dir_for_api_test("branch-durable-checkpoint-volatile-base");
+    {
+        let backend = StorageBackend::local_fs(root.clone());
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        put_at(&mut runtime, branch(), b"ckpt-a", b"one", 10);
+        put_at(&mut runtime, branch(), b"ckpt-b", b"two", 20);
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Checkpoint,
+                MaintenanceScope::Global,
+            ))
+            .expect("enqueue first checkpoint");
+        runtime.drain_maintenance().expect("first checkpoint");
+        runtime.close().expect("first close");
+    }
+    {
+        // Reopen #1: no table manifest exists, so the snapshot's rows install as a
+        // volatile owned table. Commit one more row and checkpoint again — the new
+        // snapshot must carry ALL three rows' content.
+        let backend = StorageBackend::local_fs(root.clone());
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+            &backend,
+        )
+        .expect("first durable reopen")
+        .into_runtime();
+        put_at(&mut runtime, branch(), b"ckpt-c", b"three", 30);
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Checkpoint,
+                MaintenanceScope::Global,
+            ))
+            .expect("enqueue second checkpoint");
+        runtime
+            .drain_maintenance()
+            .expect("second checkpoint + reclaim");
+        runtime.close().expect("second close");
+    }
+
+    let backend = StorageBackend::local_fs(root);
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("second durable reopen")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, branch(), b"ckpt-a"),
+        Some(b"one".to_vec()),
+        "snapshot-recovered rows must survive the next checkpoint cycle",
+    );
+    assert_eq!(
+        read_value(&runtime, branch(), b"ckpt-b"),
+        Some(b"two".to_vec()),
+        "snapshot-recovered rows must survive the next checkpoint cycle",
+    );
+    assert_eq!(
+        read_value(&runtime, branch(), b"ckpt-c"),
+        Some(b"three".to_vec()),
+        "the delta row must survive alongside the recovered base",
+    );
+}
+
 /// A branch-scoped compaction task legally races a branch delete: enqueued while the
 /// branch was live, drained after it was deleted. The stale task's target is gone —
 /// the drain must consume it as Canceled, not fail the drain and not record a

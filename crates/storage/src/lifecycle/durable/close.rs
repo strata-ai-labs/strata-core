@@ -409,6 +409,10 @@ impl DurableCloseMaintenanceRunner<'_, '_> {
             self.created_at,
             Some(*self.next_snapshot_id),
         )?;
+        let table_catalog = &*self.table_catalog;
+        let table_is_durable = |identity: &crate::table::TableIdentity| {
+            table_catalog.object_for_identity(identity).is_some()
+        };
         let outcome = checkpoint_durable_branch_with_budget(
             self.branch,
             self.services,
@@ -416,6 +420,7 @@ impl DurableCloseMaintenanceRunner<'_, '_> {
             || self.visible.visible_version(),
             &request,
             Some(self.budget),
+            &table_is_durable,
         )?;
         if let Some(snapshot_id) = outcome.snapshot_id() {
             *self.next_snapshot_id =

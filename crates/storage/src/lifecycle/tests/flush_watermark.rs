@@ -982,6 +982,7 @@ fn bounded_coverage_scan_matches_full_scan_over_interval() {
             state.owned_levels(),
             state.inherited_layers(),
             CommitVersion::new(visible),
+            &|_| true,
         )
         .map(CommitVersion::as_u64);
         assert_eq!(

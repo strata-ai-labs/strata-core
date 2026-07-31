@@ -1182,6 +1182,7 @@ pub(crate) fn branch_checkpoint_flush_boundary(
     owned_levels: &[Vec<BranchOwnedTable>],
     inherited_layers: &[BranchInheritedLayer],
     visible_version: CommitVersion,
+    table_is_durable: &dyn Fn(&crate::table::TableIdentity) -> bool,
 ) -> Option<CommitVersion> {
     let tables = owned_levels.iter().flatten().chain(
         inherited_layers
@@ -1190,6 +1191,14 @@ pub(crate) fn branch_checkpoint_flush_boundary(
     );
     let mut boundary: Option<CommitVersion> = None;
     for table in tables {
+        // #2863: only a DURABLY-cataloged table is a flush base. A volatile
+        // owned table (a snapshot-install L0) has no durable manifest behind
+        // it — recording its coverage as `flushed_through` would let the
+        // snapshot delta over content that only the superseded snapshot
+        // holds, and the WAL truncation then destroys it.
+        if !table_is_durable(table.descriptor().identity()) {
+            continue;
+        }
         let range = table.facts().commit_range();
         if range.min() > visible_version {
             continue;
@@ -1534,6 +1543,11 @@ pub(crate) fn checkpoint_durable_branch(
         read_visible_version,
         request,
         None,
+        // Test-facing wrapper: unit tests hand-build states whose owned tables
+        // stand in for flushed (durably cataloged) tables. Production paths go
+        // through `checkpoint_durable_branch_with_budget` with the real catalog
+        // predicate.
+        &|_| true,
     )
 }
 
@@ -1544,6 +1558,7 @@ pub(crate) fn checkpoint_durable_branch_with_budget(
     read_visible_version: impl FnOnce() -> CommitVersion,
     request: &LifecycleCheckpointRequest,
     budget: Option<&StorageBudgetLedger>,
+    table_is_durable: &dyn Fn(&crate::table::TableIdentity) -> bool,
 ) -> LifecycleResult<LifecycleCheckpointOutcome> {
     request.validate()?;
     if branch.branch_id() != request.branch_id() {
@@ -1558,28 +1573,68 @@ pub(crate) fn checkpoint_durable_branch_with_budget(
         request,
         budget,
         |visible_version| {
-            let rows = branch
-                .checkpoint_rows(visible_version)
-                .map_err(branch_error)?;
-            let flush_boundary = branch_checkpoint_flush_boundary(
-                branch.owned_levels(),
-                branch.inherited_layers(),
-                visible_version,
-            );
+            let (rows, has_durable_rows, flush_boundary) =
+                branch_checkpoint_collection(branch, visible_version, table_is_durable)?;
             // W3.1b: persist the retained timeline alongside the delta rows
             // (only when provably complete; a fallback-scan reopen stays
             // correct otherwise).
             let timeline_groups = timeline_group_for_branch(branch, visible_version)
                 .into_iter()
                 .collect();
-            Ok((
-                rows,
-                branch.owned_table_count() > 0,
-                flush_boundary,
-                timeline_groups,
-            ))
+            Ok((rows, has_durable_rows, flush_boundary, timeline_groups))
         },
     )
+}
+
+/// #2863: one branch's checkpoint collection — the snapshot rows, whether the
+/// branch holds a DURABLY-backed owned table, and its durable flush boundary.
+///
+/// The snapshot's self-containment premise is "owned tables are durably
+/// manifest-covered, so the delta may skip their rows". A VOLATILE owned table
+/// (a snapshot-install L0 — no durable catalog entry) breaks that premise: its
+/// rows' only durable home is the snapshot being superseded. So its rows are
+/// CAPTURED into the checkpoint (bounded by the watermark), and it contributes
+/// to neither `has_durable_rows` nor the flush boundary.
+pub(crate) fn branch_checkpoint_collection(
+    branch: &BranchLocalState,
+    visible_version: CommitVersion,
+    table_is_durable: &dyn Fn(&crate::table::TableIdentity) -> bool,
+) -> LifecycleResult<(Vec<crate::row::StorageRow>, bool, Option<CommitVersion>)> {
+    let mut rows = branch
+        .checkpoint_rows(visible_version)
+        .map_err(branch_error)?;
+    let mut captured_volatile = false;
+    for table in branch.owned_levels().iter().flatten() {
+        if table_is_durable(table.descriptor().identity()) {
+            continue;
+        }
+        for_each_reader_row(table.reader(), |row| {
+            if row.commit_version() <= visible_version {
+                rows.push(row.row().clone());
+                captured_volatile = true;
+            }
+        });
+    }
+    if captured_volatile {
+        rows.sort_by_key(crate::table::TableInternalKeyBytes::from_row);
+        let keys: Vec<crate::table::TableInternalKeyBytes> = rows
+            .iter()
+            .map(crate::table::TableInternalKeyBytes::from_row)
+            .collect();
+        crate::table::validate_strictly_sorted_unique_keys(keys.iter()).map_err(branch_error)?;
+    }
+    let has_durable_rows = branch
+        .owned_levels()
+        .iter()
+        .flatten()
+        .any(|table| table_is_durable(table.descriptor().identity()));
+    let flush_boundary = branch_checkpoint_flush_boundary(
+        branch.owned_levels(),
+        branch.inherited_layers(),
+        visible_version,
+        table_is_durable,
+    );
+    Ok((rows, has_durable_rows, flush_boundary))
 }
 
 /// W3.1b: the branch's persistable timeline group — `None` unless its
@@ -1614,6 +1669,7 @@ pub(crate) fn checkpoint_durable_runtime_with_budget(
     request: &LifecycleCheckpointRequest,
     seeded_branch_id: BranchId,
     budget: Option<&StorageBudgetLedger>,
+    table_is_durable: &dyn Fn(&crate::table::TableIdentity) -> bool,
 ) -> LifecycleResult<LifecycleCheckpointOutcome> {
     request.validate()?;
     match checkpoint_structural_deferral(branch_catalog, seeded_branch_id)? {
@@ -1648,17 +1704,12 @@ pub(crate) fn checkpoint_durable_runtime_with_budget(
             let mut timeline_groups = Vec::new();
             for descriptor in &active_descriptors {
                 let branch = branch_catalog.branch_state(descriptor.branch_id())?;
-                has_durable_rows |= branch.owned_table_count() > 0;
-                if let Some(boundary) = branch_checkpoint_flush_boundary(
-                    branch.owned_levels(),
-                    branch.inherited_layers(),
-                    visible_version,
-                ) {
+                let (mut rows, branch_has_durable, branch_boundary) =
+                    branch_checkpoint_collection(branch, visible_version, table_is_durable)?;
+                has_durable_rows |= branch_has_durable;
+                if let Some(boundary) = branch_boundary {
                     flush_boundary = Some(flush_boundary.map_or(boundary, |f| f.max(boundary)));
                 }
-                let mut rows = branch
-                    .checkpoint_rows(visible_version)
-                    .map_err(branch_error)?;
                 combined.append(&mut rows);
                 if let Some(group) = timeline_group_for_branch(branch, visible_version) {
                     timeline_groups.push(group);
