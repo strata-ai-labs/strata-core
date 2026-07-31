@@ -242,8 +242,10 @@ impl RetainedCommitTimeline {
         state.complete = true;
     }
 
-    /// W3.1c: the version-bounded entries when exactness is provable —
-    /// the cold timeline surfaces materialize a full view from these.
+    /// W3.1c: the version-bounded entries when the index is complete — the
+    /// cold timeline surfaces materialize a full view from these. A bound
+    /// above the tip serves the clamped provable prefix (#2853): those
+    /// entries ARE the retained timeline; the shed suffix is not retained.
     pub(crate) fn materialized_entries(
         &self,
         version_bound: Option<CommitVersion>,
@@ -252,7 +254,7 @@ impl RetainedCommitTimeline {
         if !state.complete {
             return None;
         }
-        bounded_prefix(&state.entries, version_bound).map(<[_]>::to_vec)
+        Some(bounded_prefix(&state.entries, version_bound).to_vec())
     }
 
     /// The largest-timestamp entry at or before `query_timestamp`, among
@@ -269,7 +271,7 @@ impl RetainedCommitTimeline {
         if !state.complete || !state.timestamps_monotonic {
             return None;
         }
-        let prefix = bounded_prefix(&state.entries, version_bound)?;
+        let prefix = bounded_prefix(&state.entries, version_bound);
         let Some(first) = prefix.first() else {
             return Some(RetainedTimelineLookup::Empty);
         };
@@ -298,9 +300,17 @@ impl RetainedCommitTimeline {
         if !state.complete {
             return RetainedVersionLookup::Unproven;
         }
-        let Some(prefix) = bounded_prefix(&state.entries, version_bound) else {
+        // #2853: a version above the index tip may be a legally-shed mapping
+        // (its rows exist; only the timeline fact is gone) — that is
+        // unavailability, never proven absence.
+        let tip = state
+            .entries
+            .last()
+            .map_or(0, |entry| entry.commit_version().as_u64());
+        if version.as_u64() > tip {
             return RetainedVersionLookup::Unproven;
-        };
+        }
+        let prefix = bounded_prefix(&state.entries, version_bound);
         match prefix
             .binary_search_by_key(&version.as_u64(), |entry| entry.commit_version().as_u64())
         {
@@ -310,26 +320,22 @@ impl RetainedCommitTimeline {
     }
 }
 
-/// The version-bounded prefix of the version-ordered entries. `None` when the
-/// bound exceeds the index tip: the index does not (yet) cover the caller's
-/// view, so equivalence with a scan of that view cannot be proven.
+/// The version-bounded prefix of the version-ordered entries, CLAMPED to the
+/// index tip. A view bound above the tip means the view holds content whose
+/// (version→timestamp) facts were legally shed (flush-published rows outlive
+/// WAL'd timeline facts after a lossy crash — DUR-011): retained history then
+/// SHRINKS to the provable prefix, it does not vanish (#2853). Lookups past
+/// the tip stay unavailable through each surface's own arm.
 fn bounded_prefix(
     entries: &[RetainedTimelineEntry],
     version_bound: Option<CommitVersion>,
-) -> Option<&[RetainedTimelineEntry]> {
+) -> &[RetainedTimelineEntry] {
     match version_bound {
-        None => Some(entries),
+        None => entries,
         Some(bound) => {
-            if let Some(last) = entries.last() {
-                if bound.as_u64() > last.commit_version().as_u64() {
-                    return None;
-                }
-            } else if bound.as_u64() > 0 {
-                return None;
-            }
             let end =
                 entries.partition_point(|entry| entry.commit_version().as_u64() <= bound.as_u64());
-            Some(&entries[..end])
+            &entries[..end]
         }
     }
 }
@@ -398,10 +404,57 @@ mod tests {
             index.timestamp_for_version(CommitVersion::new(3), Some(CommitVersion::new(2))),
             RetainedVersionLookup::Absent
         );
-        // A bound beyond the tip cannot prove coverage: fall back.
+        // #2853: a bound beyond the tip serves the clamped provable prefix —
+        // retained history SHRINKS past the tip (shed facts are not retained),
+        // it does not vanish. The query at the tip's own timestamp matches it.
         assert_eq!(
             index.lookup_at_or_before(Timestamp::from_micros(30), Some(CommitVersion::new(9))),
-            None
+            Some(RetainedTimelineLookup::Matched(entry(3, 30)))
+        );
+    }
+
+    /// #2853 truth table: a view bound above the index tip (content outlived
+    /// the shed timeline facts) serves the clamped prefix on every surface,
+    /// and a shed version's mapping is unavailability, never proven absence.
+    #[test]
+    fn bound_above_tip_serves_the_clamped_prefix() {
+        let index = seeded(&[entry(1, 10), entry(3, 30)]);
+        let bound = Some(CommitVersion::new(9));
+
+        assert_eq!(
+            index.materialized_entries(bound),
+            Some(vec![entry(1, 10), entry(3, 30)]),
+            "the retained timeline is the provable prefix, not empty",
+        );
+        assert_eq!(
+            index.lookup_at_or_before(Timestamp::from_micros(15), bound),
+            Some(RetainedTimelineLookup::Matched(entry(1, 10))),
+        );
+        assert_eq!(
+            index.lookup_at_or_before(Timestamp::from_micros(45), bound),
+            Some(RetainedTimelineLookup::AfterLatestRetained(entry(3, 30))),
+            "past the tip's timestamp stays the after-latest refusal shape",
+        );
+        assert_eq!(
+            index.lookup_at_or_before(Timestamp::from_micros(5), bound),
+            Some(RetainedTimelineLookup::BeforeRetainedHistory),
+        );
+
+        // Version→timestamp: within the tip, Found/Absent stay proven; above
+        // the tip the mapping may be legally shed — Unproven, never Absent.
+        assert_eq!(
+            index.timestamp_for_version(CommitVersion::new(3), bound),
+            RetainedVersionLookup::Found(Timestamp::from_micros(30)),
+        );
+        assert_eq!(
+            index.timestamp_for_version(CommitVersion::new(2), bound),
+            RetainedVersionLookup::Absent,
+            "a gap inside the covered prefix is proven absent",
+        );
+        assert_eq!(
+            index.timestamp_for_version(CommitVersion::new(5), bound),
+            RetainedVersionLookup::Unproven,
+            "a shed version above the tip is unavailable, not absent",
         );
     }
 

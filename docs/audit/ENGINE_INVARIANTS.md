@@ -849,8 +849,17 @@ on CONTENT (fork-current above all) MUST resolve from row-source facts
 (`max_commit_version` across active/frozen/owned/inherited), never from timeline bounds
 (#2852: the timeline-based resolution silently forked an EMPTY child over a populated
 source). Temporal operations (fork-at-version/at-timestamp, at-timestamp reads) may
-refuse on missing coverage, but must not deny coverage the index provably retains
-(#2853 tracks that availability leg).
+refuse on missing coverage, but must not deny coverage the index provably retains —
+the availability leg, closed by #2853: retained history past the index tip SHRINKS to
+the provable prefix, it never vanishes. Three rules enforce it: (1) the index's
+bounded lookups CLAMP a view bound above the tip to the tip's prefix (a shed
+version's mapping is Unproven, never proven-Absent; queries past the tip's timestamp
+keep the after-latest refusal shape); (2) the scan-fallback surfaces re-consult the
+index after seeding it (the seed folds observed entries the empty post-elision scan
+cannot see); (3) recovery's checkpoint/manifest COMBINE re-seeds the snapshot's
+timeline group onto the SURVIVING branch instance — the group is the only durable
+carrier of retired (version→timestamp) facts, and the combine's instance swap
+previously discarded it, force-completing the index EMPTY.
 
 **Audit**: `current_branch_version` (`api/runtime/mod.rs`, the fork-current anchor)
 reads branch read-view facts, not `timeline_view` bounds; the `retained_floor` fallback
@@ -858,6 +867,14 @@ maps a degraded timeline to a ZERO floor only where content or prior timeline va
 bounds the fork version. `fork_current_captures_content_that_outlives_timeline_coverage`
 (api/tests/branch.rs) pins the choreography;
 `fork_current_of_a_rowless_source_stays_a_legitimate_empty_fork` pins the #2521 empty-fork
+direction control. Availability leg: `bounded_prefix` clamp + the tip guard in
+`timestamp_for_version` (`timeline_index.rs`;
+`bound_above_tip_serves_the_clamped_prefix` is the truth table), the post-seed
+re-consults in `timeline_view_or_index` / `timeline_version_at_or_before` /
+`timeline_timestamp_for_version` (`api/runtime/data.rs`), and the COMBINE-arm
+`seed_branch_timeline_from_groups` re-seed (`lifecycle/recovery.rs`);
+`fork_at_version_inside_surviving_timeline_coverage_succeeds_after_lossy_crash`
+(api/tests/branch.rs) pins the end-to-end choreography with its shed-version refusal
 direction control. The whole-DB DST sweep (seeds 83 154 164 178) is the volume lane.
 
 ## How to Use This Catalog

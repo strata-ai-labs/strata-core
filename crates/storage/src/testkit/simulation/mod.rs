@@ -349,12 +349,15 @@ mod tests {
         // the grammar deliberately changes.
         let dir = tempfile::tempdir().expect("tmp");
         let outcome = super::run_whole_db_harness(dir.path(), Some(4)).expect("whole-db sweep");
+        // Re-pinned for #2853: fork-at-version calls inside surviving timeline
+        // coverage now succeed, shifting the trajectories' live sets and rng
+        // draws (a deliberate semantic change).
         assert_eq!(outcome.seeds_executed(), 4, "{outcome:?}");
         assert_eq!(outcome.epochs_executed(), 11, "{outcome:?}");
         assert_eq!(outcome.crashed_epochs(), 7, "{outcome:?}");
-        assert_eq!(outcome.forks(), 16, "{outcome:?}");
+        assert_eq!(outcome.forks(), 18, "{outcome:?}");
         assert_eq!(outcome.deletes(), 5, "{outcome:?}");
-        assert_eq!(outcome.temporal_probes_ok(), 19, "{outcome:?}");
+        assert_eq!(outcome.temporal_probes_ok(), 21, "{outcome:?}");
     }
 
     /// #2859 family B regression pin: seed 289 at the 6x48 deep shape crosses
