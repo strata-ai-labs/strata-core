@@ -19,7 +19,7 @@ use std::time::Duration;
 use crate::Executor;
 
 use super::dispatch::execute_wire_request;
-use super::protocol::WireRequest;
+use super::protocol::{self, HelloFrame, ServerHello, WireRequest};
 use super::{pid_path, resolve_binding, wire};
 
 /// Concurrent handler-thread cap. Excess connections are dropped rather than
@@ -309,6 +309,7 @@ fn handle_connection(
     let mut reader = BufReader::new(read_half);
     let mut writer = BufWriter::new(stream);
 
+    let mut awaiting_first_frame = true;
     loop {
         if shutdown.load(Ordering::SeqCst) {
             break;
@@ -323,11 +324,99 @@ fn handle_connection(
             Err(_) => break,
         };
 
+        // A hello is only meaningful as the connection's first frame: it
+        // negotiates protocol revision 2 before any command. A first frame
+        // that is instead a bare request keeps the connection on the implicit
+        // protocol 1 — transitional acceptance, to be removed before the
+        // release train once every in-family client sends a hello (#2872,
+        // design doc §4.1). A hello arriving later is not sniffed and falls
+        // through as a malformed request envelope.
+        if std::mem::take(&mut awaiting_first_frame) && protocol::frame_is_hello(&frame) {
+            match serve_hello(&frame) {
+                Ok(response) => {
+                    if wire::write_frame(&mut writer, response.as_bytes()).is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                Err(refusal) => {
+                    // Best-effort refusal: the connection is closing over a
+                    // protocol violation either way; a failed write of the
+                    // refusal changes nothing for the server.
+                    let _ = wire::write_frame(&mut writer, refusal.as_bytes());
+                    break;
+                }
+            }
+        }
+
         let response = serve_one(executor, baseline, &frame);
         if wire::write_frame(&mut writer, response.as_bytes()).is_err() {
             break;
         }
     }
+}
+
+/// Serve a hello first frame: strict parse, protocol check, capability grant.
+/// `Ok` is the `ipc_hello` response envelope and the connection continues on
+/// protocol revision 2; `Err` is a refusal envelope and the connection closes
+/// (a client that cannot hello correctly has nothing safe to say next).
+fn serve_hello(frame: &[u8]) -> Result<String, String> {
+    let request: HelloFrame = match serde_json::from_slice(frame) {
+        Ok(request) => request,
+        Err(error) => return Err(ipc_hello_error(&format!("malformed hello frame: {error}"))),
+    };
+    let hello = request.hello;
+    if hello.protocol != protocol::PROTOCOL_VERSION {
+        return Err(ipc_hello_error(&format!(
+            "unsupported protocol revision {}; this owner speaks revision {}",
+            hello.protocol,
+            protocol::PROTOCOL_VERSION
+        )));
+    }
+    // Identity and declared access are observability-only in this revision:
+    // status reporting and server-side read-only enforcement build on them.
+    tracing::debug!(client = ?hello.client, access = ?hello.access, "IPC hello");
+    let capabilities: Vec<String> = hello
+        .capabilities
+        .iter()
+        .filter(|name| protocol::SUPPORTED_CAPABILITIES.contains(&name.as_str()))
+        .cloned()
+        .collect();
+    let response = ServerHello {
+        protocol: protocol::PROTOCOL_VERSION,
+        release: env!("CARGO_PKG_VERSION").to_owned(),
+        idl: protocol::build_idl_stamps(),
+        granted_access: hello.access,
+        capabilities,
+        owner_pid: std::process::id(),
+    };
+    Ok(
+        serde_json::to_string(&serde_json::json!({ "type": "ipc_hello", "data": response }))
+            .unwrap_or_else(|error| serialize_hello_failure(&error)),
+    )
+}
+
+/// Last-resort envelope for a hello response that fails to serialize —
+/// practically unreachable with plain-data fields, mirrored on the dispatch
+/// path's serialize fallback.
+fn serialize_hello_failure(error: &serde_json::Error) -> String {
+    let status = crate::ExecutorError::new(
+        crate::error::ExecutorErrorClass::Internal,
+        "internal.executor.wire_response",
+        false,
+        format!("hello response serialization failed: {error}"),
+    );
+    serde_json::to_string(&serde_json::json!({ "error": status }))
+        .unwrap_or_else(|_| static_wire_request_error())
+}
+
+fn ipc_hello_error(detail: &str) -> String {
+    let error = crate::ExecutorError::invalid_input(
+        "invalid_argument.executor.ipc_hello",
+        format!("IPC hello refused: {detail}"),
+    );
+    serde_json::to_string(&serde_json::json!({ "error": error }))
+        .unwrap_or_else(|_| static_wire_request_error())
 }
 
 /// Decode one framed request, apply its session scope, and dispatch — with a
@@ -588,6 +677,184 @@ mod tests {
         let response = wire::read_frame(&mut reader).expect("handler continued past the timeout");
         let response: serde_json::Value = serde_json::from_slice(&response).expect("decode");
         assert_eq!(response["type"], "pong", "served after an idle pause");
+
+        server.shutdown();
+    }
+
+    /// One raw connection with reader/writer halves, for multi-frame tests.
+    struct RawConn {
+        writer: BufWriter<UnixStream>,
+        reader: BufReader<UnixStream>,
+    }
+
+    impl RawConn {
+        fn connect(sock: &std::path::Path) -> Self {
+            let stream = UnixStream::connect(sock).expect("connect");
+            Self {
+                writer: BufWriter::new(stream.try_clone().expect("clone")),
+                reader: BufReader::new(stream),
+            }
+        }
+
+        fn send(&mut self, payload: &[u8]) -> serde_json::Value {
+            wire::write_frame(&mut self.writer, payload).expect("write");
+            let response = wire::read_frame(&mut self.reader).expect("read");
+            serde_json::from_slice(&response).expect("decode response")
+        }
+
+        fn send_command(&mut self, command: &str) -> serde_json::Value {
+            let raw = serde_json::value::RawValue::from_string(command.to_owned()).expect("raw");
+            let request = WireRequestOwned {
+                branch: None,
+                space: None,
+                command: &raw,
+            };
+            self.send(&serde_json::to_vec(&request).expect("serialize"))
+        }
+    }
+
+    #[test]
+    fn a_hello_first_frame_negotiates_protocol_2_and_commands_follow() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+        let mut conn = RawConn::connect(server.socket_path());
+
+        let hello = conn.send(b"{\"hello\":{\"protocol\":2}}");
+        assert_eq!(hello["type"], "ipc_hello", "hello answered: {hello}");
+        assert_eq!(hello["data"]["protocol"], 2);
+        assert_eq!(hello["data"]["release"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(hello["data"]["idl"]["schema_version"], "strata.idl.v1");
+        assert_eq!(
+            hello["data"]["idl"]["generator_version"],
+            "strata-executor-idl.1"
+        );
+        assert_eq!(hello["data"]["granted_access"], "read_write");
+        assert_eq!(
+            hello["data"]["owner_pid"],
+            u64::from(std::process::id()),
+            "the owner reports its own pid"
+        );
+        assert_eq!(
+            hello["data"]["capabilities"],
+            serde_json::json!([]),
+            "nothing granted from an empty want-list"
+        );
+
+        // The same connection then serves commands normally.
+        let pong = conn.send_command("{\"type\":\"ping\"}");
+        assert_eq!(pong["type"], "pong", "commands follow the hello");
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn an_unsupported_protocol_revision_is_refused_and_the_connection_closes() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+        let mut conn = RawConn::connect(server.socket_path());
+
+        let refusal = conn.send(b"{\"hello\":{\"protocol\":99}}");
+        assert_eq!(
+            refusal["error"]["code"], "invalid_argument.executor.ipc_hello",
+            "refused with the registered hello code: {refusal}"
+        );
+        assert_eq!(refusal["error"]["class"], "invalid_argument");
+
+        // The refusal closes the connection: a further exchange fails — the
+        // write may already see a broken pipe, or the read reaches EOF —
+        // rather than hanging or being served.
+        let followup = wire::write_frame(&mut conn.writer, b"{\"command\":{\"type\":\"ping\"}}")
+            .and_then(|()| wire::read_frame(&mut conn.reader));
+        assert!(
+            followup.is_err(),
+            "a refused connection serves nothing further"
+        );
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn a_malformed_hello_is_refused_not_guessed() {
+        // deny_unknown_fields is the hello's evolution contract: a field this
+        // owner does not know cannot be silently absorbed, because the client
+        // chose protocol semantics the owner would then be faking.
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+        let mut conn = RawConn::connect(server.socket_path());
+
+        let refusal = conn.send(b"{\"hello\":{\"protocol\":2,\"surprise\":true}}");
+        assert_eq!(
+            refusal["error"]["code"],
+            "invalid_argument.executor.ipc_hello"
+        );
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn unsupported_capabilities_are_ignored_not_granted_and_not_errors() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+        let mut conn = RawConn::connect(server.socket_path());
+
+        let hello = conn
+            .send(b"{\"hello\":{\"protocol\":2,\"capabilities\":[\"notify.version\",\"bogus\"]}}");
+        assert_eq!(hello["type"], "ipc_hello", "probing is not an error");
+        assert_eq!(
+            hello["data"]["capabilities"],
+            serde_json::json!([]),
+            "nothing is granted until a capability is supported"
+        );
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn a_read_access_declaration_is_echoed_but_unenforced_in_this_revision() {
+        // Pins the slice boundary explicitly: the hello CARRIES the access
+        // declaration; REJECTING writes on a read session is the follow-up
+        // enforcement slice, which will flip the second half of this test.
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+        let mut conn = RawConn::connect(server.socket_path());
+
+        let hello = conn.send(b"{\"hello\":{\"protocol\":2,\"access\":\"read\"}}");
+        assert_eq!(hello["data"]["granted_access"], "read");
+
+        let put = conn.send_command("{\"type\":\"kv_put\",\"key\":\"aGk=\",\"value\":\"dg==\"}");
+        assert_eq!(
+            put["type"], "write_result",
+            "declarative only: a write still succeeds until enforcement lands"
+        );
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn a_hello_after_the_first_frame_is_a_malformed_request_envelope() {
+        // The hello negotiates a connection, not a request — mid-connection it
+        // is just a frame with no `command`, and the connection survives it.
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+        let mut conn = RawConn::connect(server.socket_path());
+
+        assert_eq!(conn.send_command("{\"type\":\"ping\"}")["type"], "pong");
+        let late_hello = conn.send(b"{\"hello\":{\"protocol\":2}}");
+        assert_eq!(
+            late_hello["error"]["code"],
+            "invalid_argument.executor.wire_request"
+        );
+        assert_eq!(
+            conn.send_command("{\"type\":\"ping\"}")["type"],
+            "pong",
+            "the connection continues after the stray hello"
+        );
 
         server.shutdown();
     }

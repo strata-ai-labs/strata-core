@@ -586,6 +586,9 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="unavailable.executor.ipc_transport"></a>
 - `unavailable.executor.ipc_transport`
 
+<a id="invalid_argument.executor.ipc_hello"></a>
+- `invalid_argument.executor.ipc_hello`
+
 <a id="invalid_argument.executor.vector_batch_duplicate_key"></a>
 - `invalid_argument.executor.vector_batch_duplicate_key`
 

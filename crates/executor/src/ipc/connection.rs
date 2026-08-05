@@ -251,6 +251,22 @@ impl Connection {
         }
     }
 
+    /// The owner's hello, when this connection brokered to a remote owner that
+    /// speaks protocol revision 2 — its release, IDL stamps, granted access,
+    /// and pid. `None` for local and cache handles (there is no remote owner
+    /// to describe) and for a pre-hello owner (implicit protocol 1).
+    #[must_use]
+    pub fn server_hello(&self) -> Option<super::ServerHello> {
+        match &self.inner {
+            ConnectionInner::Remote { client } => client
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .server_hello()
+                .cloned(),
+            ConnectionInner::Local { .. } => None,
+        }
+    }
+
     /// Set this connection's default branch. Applied to every subsequent
     /// command (locally by setting the executor default under the lock,
     /// remotely by sending it in the request envelope).
@@ -618,6 +634,46 @@ mod tests {
         assert!(conn.is_local(), "an uncontended client wins the lock");
         assert!(!conn.is_hosting(), "client never hosts a socket");
         conn.close().expect("close");
+    }
+
+    #[test]
+    fn a_brokered_client_learns_the_owner_hello_and_a_local_owner_has_none() {
+        // The hello is how an out-of-process surface (a status bar, doctor)
+        // learns what it attached to: protocol revision, release, IDL stamps.
+        // In-repo owner and client share one build, so the stamps must match
+        // exactly here — a mismatch would mean the hello lies about its build.
+        let dir = tempfile::tempdir().expect("tmp");
+        let owner = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            IpcMode::Host,
+        )
+        .expect("owner open");
+        assert!(
+            owner.server_hello().is_none(),
+            "a local owner has no remote owner to describe"
+        );
+
+        let client = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            IpcMode::Client,
+        )
+        .expect("client open");
+        assert!(!client.is_local(), "second opener brokered as a client");
+
+        let hello = client
+            .server_hello()
+            .expect("a protocol-2 owner said hello");
+        assert_eq!(hello.protocol, 2);
+        assert_eq!(hello.release, env!("CARGO_PKG_VERSION"));
+        assert_eq!(hello.idl.schema_version, "strata.idl.v1");
+        assert_eq!(hello.idl.generator_version, "strata-executor-idl.1");
+        assert_eq!(hello.owner_pid, std::process::id(), "same-process owner");
+        assert!(hello.capabilities.is_empty(), "no capabilities exist yet");
+
+        client.close().expect("client close");
+        owner.close().expect("owner close");
     }
 
     #[test]
