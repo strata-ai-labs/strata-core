@@ -1,5 +1,48 @@
 {
   "$defs": {
+    "AdminIpcClient": {
+      "description": "One connected IPC client, as reported by `ipc_status`. Display identity\nonly — the socket's same-user permission check is the security boundary.",
+      "properties": {
+        "access": {
+          "$ref": "#/$defs/SessionAccess",
+          "description": "The session access this connection was granted."
+        },
+        "name": {
+          "description": "Client-reported product name (`strata-vscode`, `strata`), if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pid": {
+          "description": "Client-reported process id, if any.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "protocol": {
+          "description": "The negotiated wire protocol revision (1 = legacy, no hello).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "description": "Client-reported version, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "access",
+        "protocol"
+      ],
+      "type": "object"
+    },
     "AdminIpcStatus": {
       "description": "Multi-process IPC status output.",
       "properties": {
@@ -8,6 +51,13 @@
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "clients": {
+          "description": "The connected clients, as their hellos introduced them; a protocol-1\n(pre-hello) connection appears anonymous. Empty when not hosting.",
+          "items": {
+            "$ref": "#/$defs/AdminIpcClient"
+          },
+          "type": "array"
         },
         "hosting": {
           "description": "True when this process is hosting a broker socket for other processes.",
@@ -40,6 +90,21 @@
         "client_count"
       ],
       "type": "object"
+    },
+    "SessionAccess": {
+      "description": "The access a session declares at hello. The owner's dispatch gate rejects\nwrite-classified commands on a `Read` session; see the IPC evolution\ndesign (`docs/architecture/ipc/ipc-evolution-design.md` §4.2).",
+      "oneOf": [
+        {
+          "const": "read",
+          "description": "The session intends read-class commands only.",
+          "type": "string"
+        },
+        {
+          "const": "read_write",
+          "description": "Full command access — the pre-hello default.",
+          "type": "string"
+        }
+      ]
     }
   },
   "$id": "https://stratadb.org/idl/v1/schemas/admin.ipc_status.json",

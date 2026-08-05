@@ -189,7 +189,7 @@ impl Connection {
                     let state = crate::IpcHostState::new(
                         server.socket_path().to_path_buf(),
                         std::process::id(),
-                        server.client_count(),
+                        server.clients(),
                         server.stop_signal(),
                     );
                     executor
@@ -687,6 +687,62 @@ mod tests {
         assert!(conn.is_local(), "an uncontended client wins the lock");
         assert!(!conn.is_hosting(), "client never hosts a socket");
         conn.close().expect("close");
+    }
+
+    #[test]
+    fn ipc_status_reports_client_identities_from_both_vantages() {
+        // The status-bar contract: the owner (and any client asking through
+        // it) can see WHO is attached — the identity each hello introduced,
+        // its granted access, and its protocol revision.
+        let dir = tempfile::tempdir().expect("tmp");
+        let owner = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            IpcMode::Host,
+            SessionAccess::ReadWrite,
+        )
+        .expect("owner open");
+        let reader = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            IpcMode::Client,
+            SessionAccess::Read,
+        )
+        .expect("reader open");
+        assert!(!reader.is_local(), "brokered as a client");
+
+        let status = ipc_status(&owner);
+        assert_eq!(status.client_count, 1);
+        assert_eq!(status.clients.len(), 1, "count and list agree: {status:?}");
+        let client = &status.clients[0];
+        assert_eq!(client.protocol, 2);
+        assert_eq!(client.access, SessionAccess::Read);
+        assert_eq!(client.pid, Some(u64::from(std::process::id())));
+        assert!(
+            client.name.is_some(),
+            "the Rust client introduces its executable name"
+        );
+        assert_eq!(client.version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
+
+        // The same list is visible to the client itself (forwarded to the
+        // owner, reported back over the wire).
+        let remote_view = ipc_status(&reader);
+        assert_eq!(remote_view.clients.len(), 1);
+        assert_eq!(remote_view.clients[0].access, SessionAccess::Read);
+
+        // A departed client leaves no entry.
+        reader.close().expect("reader close");
+        let mut remaining = usize::MAX;
+        for _ in 0..200 {
+            remaining = ipc_status(&owner).clients.len();
+            if remaining == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(remaining, 0, "gone clients leave no identity entries");
+
+        owner.close().expect("owner close");
     }
 
     #[test]
