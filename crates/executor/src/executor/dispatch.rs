@@ -5,6 +5,21 @@ use crate::{ExecutorError, PageInfo};
 impl Executor {
     /// Executes one serialized command.
     pub fn execute(&mut self, command: Command) -> ExecutorResult<Output> {
+        let is_write = command.is_write();
+        let result = self.dispatch_command(command);
+        if is_write {
+            // The store-state watermark ticks on every write ATTEMPT, success
+            // or failure — an itemwise batch can partially apply and an
+            // in-doubt error may have committed, so for a refresh hint a
+            // spurious tick (wasted re-read) is the safe direction and a
+            // missed tick (stale observer) is not.
+            self.state_version
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        result
+    }
+
+    fn dispatch_command(&mut self, command: Command) -> ExecutorResult<Output> {
         match command {
             Command::Ping {} => self.execute_ping(),
             Command::Info { branch } => self.execute_info(branch.as_deref()),

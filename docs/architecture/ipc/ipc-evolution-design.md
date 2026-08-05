@@ -215,27 +215,30 @@ The minimal subscription that removes polling, deliberately **metadata-only** (n
 data on the push path — nothing to redact, and it keeps the surface far from
 server-product territory).
 
-- Subscribe (protocol 2, capability `notify.version` granted at hello):
-  `{"id": 3, "subscribe": {"events": ["version"]}}` → acked with an
-  `{"id": 3, "payload": {"type": "ipc_subscribed", …}}` envelope.
-- Push: `{"notify": {"event": "version", "branch": "main", "version": 812}}`.
-- Semantics: **coalesced and lossy** — latest-wins per branch; a slow client gets
-  fewer ticks, never a backlog. No acks. Delivery is best-effort; a reconnecting
-  client re-reads state (the same rule as `MaybeCommitted` recovery).
+- Subscribe (protocol 2; the `notify.version` capability grant at hello is
+  *discovery* — a supported capability's frames are served on any protocol-2
+  connection): `{"id": 3, "subscribe": {"events": ["version"]}}` → acked with an
+  `{"id": 3, "payload": {"type": "ipc_subscribed", "data": {"events": [...]}}}`
+  envelope carrying the accepted intersection (unknown event names ignored).
+- Push: `{"notify": {"event": "version", "version": 812}}`.
+- Semantics: **coalesced and lossy** — latest-wins; a slow client gets fewer ticks,
+  never a backlog. No acks. Delivery is best-effort; a reconnecting client re-reads
+  state (the same rule as `MaybeCommitted` recovery).
 
-Implementation without touching the engine:
+Implementation *(as landed, G5 — simpler than the original two-mechanism sketch, same
+contract)*: the watermark is an executor-level `Arc<AtomicU64>` bumped inside
+`Executor::execute` on every write-classified command attempt — the one choke point
+every entry path crosses (owner-local writes, every IPC client, wasm), so no write
+can bypass it and the engine is untouched. A subscribed handler polls the atomic
+lock-free: its read timeout drops to ~150 ms, and each timeout or served request
+doubles as the poll — no watcher thread, no cross-thread writer sharing, ticks never
+interleave inside a response. Latency bound ≈ the poll interval; a subscriber's own
+write ticks immediately after its response.
 
-1. **Server-dispatched writes:** after a successful dispatch classified as a write
-   (G2's `is_write()`), read the current commit version while still under the lock and
-   broadcast if advanced.
-2. **Owner-local writes** (the owner process writing through its own `Local`
-   connection bypasses server dispatch): a watcher thread polls the version under the
-   mutex at a coarse interval (100–250 ms) **only while subscribers exist**. This
-   converts N clients × their individual polling into one in-process check.
-
-Refinement (optional, later): the engine exposing a lock-free version watermark
-(`AtomicU64`) would eliminate the watcher's lock acquisitions; not required for the
-slice and touches engine, so it is explicitly deferred.
+Ticks are **store-scoped** (no `branch` field): per-branch attribution would need a
+generic branch accessor over the whole command enum for marginal value — the
+consumer's refresh contract (strata-vscode AR-5) is per-database. Adding `branch`
+later is a compatible, additive refinement.
 
 ### 5.2 G7 — Client identities in `ipc_status`
 

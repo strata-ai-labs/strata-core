@@ -205,6 +205,10 @@ pub struct Executor {
     /// socket, so the `ipc_status` command can report it. `None` on a
     /// non-hosting executor (client, cache, or `IpcMode::Off`).
     ipc_host_state: Option<crate::IpcHostState>,
+    /// Store-state watermark: bumped on every write-classified command attempt
+    /// (see `execute`). Shared as an `Arc` so IPC version-tick subscribers can
+    /// observe it lock-free, without holding the executor.
+    state_version: std::sync::Arc<std::sync::atomic::AtomicU64>,
     #[cfg(feature = "inference")]
     inference: Box<dyn strata_inference::InferenceService>,
 }
@@ -239,9 +243,16 @@ impl Executor {
             default_branch,
             default_space: DEFAULT_SPACE.to_owned(),
             ipc_host_state: None,
+            state_version: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(feature = "inference")]
             inference: Box::new(strata_inference::InferenceRuntime::default()),
         }
+    }
+
+    /// A shared handle to the store-state watermark, for observers (IPC
+    /// version-tick subscriptions) that poll it without holding the executor.
+    pub(crate) fn state_version_handle(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        self.state_version.clone()
     }
 
     /// Injects the live IPC host state (called by a hosting `Connection` after
