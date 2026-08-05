@@ -310,6 +310,9 @@ fn handle_connection(
     let mut writer = BufWriter::new(stream);
 
     let mut awaiting_first_frame = true;
+    // Whether this connection negotiated protocol revision 2 (hello accepted):
+    // responses then carry the request's correlation id in a transport frame.
+    let mut correlated = false;
     loop {
         if shutdown.load(Ordering::SeqCst) {
             break;
@@ -337,6 +340,7 @@ fn handle_connection(
                     if wire::write_frame(&mut writer, response.as_bytes()).is_err() {
                         break;
                     }
+                    correlated = true;
                     continue;
                 }
                 Err(refusal) => {
@@ -349,7 +353,11 @@ fn handle_connection(
             }
         }
 
-        let response = serve_one(executor, baseline, &frame);
+        let response = if correlated {
+            serve_one_correlated(executor, baseline, &frame)
+        } else {
+            serve_one(executor, baseline, &frame)
+        };
         if wire::write_frame(&mut writer, response.as_bytes()).is_err() {
             break;
         }
@@ -419,15 +427,78 @@ fn ipc_hello_error(detail: &str) -> String {
         .unwrap_or_else(|_| static_wire_request_error())
 }
 
-/// Decode one framed request, apply its session scope, and dispatch — with a
-/// panic guard so a single misbehaving command cannot take down the owner. The
-/// scope application and dispatch happen under one lock hold, so concurrent
-/// connections cannot interleave between them.
+/// Serve one frame on the implicit protocol 1: decode and dispatch, answering
+/// with the bare executor envelope. A correlation id on a protocol-1 request
+/// is ignored rather than rejected — there is no response frame to echo it in,
+/// and a pre-hello owner never knew the field existed.
 fn serve_one(executor: &Arc<Mutex<Executor>>, baseline: &Baseline, frame: &[u8]) -> String {
     let request: WireRequest = match serde_json::from_slice(frame) {
         Ok(request) => request,
         Err(error) => return wire_request_error(&error.to_string()),
     };
+    dispatch_request(executor, baseline, &request)
+}
+
+/// Serve one frame on protocol revision 2: the request must carry a
+/// correlation id, and the response is `{"id", "payload"}` with the untouched
+/// executor envelope as the payload. `id` is `null` only when the request's
+/// own id could not be read.
+fn serve_one_correlated(
+    executor: &Arc<Mutex<Executor>>,
+    baseline: &Baseline,
+    frame: &[u8],
+) -> String {
+    let request: WireRequest = match serde_json::from_slice(frame) {
+        Ok(request) => request,
+        Err(error) => return correlate(None, &wire_request_error(&error.to_string())),
+    };
+    let Some(id) = request.id else {
+        return correlate(
+            None,
+            &wire_request_error("a protocol-revision-2 request requires a correlation id"),
+        );
+    };
+    correlate(Some(id), &dispatch_request(executor, baseline, &request))
+}
+
+/// Wrap an executor response envelope in a protocol-revision-2 response frame.
+fn correlate(id: Option<u64>, payload: &str) -> String {
+    match serde_json::value::RawValue::from_string(payload.to_owned()) {
+        Ok(raw) => serde_json::to_string(&protocol::WireResponseFrame { id, payload: &raw })
+            .unwrap_or_else(|error| {
+                serialize_failure_frame(
+                    id,
+                    &format!("response frame serialization failed: {error}"),
+                )
+            }),
+        // Unreachable with the well-formed JSON every response path produces;
+        // kept total so a correlated connection always receives a frame.
+        Err(error) => {
+            serialize_failure_frame(id, &format!("response payload was not JSON: {error}"))
+        }
+    }
+}
+
+/// Last-resort correlated frame, hand-built so even the serialize-failure
+/// path answers in the shape a protocol-revision-2 client is parsing.
+fn serialize_failure_frame(id: Option<u64>, detail: &str) -> String {
+    let id = id.map_or("null".to_owned(), |id| id.to_string());
+    let message = detail.replace(['"', '\\'], "'");
+    format!(
+        "{{\"id\":{id},\"payload\":{{\"error\":{{\"class\":\"internal\",\
+         \"code\":\"internal.executor.wire_response\",\"message\":\"{message}\"}}}}}}"
+    )
+}
+
+/// Decode one parsed request's scope and dispatch it — with a panic guard so a
+/// single misbehaving command cannot take down the owner. The scope
+/// application and dispatch happen under one lock hold, so concurrent
+/// connections cannot interleave between them.
+fn dispatch_request(
+    executor: &Arc<Mutex<Executor>>,
+    baseline: &Baseline,
+    request: &WireRequest,
+) -> String {
     // Each request fully determines the scope: its own branch/space, or the
     // owner's baseline when omitted — never a previous request's leftover.
     let branch = request.branch.as_deref().unwrap_or(&baseline.branch);
@@ -504,7 +575,8 @@ mod tests {
     use std::os::unix::net::UnixStream;
     use std::sync::{Arc, Mutex};
 
-    /// Send a wire command with optional scope and read the response envelope.
+    /// Send a legacy (protocol 1) wire command with optional scope and read
+    /// the bare response envelope.
     fn round_trip(
         sock: &std::path::Path,
         branch: Option<&str>,
@@ -515,6 +587,7 @@ mod tests {
         let mut reader = BufReader::new(stream);
         let raw = serde_json::value::RawValue::from_string(command.to_owned()).expect("raw");
         let request = WireRequestOwned {
+            id: None,
             branch,
             space: None,
             command: &raw,
@@ -669,6 +742,7 @@ mod tests {
         let raw = serde_json::value::RawValue::from_string("{\"type\":\"ping\"}".to_owned())
             .expect("raw");
         let request = WireRequestOwned {
+            id: None,
             branch: None,
             space: None,
             command: &raw,
@@ -702,9 +776,23 @@ mod tests {
             serde_json::from_slice(&response).expect("decode response")
         }
 
+        /// A legacy (protocol 1) request: no correlation id.
         fn send_command(&mut self, command: &str) -> serde_json::Value {
             let raw = serde_json::value::RawValue::from_string(command.to_owned()).expect("raw");
             let request = WireRequestOwned {
+                id: None,
+                branch: None,
+                space: None,
+                command: &raw,
+            };
+            self.send(&serde_json::to_vec(&request).expect("serialize"))
+        }
+
+        /// A protocol-revision-2 request carrying a correlation id.
+        fn send_correlated(&mut self, id: u64, command: &str) -> serde_json::Value {
+            let raw = serde_json::value::RawValue::from_string(command.to_owned()).expect("raw");
+            let request = WireRequestOwned {
+                id: Some(id),
                 branch: None,
                 space: None,
                 command: &raw,
@@ -741,9 +829,15 @@ mod tests {
             "nothing granted from an empty want-list"
         );
 
-        // The same connection then serves commands normally.
-        let pong = conn.send_command("{\"type\":\"ping\"}");
-        assert_eq!(pong["type"], "pong", "commands follow the hello");
+        // The same connection then serves commands, correlated: the response
+        // is an {"id","payload"} frame echoing the request id, with the
+        // classic executor envelope untouched inside.
+        let pong = conn.send_correlated(1, "{\"type\":\"ping\"}");
+        assert_eq!(pong["id"], 1, "the response echoes the request id");
+        assert_eq!(
+            pong["payload"]["type"], "pong",
+            "the payload is the classic envelope: {pong}"
+        );
 
         server.shutdown();
     }
@@ -826,10 +920,107 @@ mod tests {
         let hello = conn.send(b"{\"hello\":{\"protocol\":2,\"access\":\"read\"}}");
         assert_eq!(hello["data"]["granted_access"], "read");
 
-        let put = conn.send_command("{\"type\":\"kv_put\",\"key\":\"aGk=\",\"value\":\"dg==\"}");
+        let put = conn.send_correlated(
+            1,
+            "{\"type\":\"kv_put\",\"key\":\"aGk=\",\"value\":\"dg==\"}",
+        );
         assert_eq!(
-            put["type"], "write_result",
+            put["payload"]["type"], "write_result",
             "declarative only: a write still succeeds until enforcement lands"
+        );
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn a_correlated_request_without_an_id_is_refused_with_a_null_id_frame() {
+        // Protocol 2 requires the id: without one the client cannot correlate
+        // the answer, so the refusal itself says which request it refuses the
+        // only way it can — id null, in a frame the client is parsing.
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+        let mut conn = RawConn::connect(server.socket_path());
+
+        assert_eq!(
+            conn.send(b"{\"hello\":{\"protocol\":2}}")["type"],
+            "ipc_hello"
+        );
+        let refused = conn.send_command("{\"type\":\"ping\"}");
+        assert_eq!(refused["id"], serde_json::Value::Null);
+        assert_eq!(
+            refused["payload"]["error"]["code"],
+            "invalid_argument.executor.wire_request"
+        );
+        assert_eq!(
+            conn.send_correlated(1, "{\"type\":\"ping\"}")["payload"]["type"],
+            "pong",
+            "the connection survives the refusal"
+        );
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn pipelined_requests_are_answered_in_order_with_their_own_ids() {
+        // The protocol permits writing ahead: two frames sent back-to-back are
+        // answered in request order, each response carrying its request's id.
+        // (One-in-flight is client discipline, not a server rule.)
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+        let mut conn = RawConn::connect(server.socket_path());
+        assert_eq!(
+            conn.send(b"{\"hello\":{\"protocol\":2}}")["type"],
+            "ipc_hello"
+        );
+
+        let first = frame_for(7, "{\"type\":\"ping\"}");
+        let second = frame_for(8, "{\"type\":\"kv_count\"}");
+        wire::write_frame(&mut conn.writer, &first).expect("write first");
+        wire::write_frame(&mut conn.writer, &second).expect("write second");
+
+        let responses: Vec<serde_json::Value> = (0..2)
+            .map(|_| {
+                let bytes = wire::read_frame(&mut conn.reader).expect("read");
+                serde_json::from_slice(&bytes).expect("decode")
+            })
+            .collect();
+        assert_eq!(responses[0]["id"], 7, "first in, first answered");
+        assert_eq!(responses[0]["payload"]["type"], "pong");
+        assert_eq!(responses[1]["id"], 8);
+        assert_eq!(responses[1]["payload"]["type"], "uint");
+
+        server.shutdown();
+    }
+
+    /// Serialize one correlated request frame without sending it.
+    fn frame_for(id: u64, command: &str) -> Vec<u8> {
+        let raw = serde_json::value::RawValue::from_string(command.to_owned()).expect("raw");
+        serde_json::to_vec(&WireRequestOwned {
+            id: Some(id),
+            branch: None,
+            space: None,
+            command: &raw,
+        })
+        .expect("serialize")
+    }
+
+    #[test]
+    fn a_stray_id_on_a_legacy_connection_is_ignored_not_echoed() {
+        // Pins protocol-1 semantics exactly: no hello means no response frame,
+        // even when the request smuggles an id — a legacy connection's reply
+        // is the bare envelope, byte-compatible with every pre-hello client.
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+        let mut conn = RawConn::connect(server.socket_path());
+
+        let response = conn.send_correlated(42, "{\"type\":\"ping\"}");
+        assert_eq!(response["type"], "pong", "bare envelope: {response}");
+        assert!(
+            response.get("id").is_none(),
+            "no frame wrapper on protocol 1"
         );
 
         server.shutdown();

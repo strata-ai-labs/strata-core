@@ -28,6 +28,11 @@ use serde_json::value::RawValue;
 /// A framed request: the connection's session scope plus the wire command.
 #[derive(Debug, Deserialize)]
 pub(crate) struct WireRequest<'a> {
+    /// Correlation id, echoed on the response frame. Required on a
+    /// protocol-revision-2 connection (negotiated by hello); ignored on the
+    /// implicit protocol 1, whose responses carry no frame to echo it in.
+    #[serde(default)]
+    pub(crate) id: Option<u64>,
     /// Session default branch for this request (the client's `--branch`),
     /// applied before dispatch. `None` leaves the owner's default in place.
     #[serde(default)]
@@ -45,10 +50,33 @@ pub(crate) struct WireRequest<'a> {
 #[derive(Debug, Serialize)]
 pub(crate) struct WireRequestOwned<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) branch: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) space: Option<&'a str>,
     pub(crate) command: &'a RawValue,
+}
+
+/// A protocol-revision-2 response frame: the request's correlation id plus
+/// the untouched executor response envelope. The wrapper is transport-only —
+/// `payload` is byte-identical to what a local execution or a protocol-1
+/// response carries, so correlation never forks the executor wire format.
+/// `id` is `null` only when the request's own id could not be read (the
+/// malformed-envelope case).
+#[derive(Debug, Serialize)]
+pub(crate) struct WireResponseFrame<'a> {
+    pub(crate) id: Option<u64>,
+    pub(crate) payload: &'a RawValue,
+}
+
+/// The client-side reader for a protocol-revision-2 response frame.
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireResponseFrameRef<'a> {
+    #[serde(default)]
+    pub(crate) id: Option<u64>,
+    #[serde(borrow)]
+    pub(crate) payload: &'a RawValue,
 }
 
 /// The protocol revision a hello negotiates. Connections that never send a
@@ -187,6 +215,7 @@ mod tests {
         )
         .expect("raw command");
         let owned = WireRequestOwned {
+            id: Some(7),
             branch: Some("feature"),
             space: None,
             command: &command,
@@ -194,6 +223,7 @@ mod tests {
         let bytes = serde_json::to_vec(&owned).expect("serialize request");
 
         let decoded: WireRequest = serde_json::from_slice(&bytes).expect("decode request");
+        assert_eq!(decoded.id, Some(7));
         assert_eq!(decoded.branch.as_deref(), Some("feature"));
         assert_eq!(decoded.space, None);
         // The out-of-range integer is preserved verbatim (not coerced to f64),
@@ -205,9 +235,31 @@ mod tests {
     fn absent_scope_decodes_to_none() {
         let decoded: WireRequest =
             serde_json::from_str("{\"command\":{\"type\":\"ping\"}}").expect("decode");
+        assert_eq!(decoded.id, None, "protocol-1 requests carry no id");
         assert_eq!(decoded.branch, None);
         assert_eq!(decoded.space, None);
         assert_eq!(decoded.command.get(), "{\"type\":\"ping\"}");
+    }
+
+    #[test]
+    fn a_response_frame_round_trips_id_and_raw_payload() {
+        let payload = serde_json::value::RawValue::from_string(
+            "{\"type\":\"pong\",\"data\":{\"version\":\"1.0.0\"}}".to_owned(),
+        )
+        .expect("raw payload");
+        let frame = super::WireResponseFrame {
+            id: Some(9),
+            payload: &payload,
+        };
+        let bytes = serde_json::to_vec(&frame).expect("serialize frame");
+        let decoded: super::WireResponseFrameRef =
+            serde_json::from_slice(&bytes).expect("decode frame");
+        assert_eq!(decoded.id, Some(9));
+        assert_eq!(
+            decoded.payload.get(),
+            payload.get(),
+            "the payload passes through byte-identical"
+        );
     }
 
     #[test]
