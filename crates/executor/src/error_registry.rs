@@ -252,6 +252,16 @@ const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
         EXECUTOR_SCHEMA,
     ),
     entry(
+        "invalid_argument.executor.ipc_hello",
+        ErrorClass::InvalidArgument,
+        RetryPolicy::Never,
+        CommitOutcomeStatus::NotStarted,
+        "The IPC hello frame was malformed or requested an unsupported protocol revision.",
+        "Send a well-formed hello for protocol revision 2; the refusal message names the \
+         revision this owner speaks.",
+        EXECUTOR_SCHEMA,
+    ),
+    entry(
         "invalid_argument.executor.vector_batch_duplicate_key",
         ErrorClass::InvalidArgument,
         RetryPolicy::Never,

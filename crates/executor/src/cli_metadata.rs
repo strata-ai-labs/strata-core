@@ -13,8 +13,10 @@ pub const EMBEDDED_CLI_COMMAND_INDEX_JSON: &str =
 
 const SUPPORTED_SCHEMA_VERSION: &str = "strata.cli.v1";
 const SUPPORTED_GENERATOR_VERSION: &str = "strata-executor-cli-idl.1";
-const SUPPORTED_SOURCE_SCHEMA_VERSION: &str = "strata.idl.v1";
-const SUPPORTED_SOURCE_GENERATOR_VERSION: &str = "strata-executor-idl.1";
+// Crate-visible: the IPC hello echoes these same stamps (protocol.rs), so the
+// hello and the embedded command index cannot disagree about the source IDL.
+pub(crate) const SUPPORTED_SOURCE_SCHEMA_VERSION: &str = "strata.idl.v1";
+pub(crate) const SUPPORTED_SOURCE_GENERATOR_VERSION: &str = "strata-executor-idl.1";
 
 /// CLI metadata runtime result type.
 pub type CliMetadataResult<T> = std::result::Result<T, CliMetadataError>;
