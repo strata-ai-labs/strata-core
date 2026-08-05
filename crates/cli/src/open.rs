@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use strata_executor::ipc::Connection;
+use strata_executor::ipc::{Connection, SessionAccess};
 use strata_executor::{Executor, IpcMode};
 
 use crate::CliError;
@@ -35,13 +35,16 @@ pub(crate) struct OpenedConnection {
 /// waiting to happen.
 ///
 /// `ipc` selects the multi-process access policy for a durable open; cache
-/// opens ignore it (cache mode is single-process by construction).
+/// opens ignore it (cache mode is single-process by construction). `access`
+/// is the session access for a durable open — `Read` requires a durable
+/// target (an ephemeral cache session has nothing to protect).
 pub(crate) fn open_connection(
     cache: bool,
     db_flag: Option<PathBuf>,
     db_path: Option<PathBuf>,
     durability: Option<strata_executor::DurabilityMode>,
     ipc: IpcMode,
+    access: SessionAccess,
     intent: OpenIntent,
 ) -> Result<OpenedConnection, CliError> {
     if cache {
@@ -72,7 +75,7 @@ pub(crate) fn open_connection(
             options = options.with_durability(mode);
         }
         return Ok(OpenedConnection {
-            connection: Connection::open_durable_local_brokered(path, options, ipc)?,
+            connection: Connection::open_durable_local_brokered(path, options, ipc, access)?,
             implicit_cache: false,
         });
     }
@@ -80,6 +83,11 @@ pub(crate) fn open_connection(
     if durability.is_some() {
         return Err(CliError::usage(
             "`--durability` requires a durable database (a path or STRATA_DB)",
+        ));
+    }
+    if access == SessionAccess::Read {
+        return Err(CliError::usage(
+            "`--read-only` requires a durable database (a path or STRATA_DB)",
         ));
     }
 

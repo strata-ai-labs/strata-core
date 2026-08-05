@@ -21,6 +21,8 @@ use crate::{
 };
 
 use super::client::{ConnectError, IpcClient};
+use super::dispatch::read_only_rejection;
+use super::protocol::SessionAccess;
 use super::resolve_connect;
 use super::server::IpcServer;
 
@@ -36,6 +38,11 @@ const OPEN_RETRY_STEPS: u32 = 20;
 pub struct Connection {
     inner: ConnectionInner,
     scope: Mutex<Scope>,
+    /// The access this connection was opened with. For a remote connection the
+    /// owner's dispatch gate is the authority and this drives the courtesy
+    /// pre-rejection; for a local connection it is the only gate there is
+    /// (a true read-only *open* is a separate engine feature).
+    access: SessionAccess,
 }
 
 struct Scope {
@@ -68,26 +75,34 @@ impl Connection {
     /// - [`IpcMode::Off`]: opt out entirely — a raw local open with no server
     ///   and no fallback (hardened single-process deployments).
     ///
+    /// `access` is the session access this connection lives under. `Read`
+    /// rejects every write-classified command: enforced by the owner's
+    /// dispatch gate when brokered, and by this connection's own execute
+    /// chokepoint when local (a courtesy until a true read-only engine open
+    /// exists).
+    ///
     /// # Errors
     ///
-    /// The underlying open error, or the lock-contention error when the store
-    /// is owned but no socket is reachable within the retry budget.
+    /// The underlying open error, the owner's capacity refusal, or the
+    /// lock-contention error when the store is owned but no socket is
+    /// reachable within the retry budget.
     pub fn open_durable_local_brokered(
         path: impl Into<PathBuf>,
         options: DurableLocalOpenOptions,
         ipc: IpcMode,
+        access: SessionAccess,
     ) -> ExecutorResult<Self> {
         let path = path.into();
         match ipc {
             // Opt out: a raw single-process open, no socket and no fallback.
             IpcMode::Off => {
                 let executor = Executor::open_durable_local_with_options(&path, options)?;
-                Ok(Self::local(executor, None))
+                Ok(Self::local(executor, None, access))
             }
             // Host: win the lock and host a socket others can broker to.
-            IpcMode::Host => Self::open_brokered(&path, options, true),
+            IpcMode::Host => Self::open_brokered(&path, options, true, access),
             // Client: win the lock but do not host; broker only on contention.
-            IpcMode::Client => Self::open_brokered(&path, options, false),
+            IpcMode::Client => Self::open_brokered(&path, options, false, access),
         }
     }
 
@@ -95,13 +110,14 @@ impl Connection {
         path: &Path,
         options: DurableLocalOpenOptions,
         host: bool,
+        access: SessionAccess,
     ) -> ExecutorResult<Self> {
         match Executor::open_durable_local_with_options(path, options.clone()) {
-            Ok(executor) => Ok(Self::local_hosting(path, executor, host)),
+            Ok(executor) => Ok(Self::local_hosting(path, executor, host, access)),
             // Contention: the store is already owned. Ride the owner start-up /
             // shut-down window, brokering to its socket if one appears.
             Err(error) if error.code() == LOCK_CONTENTION_CODE => {
-                Self::broker_to_owner(path, options, host)
+                Self::broker_to_owner(path, options, host, access)
             }
             // A non-contention open error never brokers — propagate it as-is.
             Err(error) => Err(error),
@@ -120,6 +136,7 @@ impl Connection {
         path: &Path,
         options: DurableLocalOpenOptions,
         host: bool,
+        access: SessionAccess,
     ) -> ExecutorResult<Self> {
         // A capacity refusal is remembered across the window: slots may free
         // as clients disconnect, so we keep riding — but if the window closes
@@ -128,8 +145,8 @@ impl Connection {
         let mut at_capacity: Option<crate::ExecutorError> = None;
         for _ in 0..OPEN_RETRY_STEPS {
             if let Some(socket) = resolve_connect(path) {
-                match IpcClient::connect(&socket) {
-                    Ok(client) => return Ok(Self::remote(client)),
+                match IpcClient::connect(&socket, access) {
+                    Ok(client) => return Ok(Self::remote(client, access)),
                     Err(ConnectError::AtCapacity(error)) => at_capacity = Some(error),
                     // Any other connect failure (a socket mid-teardown, a
                     // refused hello) keeps riding the window; the lock probe
@@ -140,7 +157,7 @@ impl Connection {
                 }
             }
             match Executor::open_durable_local_with_options(path, options.clone()) {
-                Ok(executor) => return Ok(Self::local_hosting(path, executor, host)),
+                Ok(executor) => return Ok(Self::local_hosting(path, executor, host, access)),
                 Err(error) if error.code() == LOCK_CONTENTION_CODE => {
                     std::thread::sleep(OPEN_RETRY_STEP);
                 }
@@ -148,13 +165,13 @@ impl Connection {
             }
         }
         match Executor::open_durable_local_with_options(path, options) {
-            Ok(executor) => Ok(Self::local_hosting(path, executor, host)),
+            Ok(executor) => Ok(Self::local_hosting(path, executor, host, access)),
             Err(error) if error.code() == LOCK_CONTENTION_CODE => Err(at_capacity.unwrap_or(error)),
             Err(error) => Err(error),
         }
     }
 
-    fn local_hosting(path: &Path, executor: Executor, host: bool) -> Self {
+    fn local_hosting(path: &Path, executor: Executor, host: bool, access: SessionAccess) -> Self {
         let scope = Scope {
             branch: executor.default_branch().to_owned(),
             space: executor.default_space().to_owned(),
@@ -194,10 +211,11 @@ impl Connection {
         Self {
             inner: ConnectionInner::Local { executor, server },
             scope: Mutex::new(scope),
+            access,
         }
     }
 
-    fn local(executor: Executor, server: Option<IpcServer>) -> Self {
+    fn local(executor: Executor, server: Option<IpcServer>, access: SessionAccess) -> Self {
         let scope = Scope {
             branch: executor.default_branch().to_owned(),
             space: executor.default_space().to_owned(),
@@ -208,6 +226,7 @@ impl Connection {
                 server,
             },
             scope: Mutex::new(scope),
+            access,
         }
     }
 
@@ -215,12 +234,14 @@ impl Connection {
     /// connection. Cache mode has no writer lock and no socket, so there is
     /// nothing to broker — this is always a plain local handle, letting every
     /// frontend hold one `Connection` type regardless of the open target.
+    /// Cache handles are full-access; a read-only view of an ephemeral store
+    /// no other process can reach has nothing to protect.
     #[must_use]
     pub fn cache(executor: Executor) -> Self {
-        Self::local(executor, None)
+        Self::local(executor, None, SessionAccess::ReadWrite)
     }
 
-    fn remote(client: IpcClient) -> Self {
+    fn remote(client: IpcClient, access: SessionAccess) -> Self {
         Self {
             inner: ConnectionInner::Remote {
                 client: Mutex::new(client),
@@ -229,6 +250,7 @@ impl Connection {
                 branch: DEFAULT_BRANCH.to_owned(),
                 space: DEFAULT_SPACE.to_owned(),
             }),
+            access,
         }
     }
 
@@ -326,9 +348,16 @@ impl Connection {
     ///
     /// # Errors
     ///
-    /// The command's own error, or a transport error if a remote owner's
-    /// connection fails.
+    /// The command's own error, the read-only rejection on a `Read`-access
+    /// connection submitting a write, or a transport error if a remote
+    /// owner's connection fails.
     pub fn execute(&self, command: Command) -> ExecutorResult<Output> {
+        // One chokepoint for both transports. Remotely this is a courtesy
+        // (the owner's dispatch gate is the authority and would reject the
+        // same way); locally it is the only gate there is.
+        if self.access == SessionAccess::Read && command.is_write() {
+            return Err(read_only_rejection(&command));
+        }
         let (branch, space) = {
             let scope = self
                 .scope
@@ -389,7 +418,7 @@ impl Connection {
 
 #[cfg(test)]
 mod tests {
-    use super::Connection;
+    use super::{Connection, SessionAccess};
     use crate::{Command, DurableLocalOpenOptions, Executor, IpcMode, Output};
 
     fn ipc_status(conn: &Connection) -> crate::types::AdminIpcStatus {
@@ -416,6 +445,7 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Host,
+            SessionAccess::ReadWrite,
         )
         .expect("owner open");
         assert!(ipc_status(&owner).hosting, "hosting before stop");
@@ -437,12 +467,14 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Host,
+            SessionAccess::ReadWrite,
         )
         .expect("owner open");
         let client = Connection::open_durable_local_brokered(
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Client,
+            SessionAccess::ReadWrite,
         )
         .expect("client open");
         assert!(!client.is_local(), "second opener brokered as a client");
@@ -477,6 +509,7 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Host,
+            SessionAccess::ReadWrite,
         )
         .expect("owner open");
 
@@ -496,6 +529,7 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Client,
+            SessionAccess::ReadWrite,
         )
         .expect("client open");
         assert!(!client.is_local(), "second opener brokered as a client");
@@ -544,6 +578,7 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Host,
+            SessionAccess::ReadWrite,
         )
         .expect("owner open");
         assert!(owner.is_hosting(), "the owner started a server");
@@ -570,6 +605,7 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Client,
+            SessionAccess::ReadWrite,
         )
         .expect("client open");
         assert!(client.is_local() && !client.hosting_active());
@@ -627,6 +663,7 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Off,
+            SessionAccess::ReadWrite,
         )
         .expect("open");
         assert!(conn.is_local());
@@ -644,11 +681,82 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Client,
+            SessionAccess::ReadWrite,
         )
         .expect("open");
         assert!(conn.is_local(), "an uncontended client wins the lock");
         assert!(!conn.is_hosting(), "client never hosts a socket");
         conn.close().expect("close");
+    }
+
+    #[test]
+    fn a_read_access_local_open_gates_writes_at_the_connection() {
+        // No engine read-only open exists yet, so for a local connection the
+        // execute chokepoint IS the gate: writes rejected, reads served.
+        let dir = tempfile::tempdir().expect("tmp");
+        let conn = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            IpcMode::Off,
+            SessionAccess::Read,
+        )
+        .expect("read-access open");
+
+        let error = conn
+            .execute(kv_put("aGk=", "dg=="))
+            .expect_err("a write on a read-access connection is rejected");
+        assert_eq!(error.code(), "access_denied.executor.read_only_session");
+
+        let got = conn.execute(kv_get("aGk=")).expect("reads still serve");
+        let got = serde_json::to_value(&got).expect("json");
+        assert_eq!(got["data"]["found"], false, "and nothing was written");
+        conn.close().expect("close");
+    }
+
+    #[test]
+    fn a_read_access_brokered_client_is_gated_and_the_owner_stays_writable() {
+        // The gate keys on each session, not the store: a read-access client
+        // brokered to a read-write owner is rejected on writes while the
+        // owner keeps full access.
+        let dir = tempfile::tempdir().expect("tmp");
+        let owner = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            IpcMode::Host,
+            SessionAccess::ReadWrite,
+        )
+        .expect("owner open");
+        let reader = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            IpcMode::Client,
+            SessionAccess::Read,
+        )
+        .expect("reader open");
+        assert!(!reader.is_local(), "second opener brokered as a client");
+        assert_eq!(
+            reader.server_hello().expect("protocol 2").granted_access,
+            SessionAccess::Read,
+            "the owner granted the declared read access"
+        );
+
+        let error = reader
+            .execute(kv_put("aGk=", "dg=="))
+            .expect_err("a write on a read session is rejected");
+        assert_eq!(error.code(), "access_denied.executor.read_only_session");
+
+        owner
+            .execute(kv_put("aGk=", "b3duZXI="))
+            .expect("owner writes");
+        let seen = reader.execute(kv_get("aGk=")).expect("reader reads");
+        let seen = serde_json::to_value(&seen).expect("json");
+        assert_eq!(
+            seen["data"]["value"]["value"], "b3duZXI=",
+            "the read session observes the owner's writes"
+        );
+
+        reader.close().expect("reader close");
+        owner.close().expect("owner close");
     }
 
     #[test]
@@ -662,6 +770,7 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Host,
+            SessionAccess::ReadWrite,
         )
         .expect("owner open");
 
@@ -687,6 +796,7 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Client,
+            SessionAccess::ReadWrite,
         );
         let Err(error) = refused else {
             panic!("an open against a saturated owner must fail");
@@ -708,6 +818,7 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Host,
+            SessionAccess::ReadWrite,
         )
         .expect("owner open");
         assert!(
@@ -719,6 +830,7 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Client,
+            SessionAccess::ReadWrite,
         )
         .expect("client open");
         assert!(!client.is_local(), "second opener brokered as a client");
@@ -746,6 +858,7 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Host,
+            SessionAccess::ReadWrite,
         )
         .expect("owner open");
         assert!(
@@ -767,6 +880,7 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Client,
+            SessionAccess::ReadWrite,
         )
         .expect("client open");
         assert!(
@@ -804,6 +918,7 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Host,
+            SessionAccess::ReadWrite,
         )
         .expect("owner open");
 
@@ -811,6 +926,7 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Client,
+            SessionAccess::ReadWrite,
         )
         .expect("client open");
         assert!(!client.is_local(), "brokered as a client");
@@ -835,6 +951,7 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Off,
+            SessionAccess::ReadWrite,
         )
         .expect("open");
 
@@ -874,6 +991,7 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Off,
+            SessionAccess::ReadWrite,
         )
         .expect("open");
 
@@ -908,6 +1026,7 @@ mod tests {
             // a non-contention error as if it were a busy owner.
             DurableLocalOpenOptions::new(),
             IpcMode::Client,
+            SessionAccess::ReadWrite,
         );
         let Err(error) = refused else {
             panic!("a regular file is not a database");
@@ -923,6 +1042,7 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Host,
+            SessionAccess::ReadWrite,
         )
         .expect("owner open");
 
@@ -932,6 +1052,7 @@ mod tests {
             dir.path(),
             DurableLocalOpenOptions::new(),
             IpcMode::Off,
+            SessionAccess::ReadWrite,
         );
         let Err(error) = refused else {
             panic!("opt-out should refuse a held store, not broker");

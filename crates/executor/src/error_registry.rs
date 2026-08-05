@@ -272,6 +272,15 @@ const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
         EXECUTOR_SCHEMA,
     ),
     entry(
+        "access_denied.executor.read_only_session",
+        ErrorClass::AccessDenied,
+        RetryPolicy::Never,
+        CommitOutcomeStatus::NotStarted,
+        "The session is read-only and the command is classified as a write.",
+        "Reopen the connection with read-write access, or use a read-class command.",
+        EXECUTOR_SCHEMA,
+    ),
+    entry(
         "invalid_argument.executor.vector_batch_duplicate_key",
         ErrorClass::InvalidArgument,
         RetryPolicy::Never,
