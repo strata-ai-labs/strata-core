@@ -231,6 +231,59 @@ fn start_refuses_when_another_process_already_owns_the_store() {
     let _ = wait_with_timeout(&mut host);
 }
 
+#[test]
+fn a_read_only_client_is_gated_across_processes_and_reads_still_work() {
+    // Cross-process read-only: a writable host owns the database; a separate
+    // `--read-only` process brokering through it is rejected on writes by the
+    // OWNER's dispatch gate and still serves reads. Also pins the local
+    // (unbrokered) `--read-only` open the same way.
+    let dir = tempfile::tempdir().expect("tmp");
+    let db = db_arg(dir.path());
+
+    // Local, unbrokered: the connection's own gate.
+    let put = strata(&["--db", &db, "--read-only", "--json", "kv", "put", "k", "v"]);
+    assert_ne!(put.status.code(), Some(0), "a read-only write fails");
+    let combined = format!("{}{}", stdout(&put), stderr(&put));
+    assert!(
+        combined.contains("access_denied.executor.read_only_session"),
+        "the registered code names the refusal: {combined}"
+    );
+
+    // Seed a value with a writable one-shot, then attach read-only through a
+    // running host.
+    let seeded = strata(&["--db", &db, "--json", "kv", "put", "k", "v"]);
+    assert_eq!(seeded.status.code(), Some(0), "{}", stderr(&seeded));
+    let (mut host, _report) = spawn_start_host(&db);
+
+    let brokered_put = strata(&["--db", &db, "--read-only", "--json", "kv", "put", "k", "w"]);
+    assert_ne!(
+        brokered_put.status.code(),
+        Some(0),
+        "the owner's gate rejects a brokered read-only write"
+    );
+    let combined = format!("{}{}", stdout(&brokered_put), stderr(&brokered_put));
+    assert!(
+        combined.contains("access_denied.executor.read_only_session"),
+        "rejected by the registered code, not a transport error: {combined}"
+    );
+
+    let get = strata(&["--db", &db, "--read-only", "--json", "kv", "get", "k"]);
+    assert_eq!(
+        get.status.code(),
+        Some(0),
+        "a brokered read-only read serves: {}",
+        stderr(&get)
+    );
+    assert!(
+        stdout(&get).contains("\"found\":true") || stdout(&get).contains("\"found\": true"),
+        "the seeded value is visible read-only: {}",
+        stdout(&get)
+    );
+
+    let _ = strata(&["--db", &db, "stop"]);
+    let _ = wait_with_timeout(&mut host);
+}
+
 /// Waits up to a few seconds for `child` to exit, returning its status. Kills it
 /// on timeout so a hung host never wedges the suite.
 fn wait_with_timeout(child: &mut Child) -> Option<std::process::ExitStatus> {

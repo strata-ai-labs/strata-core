@@ -19,7 +19,7 @@ use std::time::Duration;
 use crate::Executor;
 
 use super::dispatch::execute_wire_request;
-use super::protocol::{self, HelloFrame, ServerHello, WireRequest};
+use super::protocol::{self, HelloFrame, ServerHello, SessionAccess, WireRequest};
 use super::{pid_path, resolve_binding, wire};
 
 /// Concurrent handler-thread cap. Excess connections are refused with a
@@ -344,6 +344,9 @@ fn handle_connection(
     // Whether this connection negotiated protocol revision 2 (hello accepted):
     // responses then carry the request's correlation id in a transport frame.
     let mut correlated = false;
+    // The session's granted access. Full access until a hello declares
+    // otherwise — a protocol-1 connection has no way to narrow itself.
+    let mut access = SessionAccess::ReadWrite;
     loop {
         if shutdown.load(Ordering::SeqCst) {
             break;
@@ -367,11 +370,12 @@ fn handle_connection(
         // through as a malformed request envelope.
         if std::mem::take(&mut awaiting_first_frame) && protocol::frame_is_hello(&frame) {
             match serve_hello(&frame) {
-                Ok(response) => {
+                Ok((response, granted)) => {
                     if wire::write_frame(&mut writer, response.as_bytes()).is_err() {
                         break;
                     }
                     correlated = true;
+                    access = granted;
                     continue;
                 }
                 Err(refusal) => {
@@ -385,9 +389,9 @@ fn handle_connection(
         }
 
         let response = if correlated {
-            serve_one_correlated(executor, baseline, &frame)
+            serve_one_correlated(executor, baseline, &frame, access)
         } else {
-            serve_one(executor, baseline, &frame)
+            serve_one(executor, baseline, &frame, access)
         };
         if wire::write_frame(&mut writer, response.as_bytes()).is_err() {
             break;
@@ -396,10 +400,11 @@ fn handle_connection(
 }
 
 /// Serve a hello first frame: strict parse, protocol check, capability grant.
-/// `Ok` is the `ipc_hello` response envelope and the connection continues on
-/// protocol revision 2; `Err` is a refusal envelope and the connection closes
-/// (a client that cannot hello correctly has nothing safe to say next).
-fn serve_hello(frame: &[u8]) -> Result<String, String> {
+/// `Ok` is the `ipc_hello` response envelope plus the granted access the
+/// connection enforces from now on; `Err` is a refusal envelope and the
+/// connection closes (a client that cannot hello correctly has nothing safe
+/// to say next).
+fn serve_hello(frame: &[u8]) -> Result<(String, SessionAccess), String> {
     let request: HelloFrame = match serde_json::from_slice(frame) {
         Ok(request) => request,
         Err(error) => return Err(ipc_hello_error(&format!("malformed hello frame: {error}"))),
@@ -412,8 +417,9 @@ fn serve_hello(frame: &[u8]) -> Result<String, String> {
             protocol::PROTOCOL_VERSION
         )));
     }
-    // Identity and declared access are observability-only in this revision:
-    // status reporting and server-side read-only enforcement build on them.
+    // Identity is observability-only in this revision; status reporting
+    // builds on it. Declared access is granted as requested and enforced at
+    // the dispatch gate for the connection's whole life.
     tracing::debug!(client = ?hello.client, access = ?hello.access, "IPC hello");
     let capabilities: Vec<String> = hello
         .capabilities
@@ -421,18 +427,20 @@ fn serve_hello(frame: &[u8]) -> Result<String, String> {
         .filter(|name| protocol::SUPPORTED_CAPABILITIES.contains(&name.as_str()))
         .cloned()
         .collect();
+    let granted = hello.access;
     let response = ServerHello {
         protocol: protocol::PROTOCOL_VERSION,
         release: env!("CARGO_PKG_VERSION").to_owned(),
         idl: protocol::build_idl_stamps(),
-        granted_access: hello.access,
+        granted_access: granted,
         capabilities,
         owner_pid: std::process::id(),
     };
-    Ok(
+    Ok((
         serde_json::to_string(&serde_json::json!({ "type": "ipc_hello", "data": response }))
             .unwrap_or_else(|error| serialize_hello_failure(&error)),
-    )
+        granted,
+    ))
 }
 
 /// Last-resort envelope for a hello response that fails to serialize —
@@ -462,12 +470,17 @@ fn ipc_hello_error(detail: &str) -> String {
 /// with the bare executor envelope. A correlation id on a protocol-1 request
 /// is ignored rather than rejected — there is no response frame to echo it in,
 /// and a pre-hello owner never knew the field existed.
-fn serve_one(executor: &Arc<Mutex<Executor>>, baseline: &Baseline, frame: &[u8]) -> String {
+fn serve_one(
+    executor: &Arc<Mutex<Executor>>,
+    baseline: &Baseline,
+    frame: &[u8],
+    access: SessionAccess,
+) -> String {
     let request: WireRequest = match serde_json::from_slice(frame) {
         Ok(request) => request,
         Err(error) => return wire_request_error(&error.to_string()),
     };
-    dispatch_request(executor, baseline, &request)
+    dispatch_request(executor, baseline, &request, access)
 }
 
 /// Serve one frame on protocol revision 2: the request must carry a
@@ -478,6 +491,7 @@ fn serve_one_correlated(
     executor: &Arc<Mutex<Executor>>,
     baseline: &Baseline,
     frame: &[u8],
+    access: SessionAccess,
 ) -> String {
     let request: WireRequest = match serde_json::from_slice(frame) {
         Ok(request) => request,
@@ -489,7 +503,10 @@ fn serve_one_correlated(
             &wire_request_error("a protocol-revision-2 request requires a correlation id"),
         );
     };
-    correlate(Some(id), &dispatch_request(executor, baseline, &request))
+    correlate(
+        Some(id),
+        &dispatch_request(executor, baseline, &request, access),
+    )
 }
 
 /// Wrap an executor response envelope in a protocol-revision-2 response frame.
@@ -529,6 +546,7 @@ fn dispatch_request(
     executor: &Arc<Mutex<Executor>>,
     baseline: &Baseline,
     request: &WireRequest,
+    access: SessionAccess,
 ) -> String {
     // Each request fully determines the scope: its own branch/space, or the
     // owner's baseline when omitted — never a previous request's leftover.
@@ -543,6 +561,7 @@ fn dispatch_request(
         Ok::<String, crate::ExecutorError>(execute_wire_request(
             &mut executor,
             request.command.get(),
+            access,
         ))
     }));
     match outcome {
@@ -986,10 +1005,10 @@ mod tests {
     }
 
     #[test]
-    fn a_read_access_declaration_is_echoed_but_unenforced_in_this_revision() {
-        // Pins the slice boundary explicitly: the hello CARRIES the access
-        // declaration; REJECTING writes on a read session is the follow-up
-        // enforcement slice, which will flip the second half of this test.
+    fn a_read_session_write_is_rejected_and_reads_still_serve() {
+        // The access a hello declares is enforced for the connection's whole
+        // life: writes are rejected with the registered read-only code, reads
+        // pass, and the rejection does not end the connection.
         let dir = tempfile::tempdir().expect("tmp");
         let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
         let mut server = IpcServer::start(dir.path(), executor).expect("start");
@@ -1003,8 +1022,15 @@ mod tests {
             "{\"type\":\"kv_put\",\"key\":\"aGk=\",\"value\":\"dg==\"}",
         );
         assert_eq!(
-            put["payload"]["type"], "write_result",
-            "declarative only: a write still succeeds until enforcement lands"
+            put["payload"]["error"]["code"], "access_denied.executor.read_only_session",
+            "a write on a read session is rejected: {put}"
+        );
+        assert_eq!(put["payload"]["error"]["class"], "access_denied");
+
+        let get = conn.send_correlated(2, "{\"type\":\"kv_get\",\"key\":\"aGk=\"}");
+        assert_eq!(
+            get["payload"]["data"]["found"], false,
+            "the gate held before dispatch (nothing written) and reads serve"
         );
 
         server.shutdown();

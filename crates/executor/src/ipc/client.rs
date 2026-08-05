@@ -56,8 +56,8 @@ pub(crate) struct IpcClient {
 
 impl IpcClient {
     /// Connect to a store owner listening at `socket_path` and introduce
-    /// ourselves with a protocol-revision-2 hello.
-    pub(crate) fn connect(socket_path: &Path) -> Result<Self, ConnectError> {
+    /// ourselves with a protocol-revision-2 hello declaring `access`.
+    pub(crate) fn connect(socket_path: &Path, access: SessionAccess) -> Result<Self, ConnectError> {
         let stream = UnixStream::connect(socket_path).map_err(ConnectError::Io)?;
         stream
             .set_read_timeout(Some(READ_TIMEOUT))
@@ -71,7 +71,7 @@ impl IpcClient {
             server_hello: None,
             last_id: 0,
         };
-        client.server_hello = client.hello()?;
+        client.server_hello = client.hello(access)?;
         Ok(client)
     }
 
@@ -81,7 +81,7 @@ impl IpcClient {
     /// implicit protocol 1 rather than stranding the user on a skewed pair.
     /// A capacity rejection is a typed refusal; any other refusal or transport
     /// failure fails the connect.
-    fn hello(&mut self) -> Result<Option<ServerHello>, ConnectError> {
+    fn hello(&mut self, access: SessionAccess) -> Result<Option<ServerHello>, ConnectError> {
         let request = HelloRequest {
             protocol: protocol::PROTOCOL_VERSION,
             idl: Some(protocol::build_idl_stamps()),
@@ -90,7 +90,7 @@ impl IpcClient {
                 version: Some(env!("CARGO_PKG_VERSION").to_owned()),
                 pid: Some(std::process::id()),
             }),
-            access: SessionAccess::ReadWrite,
+            access,
             capabilities: Vec::new(),
         };
         let payload = serde_json::to_vec(&HelloFrame { hello: request })
@@ -346,7 +346,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tmp");
         let sock = spawn_at_capacity_owner(dir.path());
 
-        let error = match IpcClient::connect(&sock) {
+        let error = match IpcClient::connect(&sock, crate::ipc::SessionAccess::ReadWrite) {
             Err(super::ConnectError::AtCapacity(error)) => error,
             Err(other) => panic!("expected the typed capacity refusal, got {other:?}"),
             Ok(_) => panic!("a refused connection must not connect"),
@@ -363,7 +363,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tmp");
         let sock = spawn_miscorrelating_owner(dir.path());
 
-        let mut client = IpcClient::connect(&sock).expect("hello succeeds");
+        let mut client = IpcClient::connect(&sock, crate::ipc::SessionAccess::ReadWrite)
+            .expect("hello succeeds");
         assert!(client.server_hello().is_some(), "protocol 2 negotiated");
 
         let command: crate::Command =
@@ -383,7 +384,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tmp");
         let sock = spawn_legacy_owner(dir.path());
 
-        let mut client = IpcClient::connect(&sock).expect("connect despite the old owner");
+        let mut client = IpcClient::connect(&sock, crate::ipc::SessionAccess::ReadWrite)
+            .expect("connect despite the old owner");
         assert!(
             client.server_hello().is_none(),
             "no hello info on a downgraded (protocol 1) connection"

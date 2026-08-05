@@ -6,6 +6,10 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use strata_executor::JsonIndexType;
 
 /// Strata V1 command-line interface.
+// A clap argument struct: each bool is an independent CLI switch, which is
+// exactly the shape the excessive-bools lint exists to steer *API* types away
+// from.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Parser)]
 #[command(name = "strata", version, about = "Strata database CLI")]
 pub(crate) struct Cli {
@@ -28,6 +32,11 @@ pub(crate) struct Cli {
     /// without hosting; `off` opts out (single-process only, no socket).
     #[arg(long, value_enum, value_name = "MODE", conflicts_with = "cache")]
     pub(crate) ipc: Option<IpcArg>,
+    /// Open the durable database read-only: every write-classified command is
+    /// rejected. Enforced by the owner's dispatch gate when brokered to
+    /// another process, and at this connection otherwise.
+    #[arg(long, conflicts_with = "cache")]
+    pub(crate) read_only: bool,
     /// Default branch for commands that accept a branch.
     #[arg(long, global = true)]
     pub(crate) branch: Option<String>,

@@ -169,13 +169,14 @@ a separate engine feature and out of this track's scope).
   already exists in the error contract vocabulary; retry `Never`; commit outcome
   `definitely_not_committed`). Exact code name goes through error-contract review.
 - **Classification:** `Command::is_write()` becomes the runtime authority — its first
-  real caller. The IDL `access` facet remains the authored truth. A **generated
-  conformance test** (via the `strata-idl` tests_gen pipeline) asserts
+  real caller. The IDL `access` facet remains the authored truth. A **conformance
+  test** driven by the generated command index asserts
   `is_write(cmd) == (idl.access == "write")` for all 127 commands, so the runtime gate
-  and the authored classification cannot drift. `ipc_stop` stays permitted for
-  read-only sessions (it is transport administration, not data mutation) — the
-  conformance test carries an explicit allowlisted exception if its IDL kind says
-  otherwise.
+  and the authored classification cannot drift. *(Resolved at implementation, G2:)*
+  the IDL classifies `ipc_stop` and `hub_clone` as writes, and the gate honors that —
+  a read-only session may not stop the owner's transport (a write-grade disruption
+  for every attached client) or clone data in. The conformance contract carries
+  **zero exceptions**.
 - **Client courtesy:** `Connection` pre-rejects locally on a read-only session to save
   the round trip; the server remains the authority.
 - **CLI surface:** a global `--read-only` flag maps to `AccessMode::ReadOnly` for

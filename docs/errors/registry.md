@@ -592,6 +592,9 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="resource_exhausted.executor.ipc_connections"></a>
 - `resource_exhausted.executor.ipc_connections`
 
+<a id="access_denied.executor.read_only_session"></a>
+- `access_denied.executor.read_only_session`
+
 <a id="invalid_argument.executor.vector_batch_duplicate_key"></a>
 - `invalid_argument.executor.vector_batch_duplicate_key`
 
