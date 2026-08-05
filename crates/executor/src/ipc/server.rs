@@ -11,7 +11,7 @@ use std::io::{self, BufReader, BufWriter};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -48,9 +48,10 @@ pub struct IpcServer {
     pointer_path: Option<PathBuf>,
     pid_path: PathBuf,
     shutdown: Arc<AtomicBool>,
-    /// Live count of connected clients, incremented/decremented by each handler
-    /// thread and read by `ipc_status` through the injected host state.
-    client_count: Arc<AtomicUsize>,
+    /// Live registry of connected clients — registered/deregistered by each
+    /// handler thread's RAII guard, upgraded with identity by hellos, and read
+    /// by `ipc_status` through the injected host state.
+    clients: crate::IpcClientRegistry,
     listener_handle: Option<JoinHandle<()>>,
 }
 
@@ -98,8 +99,8 @@ impl IpcServer {
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let listener_shutdown = shutdown.clone();
-        let client_count = Arc::new(AtomicUsize::new(0));
-        let listener_client_count = client_count.clone();
+        let clients = crate::IpcClientRegistry::new();
+        let listener_clients = clients.clone();
         let listener_handle =
             thread::Builder::new()
                 .name("ipc-listener".into())
@@ -109,7 +110,7 @@ impl IpcServer {
                         executor,
                         baseline,
                         listener_shutdown,
-                        listener_client_count,
+                        listener_clients,
                     );
                 })?;
 
@@ -118,7 +119,7 @@ impl IpcServer {
             pointer_path: binding.pointer,
             pid_path: pid_file,
             shutdown,
-            client_count,
+            clients,
             listener_handle: Some(listener_handle),
         })
     }
@@ -129,10 +130,16 @@ impl IpcServer {
         &self.socket_path
     }
 
-    /// The live connected-client counter, shared with the handler threads.
+    /// The live client registry, shared with the handler threads.
     #[must_use]
-    pub fn client_count(&self) -> Arc<AtomicUsize> {
-        self.client_count.clone()
+    pub fn clients(&self) -> crate::IpcClientRegistry {
+        self.clients.clone()
+    }
+
+    /// The number of currently connected clients.
+    #[must_use]
+    pub fn client_count(&self) -> usize {
+        self.clients.len()
     }
 
     /// The shutdown flag; setting it stops the listener (`ipc_stop`).
@@ -243,7 +250,7 @@ fn listener_loop(
     executor: Arc<Mutex<Executor>>,
     baseline: Arc<Baseline>,
     shutdown: Arc<AtomicBool>,
-    client_count: Arc<AtomicUsize>,
+    clients: crate::IpcClientRegistry,
 ) {
     let mut handlers: Vec<JoinHandle<()>> = Vec::new();
     while !shutdown.load(Ordering::SeqCst) {
@@ -262,11 +269,11 @@ fn listener_loop(
                 let executor = executor.clone();
                 let baseline = baseline.clone();
                 let shutdown = shutdown.clone();
-                let client_count = client_count.clone();
+                let clients = clients.clone();
                 match thread::Builder::new()
                     .name("ipc-handler".into())
                     .spawn(move || {
-                        handle_connection(stream, &executor, &baseline, &shutdown, client_count);
+                        handle_connection(stream, &executor, &baseline, &shutdown, clients);
                     }) {
                     Ok(handle) => handlers.push(handle),
                     Err(error) => tracing::warn!("failed to spawn IPC handler: {error}"),
@@ -314,21 +321,43 @@ fn reject_at_capacity(stream: UnixStream) {
     let _ = wire::write_frame(&mut writer, payload.as_bytes());
 }
 
-/// RAII connected-client counter: bumps the live count for this handler
-/// thread's whole life and decrements on every exit path (EOF, timeout, error,
-/// or panic), so `ipc_status` never leaks a stale connection.
-struct ConnectionGuard(Arc<AtomicUsize>);
+/// Monotonic per-connection id source, for registry keys in accept order.
+static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
+
+/// RAII client registration: registers an anonymous protocol-1 entry for this
+/// handler thread's whole life and deregisters on every exit path (EOF,
+/// timeout, error, or panic), so `ipc_status` never reports a stale
+/// connection. A hello upgrades the entry in place via [`Self::introduce`].
+struct ConnectionGuard {
+    clients: crate::IpcClientRegistry,
+    id: u64,
+}
 
 impl ConnectionGuard {
-    fn enter(count: Arc<AtomicUsize>) -> Self {
-        count.fetch_add(1, Ordering::Relaxed);
-        Self(count)
+    fn enter(clients: crate::IpcClientRegistry) -> Self {
+        let id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
+        clients.register(
+            id,
+            crate::IpcClientEntry {
+                name: None,
+                version: None,
+                pid: None,
+                access: SessionAccess::ReadWrite,
+                protocol: 1,
+            },
+        );
+        Self { clients, id }
+    }
+
+    /// Upgrade this connection's registry entry with what its hello declared.
+    fn introduce(&self, entry: crate::IpcClientEntry) {
+        self.clients.update(self.id, entry);
     }
 }
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
+        self.clients.deregister(self.id);
     }
 }
 
@@ -337,9 +366,9 @@ fn handle_connection(
     executor: &Arc<Mutex<Executor>>,
     baseline: &Baseline,
     shutdown: &AtomicBool,
-    client_count: Arc<AtomicUsize>,
+    clients: crate::IpcClientRegistry,
 ) {
-    let _connected = ConnectionGuard::enter(client_count);
+    let connected = ConnectionGuard::enter(clients);
     let Ok(read_half) = stream.try_clone() else {
         return;
     };
@@ -385,12 +414,21 @@ fn handle_connection(
         // through as a malformed request envelope.
         if std::mem::take(&mut awaiting_first_frame) && protocol::frame_is_hello(&frame) {
             match serve_hello(&frame) {
-                Ok((response, granted)) => {
-                    if wire::write_frame(&mut writer, response.as_bytes()).is_err() {
+                Ok(outcome) => {
+                    if wire::write_frame(&mut writer, outcome.response.as_bytes()).is_err() {
                         break;
                     }
                     correlated = true;
-                    access = granted;
+                    access = outcome.access;
+                    // The hello introduced this connection: upgrade its
+                    // anonymous registry entry so `ipc_status` can name it.
+                    connected.introduce(crate::IpcClientEntry {
+                        name: outcome.client.as_ref().map(|c| c.name.clone()),
+                        version: outcome.client.as_ref().and_then(|c| c.version.clone()),
+                        pid: outcome.client.as_ref().and_then(|c| c.pid).map(u64::from),
+                        access: outcome.access,
+                        protocol: protocol::PROTOCOL_VERSION,
+                    });
                     continue;
                 }
                 Err(refusal) => {
@@ -512,12 +550,19 @@ fn serve_subscribe(
     )
 }
 
+/// An accepted hello: the response envelope to write, plus what the
+/// connection learned about itself — the access it enforces from now on and
+/// the identity for the client registry.
+struct HelloOutcome {
+    response: String,
+    access: SessionAccess,
+    client: Option<protocol::ClientIdentity>,
+}
+
 /// Serve a hello first frame: strict parse, protocol check, capability grant.
-/// `Ok` is the `ipc_hello` response envelope plus the granted access the
-/// connection enforces from now on; `Err` is a refusal envelope and the
-/// connection closes (a client that cannot hello correctly has nothing safe
-/// to say next).
-fn serve_hello(frame: &[u8]) -> Result<(String, SessionAccess), String> {
+/// `Err` is a refusal envelope and the connection closes (a client that
+/// cannot hello correctly has nothing safe to say next).
+fn serve_hello(frame: &[u8]) -> Result<HelloOutcome, String> {
     let request: HelloFrame = match serde_json::from_slice(frame) {
         Ok(request) => request,
         Err(error) => return Err(ipc_hello_error(&format!("malformed hello frame: {error}"))),
@@ -530,9 +575,9 @@ fn serve_hello(frame: &[u8]) -> Result<(String, SessionAccess), String> {
             protocol::PROTOCOL_VERSION
         )));
     }
-    // Identity is observability-only in this revision; status reporting
-    // builds on it. Declared access is granted as requested and enforced at
-    // the dispatch gate for the connection's whole life.
+    // Declared access is granted as requested and enforced at the dispatch
+    // gate for the connection's whole life; the identity feeds the client
+    // registry `ipc_status` reports from.
     tracing::debug!(client = ?hello.client, access = ?hello.access, "IPC hello");
     let capabilities: Vec<String> = hello
         .capabilities
@@ -549,11 +594,14 @@ fn serve_hello(frame: &[u8]) -> Result<(String, SessionAccess), String> {
         capabilities,
         owner_pid: std::process::id(),
     };
-    Ok((
-        serde_json::to_string(&serde_json::json!({ "type": "ipc_hello", "data": response }))
-            .unwrap_or_else(|error| serialize_hello_failure(&error)),
-        granted,
-    ))
+    Ok(HelloOutcome {
+        response: serde_json::to_string(
+            &serde_json::json!({ "type": "ipc_hello", "data": response }),
+        )
+        .unwrap_or_else(|error| serialize_hello_failure(&error)),
+        access: granted,
+        client: hello.client,
+    })
 }
 
 /// Last-resort envelope for a hello response that fails to serialize —
@@ -734,6 +782,7 @@ mod tests {
     use crate::ipc::protocol::WireRequestOwned;
     use crate::ipc::wire;
     use crate::Executor;
+    use crate::SessionAccess;
     use std::io::{BufReader, BufWriter};
     use std::os::unix::net::UnixStream;
     use std::sync::{Arc, Mutex};
@@ -977,15 +1026,14 @@ mod tests {
         let held: Vec<UnixStream> = (0..super::MAX_CONNECTIONS)
             .map(|_| UnixStream::connect(&sock).expect("saturating connect"))
             .collect();
-        let count = server.client_count();
         for _ in 0..500 {
-            if count.load(std::sync::atomic::Ordering::Relaxed) >= super::MAX_CONNECTIONS {
+            if server.client_count() >= super::MAX_CONNECTIONS {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(
-            count.load(std::sync::atomic::Ordering::Relaxed),
+            server.client_count(),
             super::MAX_CONNECTIONS,
             "all saturating connections have live handlers"
         );
@@ -1279,6 +1327,58 @@ mod tests {
             wire::read_frame(&mut conn.reader).is_err(),
             "an empty subscription never ticks"
         );
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn the_client_registry_names_hello_clients_and_keeps_legacy_anonymous() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+
+        // A legacy connection: first frame is a bare request, no hello.
+        let mut legacy = RawConn::connect(server.socket_path());
+        assert_eq!(legacy.send_command("{\"type\":\"ping\"}")["type"], "pong");
+
+        // A hello'd connection introducing itself with identity + read access.
+        let mut named = RawConn::connect(server.socket_path());
+        let hello = named.send(
+            b"{\"hello\":{\"protocol\":2,\"access\":\"read\",\
+              \"client\":{\"name\":\"strata-vscode\",\"version\":\"0.1.0\",\"pid\":4242}}}",
+        );
+        assert_eq!(hello["type"], "ipc_hello");
+
+        let clients = server.clients().snapshot();
+        assert_eq!(clients.len(), 2, "both connections are registered");
+        let anon = clients
+            .iter()
+            .find(|c| c.protocol == 1)
+            .expect("the legacy connection appears");
+        assert!(
+            anon.name.is_none() && anon.version.is_none() && anon.pid.is_none(),
+            "a pre-hello connection is anonymous"
+        );
+        assert_eq!(anon.access, SessionAccess::ReadWrite);
+        let named_entry = clients
+            .iter()
+            .find(|c| c.protocol == 2)
+            .expect("the hello'd connection appears");
+        assert_eq!(named_entry.name.as_deref(), Some("strata-vscode"));
+        assert_eq!(named_entry.version.as_deref(), Some("0.1.0"));
+        assert_eq!(named_entry.pid, Some(4242));
+        assert_eq!(named_entry.access, SessionAccess::Read);
+
+        // Disconnects deregister on every exit path (the RAII guard).
+        drop(named);
+        drop(legacy);
+        for _ in 0..200 {
+            if server.client_count() == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(server.client_count(), 0, "gone clients leave no entries");
 
         server.shutdown();
     }

@@ -22,6 +22,7 @@ pub mod idl_tooling;
 // every frontend can name it; the socket transport that acts on it is unix-only
 // (`ipc` below).
 pub mod ipc_mode;
+pub mod session_access;
 // Live state of a hosted IPC socket, injected into the executor so `ipc_status`
 // can report it. Always compiled (the executor field is); the unix `ipc`
 // transport populates it.
@@ -43,9 +44,10 @@ pub use error::{
 };
 pub use error_registry::{public_error_code_entries, public_error_code_entry};
 pub use executor::Executor;
-pub use ipc_host_state::IpcHostState;
+pub use ipc_host_state::{IpcClientEntry, IpcClientRegistry, IpcHostState};
 pub use ipc_mode::IpcMode;
 pub use output::{Output, RemoteOriginFrontierInfo, RemoteOriginInfo};
+pub use session_access::SessionAccess;
 pub use strata_engine::{
     CommitOutcomeStatus, DurabilityMode, DurableLocalOpenOptions, ErrorClass,
     ErrorCodeRegistryEntry, ErrorDetail, RetryPolicy,

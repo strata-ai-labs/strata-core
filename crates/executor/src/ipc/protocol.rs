@@ -127,18 +127,7 @@ pub(crate) struct HelloRequest {
     pub(crate) capabilities: Vec<String>,
 }
 
-/// The access a session declares at hello. Declarative in this revision — the
-/// owner records and echoes it; rejecting write commands on a `Read` session
-/// is the follow-up read-only-enforcement slice.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionAccess {
-    /// The session intends read-class commands only.
-    Read,
-    /// Full command access — the pre-hello default.
-    #[default]
-    ReadWrite,
-}
+pub use crate::session_access::SessionAccess;
 
 /// The IDL version stamps a party was built against (the same pair the
 /// generated command index carries).
