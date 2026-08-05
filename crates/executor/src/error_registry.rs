@@ -262,6 +262,16 @@ const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
         EXECUTOR_SCHEMA,
     ),
     entry(
+        "resource_exhausted.executor.ipc_connections",
+        ErrorClass::ResourceExhausted,
+        RetryPolicy::SameRequest,
+        CommitOutcomeStatus::NotStarted,
+        "The store owner is at its IPC connection capacity.",
+        "Retry after another client disconnects, or reduce the number of processes holding \
+         connections to this database.",
+        EXECUTOR_SCHEMA,
+    ),
+    entry(
         "invalid_argument.executor.vector_batch_duplicate_key",
         ErrorClass::InvalidArgument,
         RetryPolicy::Never,

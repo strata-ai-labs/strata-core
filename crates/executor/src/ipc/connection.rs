@@ -20,7 +20,7 @@ use crate::{
     DEFAULT_SPACE,
 };
 
-use super::client::IpcClient;
+use super::client::{ConnectError, IpcClient};
 use super::resolve_connect;
 use super::server::IpcServer;
 
@@ -121,10 +121,22 @@ impl Connection {
         options: DurableLocalOpenOptions,
         host: bool,
     ) -> ExecutorResult<Self> {
+        // A capacity refusal is remembered across the window: slots may free
+        // as clients disconnect, so we keep riding — but if the window closes
+        // with the store still locked, the refusal is the truthful error to
+        // surface, not the lock-contention fallback.
+        let mut at_capacity: Option<crate::ExecutorError> = None;
         for _ in 0..OPEN_RETRY_STEPS {
             if let Some(socket) = resolve_connect(path) {
-                if let Ok(client) = IpcClient::connect(&socket) {
-                    return Ok(Self::remote(client));
+                match IpcClient::connect(&socket) {
+                    Ok(client) => return Ok(Self::remote(client)),
+                    Err(ConnectError::AtCapacity(error)) => at_capacity = Some(error),
+                    // Any other connect failure (a socket mid-teardown, a
+                    // refused hello) keeps riding the window; the lock probe
+                    // below decides how this open ends.
+                    Err(ConnectError::Io(error)) => {
+                        tracing::debug!("IPC connect probe failed; still riding: {error}");
+                    }
                 }
             }
             match Executor::open_durable_local_with_options(path, options.clone()) {
@@ -135,8 +147,11 @@ impl Connection {
                 Err(error) => return Err(error),
             }
         }
-        Executor::open_durable_local_with_options(path, options)
-            .map(|executor| Self::local_hosting(path, executor, host))
+        match Executor::open_durable_local_with_options(path, options) {
+            Ok(executor) => Ok(Self::local_hosting(path, executor, host)),
+            Err(error) if error.code() == LOCK_CONTENTION_CODE => Err(at_capacity.unwrap_or(error)),
+            Err(error) => Err(error),
+        }
     }
 
     fn local_hosting(path: &Path, executor: Executor, host: bool) -> Self {
@@ -634,6 +649,52 @@ mod tests {
         assert!(conn.is_local(), "an uncontended client wins the lock");
         assert!(!conn.is_hosting(), "client never hosts a socket");
         conn.close().expect("close");
+    }
+
+    #[test]
+    fn an_owner_at_capacity_yields_the_capacity_error_not_the_lock_error() {
+        // The open dance rides the retry window on capacity refusals (a slot
+        // may free), but when the window closes with the store still locked
+        // it must surface the truthful capacity error — not the misleading
+        // "no socket reachable" lock fallback.
+        let dir = tempfile::tempdir().expect("tmp");
+        let owner = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            IpcMode::Host,
+        )
+        .expect("owner open");
+
+        // Saturate the owner's connection cap with idle raw connections and
+        // gate on the live client count the owner itself reports.
+        let socket = crate::ipc::resolve_connect(dir.path()).expect("owner socket");
+        let held: Vec<std::os::unix::net::UnixStream> = (0..crate::ipc::server::MAX_CONNECTIONS)
+            .map(|_| std::os::unix::net::UnixStream::connect(&socket).expect("saturate"))
+            .collect();
+        for _ in 0..500 {
+            if ipc_status(&owner).client_count >= crate::ipc::server::MAX_CONNECTIONS as u64 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            ipc_status(&owner).client_count,
+            crate::ipc::server::MAX_CONNECTIONS as u64,
+            "the cap is saturated"
+        );
+
+        let refused = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            IpcMode::Client,
+        );
+        let Err(error) = refused else {
+            panic!("an open against a saturated owner must fail");
+        };
+        assert_eq!(error.code(), "resource_exhausted.executor.ipc_connections");
+
+        drop(held);
+        owner.close().expect("owner close");
     }
 
     #[test]
