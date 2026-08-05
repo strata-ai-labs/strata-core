@@ -170,6 +170,7 @@ impl IpcClient {
         });
         let request = WireRequestOwned {
             id,
+            deadline_ms: None,
             branch,
             space,
             command: &raw,

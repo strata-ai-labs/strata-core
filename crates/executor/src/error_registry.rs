@@ -281,6 +281,15 @@ const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
         EXECUTOR_SCHEMA,
     ),
     entry(
+        "unavailable.executor.ipc_deadline",
+        ErrorClass::Unavailable,
+        RetryPolicy::SameRequest,
+        CommitOutcomeStatus::NotStarted,
+        "The request's deadline expired while it waited for the execution lane.",
+        "Retry with a larger deadline_ms, or when the database owner is less busy.",
+        EXECUTOR_SCHEMA,
+    ),
+    entry(
         "invalid_argument.executor.vector_batch_duplicate_key",
         ErrorClass::InvalidArgument,
         RetryPolicy::Never,
