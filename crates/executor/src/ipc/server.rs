@@ -22,10 +22,13 @@ use super::dispatch::execute_wire_request;
 use super::protocol::{self, HelloFrame, ServerHello, WireRequest};
 use super::{pid_path, resolve_binding, wire};
 
-/// Concurrent handler-thread cap. Excess connections are dropped rather than
-/// queued — the client's open dance retries, and an embedded store never has
-/// a legitimate fan-out this wide.
-const MAX_CONNECTIONS: usize = 128;
+/// Concurrent handler-thread cap. Excess connections are refused with a
+/// structured rejection frame rather than queued — the client's open dance
+/// retries, and an embedded store never has a legitimate fan-out this wide.
+pub(crate) const MAX_CONNECTIONS: usize = 128;
+/// Write timeout for the capacity-rejection frame: the listener thread writes
+/// it inline and must not stall on a slow or dead peer.
+const REJECT_WRITE_TIMEOUT: Duration = Duration::from_millis(500);
 /// Handler read timeout: bounds how long a handler blocks before re-checking
 /// the shutdown flag, so `shutdown()` returns promptly.
 const HANDLER_READ_TIMEOUT: Duration = Duration::from_secs(2);
@@ -242,8 +245,10 @@ fn listener_loop(
             Ok((stream, _addr)) => {
                 handlers.retain(|handle| !handle.is_finished());
                 if handlers.len() >= MAX_CONNECTIONS {
-                    tracing::warn!("IPC connection limit reached ({MAX_CONNECTIONS}); dropping");
-                    drop(stream);
+                    tracing::warn!(
+                        "IPC connection limit reached ({MAX_CONNECTIONS}); refusing connection"
+                    );
+                    reject_at_capacity(stream);
                     continue;
                 }
                 stream.set_nonblocking(false).ok();
@@ -275,6 +280,32 @@ fn listener_loop(
     for handle in handlers {
         let _ = handle.join();
     }
+}
+
+/// Refuse a connection over the cap with a structured rejection frame, then
+/// close it. Without the frame, a refused client watches a silent drop hang
+/// until its own timeout; with it, the client learns why and can retry once a
+/// slot frees.
+fn reject_at_capacity(stream: UnixStream) {
+    // Best-effort throughout: the peer may already be gone, and the listener
+    // must keep accepting either way — a failed step just means the peer
+    // learns nothing extra before the close it was getting anyway.
+    let _ = stream.set_write_timeout(Some(REJECT_WRITE_TIMEOUT));
+    let error = crate::ExecutorError::new(
+        // The wire class derives from the code's `resource_exhausted.` prefix;
+        // retryable=true renders the SameRequest retry policy.
+        crate::error::ExecutorErrorClass::Unavailable,
+        "resource_exhausted.executor.ipc_connections",
+        true,
+        format!(
+            "the store owner is at its IPC connection capacity ({MAX_CONNECTIONS}); \
+             retry once another client disconnects"
+        ),
+    );
+    let payload = serde_json::to_string(&serde_json::json!({ "error": error }))
+        .unwrap_or_else(|_| static_wire_request_error());
+    let mut writer = BufWriter::new(stream);
+    let _ = wire::write_frame(&mut writer, payload.as_bytes());
 }
 
 /// RAII connected-client counter: bumps the live count for this handler
@@ -799,6 +830,53 @@ mod tests {
             };
             self.send(&serde_json::to_vec(&request).expect("serialize"))
         }
+    }
+
+    #[test]
+    fn a_connection_over_the_cap_is_refused_with_a_structured_frame() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+        let sock = server.socket_path().to_path_buf();
+
+        // Saturate the cap with idle connections and wait until every handler
+        // is live — accepts are asynchronous, so the shared client count is
+        // the only honest gate before probing the cap.
+        let held: Vec<UnixStream> = (0..super::MAX_CONNECTIONS)
+            .map(|_| UnixStream::connect(&sock).expect("saturating connect"))
+            .collect();
+        let count = server.client_count();
+        for _ in 0..500 {
+            if count.load(std::sync::atomic::Ordering::Relaxed) >= super::MAX_CONNECTIONS {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::Relaxed),
+            super::MAX_CONNECTIONS,
+            "all saturating connections have live handlers"
+        );
+
+        // The next connection is refused with the registered frame — written
+        // unprompted, before any client frame — and then closed.
+        let over = UnixStream::connect(&sock).expect("connect over the cap");
+        let mut reader = BufReader::new(over);
+        let frame = wire::read_frame(&mut reader).expect("the rejection frame arrives");
+        let value: serde_json::Value = serde_json::from_slice(&frame).expect("decode");
+        assert_eq!(
+            value["error"]["code"], "resource_exhausted.executor.ipc_connections",
+            "refused with the registered capacity code: {value}"
+        );
+        assert_eq!(value["error"]["class"], "resource_exhausted");
+        assert_eq!(value["error"]["retry_policy"], "same_request");
+        assert!(
+            wire::read_frame(&mut reader).is_err(),
+            "closed after the refusal"
+        );
+
+        drop(held);
+        server.shutdown();
     }
 
     #[test]

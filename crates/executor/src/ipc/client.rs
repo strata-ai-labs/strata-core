@@ -24,6 +24,22 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// Client write timeout: framing a request should never block for long.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Why a connect attempt failed — the broker's open dance treats these
+/// differently: a capacity refusal is a definitive, typed answer from a live
+/// owner worth surfacing to the caller, while a transport failure is just one
+/// bad probe inside the bounded retry window.
+#[derive(Debug)]
+pub(crate) enum ConnectError {
+    /// The owner answered with the registered capacity-rejection frame.
+    AtCapacity(ExecutorError),
+    /// Any other transport or handshake failure.
+    Io(io::Error),
+}
+
+/// The capacity-rejection code a refused connection carries (see
+/// `reject_at_capacity` on the server side).
+const AT_CAPACITY_CODE: &str = "resource_exhausted.executor.ipc_connections";
+
 /// A connected IPC client. One outstanding request at a time (synchronous
 /// request/response), so framing plus stream ordering is the only correlation
 /// needed.
@@ -41,12 +57,16 @@ pub(crate) struct IpcClient {
 impl IpcClient {
     /// Connect to a store owner listening at `socket_path` and introduce
     /// ourselves with a protocol-revision-2 hello.
-    pub(crate) fn connect(socket_path: &Path) -> io::Result<Self> {
-        let stream = UnixStream::connect(socket_path)?;
-        stream.set_read_timeout(Some(READ_TIMEOUT))?;
-        stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
+    pub(crate) fn connect(socket_path: &Path) -> Result<Self, ConnectError> {
+        let stream = UnixStream::connect(socket_path).map_err(ConnectError::Io)?;
+        stream
+            .set_read_timeout(Some(READ_TIMEOUT))
+            .map_err(ConnectError::Io)?;
+        stream
+            .set_write_timeout(Some(WRITE_TIMEOUT))
+            .map_err(ConnectError::Io)?;
         let mut client = Self {
-            reader: BufReader::new(stream.try_clone()?),
+            reader: BufReader::new(stream.try_clone().map_err(ConnectError::Io)?),
             writer: BufWriter::new(stream),
             server_hello: None,
             last_id: 0,
@@ -59,8 +79,9 @@ impl IpcClient {
     /// `Ok(None)` is a pre-hello owner that answered the hello frame with a
     /// malformed-envelope error and kept the connection — we downgrade to the
     /// implicit protocol 1 rather than stranding the user on a skewed pair.
-    /// Any other refusal or transport failure fails the connect.
-    fn hello(&mut self) -> io::Result<Option<ServerHello>> {
+    /// A capacity rejection is a typed refusal; any other refusal or transport
+    /// failure fails the connect.
+    fn hello(&mut self) -> Result<Option<ServerHello>, ConnectError> {
         let request = HelloRequest {
             protocol: protocol::PROTOCOL_VERSION,
             idl: Some(protocol::build_idl_stamps()),
@@ -72,16 +93,25 @@ impl IpcClient {
             access: SessionAccess::ReadWrite,
             capabilities: Vec::new(),
         };
-        let payload =
-            serde_json::to_vec(&HelloFrame { hello: request }).map_err(io::Error::other)?;
-        wire::write_frame(&mut self.writer, &payload)?;
-        let response = wire::read_frame(&mut self.reader)?;
-        let value: serde_json::Value =
-            serde_json::from_slice(&response).map_err(io::Error::other)?;
+        let payload = serde_json::to_vec(&HelloFrame { hello: request })
+            .map_err(|error| ConnectError::Io(io::Error::other(error)))?;
+        // An owner at capacity writes its rejection frame and closes without
+        // ever reading our hello — so a failed hello WRITE (broken pipe) may
+        // coexist with a readable rejection already in the socket buffer.
+        // Read before judging the write.
+        let write_result = wire::write_frame(&mut self.writer, &payload);
+        let response = match wire::read_frame(&mut self.reader) {
+            Ok(response) => response,
+            Err(read_error) => {
+                return Err(ConnectError::Io(write_result.err().unwrap_or(read_error)));
+            }
+        };
+        let value: serde_json::Value = serde_json::from_slice(&response)
+            .map_err(|error| ConnectError::Io(io::Error::other(error)))?;
 
         if value.get("type").and_then(serde_json::Value::as_str) == Some("ipc_hello") {
-            let hello: ServerHello =
-                serde_json::from_value(value["data"].clone()).map_err(io::Error::other)?;
+            let hello: ServerHello = serde_json::from_value(value["data"].clone())
+                .map_err(|error| ConnectError::Io(io::Error::other(error)))?;
             return Ok(Some(hello));
         }
         if let Some(error) = value.get("error") {
@@ -89,13 +119,18 @@ impl IpcClient {
             if code == Some("invalid_argument.executor.wire_request") {
                 return Ok(None);
             }
-            return Err(io::Error::other(format!(
+            if code == Some(AT_CAPACITY_CODE) {
+                let status: ErrorStatus = serde_json::from_value(error.clone())
+                    .map_err(|error| ConnectError::Io(io::Error::other(error)))?;
+                return Err(ConnectError::AtCapacity(ExecutorError::from_status(status)));
+            }
+            return Err(ConnectError::Io(io::Error::other(format!(
                 "the store owner refused the IPC hello: {error}"
-            )));
+            ))));
         }
-        Err(io::Error::other(
+        Err(ConnectError::Io(io::Error::other(
             "unexpected response to the IPC hello (neither ipc_hello nor an error envelope)",
-        ))
+        )))
     }
 
     /// The owner's hello, when this connection negotiated protocol revision 2.
@@ -276,6 +311,47 @@ mod tests {
             }
         });
         sock
+    }
+
+    /// A hand-rolled owner at capacity: writes the rejection frame the moment
+    /// a connection arrives (never reading the client's hello) and closes.
+    fn spawn_at_capacity_owner(dir: &std::path::Path) -> std::path::PathBuf {
+        let sock = dir.join("strata.sock");
+        let listener = UnixListener::bind(&sock).expect("bind fake owner");
+        std::thread::spawn(move || {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut writer = BufWriter::new(stream);
+            // Built with the real constructor so this fake cannot drift from
+            // the envelope the listener's reject_at_capacity actually writes.
+            let error = crate::ExecutorError::new(
+                crate::error::ExecutorErrorClass::Unavailable,
+                "resource_exhausted.executor.ipc_connections",
+                true,
+                "the store owner is at its IPC connection capacity",
+            );
+            let rejection =
+                serde_json::to_string(&serde_json::json!({ "error": error })).expect("serialize");
+            let _ = wire::write_frame(&mut writer, rejection.as_bytes());
+            // The stream drops here: rejection then close, like the listener.
+        });
+        sock
+    }
+
+    #[test]
+    fn a_capacity_refusal_surfaces_as_a_typed_connect_error() {
+        // The refusal races our hello write (the owner never reads it), so
+        // this also exercises the read-before-judging-the-write path.
+        let dir = tempfile::tempdir().expect("tmp");
+        let sock = spawn_at_capacity_owner(dir.path());
+
+        let error = match IpcClient::connect(&sock) {
+            Err(super::ConnectError::AtCapacity(error)) => error,
+            Err(other) => panic!("expected the typed capacity refusal, got {other:?}"),
+            Ok(_) => panic!("a refused connection must not connect"),
+        };
+        assert_eq!(error.code(), "resource_exhausted.executor.ipc_connections");
     }
 
     #[test]
