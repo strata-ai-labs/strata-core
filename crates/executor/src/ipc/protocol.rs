@@ -84,11 +84,17 @@ pub(crate) struct WireResponseFrameRef<'a> {
 /// access, no identity).
 pub(crate) const PROTOCOL_VERSION: u32 = 2;
 
+/// The version-tick notification capability: a subscribed connection receives
+/// coalesced, lossy `{"notify":{"event":"version",…}}` pushes when the
+/// store-state watermark advances.
+pub(crate) const CAPABILITY_NOTIFY_VERSION: &str = "notify.version";
+
 /// Capability names this owner supports. A hello's grant is the intersection
 /// of the client's want-list with this set — unknown names are ignored, never
-/// errors, so a newer client can probe an older owner. Empty until the first
-/// optional capability (version-tick notifications) lands.
-pub(crate) const SUPPORTED_CAPABILITIES: &[&str] = &[];
+/// errors, so a newer client can probe an older owner. The grant is
+/// *discovery*, not authorization: a supported capability's frames are served
+/// on any protocol-revision-2 connection.
+pub(crate) const SUPPORTED_CAPABILITIES: &[&str] = &[CAPABILITY_NOTIFY_VERSION];
 
 /// A hello first frame: `{"hello": {…}}`. Distinguished from a legacy
 /// [`WireRequest`] first frame by its single `hello` intent key.
@@ -201,6 +207,41 @@ pub(crate) fn frame_is_hello(frame: &[u8]) -> bool {
     }
     serde_json::from_slice::<Sniff>(frame)
         .map(|sniff| sniff.hello.is_some())
+        .unwrap_or(false)
+}
+
+/// A subscription frame on a protocol-revision-2 connection:
+/// `{"id": n, "subscribe": {"events": ["version"]}}`. Acked with an
+/// `ipc_subscribed` envelope carrying the accepted event set (the supported
+/// intersection — unknown names are ignored, mirroring capability grants).
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SubscribeFrame {
+    #[serde(default)]
+    pub(crate) id: Option<u64>,
+    pub(crate) subscribe: SubscribeRequest,
+}
+
+/// The subscription want-list.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SubscribeRequest {
+    #[serde(default)]
+    pub(crate) events: Vec<String>,
+}
+
+/// The event name a version-tick subscription asks for.
+pub(crate) const EVENT_VERSION: &str = "version";
+
+/// Whether a frame is a subscription (vs a request). Same shape-only contract
+/// as [`frame_is_hello`].
+pub(crate) fn frame_is_subscribe(frame: &[u8]) -> bool {
+    #[derive(Deserialize)]
+    struct Sniff {
+        subscribe: Option<serde::de::IgnoredAny>,
+    }
+    serde_json::from_slice::<Sniff>(frame)
+        .map(|sniff| sniff.subscribe.is_some())
         .unwrap_or(false)
 }
 
@@ -326,6 +367,25 @@ mod tests {
         let unknown_beside_hello: Result<super::HelloFrame, _> =
             serde_json::from_str("{\"hello\":{\"protocol\":2},\"surprise\":true}");
         assert!(unknown_beside_hello.is_err(), "unknown frame key rejected");
+    }
+
+    #[test]
+    fn the_subscribe_sniff_routes_by_shape_and_the_frame_round_trips() {
+        use super::frame_is_subscribe;
+        assert!(frame_is_subscribe(
+            b"{\"id\":1,\"subscribe\":{\"events\":[\"version\"]}}"
+        ));
+        assert!(!frame_is_subscribe(b"{\"command\":{\"type\":\"ping\"}}"));
+        assert!(!frame_is_subscribe(b"{\"hello\":{\"protocol\":2}}"));
+
+        let decoded: super::SubscribeFrame =
+            serde_json::from_str("{\"id\":3,\"subscribe\":{\"events\":[\"version\"]}}")
+                .expect("decode");
+        assert_eq!(decoded.id, Some(3));
+        assert_eq!(decoded.subscribe.events, ["version"]);
+        let unknown: Result<super::SubscribeFrame, _> =
+            serde_json::from_str("{\"id\":3,\"subscribe\":{\"events\":[],\"surprise\":1}}");
+        assert!(unknown.is_err(), "subscribe evolves by known fields only");
     }
 
     #[test]

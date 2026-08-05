@@ -18,8 +18,10 @@ use std::time::Duration;
 
 use crate::Executor;
 
+use std::sync::atomic::AtomicU64;
+
 use super::dispatch::execute_wire_request;
-use super::protocol::{self, HelloFrame, ServerHello, SessionAccess, WireRequest};
+use super::protocol::{self, HelloFrame, ServerHello, SessionAccess, SubscribeFrame, WireRequest};
 use super::{pid_path, resolve_binding, wire};
 
 /// Concurrent handler-thread cap. Excess connections are refused with a
@@ -32,6 +34,10 @@ const REJECT_WRITE_TIMEOUT: Duration = Duration::from_millis(500);
 /// Handler read timeout: bounds how long a handler blocks before re-checking
 /// the shutdown flag, so `shutdown()` returns promptly.
 const HANDLER_READ_TIMEOUT: Duration = Duration::from_secs(2);
+/// Read timeout for a version-tick-subscribed connection: each timeout tick
+/// doubles as the watermark poll, so this bounds notification latency. The
+/// watermark is a lock-free atomic — polling never touches the executor lane.
+const NOTIFY_POLL: Duration = Duration::from_millis(150);
 /// Listener idle poll when no connection is pending.
 const ACCEPT_POLL: Duration = Duration::from_millis(50);
 
@@ -347,6 +353,8 @@ fn handle_connection(
     // The session's granted access. Full access until a hello declares
     // otherwise — a protocol-1 connection has no way to narrow itself.
     let mut access = SessionAccess::ReadWrite;
+    // Version-tick subscription state, once this connection subscribes.
+    let mut ticks: Option<TickState> = None;
     loop {
         if shutdown.load(Ordering::SeqCst) {
             break;
@@ -355,7 +363,14 @@ fn handle_connection(
             Ok(frame) => frame,
             // A read timeout re-checks the shutdown flag and loops; anything
             // else (a clean EOF disconnect included) ends this connection.
+            // For a subscribed connection each timeout is also the watermark
+            // poll — the lowered NOTIFY_POLL timeout bounds tick latency.
             Err(ref e) if is_read_retry_error(e.kind()) => {
+                if let Some(state) = &mut ticks {
+                    if !state.push_if_advanced(&mut writer) {
+                        break;
+                    }
+                }
                 continue;
             }
             Err(_) => break,
@@ -388,6 +403,23 @@ fn handle_connection(
             }
         }
 
+        // A subscription frame is transport-level: it never dispatches through
+        // the executor (and so is never gated — a read-only observer is
+        // exactly who subscribes). Protocol-revision-2 connections only; on
+        // protocol 1 it falls through as a malformed request envelope.
+        if correlated && protocol::frame_is_subscribe(&frame) {
+            let response = serve_subscribe(&frame, executor, &mut ticks);
+            if ticks.is_some() {
+                // Prompt ticks need a short poll; best-effort — a failure just
+                // leaves the slower shutdown-check cadence in place.
+                let _ = reader.get_ref().set_read_timeout(Some(NOTIFY_POLL));
+            }
+            if wire::write_frame(&mut writer, response.as_bytes()).is_err() {
+                break;
+            }
+            continue;
+        }
+
         let response = if correlated {
             serve_one_correlated(executor, baseline, &frame, access)
         } else {
@@ -396,7 +428,88 @@ fn handle_connection(
         if wire::write_frame(&mut writer, response.as_bytes()).is_err() {
             break;
         }
+        // A write this connection just dispatched advances the watermark; a
+        // subscribed connection hears about it right away, not a poll later.
+        if let Some(state) = &mut ticks {
+            if !state.push_if_advanced(&mut writer) {
+                break;
+            }
+        }
     }
+}
+
+/// A connection's version-tick subscription: the shared store-state watermark
+/// plus the last value pushed. Coalescing is inherent — only the latest value
+/// at each check is pushed, so a slow client gets fewer ticks, never a
+/// backlog.
+struct TickState {
+    watermark: Arc<AtomicU64>,
+    last_seen: u64,
+}
+
+impl TickState {
+    /// Push one `{"notify":{"event":"version","version":N}}` frame if the
+    /// watermark advanced past the last push. Returns false when the write
+    /// fails (the connection is dead and the handler should exit).
+    fn push_if_advanced(&mut self, writer: &mut BufWriter<UnixStream>) -> bool {
+        let now = self.watermark.load(Ordering::Relaxed);
+        if now == self.last_seen {
+            return true;
+        }
+        self.last_seen = now;
+        let frame = format!("{{\"notify\":{{\"event\":\"version\",\"version\":{now}}}}}");
+        wire::write_frame(writer, frame.as_bytes()).is_ok()
+    }
+}
+
+/// Serve a subscription frame: accept the supported event intersection, arm
+/// the tick state when `version` is among them, and ack with the accepted set.
+/// The baseline watermark is captured at subscribe time — the subscriber
+/// re-reads current state anyway, so the first tick is the first *change*.
+fn serve_subscribe(
+    frame: &[u8],
+    executor: &Arc<Mutex<Executor>>,
+    ticks: &mut Option<TickState>,
+) -> String {
+    let request: SubscribeFrame = match serde_json::from_slice(frame) {
+        Ok(request) => request,
+        Err(error) => {
+            return correlate(
+                None,
+                &wire_request_error(&format!("malformed subscription frame: {error}")),
+            )
+        }
+    };
+    let Some(id) = request.id else {
+        return correlate(
+            None,
+            &wire_request_error("a protocol-revision-2 subscription requires a correlation id"),
+        );
+    };
+    let accepted: Vec<&str> = request
+        .subscribe
+        .events
+        .iter()
+        .filter(|event| event.as_str() == protocol::EVENT_VERSION)
+        .map(String::as_str)
+        .collect();
+    if accepted.contains(&protocol::EVENT_VERSION) {
+        let watermark = executor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .state_version_handle();
+        *ticks = Some(TickState {
+            last_seen: watermark.load(Ordering::Relaxed),
+            watermark,
+        });
+    }
+    correlate(
+        Some(id),
+        &serde_json::to_string(
+            &serde_json::json!({ "type": "ipc_subscribed", "data": { "events": accepted } }),
+        )
+        .unwrap_or_else(|error| serialize_hello_failure(&error)),
+    )
 }
 
 /// Serve a hello first frame: strict parse, protocol check, capability grant.
@@ -986,7 +1099,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_capabilities_are_ignored_not_granted_and_not_errors() {
+    fn capability_grants_are_the_supported_intersection() {
         let dir = tempfile::tempdir().expect("tmp");
         let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
         let mut server = IpcServer::start(dir.path(), executor).expect("start");
@@ -997,8 +1110,195 @@ mod tests {
         assert_eq!(hello["type"], "ipc_hello", "probing is not an error");
         assert_eq!(
             hello["data"]["capabilities"],
+            serde_json::json!(["notify.version"]),
+            "the supported capability is granted; the unknown one is ignored"
+        );
+
+        server.shutdown();
+    }
+
+    /// Open a hello'd connection subscribed to version ticks.
+    fn subscribed_conn(sock: &std::path::Path, access: &str) -> RawConn {
+        let mut conn = RawConn::connect(sock);
+        let hello = format!("{{\"hello\":{{\"protocol\":2,\"access\":\"{access}\"}}}}");
+        assert_eq!(conn.send(hello.as_bytes())["type"], "ipc_hello");
+        let ack = conn.send(b"{\"id\":1,\"subscribe\":{\"events\":[\"version\"]}}");
+        assert_eq!(ack["id"], 1);
+        assert_eq!(ack["payload"]["type"], "ipc_subscribed", "acked: {ack}");
+        assert_eq!(
+            ack["payload"]["data"]["events"],
+            serde_json::json!(["version"])
+        );
+        conn
+    }
+
+    /// Blocking-read one frame and decode it (used for expected pushes).
+    fn read_push(conn: &mut RawConn) -> serde_json::Value {
+        let frame = wire::read_frame(&mut conn.reader).expect("push arrives");
+        serde_json::from_slice(&frame).expect("push decodes")
+    }
+
+    /// One owner-local write, never crossing the socket.
+    fn owner_local_put(executor: &Arc<Mutex<Executor>>, value: &str) {
+        let put: crate::Command = serde_json::from_value(
+            serde_json::json!({ "type": "kv_put", "key": "aGk=", "value": value }),
+        )
+        .expect("command");
+        executor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .execute(put)
+            .expect("owner-local write");
+    }
+
+    #[test]
+    fn a_subscriber_is_ticked_by_its_own_writes_immediately() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+        let mut conn = subscribed_conn(server.socket_path(), "read_write");
+
+        let put = conn.send_correlated(
+            2,
+            "{\"type\":\"kv_put\",\"key\":\"aGk=\",\"value\":\"dg==\"}",
+        );
+        assert_eq!(put["payload"]["type"], "write_result");
+        // The tick follows the response on the same connection — pushed after
+        // the serve, not a poll interval later.
+        let push = read_push(&mut conn);
+        assert_eq!(push["notify"]["event"], "version", "a tick: {push}");
+        assert_eq!(push["notify"]["version"], 1, "one write so far");
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn owner_local_writes_reach_a_read_only_subscriber() {
+        // The headline scenario: the owner process writes in-process (never
+        // crossing the socket), and a read-only observer hears about it. The
+        // watermark lives at the executor choke point, so no write path can
+        // bypass it.
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor.clone()).expect("start");
+        let mut conn = subscribed_conn(server.socket_path(), "read");
+
+        owner_local_put(&executor, "dg==");
+
+        let push = read_push(&mut conn);
+        assert_eq!(push["notify"]["event"], "version");
+        assert_eq!(
+            push["notify"]["version"], 1,
+            "the local write ticked: {push}"
+        );
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn ticks_are_coalesced_and_strictly_increasing() {
+        // Lossy latest-wins semantics: a burst of writes may surface as fewer
+        // frames (typically one), every frame carries a newer value than the
+        // last, and the final observed value is the final watermark.
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor.clone()).expect("start");
+        let mut conn = subscribed_conn(server.socket_path(), "read");
+
+        for _ in 0..5u8 {
+            owner_local_put(&executor, "dg==");
+        }
+
+        let mut last = 0u64;
+        loop {
+            let push = read_push(&mut conn);
+            let version = push["notify"]["version"].as_u64().expect("version");
+            assert!(
+                version > last,
+                "ticks are strictly increasing (got {version} after {last})"
+            );
+            last = version;
+            if version == 5 {
+                break;
+            }
+        }
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn an_unsubscribed_connection_receives_no_pushes() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor.clone()).expect("start");
+        let mut conn = RawConn::connect(server.socket_path());
+        assert_eq!(
+            conn.send(b"{\"hello\":{\"protocol\":2}}")["type"],
+            "ipc_hello"
+        );
+
+        owner_local_put(&executor, "dg==");
+
+        // No subscription — nothing may arrive. A bounded read must time out.
+        conn.reader
+            .get_ref()
+            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .expect("set timeout");
+        assert!(
+            wire::read_frame(&mut conn.reader).is_err(),
+            "an unsubscribed connection is never pushed to"
+        );
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn a_subscription_with_only_unknown_events_acks_empty_and_never_ticks() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor.clone()).expect("start");
+        let mut conn = RawConn::connect(server.socket_path());
+        assert_eq!(
+            conn.send(b"{\"hello\":{\"protocol\":2}}")["type"],
+            "ipc_hello"
+        );
+
+        let ack = conn.send(b"{\"id\":1,\"subscribe\":{\"events\":[\"weather\"]}}");
+        assert_eq!(
+            ack["payload"]["data"]["events"],
             serde_json::json!([]),
-            "nothing is granted until a capability is supported"
+            "unknown events are ignored, mirroring capability grants: {ack}"
+        );
+
+        owner_local_put(&executor, "dg==");
+        conn.reader
+            .get_ref()
+            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .expect("set timeout");
+        assert!(
+            wire::read_frame(&mut conn.reader).is_err(),
+            "an empty subscription never ticks"
+        );
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn a_subscription_without_an_id_is_refused() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+        let mut conn = RawConn::connect(server.socket_path());
+        assert_eq!(
+            conn.send(b"{\"hello\":{\"protocol\":2}}")["type"],
+            "ipc_hello"
+        );
+
+        let refused = conn.send(b"{\"subscribe\":{\"events\":[\"version\"]}}");
+        assert_eq!(refused["id"], serde_json::Value::Null);
+        assert_eq!(
+            refused["payload"]["error"]["code"],
+            "invalid_argument.executor.wire_request"
         );
 
         server.shutdown();
