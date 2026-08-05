@@ -345,20 +345,20 @@ code against protocol 1.
 
 ## 11. Issue tracking
 
-Filled in when the gap issues are filed; the umbrella issue owns the live checklist.
+The umbrella issue owns the live checklist.
 
 | Gap | Issue |
 |-----|-------|
-| Umbrella | TBD |
-| G1 | TBD |
-| G2 | TBD |
-| G3 | TBD |
-| G4 | TBD |
-| G5 | TBD |
-| G6 | TBD |
-| G7 | TBD |
-| G8 | TBD |
-| G9 | TBD |
-| G10 | TBD |
-| strata-python `ipc` feature | TBD |
-| strata-nodesdk executor cutover | TBD |
+| Umbrella | [#2871](https://github.com/stratalab/strata-core/issues/2871) |
+| G1 hello frame | [#2872](https://github.com/stratalab/strata-core/issues/2872) |
+| G2 read-only sessions | [#2873](https://github.com/stratalab/strata-core/issues/2873) |
+| G3 correlation IDs | [#2874](https://github.com/stratalab/strata-core/issues/2874) |
+| G4 cap rejection frame | [#2875](https://github.com/stratalab/strata-core/issues/2875) |
+| G5 version ticks | [#2876](https://github.com/stratalab/strata-core/issues/2876) |
+| G6 deadlines + cancel | [#2877](https://github.com/stratalab/strata-core/issues/2877) |
+| G7 client identities | [#2878](https://github.com/stratalab/strata-core/issues/2878) |
+| G8 parallel reads (NODE-11) | [#2879](https://github.com/stratalab/strata-core/issues/2879) |
+| G9 large-result bounding | [#2880](https://github.com/stratalab/strata-core/issues/2880) |
+| G10 Windows transport | [#2881](https://github.com/stratalab/strata-core/issues/2881) |
+| strata-python `ipc` feature | [strata-python#68](https://github.com/stratalab/strata-python/issues/68) |
+| strata-nodesdk executor cutover | [strata-nodesdk#22](https://github.com/stratalab/strata-nodesdk/issues/22) |
