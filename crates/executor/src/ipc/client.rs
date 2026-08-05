@@ -13,6 +13,7 @@ use crate::{Command, ErrorStatus, ExecutorError, ExecutorResult, Output};
 
 use super::protocol::{
     self, ClientIdentity, HelloFrame, HelloRequest, ServerHello, SessionAccess, WireRequestOwned,
+    WireResponseFrameRef,
 };
 use super::wire;
 
@@ -32,6 +33,9 @@ pub(crate) struct IpcClient {
     /// The owner's hello, when it speaks protocol revision 2. `None` against a
     /// pre-hello owner (the connection then runs the implicit protocol 1).
     server_hello: Option<ServerHello>,
+    /// Correlation id of the most recent protocol-revision-2 request. The next
+    /// request uses the increment, and the response frame must echo it back.
+    last_id: u64,
 }
 
 impl IpcClient {
@@ -45,6 +49,7 @@ impl IpcClient {
             reader: BufReader::new(stream.try_clone()?),
             writer: BufWriter::new(stream),
             server_hello: None,
+            last_id: 0,
         };
         client.server_hello = client.hello()?;
         Ok(client)
@@ -102,6 +107,12 @@ impl IpcClient {
     /// typed result. A transport failure surfaces as a registered
     /// `unavailable.executor.ipc_transport` error (the command's fate is
     /// in-doubt).
+    ///
+    /// On a protocol-revision-2 connection the request carries a correlation
+    /// id and the response arrives in an `{"id","payload"}` frame; the echoed
+    /// id must match, or the stream ordering this client depends on has been
+    /// violated and the response cannot be trusted. On the implicit protocol 1
+    /// both directions are the bare shapes.
     pub(crate) fn execute(
         &mut self,
         branch: Option<&str>,
@@ -117,7 +128,13 @@ impl IpcClient {
             )
         })?;
         let raw = RawValue::from_string(command_json).map_err(transport_error)?;
+        let correlated = self.server_hello.is_some();
+        let id = correlated.then(|| {
+            self.last_id = self.last_id.wrapping_add(1);
+            self.last_id
+        });
         let request = WireRequestOwned {
+            id,
             branch,
             space,
             command: &raw,
@@ -126,7 +143,19 @@ impl IpcClient {
 
         wire::write_frame(&mut self.writer, &payload).map_err(transport_error)?;
         let response = wire::read_frame(&mut self.reader).map_err(transport_error)?;
-        decode_wire_response(&response)
+
+        let Some(sent_id) = id else {
+            return decode_wire_response(&response);
+        };
+        let frame: WireResponseFrameRef =
+            serde_json::from_slice(&response).map_err(transport_error)?;
+        if frame.id != Some(sent_id) {
+            return Err(transport_error(format!(
+                "correlation id mismatch: sent {sent_id}, response echoed {:?}",
+                frame.id
+            )));
+        }
+        decode_wire_response(frame.payload.get().as_bytes())
     }
 }
 
@@ -175,6 +204,8 @@ mod tests {
     /// protocol-1 server did — a `WireRequest` with `ping` gets a pong
     /// envelope; anything else (including a hello frame it has never heard
     /// of) gets the malformed-envelope error — and keeps the connection open.
+    /// A frame smuggling a correlation `id` is answered with an error too:
+    /// after downgrading, the client must speak pure protocol 1.
     fn spawn_legacy_owner(dir: &std::path::Path) -> std::path::PathBuf {
         let sock = dir.join("strata.sock");
         let listener = UnixListener::bind(&sock).expect("bind fake owner");
@@ -186,14 +217,15 @@ mod tests {
             let mut writer = BufWriter::new(stream);
             while let Ok(frame) = wire::read_frame(&mut reader) {
                 let value: Result<serde_json::Value, _> = serde_json::from_slice(&frame);
-                let is_ping = value
+                let is_pure_protocol_1_ping = value
                     .as_ref()
                     .ok()
+                    .filter(|v| v.get("id").is_none())
                     .and_then(|v| v.get("command"))
                     .and_then(|c| c.get("type"))
                     .and_then(|t| t.as_str())
                     == Some("ping");
-                let response = if is_ping {
+                let response = if is_pure_protocol_1_ping {
                     "{\"type\":\"pong\",\"data\":{\"version\":\"0.0.0-legacy\"}}".to_owned()
                 } else {
                     "{\"error\":{\"class\":\"invalid_argument\",\
@@ -207,6 +239,63 @@ mod tests {
             }
         });
         sock
+    }
+
+    /// A hand-rolled protocol-revision-2 owner that answers the hello
+    /// correctly, then echoes the WRONG correlation id on every response —
+    /// the transport-corruption case the client must refuse to trust.
+    fn spawn_miscorrelating_owner(dir: &std::path::Path) -> std::path::PathBuf {
+        let sock = dir.join("strata.sock");
+        let listener = UnixListener::bind(&sock).expect("bind fake owner");
+        std::thread::spawn(move || {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+            let mut writer = BufWriter::new(stream);
+            let mut helloed = false;
+            while let Ok(frame) = wire::read_frame(&mut reader) {
+                let response = if helloed {
+                    "{\"id\":999999,\"payload\":{\"type\":\"pong\",\
+                     \"data\":{\"version\":\"0.0.0-test\"}}}"
+                        .to_owned()
+                } else {
+                    helloed = true;
+                    let _ = frame; // the hello's contents are irrelevant here
+                    "{\"type\":\"ipc_hello\",\"data\":{\"protocol\":2,\
+                     \"release\":\"0.0.0-test\",\
+                     \"idl\":{\"schema_version\":\"strata.idl.v1\",\
+                     \"generator_version\":\"strata-executor-idl.1\"},\
+                     \"granted_access\":\"read_write\",\"capabilities\":[],\
+                     \"owner_pid\":1}}"
+                        .to_owned()
+                };
+                if wire::write_frame(&mut writer, response.as_bytes()).is_err() {
+                    break;
+                }
+            }
+        });
+        sock
+    }
+
+    #[test]
+    fn a_miscorrelated_response_is_a_transport_error_not_a_result() {
+        // If the echoed id does not match the sent id, the stream ordering the
+        // client depends on has been violated — returning the payload anyway
+        // could hand a caller some other request's answer. The registered
+        // in-doubt transport error is the only honest result.
+        let dir = tempfile::tempdir().expect("tmp");
+        let sock = spawn_miscorrelating_owner(dir.path());
+
+        let mut client = IpcClient::connect(&sock).expect("hello succeeds");
+        assert!(client.server_hello().is_some(), "protocol 2 negotiated");
+
+        let command: crate::Command =
+            serde_json::from_value(serde_json::json!({ "type": "ping" })).expect("ping");
+        let error = client
+            .execute(None, None, &command)
+            .expect_err("a miscorrelated response must not be trusted");
+        assert_eq!(error.code(), "unavailable.executor.ipc_transport");
     }
 
     #[test]
