@@ -458,10 +458,11 @@ fn handle_connection(
             continue;
         }
 
+        let received_at = std::time::Instant::now();
         let response = if correlated {
-            serve_one_correlated(executor, baseline, &frame, access)
+            serve_one_correlated(executor, baseline, &frame, access, received_at)
         } else {
-            serve_one(executor, baseline, &frame, access)
+            serve_one(executor, baseline, &frame, access, received_at)
         };
         if wire::write_frame(&mut writer, response.as_bytes()).is_err() {
             break;
@@ -636,12 +637,13 @@ fn serve_one(
     baseline: &Baseline,
     frame: &[u8],
     access: SessionAccess,
+    received_at: std::time::Instant,
 ) -> String {
     let request: WireRequest = match serde_json::from_slice(frame) {
         Ok(request) => request,
         Err(error) => return wire_request_error(&error.to_string()),
     };
-    dispatch_request(executor, baseline, &request, access)
+    dispatch_request(executor, baseline, &request, access, received_at)
 }
 
 /// Serve one frame on protocol revision 2: the request must carry a
@@ -653,6 +655,7 @@ fn serve_one_correlated(
     baseline: &Baseline,
     frame: &[u8],
     access: SessionAccess,
+    received_at: std::time::Instant,
 ) -> String {
     let request: WireRequest = match serde_json::from_slice(frame) {
         Ok(request) => request,
@@ -666,7 +669,7 @@ fn serve_one_correlated(
     };
     correlate(
         Some(id),
-        &dispatch_request(executor, baseline, &request, access),
+        &dispatch_request(executor, baseline, &request, access, received_at),
     )
 }
 
@@ -708,6 +711,7 @@ fn dispatch_request(
     baseline: &Baseline,
     request: &WireRequest,
     access: SessionAccess,
+    received_at: std::time::Instant,
 ) -> String {
     // Each request fully determines the scope: its own branch/space, or the
     // owner's baseline when omitted — never a previous request's leftover.
@@ -717,6 +721,15 @@ fn dispatch_request(
         let mut executor = executor
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Deadline shed: the budget may have expired while this request
+        // waited for the execution lane (the lock above). Checked after
+        // acquisition and before dispatch, so expired work is dropped
+        // instead of piling onto a busy lane for a caller that gave up.
+        if let Some(budget_ms) = request.deadline_ms {
+            if received_at.elapsed() >= std::time::Duration::from_millis(budget_ms) {
+                return Err(deadline_shed(budget_ms));
+            }
+        }
         executor.set_default_branch(branch.to_owned())?;
         executor.set_default_space(space.to_owned())?;
         Ok::<String, crate::ExecutorError>(execute_wire_request(
@@ -757,6 +770,20 @@ fn wire_request_error(detail: &str) -> String {
     );
     serde_json::to_string(&serde_json::json!({ "error": error }))
         .unwrap_or_else(|_| static_wire_request_error())
+}
+
+/// The registered rejection for a request whose deadline expired before
+/// dispatch. Retryable by policy (`same_request`): the same request may well
+/// succeed once the lane is less busy.
+fn deadline_shed(budget_ms: u64) -> crate::ExecutorError {
+    crate::ExecutorError::new(
+        // The wire class derives from the code's `unavailable.` prefix;
+        // retryable=true renders the SameRequest retry policy.
+        crate::error::ExecutorErrorClass::Unavailable,
+        "unavailable.executor.ipc_deadline",
+        true,
+        format!("the request's {budget_ms}ms deadline expired before dispatch"),
+    )
 }
 
 fn internal_panic_error() -> String {
@@ -800,6 +827,7 @@ mod tests {
         let raw = serde_json::value::RawValue::from_string(command.to_owned()).expect("raw");
         let request = WireRequestOwned {
             id: None,
+            deadline_ms: None,
             branch,
             space: None,
             command: &raw,
@@ -955,6 +983,7 @@ mod tests {
             .expect("raw");
         let request = WireRequestOwned {
             id: None,
+            deadline_ms: None,
             branch: None,
             space: None,
             command: &raw,
@@ -993,6 +1022,7 @@ mod tests {
             let raw = serde_json::value::RawValue::from_string(command.to_owned()).expect("raw");
             let request = WireRequestOwned {
                 id: None,
+                deadline_ms: None,
                 branch: None,
                 space: None,
                 command: &raw,
@@ -1005,6 +1035,7 @@ mod tests {
             let raw = serde_json::value::RawValue::from_string(command.to_owned()).expect("raw");
             let request = WireRequestOwned {
                 id: Some(id),
+                deadline_ms: None,
                 branch: None,
                 space: None,
                 command: &raw,
@@ -1332,6 +1363,118 @@ mod tests {
     }
 
     #[test]
+    fn a_request_within_its_deadline_executes_normally() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+        let mut conn = RawConn::connect(server.socket_path());
+        assert_eq!(
+            conn.send(b"{\"hello\":{\"protocol\":2}}")["type"],
+            "ipc_hello"
+        );
+
+        let response =
+            conn.send(b"{\"id\":1,\"deadline_ms\":60000,\"command\":{\"type\":\"ping\"}}");
+        assert_eq!(response["id"], 1);
+        assert_eq!(
+            response["payload"]["type"], "pong",
+            "a live budget executes"
+        );
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn an_already_expired_deadline_is_shed_with_the_registered_code() {
+        // deadline_ms: 0 is "already expired" by construction (elapsed >= 0),
+        // making the shed deterministic without sleeps or contention.
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+        let mut conn = RawConn::connect(server.socket_path());
+        assert_eq!(
+            conn.send(b"{\"hello\":{\"protocol\":2}}")["type"],
+            "ipc_hello"
+        );
+
+        let shed = conn.send(
+            b"{\"id\":1,\"deadline_ms\":0,\
+              \"command\":{\"type\":\"kv_put\",\"key\":\"aGk=\",\"value\":\"dg==\"}}",
+        );
+        assert_eq!(shed["id"], 1, "the shed is correlated");
+        assert_eq!(
+            shed["payload"]["error"]["code"], "unavailable.executor.ipc_deadline",
+            "shed with the registered code: {shed}"
+        );
+        assert_eq!(shed["payload"]["error"]["retry_policy"], "same_request");
+        assert_eq!(shed["payload"]["error"]["commit_outcome"], "not_started");
+
+        // Shed before dispatch: the write never happened.
+        let get = conn.send_correlated(2, "{\"type\":\"kv_get\",\"key\":\"aGk=\"}");
+        assert_eq!(
+            get["payload"]["data"]["found"], false,
+            "nothing was written by the shed request"
+        );
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn a_deadline_that_expires_waiting_for_the_lane_is_shed() {
+        // The motivating case: the lane is busy (here: the test holds the
+        // executor lock, standing in for another connection's long command),
+        // the client's budget expires during the wait, and the request is
+        // shed at lock acquisition instead of executing for a caller that
+        // has already given up.
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor.clone()).expect("start");
+        let mut conn = RawConn::connect(server.socket_path());
+        assert_eq!(
+            conn.send(b"{\"hello\":{\"protocol\":2}}")["type"],
+            "ipc_hello"
+        );
+
+        let lane = executor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        wire::write_frame(
+            &mut conn.writer,
+            b"{\"id\":1,\"deadline_ms\":50,\"command\":{\"type\":\"ping\"}}",
+        )
+        .expect("write while the lane is held");
+        // Hold the lane well past the request's 50ms budget, then release.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        drop(lane);
+
+        let frame = wire::read_frame(&mut conn.reader).expect("shed response");
+        let shed: serde_json::Value = serde_json::from_slice(&frame).expect("decode");
+        assert_eq!(
+            shed["payload"]["error"]["code"], "unavailable.executor.ipc_deadline",
+            "the expired wait was shed, not executed: {shed}"
+        );
+
+        server.shutdown();
+    }
+
+    #[test]
+    fn a_legacy_request_deadline_is_honored_with_a_bare_envelope() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
+        let mut server = IpcServer::start(dir.path(), executor).expect("start");
+        let mut conn = RawConn::connect(server.socket_path());
+
+        let shed = conn.send(b"{\"deadline_ms\":0,\"command\":{\"type\":\"ping\"}}");
+        assert_eq!(
+            shed["error"]["code"], "unavailable.executor.ipc_deadline",
+            "bare envelope on protocol 1: {shed}"
+        );
+        assert!(shed.get("id").is_none(), "no frame wrapper on protocol 1");
+
+        server.shutdown();
+    }
+
+    #[test]
     fn the_client_registry_names_hello_clients_and_keeps_legacy_anonymous() {
         let dir = tempfile::tempdir().expect("tmp");
         let executor = Arc::new(Mutex::new(Executor::open_cache().expect("cache")));
@@ -1503,6 +1646,7 @@ mod tests {
         let raw = serde_json::value::RawValue::from_string(command.to_owned()).expect("raw");
         serde_json::to_vec(&WireRequestOwned {
             id: Some(id),
+            deadline_ms: None,
             branch: None,
             space: None,
             command: &raw,

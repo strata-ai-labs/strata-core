@@ -250,19 +250,26 @@ not authentication — same-user trust model is unchanged.
 
 ## 6. Deadlines and cancellation (G6)
 
-- `WireRequest` gains `deadline_ms: u64?` — a relative budget from server receipt.
-- **Phase 1 (transport only):** the handler checks the deadline after acquiring the
-  executor lock and *before* dispatch; an expired request is answered with a new
-  registered code (proposed `unavailable.executor.ipc_deadline`; retry `SameRequest`;
-  `definitely_not_committed`) instead of executing pointlessly. This bounds the damage
-  of queue-wait behind a long command: the lane still serializes, but expired work is
-  shed instead of piling on.
-- **Cancel frame:** `{"cancel": {"id": 7}}` — best effort. Phase 1 cancels only
-  requests not yet dispatched (their response is the deadline/canceled error);
-  an in-flight command cannot be interrupted.
-- **Phase 2 (engine cooperation, separate slice):** cooperative deadline checks at
-  pagination boundaries inside long reads (scans, analytics). Full mid-command
-  cancellation is engine work and rides with G8's read-path changes if at all.
+- `WireRequest` gains `deadline_ms: u64?` — a relative budget whose clock starts when
+  the owner *reads* the frame.
+- **Phase 1 (landed, G6):** the handler checks the deadline after acquiring the
+  executor lock and *before* dispatch; an expired request is answered with the
+  registered `unavailable.executor.ipc_deadline` (retry `same_request`,
+  `not_started`) instead of executing pointlessly. This sheds exactly the motivating
+  case — a request that waited out its budget behind another connection's long
+  command: the lane still serializes, but expired work is dropped instead of piling
+  on. Honored on both protocols (a legacy client simply never sends the field).
+- **Cancel frame — resolved into phase 2.** *(Design change at implementation:)* the
+  sketched `{"cancel": {"id"}}` for queued-not-dispatched requests cannot work on
+  this transport: frames on a connection are processed strictly in order, so a cancel
+  can never overtake the requests ahead of it in the same stream — by the time the
+  server reads it, the targeted request has already been served. The two forms of
+  cancellation that ARE meaningful both belong to phase 2: interrupting an
+  **in-flight** command (cooperative deadline/cancel checks inside long reads —
+  engine work, rides with G8's read-path changes), and **cross-connection** cancel
+  (one connection targeting another connection's request — needs identity plumbing;
+  revisit alongside it). Until then, a pipelining client bounds queued work with
+  per-request deadlines.
 - The server-side deadline never replaces client timeouts; it makes them honest — a
   client that gave up is no longer charged to everyone else's latency.
 

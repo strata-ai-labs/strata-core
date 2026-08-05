@@ -33,6 +33,13 @@ pub(crate) struct WireRequest<'a> {
     /// implicit protocol 1, whose responses carry no frame to echo it in.
     #[serde(default)]
     pub(crate) id: Option<u64>,
+    /// Relative execution budget in milliseconds. The clock starts when the
+    /// owner READS the frame; if the budget expires while the request waits
+    /// for the execution lane (behind another connection's long command), it
+    /// is shed with `unavailable.executor.ipc_deadline` instead of executing
+    /// pointlessly for a caller that has already given up.
+    #[serde(default)]
+    pub(crate) deadline_ms: Option<u64>,
     /// Session default branch for this request (the client's `--branch`),
     /// applied before dispatch. `None` leaves the owner's default in place.
     #[serde(default)]
@@ -51,6 +58,8 @@ pub(crate) struct WireRequest<'a> {
 pub(crate) struct WireRequestOwned<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) deadline_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) branch: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -246,6 +255,7 @@ mod tests {
         .expect("raw command");
         let owned = WireRequestOwned {
             id: Some(7),
+            deadline_ms: None,
             branch: Some("feature"),
             space: None,
             command: &command,
