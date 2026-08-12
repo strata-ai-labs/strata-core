@@ -116,5 +116,6 @@ strata <db> mcp serve                    # MCP over stdio (~20 tools)
 
 - `stratadb.agents_guide()` — the complete Python guide, embedded in the wheel
 - `strata agents guide` / `strata agents commands --json` / `strata agents errors --json`
+- Fuller skill set (usage, branching, time travel): `npx skills add stratalab/strata-agent-skills`
 - https://stratadb.org/llms.txt (append `.md` to any docs URL for CommonMark)
 - `strata doctor` — coded diagnostics when anything is off

@@ -11,7 +11,12 @@ use strata_executor::JsonIndexType;
 // from.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Parser)]
-#[command(name = "strata", version, about = "Strata database CLI")]
+#[command(
+    name = "strata",
+    version,
+    about = "Strata database CLI",
+    after_help = "get started:\n  strata ./my-db kv put greeting hello          a database is created by writing to it\n  strata agents guide                           the full surface, written for agents\n  npx skills add stratalab/strata-agent-skills  install the Strata agent skills\n  https://stratadb.org                          docs"
+)]
 pub(crate) struct Cli {
     /// Durable database path.
     #[arg(value_name = "DB")]

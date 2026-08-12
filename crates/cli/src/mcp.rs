@@ -89,7 +89,9 @@ fn initialize_result(params: &Value) -> Value {
     events, graphs) with branches and time travel. When unsure, call the `strata_guide` tool first — \
     it returns the complete usage guide for this exact binary version. The curated tools cover core \
     verbs; `strata_command` executes any cataloged command by raw wire JSON (catalog: guide's command \
-    section). Results and errors use the same JSON envelopes and stable error codes as the CLI.",
+    section). Results and errors use the same JSON envelopes and stable error codes as the CLI. \
+    Skills that teach this surface (usage, branching, time travel): `npx skills add \
+    stratalab/strata-agent-skills`.",
     })
 }
 

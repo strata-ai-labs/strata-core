@@ -159,7 +159,12 @@ repo; `--apply` also appends a short pointer block to the repo's `AGENTS.md`/`CL
 future agent session here starts oriented. `strata agents skill --write [--for all]` installs \
 the condensed Python + CLI playbook for coding agents — Claude Code \
 (`.claude/skills/strata/SKILL.md`), Cursor (`.cursor/rules/strata.mdc`), and Codex (a \
-marker-delimited section in `AGENTS.md`) — loaded automatically when a session touches Strata.\n",
+marker-delimited section in `AGENTS.md`) — loaded automatically when a session touches Strata.\n\
+\n\
+The fuller skill set (`strata`, `strata-branching`, `strata-time-travel`) lives in \
+stratalab/strata-agent-skills: `npx skills add stratalab/strata-agent-skills`, or \
+`/plugin marketplace add stratalab/strata-agent-skills` in Claude Code. The same repo's `init` \
+command registers this MCP server with every agent surface in a workspace.\n",
     );
 
     Ok(guide)
@@ -360,6 +365,7 @@ This repo uses Strata (embedded database — SQLite-shaped, zero-config).
 
 - Full usage guide: run `strata agents guide` (offline, version-matched)
 - Agent skill: `strata agents skill --write --for all` (Claude Code, Cursor, Codex)
+- Fuller skill set: `npx skills add stratalab/strata-agent-skills` (usage, branching, time travel)
 - Command catalog: `strata agents commands --json`; errors: `strata agents errors --json`
 - Database targeting: pass a path or set `STRATA_DB`; never rely on cwd
 - Structured output: add `--json` to any command; raw commands via `strata <db> command run --command-json`
