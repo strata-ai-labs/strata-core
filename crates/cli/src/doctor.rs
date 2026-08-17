@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
-use strata_executor::ipc::Connection;
+use strata_executor::ipc::{Connection, SessionAccess};
 use strata_executor::{Command, DurableLocalOpenOptions, Executor, ExecutorError, IpcMode};
 
 use crate::{init, open, CliError};
@@ -124,10 +124,13 @@ fn probe_database(path: &Path, issues: &mut Vec<Value>) -> Value {
     // Broker as a client: if the store is owned by a live process, probe it
     // through that owner's socket instead of failing on the writer lock — so
     // `strata doctor` can inspect a database while an app or REPL holds it.
+    // A diagnostic probe never writes, and now says so: the first read-only
+    // session consumer.
     match Connection::open_durable_local_brokered(
         path,
         DurableLocalOpenOptions::new(),
         IpcMode::Client,
+        SessionAccess::Read,
     ) {
         Ok(connection) => {
             let info = match connection.execute(Command::Info { branch: None }) {

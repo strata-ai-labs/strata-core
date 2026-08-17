@@ -28,6 +28,17 @@ impl Executor {
                 socket_path: Some(state.socket_path().display().to_string()),
                 owner_pid: Some(u64::from(state.owner_pid())),
                 client_count: state.client_count(),
+                clients: state
+                    .clients()
+                    .into_iter()
+                    .map(|entry| crate::types::AdminIpcClient {
+                        name: entry.name,
+                        version: entry.version,
+                        pid: entry.pid,
+                        access: entry.access,
+                        protocol: entry.protocol,
+                    })
+                    .collect(),
             },
             None => crate::types::AdminIpcStatus {
                 is_owner: true,
@@ -35,6 +46,7 @@ impl Executor {
                 socket_path: None,
                 owner_pid: None,
                 client_count: 0,
+                clients: Vec::new(),
             },
         };
         Output::IpcStatus(status)

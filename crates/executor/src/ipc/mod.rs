@@ -27,6 +27,7 @@ mod server;
 mod wire;
 
 pub use connection::Connection;
+pub use protocol::{ClientIdentity, IdlStamps, ServerHello, SessionAccess};
 pub use server::IpcServer;
 
 use std::path::{Path, PathBuf};

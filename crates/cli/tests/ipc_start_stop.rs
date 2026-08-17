@@ -231,6 +231,174 @@ fn start_refuses_when_another_process_already_owns_the_store() {
     let _ = wait_with_timeout(&mut host);
 }
 
+#[test]
+fn a_read_only_client_is_gated_across_processes_and_reads_still_work() {
+    // Cross-process read-only: a writable host owns the database; a separate
+    // `--read-only` process brokering through it is rejected on writes by the
+    // OWNER's dispatch gate and still serves reads. Also pins the local
+    // (unbrokered) `--read-only` open the same way.
+    let dir = tempfile::tempdir().expect("tmp");
+    let db = db_arg(dir.path());
+
+    // Local, unbrokered: the connection's own gate.
+    let put = strata(&["--db", &db, "--read-only", "--json", "kv", "put", "k", "v"]);
+    assert_ne!(put.status.code(), Some(0), "a read-only write fails");
+    let combined = format!("{}{}", stdout(&put), stderr(&put));
+    assert!(
+        combined.contains("access_denied.executor.read_only_session"),
+        "the registered code names the refusal: {combined}"
+    );
+
+    // Seed a value with a writable one-shot, then attach read-only through a
+    // running host.
+    let seeded = strata(&["--db", &db, "--json", "kv", "put", "k", "v"]);
+    assert_eq!(seeded.status.code(), Some(0), "{}", stderr(&seeded));
+    let (mut host, _report) = spawn_start_host(&db);
+
+    let brokered_put = strata(&["--db", &db, "--read-only", "--json", "kv", "put", "k", "w"]);
+    assert_ne!(
+        brokered_put.status.code(),
+        Some(0),
+        "the owner's gate rejects a brokered read-only write"
+    );
+    let combined = format!("{}{}", stdout(&brokered_put), stderr(&brokered_put));
+    assert!(
+        combined.contains("access_denied.executor.read_only_session"),
+        "rejected by the registered code, not a transport error: {combined}"
+    );
+
+    let get = strata(&["--db", &db, "--read-only", "--json", "kv", "get", "k"]);
+    assert_eq!(
+        get.status.code(),
+        Some(0),
+        "a brokered read-only read serves: {}",
+        stderr(&get)
+    );
+    assert!(
+        stdout(&get).contains("\"found\":true") || stdout(&get).contains("\"found\": true"),
+        "the seeded value is visible read-only: {}",
+        stdout(&get)
+    );
+
+    let _ = strata(&["--db", &db, "stop"]);
+    let _ = wait_with_timeout(&mut host);
+}
+
+/// Minimal wire framing (4-byte big-endian length + payload), hand-rolled so
+/// these tests speak to a durable host exactly as an out-of-repo client (the
+/// VS Code extension) will — no crate internals.
+mod raw_wire {
+    use std::io::{Read, Write};
+
+    pub(crate) fn send(stream: &mut std::os::unix::net::UnixStream, payload: &[u8]) {
+        let len = u32::try_from(payload.len()).expect("frame fits u32");
+        stream.write_all(&len.to_be_bytes()).expect("write length");
+        stream.write_all(payload).expect("write payload");
+        stream.flush().expect("flush");
+    }
+
+    pub(crate) fn recv(stream: &mut std::os::unix::net::UnixStream) -> serde_json::Value {
+        let mut len = [0u8; 4];
+        stream.read_exact(&mut len).expect("read length");
+        let mut payload = vec![0u8; u32::from_be_bytes(len) as usize];
+        stream.read_exact(&mut payload).expect("read payload");
+        serde_json::from_slice(&payload).expect("frame decodes")
+    }
+}
+
+/// Attach a raw protocol-revision-2 socket session to a started host, using
+/// the socket path its readiness report published.
+fn attach_raw(report: &serde_json::Value, access: &str) -> std::os::unix::net::UnixStream {
+    let socket = report["data"]["socket_path"]
+        .as_str()
+        .expect("the readiness report names the socket");
+    let mut stream =
+        std::os::unix::net::UnixStream::connect(socket).expect("connect to the host socket");
+    let hello = format!("{{\"hello\":{{\"protocol\":2,\"access\":\"{access}\"}}}}");
+    raw_wire::send(&mut stream, hello.as_bytes());
+    let reply = raw_wire::recv(&mut stream);
+    assert_eq!(reply["type"], "ipc_hello", "hello accepted: {reply}");
+    stream
+}
+
+#[test]
+fn a_durable_host_ticks_a_read_only_subscriber_across_processes() {
+    // The extension's exact topology, durable end-to-end: a real `strata
+    // start` owner on a durable database, a read-only raw-socket subscriber
+    // (this test process), and a separate one-shot writer process brokering
+    // through the owner. The subscriber must hear about the write.
+    let dir = tempfile::tempdir().expect("tmp");
+    let db = db_arg(dir.path());
+    let seeded = strata(&["--db", &db, "--json", "kv", "put", "hi", "there"]);
+    assert_eq!(seeded.status.code(), Some(0), "{}", stderr(&seeded));
+
+    let (mut host, report) = spawn_start_host(&db);
+    let mut subscriber = attach_raw(&report, "read");
+    raw_wire::send(
+        &mut subscriber,
+        b"{\"id\":1,\"subscribe\":{\"events\":[\"version\"]}}",
+    );
+    let ack = raw_wire::recv(&mut subscriber);
+    assert_eq!(ack["payload"]["type"], "ipc_subscribed", "acked: {ack}");
+
+    // A separate process writes, brokered through the durable owner.
+    let put = strata(&["--db", &db, "--json", "kv", "put", "hi", "again"]);
+    assert_eq!(put.status.code(), Some(0), "{}", stderr(&put));
+
+    let push = raw_wire::recv(&mut subscriber);
+    assert_eq!(push["notify"]["event"], "version", "a tick arrived: {push}");
+    assert!(
+        push["notify"]["version"].as_u64().unwrap_or(0) >= 1,
+        "the cross-process write advanced the durable store's watermark"
+    );
+
+    let _ = strata(&["--db", &db, "stop"]);
+    let _ = wait_with_timeout(&mut host);
+}
+
+#[test]
+fn a_durable_host_sheds_an_expired_deadline_over_the_wire() {
+    // Durable end-to-end deadline shed: deadline_ms 0 is expired by
+    // construction, so the durable owner must answer with the registered
+    // shed code — correlated, and without executing the write.
+    let dir = tempfile::tempdir().expect("tmp");
+    let db = db_arg(dir.path());
+    // The CLI takes plain-text keys/values; on the wire they are base64
+    // ("hi" = aGk=, "there" = dGhlcmU=).
+    let seeded = strata(&["--db", &db, "--json", "kv", "put", "hi", "there"]);
+    assert_eq!(seeded.status.code(), Some(0), "{}", stderr(&seeded));
+
+    let (mut host, report) = spawn_start_host(&db);
+    let mut session = attach_raw(&report, "read_write");
+
+    raw_wire::send(
+        &mut session,
+        b"{\"id\":1,\"deadline_ms\":0,\
+          \"command\":{\"type\":\"kv_put\",\"key\":\"aGk=\",\"value\":\"bmV3\"}}",
+    );
+    let shed = raw_wire::recv(&mut session);
+    assert_eq!(shed["id"], 1, "the shed is correlated");
+    assert_eq!(
+        shed["payload"]["error"]["code"], "unavailable.executor.ipc_deadline",
+        "the durable owner sheds expired work: {shed}"
+    );
+
+    // The shed happened before dispatch: the durable store still holds the
+    // seeded value.
+    raw_wire::send(
+        &mut session,
+        b"{\"id\":2,\"command\":{\"type\":\"kv_get\",\"key\":\"aGk=\"}}",
+    );
+    let get = raw_wire::recv(&mut session);
+    assert_eq!(
+        get["payload"]["data"]["value"]["value"], "dGhlcmU=",
+        "the seeded value survived the shed write: {get}"
+    );
+
+    let _ = strata(&["--db", &db, "stop"]);
+    let _ = wait_with_timeout(&mut host);
+}
+
 /// Waits up to a few seconds for `child` to exit, returning its status. Kills it
 /// on timeout so a hung host never wedges the suite.
 fn wait_with_timeout(child: &mut Child) -> Option<std::process::ExitStatus> {

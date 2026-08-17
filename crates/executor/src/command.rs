@@ -1890,7 +1890,13 @@ impl Command {
         }
     }
 
-    /// Returns true when the command may mutate database state.
+    /// Returns true when the command may mutate database state or disrupt the
+    /// database's transport (`ipc_stop`).
+    ///
+    /// This is the runtime authority the read-only session gate dispatches on;
+    /// the authored truth is the IDL `access` facet, and the two are pinned
+    /// together for every cataloged command by
+    /// `tests/command_write_classification.rs` — change them in lockstep.
     pub const fn is_write(&self) -> bool {
         matches!(
             self,
@@ -1929,12 +1935,16 @@ impl Command {
                 | Self::GraphAddEdge { .. }
                 | Self::GraphRemoveEdge { .. }
                 | Self::GraphBatchWrite { .. }
+                | Self::GraphBulkInsert { .. }
+                | Self::GraphApplyDeletePolicy { .. }
                 | Self::GraphDefineObjectType { .. }
                 | Self::GraphDefineLinkType { .. }
                 | Self::GraphDeleteObjectType { .. }
                 | Self::GraphDeleteLinkType { .. }
                 | Self::GraphFreezeOntology { .. }
                 | Self::ArrowImport { .. }
+                | Self::HubClone { .. }
+                | Self::IpcStop {}
         )
     }
 }

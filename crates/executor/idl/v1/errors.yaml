@@ -10,6 +10,10 @@ errors:
   - invalid_argument.executor.wire_request
   - internal.executor.wire_response
   - unavailable.executor.ipc_transport
+  - invalid_argument.executor.ipc_hello
+  - resource_exhausted.executor.ipc_connections
+  - access_denied.executor.read_only_session
+  - unavailable.executor.ipc_deadline
   - invalid_argument.executor.vector_batch_duplicate_key
   - not_found.engine.branch
   - invalid_argument.engine.vector_collection

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use serde_json::Value;
-use strata_executor::ipc::Connection;
+use strata_executor::ipc::{Connection, SessionAccess};
 use strata_executor::{Command, Executor, ExecutorError, GraphPropertyDef, IpcMode};
 
 mod agents;
@@ -102,10 +102,16 @@ fn serve_mcp(connection: Connection, context: &CommandContext) -> Result<i32, Cl
     Ok(exit)
 }
 
+#[allow(clippy::too_many_lines)]
 fn execute(cli: Cli) -> Result<i32, CliError> {
     let format = cli.output_format();
     let durability = cli.durability.map(options::DurabilityArg::mode);
     let ipc = cli.ipc.map(options::IpcArg::mode);
+    let access = if cli.read_only {
+        SessionAccess::Read
+    } else {
+        SessionAccess::ReadWrite
+    };
     let command = cli.command;
     let mut context = CommandContext::new(cli.branch, cli.space);
 
@@ -137,15 +143,24 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
                 durability,
                 // A long-lived owner other processes attach to.
                 ipc.unwrap_or(IpcMode::Host),
+                access,
                 open::OpenIntent::OneShot,
             )?;
             return serve_mcp(opened.connection, &context);
         }
         if matches!(command, options::TopCommand::Start) {
-            return run_ipc_start(cli.cache, cli.db, cli.db_path, durability, ipc, format);
+            return run_ipc_start(
+                cli.cache,
+                cli.db,
+                cli.db_path,
+                durability,
+                ipc,
+                access,
+                format,
+            );
         }
         if matches!(command, options::TopCommand::Stop) {
-            return run_ipc_stop(cli.cache, cli.db, cli.db_path, format);
+            return run_ipc_stop(cli.cache, cli.db, cli.db_path, cli.read_only, format);
         }
         if let TopLevelAction::NoDatabase(value) = top_level_without_database(&command)? {
             render_value(&value, format)?;
@@ -163,6 +178,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             durability,
             // A one-shot holds the lock briefly: broker to an owner, don't host.
             ipc.unwrap_or(IpcMode::Client),
+            access,
             open::OpenIntent::OneShot,
         )?;
         let connection = opened.connection;
@@ -189,6 +205,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
         cli.db_path,
         durability,
         session_ipc,
+        access,
         intent,
     )?;
     if opened.implicit_cache {
@@ -255,6 +272,7 @@ fn run_ipc_start(
     db_path: Option<PathBuf>,
     durability: Option<strata_executor::DurabilityMode>,
     ipc: Option<IpcMode>,
+    access: SessionAccess,
     format: options::Format,
 ) -> Result<i32, CliError> {
     if cache {
@@ -274,6 +292,7 @@ fn run_ipc_start(
         db_path,
         durability,
         IpcMode::Host,
+        access,
         open::OpenIntent::OneShot,
     )?;
     let connection = opened.connection;
@@ -308,11 +327,19 @@ fn run_ipc_stop(
     cache: bool,
     db_flag: Option<PathBuf>,
     db_path: Option<PathBuf>,
+    read_only: bool,
     format: options::Format,
 ) -> Result<i32, CliError> {
     if cache {
         return Err(CliError::usage(
             "`strata stop` stops a durable database's broker owner; `--cache` has none",
+        ));
+    }
+    if read_only {
+        // Stopping the owner's hosting is write-classified; a read-only stop
+        // is a contradiction, refused rather than silently ignored.
+        return Err(CliError::usage(
+            "`strata stop` sends a write-classified command; it is incompatible with `--read-only`",
         ));
     }
     let path = resolve_durable_target(db_flag, db_path)?;
@@ -332,6 +359,7 @@ fn run_ipc_stop(
         &path,
         strata_executor::DurableLocalOpenOptions::new(),
         IpcMode::Client,
+        SessionAccess::ReadWrite,
     )?;
     let output = connection.execute(Command::IpcStop {})?;
     render_output(&output, format)?;

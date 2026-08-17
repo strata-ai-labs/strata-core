@@ -65,6 +65,30 @@ pub struct AdminIpcStatus {
     pub owner_pid: Option<u64>,
     /// Number of clients currently connected to the host (0 when not hosting).
     pub client_count: u64,
+    /// The connected clients, as their hellos introduced them; a protocol-1
+    /// (pre-hello) connection appears anonymous. Empty when not hosting.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clients: Vec<AdminIpcClient>,
+}
+
+/// One connected IPC client, as reported by `ipc_status`. Display identity
+/// only — the socket's same-user permission check is the security boundary.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+pub struct AdminIpcClient {
+    /// Client-reported product name (`strata-vscode`, `strata`), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Client-reported version, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Client-reported process id, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u64>,
+    /// The session access this connection was granted.
+    pub access: crate::SessionAccess,
+    /// The negotiated wire protocol revision (1 = legacy, no hello).
+    pub protocol: u32,
 }
 
 /// Database information output.
