@@ -227,6 +227,17 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
                         .append_committed_rows_atomically(delta)
                         .map_err(branch_error)?;
                 }
+                // #2853: the COMBINE swapped in the staged manifest branch,
+                // discarding the checkpoint-install instance whose retained
+                // timeline carried the snapshot's group — the ONLY surviving
+                // carrier of (version→timestamp) facts whose rows are retired.
+                // Re-seed the surviving instance; without this the seeded
+                // branch's index later force-completes EMPTY and provably
+                // retained coverage is denied.
+                seed_branch_timeline_from_groups(
+                    self.shell.branch_state(),
+                    checkpoint.timeline_groups(),
+                );
             }
             (Some(_), None) if orphaned_delta => {
                 // The snapshot is a delta whose durable table-manifest base was lost; discard

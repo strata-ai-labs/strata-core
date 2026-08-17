@@ -1116,16 +1116,19 @@ mod tests {
         for label in &facts.action_trace {
             *counts.entry(*label).or_insert(0usize) += 1;
         }
+        // Re-pinned for #2853: previously-refused fork-at-version calls now
+        // succeed inside trajectories, changing live-branch sets and the
+        // conditional rng draws downstream (a deliberate semantic change).
         let expected: std::collections::BTreeMap<&str, usize> = [
-            ("advance_clock", 14),
-            ("commit", 34),
-            ("delete_branch", 4),
-            ("drain_maintenance", 3),
-            ("enqueue_checkpoint", 4),
-            ("enqueue_flush", 3),
+            ("advance_clock", 11),
+            ("commit", 37),
+            ("delete_branch", 5),
+            ("drain_maintenance", 2),
+            ("enqueue_checkpoint", 3),
+            ("enqueue_flush", 5),
             ("fork_at_version", 4),
-            ("fork_current", 1),
-            ("recreate_branch", 5),
+            ("fork_current", 2),
+            ("recreate_branch", 3),
         ]
         .into_iter()
         .collect();
@@ -1133,12 +1136,20 @@ mod tests {
         // The per-run facts counters, exactly (the sweep sums can mask
         // per-run constant mutants by coincidence) — including the
         // no-op/unavailable counters nothing else observes.
-        assert_eq!(facts.deletes, 1);
-        assert_eq!(facts.forks, 3);
-        assert_eq!(facts.recreates, 0);
-        assert_eq!(facts.deletes_refused, 0);
-        assert_eq!(facts.forks_unavailable, 1);
-        assert_eq!(facts.temporal_probes_unavailable, 5);
+        assert_eq!(
+            (
+                facts.deletes,
+                facts.forks,
+                facts.recreates,
+                facts.deletes_refused,
+                facts.forks_unavailable,
+                facts.temporal_probes_unavailable,
+            ),
+            // Re-pinned for #2853: two previously-refused fork-at-version
+            // calls and two temporal probes now succeed on surviving coverage.
+            (1, 5, 0, 0, 0, 3),
+            "per-run facts drifted: (deletes, forks, recreates, deletes_refused, forks_unavailable, probes_unavailable)",
+        );
     }
 
     /// Pool ids and branch labels are stable identifiers.

@@ -2479,6 +2479,115 @@ fn fork_current_captures_content_that_outlives_timeline_coverage() {
     );
 }
 
+/// #2852's availability leg (#2853): after a lossy crash, flush-published
+/// content legally outlives timeline coverage (index tip < content watermark).
+/// The retained timeline must then SHRINK to the index's provable prefix — not
+/// vanish into the empty post-elision scan. A fork at a version the surviving
+/// timeline provably covers succeeds; a version past the tip (content present,
+/// mapping shed) keeps refusing.
+#[test]
+fn fork_at_version_inside_surviving_timeline_coverage_succeeds_after_lossy_crash() {
+    use crate::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
+    use crate::testkit::FsModel;
+
+    let root = temp_dir_for_api_test("fork-at-version-surviving-timeline");
+    let backend = StorageBackend::reordering_local_fs(root.clone());
+    let covered_version;
+    let shed_version;
+    {
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+                .with_maintenance_scheduling_policy(
+                    crate::api::StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+                ),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        covered_version = put_at(&mut runtime, branch(), b"early", b"e", 10).commit_version();
+        // Complete the live retained-timeline index (a timestamp read scans
+        // and seeds it) so the checkpoint captures its timeline group — the
+        // recovered index then provably covers the pre-checkpoint prefix.
+        let warmed = runtime
+            .read_point(&PointReadRequest::new(
+                branch(),
+                engine_space(),
+                api_key(b"early"),
+                ReadBound::AtTimestamp(strata_core::Timestamp::from_micros(10)),
+            ))
+            .expect("timestamp read completes the timeline index");
+        assert!(warmed.row().is_some(), "warm read must see the early row");
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Checkpoint,
+                MaintenanceScope::Global,
+            ))
+            .expect("enqueue checkpoint");
+        runtime.drain_maintenance().expect("drain checkpoint");
+        put_at(&mut runtime, branch(), b"late-a", b"1", 20);
+        shed_version = put_at(&mut runtime, branch(), b"late-b", b"2", 30).commit_version();
+        runtime
+            .enqueue_maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Flush,
+                MaintenanceScope::Branch(branch()),
+            ))
+            .expect("enqueue flush");
+        runtime.drain_maintenance().expect("drain flush");
+        drop(runtime);
+        backend
+            .reordering_crash(FsModel::OrderedAtomic, 7)
+            .expect("materialize crash");
+    }
+
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("reopen after crash")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, branch(), b"late-b"),
+        Some(b"2".to_vec()),
+        "precondition: flush-published post-checkpoint content must recover"
+    );
+
+    // Inside the surviving coverage: the checkpoint-covered version forks.
+    let child = branch_with(0x84);
+    let outcome = runtime
+        .branch(&branch_request(
+            child,
+            BranchAction::ForkAtVersion {
+                source: branch(),
+                version: covered_version,
+            },
+        ))
+        .expect("fork at a version the surviving timeline provably covers");
+    assert_eq!(outcome.fork_version(), Some(covered_version));
+    assert_eq!(
+        read_value(&runtime, child, b"early"),
+        Some(b"e".to_vec()),
+        "the fork serves the covered prefix",
+    );
+    assert_eq!(
+        read_value(&runtime, child, b"late-a"),
+        None,
+        "post-fork-version content must not leak into the child",
+    );
+
+    // Past the tip: the content exists but its timeline mapping was shed —
+    // the refusal stays.
+    let error = runtime
+        .branch(&branch_request(
+            branch_with(0x85),
+            BranchAction::ForkAtVersion {
+                source: branch(),
+                version: shed_version,
+            },
+        ))
+        .expect_err("a shed-coverage version keeps refusing");
+    assert_eq!(error.class(), StorageApiErrorClass::HistoryUnavailable);
+}
+
 /// #2852 direction control: the #2521 legitimate-empty-fork case — a source
 /// with NO rows at all — must keep forking an empty child (parent linkage,
 /// fork version zero) rather than start refusing.
