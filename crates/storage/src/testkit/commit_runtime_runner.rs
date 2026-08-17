@@ -20,6 +20,7 @@ use crate::commit::{
 use crate::config::mode::DurabilityPolicy;
 use crate::format::WalRecord;
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
+use crate::timeline_index::RetainedTimelineLookup;
 use strata_core::{BranchId, CommitVersion, Timestamp};
 
 use super::commit_runtime_model::{
@@ -390,10 +391,15 @@ impl ProductionCommitRunner {
             registry
                 .register_active(*branch_id, generation)
                 .map_err(testkit_error)?;
+            let state = BranchLocalState::new(*branch_id, BranchRuntimeConfig::default())
+                .map_err(testkit_error)?;
+            // In-process branch creation marks the retained-timeline index
+            // complete from birth (W3.1b) in the lifecycle layer; the runner
+            // constructs states directly, so it mirrors that step here.
+            state.retained_timeline().mark_complete_from_birth();
             states.push(BranchStateSlot {
                 branch_id: *branch_id,
-                state: BranchLocalState::new(*branch_id, BranchRuntimeConfig::default())
-                    .map_err(testkit_error)?,
+                state,
             });
         }
         Ok(Self {
@@ -812,19 +818,63 @@ impl ProductionCommitRunner {
         branch_id: BranchId,
         model: &CommitRuntimeModel,
     ) -> Result<(), TestkitError> {
-        let timeline = self.timeline_view(branch_id)?;
-        let expected_count = model.visible_timeline_entries(branch_id).count();
-        if timeline.entries().len() != expected_count {
+        // W3.1c: commits no longer materialize timeline rows — the retained
+        // index fed at the apply funnel is the timeline's source, so the
+        // model is compared against the index, not a timeline-space scan.
+        let state = &self.states[self.state_index(branch_id)?].state;
+        let index = state.retained_timeline();
+        let bound = self.visible.visible_version();
+        let actual = index.snapshot_entries(bound).ok_or_else(|| {
+            TestkitError::new(format!(
+                "retained timeline index lost completeness for branch {branch_id}"
+            ))
+        })?;
+        let expected = model
+            .visible_timeline_entries(branch_id)
+            .collect::<Vec<_>>();
+        let entries_match = actual.len() == expected.len()
+            && actual.iter().zip(expected.iter()).all(|(a, e)| {
+                a.commit_version() == e.version() && a.commit_timestamp() == e.timestamp()
+            });
+        if !entries_match {
             return Err(TestkitError::new(format!(
-                "timeline entry count diverged for branch {branch_id}"
+                "timeline entries diverged for branch {branch_id}: index {actual:?}, model expected {expected:?}"
             )));
         }
-        for entry in model.visible_timeline_entries(branch_id) {
-            let actual = timeline
-                .version_at_or_before(entry.timestamp())
-                .matched_version();
-            let expected = model.timeline_version_at_or_before(branch_id, entry.timestamp());
-            if actual != expected {
+        // The provable tip comes from EVERY observed commit (including
+        // applied-but-not-visible ones), not the visible snapshot.
+        let observed = index.materialized_entries(None).ok_or_else(|| {
+            TestkitError::new(format!(
+                "retained timeline index lost completeness for branch {branch_id}"
+            ))
+        })?;
+        let tip = observed.last().map(|entry| entry.commit_version());
+        for entry in &expected {
+            let Some(tip) = tip else {
+                break;
+            };
+            let lookup_bound = provable_lookup_bound(tip, bound);
+            let Some(lookup) = index.lookup_at_or_before(entry.timestamp(), Some(lookup_bound))
+            else {
+                // Scripted timestamps are non-decreasing by construction
+                // (generated_timestamp), so a complete index queried within
+                // a provable bound must always prove its lookups.
+                return Err(TestkitError::new(format!(
+                    "retained timeline lookup unproven for branch {branch_id}"
+                )));
+            };
+            let actual_version = match lookup {
+                RetainedTimelineLookup::Matched(found)
+                | RetainedTimelineLookup::AfterLatestRetained(found) => {
+                    Some(found.commit_version())
+                }
+                RetainedTimelineLookup::BeforeRetainedHistory | RetainedTimelineLookup::Empty => {
+                    None
+                }
+            };
+            let expected_version =
+                model.timeline_version_at_or_before(branch_id, entry.timestamp());
+            if actual_version != expected_version {
                 return Err(TestkitError::new(format!(
                     "timeline lookup diverged for branch {branch_id}"
                 )));
@@ -1235,14 +1285,110 @@ fn testkit_error(error: impl std::fmt::Debug) -> TestkitError {
     TestkitError::new(format!("{error:?}"))
 }
 
+/// The provable lookup bound for the retained index: bounds beyond the index
+/// tip are refused by design (the pinned-view rule `bounded_prefix` enforces),
+/// and clamping to the tip is exact because the apply funnel observes every
+/// commit at or below it.
+fn provable_lookup_bound(tip: CommitVersion, visible: CommitVersion) -> CommitVersion {
+    CommitVersion::new(tip.as_u64().min(visible.as_u64()))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::generated_timestamp;
+    use super::*;
 
     #[test]
     fn generated_timestamps_include_equal_adjacent_values_for_timeline_tiebreaks() {
         assert_eq!(generated_timestamp(0), generated_timestamp(1));
         assert!(generated_timestamp(2) > generated_timestamp(1));
         assert_eq!(generated_timestamp(2), generated_timestamp(3));
+    }
+
+    #[test]
+    fn provable_lookup_bound_clamps_to_the_index_tip() {
+        let v = CommitVersion::new;
+        assert_eq!(provable_lookup_bound(v(3), v(7)), v(3));
+        assert_eq!(provable_lookup_bound(v(7), v(3)), v(3));
+        assert_eq!(provable_lookup_bound(v(5), v(5)), v(5));
+    }
+
+    /// The oracle's positive face: after identical scripted prefixes the
+    /// runtime timeline and the model agree — entry parity and lookups both.
+    /// (The generated contract exercises this under `fault-injection`; this
+    /// pin keeps the agreement path covered in default-feature test lanes.)
+    #[test]
+    fn compare_timeline_accepts_matching_runtime_and_model() {
+        let script = CommitRuntimeScript::decode(b"compare-timeline-agreement-pin");
+        let mut model = CommitRuntimeModel::new(&script);
+        let mut production = ProductionCommitRunner::new(script.branches()).expect("runner");
+        for (index, operation) in script.operations().iter().copied().enumerate().take(8) {
+            let timestamp = generated_timestamp(index);
+            production.set_next_timestamp(timestamp);
+            model.apply(operation, timestamp, script.branches());
+            production.apply(operation).expect("scripted op applies");
+        }
+        // The prefix must land timeline content for the agreement to bite.
+        assert!(model
+            .visible_timeline_entries(script.branches()[0])
+            .next()
+            .is_some());
+        for branch in script.branches() {
+            production
+                .compare_timeline(*branch, &model)
+                .expect("matching timelines compare clean");
+        }
+    }
+
+    /// `compare_timeline` is the oracle: a runtime commit the model does not
+    /// know about must be reported as divergence, and a model entry the
+    /// runtime never landed must be too.
+    #[test]
+    fn compare_timeline_reports_runtime_model_divergence_in_both_directions() {
+        let script = CommitRuntimeScript::decode(b"compare-timeline-divergence-pin");
+        let branch = script.branches()[0];
+
+        // Runtime ahead: the first scripted op (a cache commit on branch 0)
+        // applies to production only.
+        let empty_model = CommitRuntimeModel::new(&script);
+        let mut production = ProductionCommitRunner::new(script.branches()).expect("runner");
+        production.set_next_timestamp(generated_timestamp(0));
+        production
+            .apply(script.operations()[0])
+            .expect("scripted op applies");
+        let err = production
+            .compare_timeline(branch, &empty_model)
+            .expect_err("runtime-ahead timeline must diverge");
+        assert!(format!("{err:?}").contains("timeline entries diverged"));
+
+        // Model ahead: the model applies the op, a fresh runtime does not.
+        let mut model = CommitRuntimeModel::new(&script);
+        model.apply(
+            script.operations()[0],
+            generated_timestamp(0),
+            script.branches(),
+        );
+        let fresh = ProductionCommitRunner::new(script.branches()).expect("runner");
+        let err = fresh
+            .compare_timeline(branch, &model)
+            .expect_err("model-ahead timeline must diverge");
+        assert!(format!("{err:?}").contains("timeline entries diverged"));
+
+        // Same count, different stamp: a timestamp disagreement on a shared
+        // version is divergence too — entry parity is version AND timestamp.
+        let mut skewed_model = CommitRuntimeModel::new(&script);
+        skewed_model.apply(
+            script.operations()[0],
+            generated_timestamp(2),
+            script.branches(),
+        );
+        let mut skewed_production = ProductionCommitRunner::new(script.branches()).expect("runner");
+        skewed_production.set_next_timestamp(generated_timestamp(0));
+        skewed_production
+            .apply(script.operations()[0])
+            .expect("scripted op applies");
+        let err = skewed_production
+            .compare_timeline(branch, &skewed_model)
+            .expect_err("stamp-skewed timeline must diverge");
+        assert!(format!("{err:?}").contains("timeline entries diverged"));
     }
 }
