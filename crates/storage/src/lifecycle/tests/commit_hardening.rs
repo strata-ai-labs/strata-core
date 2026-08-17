@@ -237,7 +237,7 @@ fn wal_growth_policy_defers_on_unmaterialized_inherited_layers_without_churn() {
             .execute_durable_commit(
                 durable_batch(
                     extra,
-                    Box::leak(format!("churn-{round}").into_bytes().into_boxed_slice()),
+                    crate::testkit::leak_static(format!("churn-{round}").into_bytes()).as_slice(),
                     b"value",
                 ),
                 generation_guard(),
