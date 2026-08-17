@@ -426,6 +426,25 @@ fn run_repo_init(apply: bool) -> Result<Value, CliError> {
 mod tests {
     use super::*;
 
+    /// The repo pointer block is a pointer, not a manual: it must carry the
+    /// marker plus each surface it points at (guide, skill verb, the fuller
+    /// skill set, catalogs, database targeting, MCP).
+    #[test]
+    fn pointer_block_points_at_every_surface() {
+        let block = pointer_block();
+        assert!(block.starts_with(POINTER_MARKER));
+        for needle in [
+            "strata agents guide",
+            "strata agents skill --write --for all",
+            "npx skills add stratalab/strata-agent-skills",
+            "strata agents commands --json",
+            "STRATA_DB",
+            "mcp serve",
+        ] {
+            assert!(block.contains(needle), "pointer block lost `{needle}`");
+        }
+    }
+
     /// Consistency guard: the generated CLI agent guide has a catalog section
     /// for every command family, so a family cannot silently drop out of the
     /// guide an agent reads (mirrors the SDK-side agent-guide coverage guard).
