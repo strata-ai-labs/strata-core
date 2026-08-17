@@ -216,6 +216,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             env!("CARGO_PKG_VERSION")
         );
         eprintln!("type `help` for commands  |  agents: run `strata agents guide`");
+        eprintln!("skills for coding agents: npx skills add stratalab/strata-agent-skills");
     }
     let connection = opened.connection;
     if let Some(branch) = context.scope_with_overrides(None, None).branch.as_deref() {

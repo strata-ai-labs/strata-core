@@ -11,7 +11,7 @@ and built-in time travel. One binary, one directory, zero infrastructure.
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Version](https://img.shields.io/badge/version-1.0.0-brightgreen.svg)](https://stratadb.org/changelog)
 
-[Website](https://stratadb.org) · [Documentation](https://stratadb.org/docs) · [Playground](https://stratadb.org/playground)
+[Website](https://stratadb.org) · [Documentation](https://stratadb.org/docs) · [Playground](https://stratadb.org/playground) · [Agent skills](https://github.com/stratalab/strata-agent-skills)
 
 </div>
 
@@ -110,6 +110,11 @@ strata --db ./agent-memory mcp serve       # MCP server over stdio — plug into
 strata ./mydb agents guide                 # self-describing surface, written for LLMs
 strata ./mydb kv get user:ada --json       # every command speaks compact JSON
 ```
+
+Skills that teach agents this whole surface — usage, branching, time travel — live in
+[strata-agent-skills](https://github.com/stratalab/strata-agent-skills):
+`npx skills add stratalab/strata-agent-skills`, or `/plugin marketplace add stratalab/strata-agent-skills`
+in Claude Code. The same repo carries the one-command workspace setup (CLI + MCP + skills).
 
 Model execution is in the box too — run local GGUF models or call cloud providers for embeddings and generation:
 

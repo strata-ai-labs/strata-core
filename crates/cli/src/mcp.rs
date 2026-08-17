@@ -89,7 +89,9 @@ fn initialize_result(params: &Value) -> Value {
     events, graphs) with branches and time travel. When unsure, call the `strata_guide` tool first — \
     it returns the complete usage guide for this exact binary version. The curated tools cover core \
     verbs; `strata_command` executes any cataloged command by raw wire JSON (catalog: guide's command \
-    section). Results and errors use the same JSON envelopes and stable error codes as the CLI.",
+    section). Results and errors use the same JSON envelopes and stable error codes as the CLI. \
+    Skills that teach this surface (usage, branching, time travel): `npx skills add \
+    stratalab/strata-agent-skills`.",
     })
 }
 
@@ -629,6 +631,24 @@ fn rpc_error(id: Value, code: i64, message: String) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The initialize result is the MCP client's first impression: it must
+    /// echo an offered protocol version (or default it), name the server,
+    /// and carry instructions routing agents to the guide tool, the raw
+    /// command escape hatch, and the skills.
+    #[test]
+    fn initialize_result_names_the_server_and_teaches_the_entry_points() {
+        let echoed = initialize_result(&json!({ "protocolVersion": "2024-11-05" }));
+        assert_eq!(echoed["protocolVersion"], json!("2024-11-05"));
+
+        let defaulted = initialize_result(&json!({}));
+        assert_eq!(defaulted["protocolVersion"], json!(PROTOCOL_VERSION));
+        assert_eq!(defaulted["serverInfo"]["name"], json!("strata"));
+        let instructions = defaulted["instructions"].as_str().expect("instructions");
+        assert!(instructions.contains("strata_guide"));
+        assert!(instructions.contains("strata_command"));
+        assert!(instructions.contains("npx skills add"));
+    }
 
     /// Every advertised tool must dispatch, and dispatch must not accept
     /// tools that are not advertised — the list and the match are kept in one
