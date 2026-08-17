@@ -557,6 +557,10 @@ impl ModelBranch {
 }
 
 impl ModelTimelineEntry {
+    pub(crate) const fn version(self) -> CommitVersion {
+        self.version
+    }
+
     pub(crate) const fn timestamp(self) -> Timestamp {
         self.timestamp
     }
