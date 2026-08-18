@@ -49,7 +49,7 @@ INSTRUCTION_CEILINGS = {
 
 # Release `strata` binary, bytes. Unlike instruction counts this IS mildly
 # environment-sensitive (linker, debuginfo), hence the wider 15% band.
-BINARY_SIZE_CEILING = 31_491_278  # 27,383,720 (toolchain 1.94.1, linux x86_64)
+BINARY_SIZE_CEILING = 36_730_889  # 31,939,904 (toolchain 1.94.1, linux x86_64; re-baselined for the multi-process IPC epic, #2840-#2846 — see #2900)
 
 
 def iai_instruction_count(summary: dict) -> int | None:
