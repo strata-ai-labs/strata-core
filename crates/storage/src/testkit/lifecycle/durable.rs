@@ -11,7 +11,9 @@ use crate::backend::{
 use crate::branch::config::BranchRuntimeConfig;
 use crate::commit::{CommitBranchGeneration, CommitManualTimestampSource, CommitRuntimeConfig};
 use crate::config::mode::DurabilityPolicy;
-use crate::format::{encode_manifest, DatabaseManifest};
+use crate::format::{
+    encode_manifest, encode_wal_segment_header, DatabaseManifest, WalSegmentHeader,
+};
 use crate::layout::ObjectLayout;
 use crate::lifecycle::{
     LifecycleCodecId, LifecycleConfig, LifecycleDurableLocalOpenRequest,
@@ -79,17 +81,21 @@ fn check_durable_standard_create(
             && shell.admit_health_query().is_ok(),
         "durable shell admitted wrong operation before recovery",
     )?;
-    // Assembly's only directory listing is the WAL-prefix scan that reconciles
-    // the writer's resume segment against the on-disk tail (#2555). Anything
-    // else listing objects during assembly is still a side-effect violation.
-    ensure(
-        backend.listed_prefixes()
-            == vec![ObjectLayout::wal_prefix()
-                .map_err(testkit_error)?
-                .as_str()
-                .to_owned()],
-        "durable assembly listed objects beyond the single WAL resume scan",
-    )?;
+    // Assembly's directory listings are exactly two scans of the WAL prefix:
+    // the #2690 segment-loss inventory check (verify_wal_segment_inventory)
+    // and the resume scan that reconciles the writer's resume segment against
+    // the on-disk tail (#2555). Anything else listing objects during assembly
+    // is still a side-effect violation.
+    let wal_prefix = ObjectLayout::wal_prefix()
+        .map_err(testkit_error)?
+        .as_str()
+        .to_owned();
+    let listed = backend.listed_prefixes();
+    if listed != vec![wal_prefix.clone(), wal_prefix] {
+        return Err(TestkitError::new(format!(
+            "durable assembly listed objects beyond the two WAL scans: {listed:?}"
+        )));
+    }
     outcome.durable_assembly_standard_cases += 1;
     outcome.durable_manifest_create_cases += 1;
     outcome.durable_recovering_admission_cases += 1;
@@ -116,6 +122,12 @@ fn check_durable_always_existing(
     backend.write_raw(
         ObjectLayout::database_manifest().map_err(testkit_error)?,
         encode_manifest(&manifest).map_err(testkit_error)?,
+    );
+    // #2765: a checkpoint-attesting manifest requires its WAL chain on disk
+    // under strict recovery — seed the attested active segment.
+    backend.write_raw(
+        ObjectLayout::wal_segment(active_segment).map_err(testkit_error)?,
+        encode_wal_segment_header(&WalSegmentHeader::new(active_segment, DATABASE_ID)),
     );
     let shell = assemble(
         StorageMode::DurableLocalAlways,
@@ -653,5 +665,26 @@ struct ScriptWriterLock {
 impl Drop for ScriptWriterLock {
     fn drop(&mut self) {
         self.locked.store(false, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Default-lane pin (#2902): the durable assembly scenarios (two-scan
+    /// listing law, seeded-WAL-chain existing-store open) must execute and
+    /// count outside the feature-gated targets.
+    #[test]
+    fn durable_contract_holds_with_assembly_scenarios_counted() {
+        let mut outcome = LifecycleScaffoldOutcome::default();
+        check_lifecycle_durable_contract(b"lifecycle-default-lane-pin", &mut outcome)
+            .expect("durable contract holds");
+        assert!(outcome.durable_assembly_standard_cases() > 0);
+        assert!(outcome.durable_manifest_create_cases() > 0);
+        assert!(outcome.durable_recovering_admission_cases() > 0);
+        assert!(outcome.durable_no_recovery_side_effect_cases() > 0);
+        assert!(outcome.durable_assembly_always_cases() > 0);
+        assert!(outcome.durable_manifest_existing_cases() > 0);
     }
 }

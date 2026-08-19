@@ -3,7 +3,8 @@
 use super::super::TestkitError;
 use super::recovery::{
     assemble_shell, branch_id, lossy_open_plan, open_plan, physical_key, publish_snapshot, put_row,
-    testkit_error, write_database_root, RecoveryScriptBackend, DATABASE_ID,
+    testkit_error, write_database_root, write_empty_wal_segment, RecoveryScriptBackend,
+    DATABASE_ID,
 };
 use super::{ensure, script_byte};
 use crate::commit::{CommitStamp, CommitTimelineEntry, CommitTimelineRows};
@@ -165,6 +166,9 @@ fn check_checkpoint_bootstrap(
             .with_recovery_facts(1, Some(checkpoint_version.as_u64()), Some(30), None)
             .map_err(testkit_error)?,
     )?;
+    // #2765: a checkpoint-attesting manifest requires its WAL chain on disk
+    // under strict recovery — seed the attested active segment.
+    write_empty_wal_segment(backend, 1)?;
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
@@ -218,6 +222,14 @@ fn check_wal_replay_bootstrap(
         .wal_mut()
         .append(&record)
         .map_err(testkit_error)?;
+    // Recovery reads the on-disk log, not the writer's coalescing buffer —
+    // an unflushed append is legally invisible (BS5 write-group contract),
+    // so the crash-tail scenario forces its record durable first.
+    shell
+        .services_mut()
+        .wal_mut()
+        .force_durable()
+        .map_err(testkit_error)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     let recovered = LifecycleRecoveryRuntime::new(&mut shell)
@@ -227,10 +239,15 @@ fn check_wal_replay_bootstrap(
         .complete_recovery(&recovered)
         .map_err(|error| testkit_error(&error))?;
 
-    ensure(
-        runtime.visible_version() == record.commit_version(),
-        "WAL bootstrap did not publish replayed visibility",
-    )?;
+    if runtime.visible_version() != record.commit_version() {
+        return Err(TestkitError::new(format!(
+            "WAL bootstrap did not publish replayed visibility: visible {:?} vs record {:?}, seen {} applied {}",
+            runtime.visible_version(),
+            record.commit_version(),
+            runtime.bootstrap_report().records_seen(),
+            runtime.bootstrap_report().records_applied(),
+        )));
+    }
     ensure(
         runtime.bootstrap_report().records_seen() == 1
             && runtime.bootstrap_report().records_applied() == 1,
@@ -281,6 +298,13 @@ fn check_degraded_bootstrap(
         .wal_mut()
         .append(&record)
         .map_err(testkit_error)?;
+    // Recovery reads the on-disk log, not the writer's coalescing buffer —
+    // force the record durable so the lossy path has a tail to replay.
+    shell
+        .services_mut()
+        .wal_mut()
+        .force_durable()
+        .map_err(testkit_error)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     let recovered = LifecycleRecoveryRuntime::new(&mut shell)
@@ -329,6 +353,13 @@ fn check_replay_rejection_bootstrap(
         .services_mut()
         .wal_mut()
         .append(&record)
+        .map_err(testkit_error)?;
+    // Recovery reads the on-disk log, not the writer's coalescing buffer —
+    // the malformed record must be durable for replay to reject it.
+    shell
+        .services_mut()
+        .wal_mut()
+        .force_durable()
         .map_err(testkit_error)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
@@ -386,6 +417,9 @@ fn check_input_derived_checkpoint_bootstrap(
             .with_recovery_facts(1, Some(version.as_u64()), Some(snapshot_id), None)
             .map_err(testkit_error)?,
     )?;
+    // #2765: a checkpoint-attesting manifest requires its WAL chain on disk
+    // under strict recovery — seed the attested active segment.
+    write_empty_wal_segment(backend, 1)?;
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
@@ -417,6 +451,12 @@ fn check_input_derived_wal_replay_bootstrap(
         .services_mut()
         .wal_mut()
         .append(&record)
+        .map_err(testkit_error)?;
+    // Recovery reads the on-disk log, not the writer's coalescing buffer.
+    shell
+        .services_mut()
+        .wal_mut()
+        .force_durable()
         .map_err(testkit_error)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
@@ -456,6 +496,12 @@ fn check_input_derived_degraded_bootstrap(
         .wal_mut()
         .append(&record)
         .map_err(testkit_error)?;
+    // Recovery reads the on-disk log, not the writer's coalescing buffer.
+    shell
+        .services_mut()
+        .wal_mut()
+        .force_durable()
+        .map_err(testkit_error)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     let recovered = LifecycleRecoveryRuntime::new(&mut shell)
@@ -486,6 +532,12 @@ fn check_input_derived_replay_rejection_bootstrap(
         .services_mut()
         .wal_mut()
         .append(&record)
+        .map_err(testkit_error)?;
+    // Recovery reads the on-disk log, not the writer's coalescing buffer.
+    shell
+        .services_mut()
+        .wal_mut()
+        .force_durable()
         .map_err(testkit_error)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
@@ -541,4 +593,31 @@ fn timeline_only_replay_record(
     .into_rows();
     let payload = WalCommitPayload::new(timeline_rows.to_vec()).map_err(testkit_error)?;
     WalRecord::new(version, branch, timestamp, payload).map_err(testkit_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Default-lane pin (#2902): the bootstrap contract's scenarios are
+    /// otherwise reachable only through feature-gated targets, so the
+    /// mutation gate's run has kill coverage here — every scenario must
+    /// execute and count.
+    #[test]
+    fn bootstrap_contract_holds_with_all_scenarios_counted() {
+        let outcome = check_lifecycle_bootstrap_contract(b"lifecycle-default-lane-pin")
+            .expect("bootstrap contract holds");
+        // check_input_derived_bootstrap reruns the empty scenario, so the
+        // empty counter legitimately lands at 2.
+        assert_eq!(outcome.empty_bootstrap_cases(), 2);
+        assert_eq!(outcome.checkpoint_bootstrap_cases(), 1);
+        assert_eq!(outcome.wal_replay_bootstrap_cases(), 1);
+        assert_eq!(outcome.degraded_bootstrap_cases(), 1);
+        assert_eq!(outcome.replay_rejection_cases(), 1);
+        assert_eq!(outcome.input_derived_empty_bootstrap_cases(), 1);
+        assert_eq!(outcome.input_derived_checkpoint_bootstrap_cases(), 1);
+        assert_eq!(outcome.input_derived_wal_replay_bootstrap_cases(), 1);
+        assert_eq!(outcome.input_derived_degraded_bootstrap_cases(), 1);
+        assert_eq!(outcome.input_derived_replay_rejection_cases(), 1);
+    }
 }
