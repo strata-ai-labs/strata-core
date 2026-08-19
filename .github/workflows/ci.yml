@@ -115,6 +115,25 @@ jobs:
       - name: Hub tests with ingest enabled
         run: cargo test --locked -p strata-hub --features ingest
 
+  fault-injection:
+    # The storage fault-injection integration targets (#2902): every test in
+    # them is filtered out without the feature flag, so no other lane can see
+    # them — three latent reds rotted invisibly this way (#2848, #2896,
+    # #2902), each a testkit contract that silently fell behind an
+    # intentional lib change. This lane keeps that class per-PR-visible.
+    # The deep soaks stay nightly; this runs the deterministic contracts.
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorize private git dependencies
+        run: git config --global url."https://x-access-token:${{ secrets.STRATAHUB_READ_TOKEN }}@github.com/stratalab/stratahub".insteadOf "https://github.com/stratalab/stratahub"
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Storage fault-injection suite
+        run: cargo test --locked -p strata-storage --features fault-injection
+
   perf-gates:
     # TCP5.2: instruction-count ceilings over the shipping paths. Callgrind
     # counts are deterministic (~0.02% observed spread; benchmarks/README.md)

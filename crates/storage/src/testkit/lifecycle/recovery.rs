@@ -11,10 +11,10 @@ use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::facts::BranchLevel;
 use crate::commit::{CommitBranchGeneration, CommitManualTimestampSource, CommitRuntimeConfig};
 use crate::format::{
-    encode_manifest, table_row_split_extension_section, DatabaseManifest, TableManifest,
-    TableManifestLevel, TableManifestTableBounds, TableManifestTableFacts,
-    TableManifestTableProvenance, TableManifestTableRef, TableRowSplit, WalCommitPayload,
-    WalRecord,
+    encode_manifest, encode_wal_segment_header, table_row_split_extension_section,
+    DatabaseManifest, TableManifest, TableManifestLevel, TableManifestTableBounds,
+    TableManifestTableFacts, TableManifestTableProvenance, TableManifestTableRef, TableRowSplit,
+    WalCommitPayload, WalRecord, WalSegmentHeader,
 };
 use crate::layout::ObjectLayout;
 use crate::lifecycle::{
@@ -254,12 +254,21 @@ fn check_checkpoint_and_tail(
             .with_recovery_facts(1, Some(checkpoint_version.as_u64()), Some(2), None)
             .map_err(testkit_error)?,
     )?;
+    // #2765: a checkpoint-attesting manifest requires its WAL chain on disk
+    // under strict recovery — seed the attested active segment.
+    write_empty_wal_segment(backend, 1)?;
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let tail = wal_record(branch, tail_version, b"tail", b"value")?;
     shell
         .services_mut()
         .wal_mut()
         .append(&tail)
+        .map_err(testkit_error)?;
+    // Recovery reads the on-disk log, not the writer's coalescing buffer.
+    shell
+        .services_mut()
+        .wal_mut()
+        .force_durable()
         .map_err(testkit_error)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
@@ -298,6 +307,9 @@ fn check_strict_missing_snapshot(
             .with_recovery_facts(1, Some(9), Some(3), None)
             .map_err(testkit_error)?,
     )?;
+    // #2765: seed the attested WAL segment so assembly admits the store and
+    // the MISSING-SNAPSHOT rejection under test fires where expected.
+    write_empty_wal_segment(backend, 1)?;
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
@@ -417,6 +429,9 @@ fn check_input_derived_checkpoint_and_tail(
             )
             .map_err(testkit_error)?,
     )?;
+    // #2765: a checkpoint-attesting manifest requires its WAL chain on disk
+    // under strict recovery — seed the attested active segment.
+    write_empty_wal_segment(backend, 1)?;
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let equal = wal_record(branch, checkpoint_version, b"generated-equal", b"ignored")?;
     shell
@@ -435,6 +450,12 @@ fn check_input_derived_checkpoint_and_tail(
             .map_err(testkit_error)?;
         expected_tail.push(record);
     }
+    // Recovery reads the on-disk log, not the writer's coalescing buffer.
+    shell
+        .services_mut()
+        .wal_mut()
+        .force_durable()
+        .map_err(testkit_error)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     let recovered = LifecycleRecoveryRuntime::new(&mut shell)
@@ -473,6 +494,9 @@ fn check_input_derived_strict_failure(
             .map_err(testkit_error)?
     };
     write_database_root(backend, &manifest)?;
+    // #2765: seed the attested WAL segment so assembly admits the store and
+    // the MISSING-SNAPSHOT/WATERMARK rejection under test fires at recover.
+    write_empty_wal_segment(backend, 1)?;
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
@@ -629,6 +653,9 @@ fn check_checkpoint_manifest_conflict(
         std::slice::from_ref(&checkpoint_row),
     )?;
     seed_database_manifest_with_snapshot(backend, 21, CommitVersion::new(9))?;
+    // #2765: seed the attested WAL segment so assembly admits the store and
+    // the internal-key CONFLICT rejection under test fires at recover.
+    write_empty_wal_segment(backend, 1)?;
 
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
@@ -1170,6 +1197,21 @@ pub(super) fn write_database_root(
     Ok(())
 }
 
+/// Seeds the header-only WAL segment a fresh writer would have created —
+/// what #2765's strict-mode chain check requires on disk whenever the
+/// manifest attests a checkpoint (a checkpoint proves durable history, so
+/// its WAL chain must exist; byte shape mirrors `create_segment`).
+pub(super) fn write_empty_wal_segment(
+    backend: &'static RecoveryScriptBackend,
+    segment_id: u64,
+) -> Result<(), TestkitError> {
+    backend.write_raw(
+        ObjectLayout::wal_segment(segment_id).map_err(testkit_error)?,
+        encode_wal_segment_header(&WalSegmentHeader::new(segment_id, DATABASE_ID)),
+    );
+    Ok(())
+}
+
 fn wal_record(
     branch: BranchId,
     version: CommitVersion,
@@ -1361,5 +1403,25 @@ struct RecoveryScriptWriterLock {
 impl Drop for RecoveryScriptWriterLock {
     fn drop(&mut self) {
         self.locked.store(false, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Default-lane pin (#2902): the recovery contract's checkpoint and
+    /// strict-failure scenarios (incl. the seeded-WAL-chain preconditions)
+    /// must execute and count outside the feature-gated targets.
+    #[test]
+    fn recovery_contract_holds_with_all_scenarios_counted() {
+        let outcome = check_lifecycle_recovery_contract(b"lifecycle-default-lane-pin")
+            .expect("recovery contract holds");
+        assert!(outcome.checkpoint_recovery_cases() > 0);
+        assert!(outcome.strict_failure_cases() > 0);
+        assert!(outcome.lossy_degradation_cases() > 0);
+        assert!(outcome.input_derived_checkpoint_cases() > 0);
+        assert!(outcome.input_derived_strict_failure_cases() > 0);
+        assert!(outcome.checkpoint_manifest_conflict_cases() > 0);
     }
 }
