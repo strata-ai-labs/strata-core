@@ -1,7 +1,7 @@
 //! Generated durable/WAL commit contract helpers.
 
 use crate::branch::config::BranchRuntimeConfig;
-use crate::branch::read::{BranchReadBound, BranchReadView, BranchScanBounds};
+use crate::branch::read::BranchReadView;
 use crate::branch::state::BranchLocalState;
 use crate::commit::{
     execute_read_only_diagnostic, CommitBatch, CommitBatchOptions, CommitBranchApplyTarget,
@@ -11,11 +11,11 @@ use crate::commit::{
     CommitExpiry, CommitFactAllocator, CommitLowerLayer, CommitManualTimestampSource,
     CommitMutation, CommitOrigin, CommitOutcome, CommitOutcomeKind, CommitPhase,
     CommitReadOnlyDiagnostics, CommitReadSnapshot, CommitRetentionHint, CommitRuntimeConfig,
-    CommitRuntimeError, CommitStamp, CommitTimelineRows, CommitTimelineView, CommitTimestampGuard,
+    CommitRuntimeError, CommitStamp, CommitTimelineEntry, CommitTimelineView, CommitTimestampGuard,
     CommitTimestampPolicy, CommitUnresolvedDurable, CommitUnresolvedDurableGate,
     CommitUnresolvedDurableKind, CommitValidationFacts, CommitVersionAllocator,
     CommitVisibilityFacts, CommitVisiblePublisher, CommitWalAppendError, CommitWalAppendFacts,
-    CommitWalAppender, VisibleVersionPublish, VisibleVersionTracker, COMMIT_TIMELINE_SPACE,
+    CommitWalAppender, VisibleVersionPublish, VisibleVersionTracker,
 };
 use crate::config::mode::DurabilityPolicy;
 use crate::format::WalRecord;
@@ -764,16 +764,23 @@ fn check_applied_not_visible_gate(script: &[u8]) -> Result<usize, TestkitError> 
         .unresolved()
         .map_err(testkit_error)?
         .ok_or_else(|| TestkitError::new("applied-not-visible gate was empty"))?;
-    if unresolved.kind() != CommitUnresolvedDurableKind::AppliedNotVisible
-        || unresolved.commit_version() != CommitVersion::new(1)
-        || unresolved.visibility_facts().applied_version() != Some(CommitVersion::new(1))
-        || unresolved.visibility_facts().visible_version().is_some()
-        || wal.records.len() != 1
-        || state.state.active_row_count() != 1 + CommitTimelineRows::timeline_row_count()
-        || visible.tracker.visible_version() != CommitVersion::ZERO
-    {
+    if !unresolved_gate_shape_holds(
+        unresolved.kind(),
+        unresolved.commit_version(),
+        unresolved.visibility_facts().applied_version(),
+        unresolved.visibility_facts().visible_version(),
+    ) {
         return Err(TestkitError::new(
             "applied-not-visible gate facts were incorrect",
+        ));
+    }
+    if !gate_state_facts_hold(
+        wal.records.len(),
+        state.state.active_row_count(),
+        visible.tracker.visible_version().as_u64(),
+    ) {
+        return Err(TestkitError::new(
+            "applied-not-visible gate state facts were incorrect",
         ));
     }
     Ok(1)
@@ -1132,8 +1139,15 @@ impl DurableContractFixture {
                 CommitTimestampGuard::default(),
                 CommitManualTimestampSource::new(timestamp),
             ),
-            state: BranchLocalState::new(branch, BranchRuntimeConfig::default())
-                .map_err(testkit_error)?,
+            state: {
+                let state = BranchLocalState::new(branch, BranchRuntimeConfig::default())
+                    .map_err(testkit_error)?;
+                // In-process fixture branch: mirror the lifecycle layer's
+                // complete-from-birth mark (W3.1b) so the retained index
+                // is the provable timeline source.
+                state.retained_timeline().mark_complete_from_birth();
+                state
+            },
             visible: VisibleVersionTracker::default(),
             wal: RecordingWalAppender::new(policy, wal_mode),
             durable_gate: CommitUnresolvedDurableGate::new(),
@@ -1221,9 +1235,9 @@ fn require_record_payload(
         return Err(TestkitError::new("WAL record outer facts diverged"));
     }
     let rows = record.commit_payload().rows();
-    let expected_rows = expected_user_rows
-        .len()
-        .saturating_add(CommitTimelineRows::timeline_row_count());
+    // W3.1c: the WAL payload carries the stamped user rows only — the
+    // commit stamp itself is durable on the record, not as timeline rows.
+    let expected_rows = expected_user_rows.len();
     if rows.len() != expected_rows {
         return Err(TestkitError::new("WAL payload row count diverged"));
     }
@@ -1332,20 +1346,56 @@ fn timeline_view(
     view: &crate::branch::read::BranchReadView,
     branch: BranchId,
 ) -> Result<CommitTimelineView, TestkitError> {
-    let bounds = BranchScanBounds::unbounded(
-        branch,
-        COMMIT_TIMELINE_SPACE,
-        StorageSpaceId::COMMIT_TIMELINE,
-    )
-    .map_err(testkit_error)?;
-    let rows = view
-        .scan_range(&bounds, BranchReadBound::latest())
-        .map_err(testkit_error)?;
-    CommitTimelineView::from_rows(
-        branch,
-        rows.iter().map(crate::branch::read::BranchVisibleRow::row),
-    )
-    .map_err(testkit_error)
+    // W3.1c: commits no longer materialize timeline rows — the retained
+    // index observed at the apply funnel is the timeline's source, so the
+    // view is materialized from it exactly as the product read path does.
+    let (index, live_active) = view
+        .retained_timeline()
+        .ok_or_else(|| TestkitError::new("fixture view carries no retained timeline index"))?;
+    let bound = if live_active {
+        None
+    } else {
+        Some(
+            view.facts()
+                .max_commit_version()
+                .unwrap_or(CommitVersion::ZERO),
+        )
+    };
+    let entries = index
+        .materialized_entries(bound)
+        .ok_or_else(|| TestkitError::new("retained timeline index lost completeness"))?
+        .iter()
+        .map(|entry| {
+            CommitTimelineEntry::new(branch, entry.commit_version(), entry.commit_timestamp())
+                .map_err(testkit_error)
+        })
+        .collect::<Result<Vec<_>, TestkitError>>()?;
+    Ok(CommitTimelineView::from_entries(branch, entries))
+}
+
+/// An applied-but-not-visible unresolved fact carries exactly the failed
+/// commit's stamp: kind, version 1, applied at 1, and no visible version.
+fn unresolved_gate_shape_holds(
+    kind: CommitUnresolvedDurableKind,
+    commit_version: CommitVersion,
+    applied_version: Option<CommitVersion>,
+    visible_version: Option<CommitVersion>,
+) -> bool {
+    kind == CommitUnresolvedDurableKind::AppliedNotVisible
+        && commit_version == CommitVersion::new(1)
+        && applied_version == Some(CommitVersion::new(1))
+        && visible_version.is_none()
+}
+
+/// W3.1c: an applied-but-not-visible commit leaves exactly one WAL record,
+/// exactly its one applied user row (no timeline pair), and an unadvanced
+/// visible frontier.
+const fn gate_state_facts_hold(
+    wal_records: usize,
+    active_rows: usize,
+    visible_version: u64,
+) -> bool {
+    wal_records == 1 && active_rows == 1 && visible_version == 0
 }
 
 fn unresolved_fact(
@@ -1401,4 +1451,135 @@ fn timestamp(byte: u8) -> Timestamp {
 
 fn testkit_error(error: impl std::fmt::Display) -> TestkitError {
     TestkitError::new(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unresolved_gate_shape_predicate_truth_table() {
+        let v1 = CommitVersion::new(1);
+        assert!(unresolved_gate_shape_holds(
+            CommitUnresolvedDurableKind::AppliedNotVisible,
+            v1,
+            Some(v1),
+            None
+        ));
+        assert!(!unresolved_gate_shape_holds(
+            CommitUnresolvedDurableKind::DurableNotApplied,
+            v1,
+            Some(v1),
+            None
+        ));
+        assert!(!unresolved_gate_shape_holds(
+            CommitUnresolvedDurableKind::AppliedNotVisible,
+            CommitVersion::new(2),
+            Some(v1),
+            None
+        ));
+        assert!(!unresolved_gate_shape_holds(
+            CommitUnresolvedDurableKind::AppliedNotVisible,
+            v1,
+            None,
+            None
+        ));
+        assert!(!unresolved_gate_shape_holds(
+            CommitUnresolvedDurableKind::AppliedNotVisible,
+            v1,
+            Some(v1),
+            Some(v1)
+        ));
+    }
+
+    #[test]
+    fn gate_state_facts_predicate_truth_table() {
+        assert!(gate_state_facts_hold(1, 1, 0));
+        assert!(!gate_state_facts_hold(0, 1, 0));
+        assert!(!gate_state_facts_hold(1, 3, 0));
+        assert!(!gate_state_facts_hold(1, 1, 1));
+    }
+
+    /// The payload verifier must reject every kind of mismatch it claims
+    /// to check — count, tombstone flag, and stamp — and accept the exact
+    /// expectation.
+    #[test]
+    fn record_payload_verifier_rejects_mismatched_expectations() {
+        let branch = branch_id(0x77);
+        let key = physical_key(branch, 0x20, b"payload".to_vec());
+        let commit_timestamp = timestamp(7);
+        let mut fixture = DurableContractFixture::new(
+            branch,
+            CommitRuntimeConfig::default(),
+            DurabilityPolicy::Standard,
+            FakeWalMode::Succeed {
+                forced_durable: false,
+            },
+            commit_timestamp,
+        )
+        .expect("fixture");
+        fixture
+            .execute(durable_batch(
+                branch,
+                CommitDurabilityMode::Standard,
+                vec![CommitMutation::put(
+                    key.clone(),
+                    b"v".to_vec(),
+                    CommitExpiry::None,
+                    CommitRetentionHint::Append,
+                )],
+            ))
+            .expect("durable commit");
+        let record = single_record(&fixture).expect("one record");
+
+        let version = CommitVersion::new(1);
+        assert!(require_record_payload(record, branch, version, commit_timestamp, &[]).is_err());
+        assert!(
+            require_record_payload(record, branch, version, commit_timestamp, &[(&key, true)])
+                .is_err()
+        );
+        assert!(require_record_payload(
+            record,
+            branch,
+            CommitVersion::new(2),
+            commit_timestamp,
+            &[(&key, false)]
+        )
+        .is_err());
+        require_record_payload(record, branch, version, commit_timestamp, &[(&key, false)])
+            .expect("exact payload expectation holds");
+    }
+
+    /// Default-lane pin: the durable contract's checks are the mutation
+    /// gate's only coverage of this module outside the feature-gated
+    /// fault targets, so the whole contract runs here and every counter
+    /// is pinned to its exact healthy value.
+    #[test]
+    fn durable_contract_holds_with_exact_counters() {
+        let outcome = check_commit_runtime_durable_contract(b"commit-runtime-default-lane-pin")
+            .expect("durable contract holds");
+        assert_eq!(outcome.standard_commits, 1);
+        assert_eq!(outcome.always_commits, 1);
+        assert_eq!(outcome.wal_payload_parity, 1);
+        assert_eq!(outcome.clean_wal_failures, 1);
+        assert_eq!(outcome.uncertain_wal_failures, 1);
+        assert_eq!(outcome.cache_mode_rejections, 1);
+        assert_eq!(outcome.policy_mismatches, 1);
+        assert_eq!(outcome.unforced_always_rejections, 1);
+        assert_eq!(outcome.guard_release_after_failure, 1);
+        assert_eq!(outcome.read_only_rejections, 1);
+        assert!(outcome.unresolved_fact_validation > 0);
+        assert!(outcome.unresolved_fact_rejections > 0);
+        assert_eq!(outcome.unresolved_gate_records, 1);
+        assert_eq!(outcome.unresolved_gate_idempotent_records, 1);
+        assert_eq!(outcome.unresolved_gate_different_fact_rejections, 1);
+        assert_eq!(outcome.unresolved_gate_exact_clears, 1);
+        assert_eq!(outcome.durable_not_applied_gates, 1);
+        assert_eq!(outcome.applied_not_visible_gates, 1);
+        assert_eq!(outcome.unresolved_gate_blocks, 1);
+        assert_eq!(outcome.unresolved_gate_cache_blocks, 1);
+        assert_eq!(outcome.unresolved_gate_read_only_diagnostics, 1);
+        assert_eq!(outcome.clean_wal_no_gate, 1);
+        assert_eq!(outcome.uncertain_wal_no_gate, 1);
+    }
 }

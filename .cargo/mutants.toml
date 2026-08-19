@@ -47,6 +47,16 @@ exclude_re = [
     # with () is semantics-preserving by design (differently-batched fsyncs,
     # never fewer). No noise-free observer exists.
     "replace beat_pause with \\(\\)",
+    # Commit-runtime contract checks (#2896): a check returns Ok(1) exactly
+    # when it passes, so replacing its body with Ok(1) is observationally
+    # equivalent to a healthy run. The healthy path is pinned by the
+    # exact-counter contract tests; the checks' strength mechanism is their
+    # failure path (which caught the W3.1c rot #2896 fixed). The decision
+    # logic they evaluate is extracted into pure predicates with truth
+    # tables (mixed_commit_counts_hold, gate_state_facts_hold) and the
+    # record-payload verifier carries a direct mismatch-rejection test —
+    # those all stay mutated.
+    "replace check_(mixed_commit|timeline_rows_installed|version_gap_after_post_allocation_failure|applied_not_visible_gate) -> Result<usize, TestkitError> with Ok\\(1\\)",
     # BS5.4c parallel dispatch: the finish path's leader-applied fallback
     # (deliberate robustness for checkout failures, lifecycle bootstrap.rs)
     # makes a skipped dispatch semantics-equivalent — parallelism is a
