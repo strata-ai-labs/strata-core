@@ -1,7 +1,7 @@
 //! Generated cache/no-WAL commit contract helpers.
 
 use crate::branch::config::BranchRuntimeConfig;
-use crate::branch::read::{BranchReadBound, BranchScanBounds};
+
 use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
@@ -9,10 +9,9 @@ use crate::commit::{
     CommitConflictValidationMode, CommitDuplicateKeyPolicy, CommitDurabilityClass,
     CommitDurabilityMode, CommitExpiry, CommitFactAllocator, CommitManualTimestampSource,
     CommitMutation, CommitObservedVersion, CommitOrigin, CommitOutcomeKind, CommitPhase,
-    CommitReadFact, CommitReadOnlyDiagnostics, CommitRetentionHint, CommitRuntimeConfig,
-    CommitRuntimeError, CommitRuntimeResult, CommitTimelineRows, CommitTimelineView,
-    CommitTimestampGuard, CommitTimestampPolicy, CommitValidationFacts, CommitVersionAllocator,
-    VisibleVersionTracker, COMMIT_TIMELINE_SPACE,
+    CommitReadFact, CommitRetentionHint, CommitRuntimeConfig, CommitRuntimeError,
+    CommitRuntimeResult, CommitTimelineEntry, CommitTimelineView, CommitTimestampGuard,
+    CommitTimestampPolicy, CommitValidationFacts, CommitVersionAllocator, VisibleVersionTracker,
 };
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use strata_core::{BranchId, CommitVersion, Timestamp};
@@ -149,10 +148,11 @@ fn check_mixed_commit(script: &[u8]) -> Result<usize, TestkitError> {
         .commit_timestamp()
         .ok_or_else(|| TestkitError::new("mixed cache outcome missed timestamp"))?;
 
-    if outcome.mutation_counts().puts() != 2
-        || outcome.mutation_counts().deletes() != 1
-        || fixture.state.active_row_count() != 3 + CommitTimelineRows::timeline_row_count()
-    {
+    if !mixed_commit_counts_hold(
+        outcome.mutation_counts().puts(),
+        outcome.mutation_counts().deletes(),
+        fixture.state.active_row_count(),
+    ) {
         return Err(TestkitError::new("mixed cache commit counts were wrong"));
     }
     let view = fixture.state.capture_read_view().map_err(testkit_error)?;
@@ -274,6 +274,8 @@ fn check_timeline_rows_installed(script: &[u8]) -> Result<usize, TestkitError> {
         .map_err(testkit_error)?;
     let view = fixture.state.capture_read_view().map_err(testkit_error)?;
     let timeline = timeline_view(&view, branch)?;
+    // W3.1c: no rows are installed — the commit stamp must be queryable
+    // through the derived (retained-index) timeline surface.
     if timeline
         .version_at_or_before(expected_timestamp)
         .matched_version()
@@ -281,7 +283,7 @@ fn check_timeline_rows_installed(script: &[u8]) -> Result<usize, TestkitError> {
         || timeline.timestamp_for_version(CommitVersion::new(1)) != Some(expected_timestamp)
     {
         return Err(TestkitError::new(
-            "cache commit did not install timeline rows",
+            "cache commit stamp missing from the derived timeline",
         ));
     }
     Ok(1)
@@ -489,9 +491,14 @@ fn check_apply_failure_atomicity(script: &[u8]) -> Result<usize, TestkitError> {
 
 fn check_version_gap_after_post_allocation_failure(script: &[u8]) -> Result<usize, TestkitError> {
     let branch = branch_id(script_byte(script, 22));
-    let tight_config = CommitRuntimeConfig::new(1, 1, 2, CommitReadOnlyDiagnostics::Enabled)
-        .map_err(testkit_error)?;
-    let mut fixture = CacheContractFixture::new(branch, tight_config, timestamp(22))?;
+    let mut fixture =
+        CacheContractFixture::new(branch, CommitRuntimeConfig::default(), timestamp(22))?;
+    // W3.1c removed the prepared-row inflation that once pushed a tight
+    // row cap over its limit after allocation, so the post-allocation
+    // failure is engineered at the allocated-after-visible guard instead:
+    // a visible frontier at the allocator's next version burns the
+    // allocated version without applying anything.
+    fixture.visible = VisibleVersionTracker::new(CommitVersion::new(1));
     let batch = put_batch(
         branch,
         physical_key(branch, 0x20, b"gap".to_vec()),
@@ -499,18 +506,20 @@ fn check_version_gap_after_post_allocation_failure(script: &[u8]) -> Result<usiz
     );
     expect_error(
         fixture.execute(batch),
-        |error| matches!(error, CommitRuntimeError::InvalidBatch { .. }),
-        "post-allocation row-limit failure did not reject",
+        |error| matches!(error, CommitRuntimeError::InvalidCommitState { .. }),
+        "post-allocation stale-allocation failure did not reject",
     )?;
     if fixture.allocator.version_allocator().last_allocated() != CommitVersion::new(1)
         || fixture.state.active_row_count() != 0
     {
         return Err(TestkitError::new(
-            "row-limit failure did not leave a clean gap",
+            "post-allocation failure did not leave a clean gap",
         ));
     }
 
-    fixture.config = CommitRuntimeConfig::default();
+    // No allocator repair is needed: the burned allocation already moved
+    // last_allocated to the visible frontier, so the retry's allocation
+    // clears the guard on its own.
     let retry = fixture
         .execute(put_batch(
             branch,
@@ -644,8 +653,15 @@ impl CacheContractFixture {
                 CommitTimestampGuard::default(),
                 CommitManualTimestampSource::new(timestamp),
             ),
-            state: BranchLocalState::new(branch, BranchRuntimeConfig::default())
-                .map_err(testkit_error)?,
+            state: {
+                let state = BranchLocalState::new(branch, BranchRuntimeConfig::default())
+                    .map_err(testkit_error)?;
+                // In-process fixture branch: mirror the lifecycle layer's
+                // complete-from-birth mark (W3.1b) so the retained index
+                // is the provable timeline source.
+                state.retained_timeline().mark_complete_from_birth();
+                state
+            },
             visible: VisibleVersionTracker::default(),
             durable_gate: crate::commit::CommitUnresolvedDurableGate::new(),
         })
@@ -762,20 +778,37 @@ fn timeline_view(
     view: &crate::branch::read::BranchReadView,
     branch: BranchId,
 ) -> Result<CommitTimelineView, TestkitError> {
-    let bounds = BranchScanBounds::unbounded(
-        branch,
-        COMMIT_TIMELINE_SPACE,
-        StorageSpaceId::COMMIT_TIMELINE,
-    )
-    .map_err(testkit_error)?;
-    let rows = view
-        .scan_range(&bounds, BranchReadBound::latest())
-        .map_err(testkit_error)?;
-    CommitTimelineView::from_rows(
-        branch,
-        rows.iter().map(crate::branch::read::BranchVisibleRow::row),
-    )
-    .map_err(testkit_error)
+    // W3.1c: commits no longer materialize timeline rows — the retained
+    // index observed at the apply funnel is the timeline's source, so the
+    // view is materialized from it exactly as the product read path does.
+    let (index, live_active) = view
+        .retained_timeline()
+        .ok_or_else(|| TestkitError::new("fixture view carries no retained timeline index"))?;
+    let bound = if live_active {
+        None
+    } else {
+        Some(
+            view.facts()
+                .max_commit_version()
+                .unwrap_or(CommitVersion::ZERO),
+        )
+    };
+    let entries = index
+        .materialized_entries(bound)
+        .ok_or_else(|| TestkitError::new("retained timeline index lost completeness"))?
+        .iter()
+        .map(|entry| {
+            CommitTimelineEntry::new(branch, entry.commit_version(), entry.commit_timestamp())
+                .map_err(testkit_error)
+        })
+        .collect::<Result<Vec<_>, TestkitError>>()?;
+    Ok(CommitTimelineView::from_entries(branch, entries))
+}
+
+/// W3.1c: commits materialize no timeline rows — a mixed put/delete/put
+/// batch's memtable footprint is exactly its three user rows.
+const fn mixed_commit_counts_hold(puts: usize, deletes: usize, active_rows: usize) -> bool {
+    puts == 2 && deletes == 1 && active_rows == 3
 }
 
 fn script_byte(script: &[u8], index: usize) -> u8 {
@@ -802,4 +835,43 @@ fn timestamp(byte: u8) -> Timestamp {
 
 fn testkit_error(error: impl std::fmt::Display) -> TestkitError {
     TestkitError::new(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mixed_commit_count_predicate_truth_table() {
+        assert!(mixed_commit_counts_hold(2, 1, 3));
+        assert!(!mixed_commit_counts_hold(1, 1, 3));
+        assert!(!mixed_commit_counts_hold(2, 2, 3));
+        assert!(!mixed_commit_counts_hold(2, 1, 5));
+    }
+
+    /// Default-lane pin: the cache contract's checks are the mutation
+    /// gate's only coverage of this module outside the feature-gated
+    /// fault targets, so the whole contract runs here and every counter
+    /// is pinned to its exact healthy value.
+    #[test]
+    fn cache_contract_holds_with_exact_counters() {
+        let outcome = check_commit_runtime_cache_contract(b"commit-runtime-default-lane-pin")
+            .expect("cache contract holds");
+        assert_eq!(outcome.put_commits, 1);
+        assert_eq!(outcome.delete_commits, 1);
+        assert_eq!(outcome.mixed_commits, 1);
+        assert_eq!(outcome.one_version_per_batch, 1);
+        assert_eq!(outcome.one_timestamp_per_batch, 1);
+        assert_eq!(outcome.timeline_rows_installed, 1);
+        assert_eq!(outcome.visible_publications, 1);
+        assert_eq!(outcome.not_durable_outcomes, 1);
+        assert!(outcome.branch_admission_rejections > 0);
+        assert!(outcome.conflict_rejections > 0);
+        assert!(outcome.non_cache_rejections > 0);
+        assert_eq!(outcome.apply_failure_atomicity, 1);
+        assert_eq!(outcome.version_gap_after_failure, 1);
+        assert_eq!(outcome.applied_above_visible_rejections, 1);
+        assert_eq!(outcome.visible_allocator_mismatch_rejections, 1);
+        assert_eq!(outcome.guard_release_after_failure, 1);
+    }
 }
