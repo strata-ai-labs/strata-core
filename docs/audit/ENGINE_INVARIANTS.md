@@ -11,7 +11,14 @@
 > **Maintenance**: Update when the *architecture* changes, not when code is refactored.
 > If a new compaction strategy is added, add invariants for it. If a function is renamed, do nothing.
 >
-> **Categories**: LSM (7), CMP (6), COW (6), MVCC (6), ACID (7), ARCH (8), SCALE (10), DUR (9) = 59 invariants
+> **Categories**: LSM (8), CMP (8), COW (9), MVCC (8), ACID (7), ARCH (9, one retired), SCALE (11), DUR (15) = 75 entries, 74 active
+>
+> **2026-08-19 V1 refresh**: a four-way audit of every entry against the post-promotion codebase
+> re-anchored the pre-V1 families (LSM/CMP/COW/MVCC/ACID/ARCH/SCALE) to V1 mechanisms, retired
+> ARCH-006 (its subject was removed), rewrote ACID-004/ACID-007 whose premises no longer exist,
+> and added the post-promotion law (generation fencing, derived timeline, pruning proofs,
+> deferred durability, the unresolved-durable gate). File anchors below are hints as of that
+> refresh — the property, not the path, is the invariant.
 
 ---
 
@@ -19,14 +26,15 @@
 
 ### LSM-001: InternalKey sort order
 
-InternalKey byte ordering MUST produce ascending order by `(branch_id, space, type_tag, user_key)`
-and descending order by `commit_id` within the same logical key. This is achieved by bitwise-NOT
-encoding of the commit_id suffix. If this invariant is broken, every MVCC read, every merge
+Internal-key byte ordering MUST produce ascending order by
+`(branch_id, space, storage_space_id, user_key)` and descending order by `commit_version`
+within the same logical key. This is achieved by bitwise-NOT encoding of the version suffix
+(`!version` big-endian). If this invariant is broken, every MVCC read, every merge
 iteration, and every compaction produces wrong results.
 
-**Audit**: Find the InternalKey encoding function. Verify that the commit_id is inverted (`!commit_id`)
-before big-endian encoding. Construct test cases: two keys with the same logical prefix but different
-commit_ids — verify the higher commit_id sorts first in byte order.
+**Audit**: Find the physical-key encoding (`format/key.rs`). Verify the version is inverted
+before big-endian encoding and the prefix layout matches. Test:
+`internal_key_sorts_newest_version_first_for_same_key`.
 
 ### LSM-002: Byte-stuffing roundtrip
 
@@ -41,23 +49,33 @@ cannot appear within the encoded data.
 
 ### LSM-003: Read path level ordering
 
-The read path MUST check sources in this order: active memtable → frozen memtables (newest first) →
-L0 segments (newest first) → L1 → L2 → ... → L6 → inherited COW layers (nearest ancestor first).
-The first match wins. This relies on the invariant that newer sources contain newer versions of any key.
+The point-read path MUST consider sources in this order: active memtable → frozen memtables
+(newest first) → owned L0 tables (all of them) → L1 → ... → L{max} → inherited COW layers
+(nearest ancestor first). Selection is version-max under the read bound, not first-match:
+every candidate under the bound competes and the highest commit version wins; early exit is
+legal only when no remaining source can hold a version above the already-selected one.
+Within L0, ALL tables are consulted (their key ranges overlap); L0 file order is not
+load-bearing for correctness.
 
-**Audit**: Find the main point-lookup function (e.g., `get_versioned_from_branch`). Trace the source
-ordering. Verify no early return skips a newer source. Verify L0 segments are ordered by commit_max
-descending. Verify L1+ levels are checked in ascending order.
+**Audit**: Find the ordered point-candidate selection (`select_ordered_visible_point_candidate`,
+`branch/read.rs`). Trace the source ordering and the early-exit predicate
+(`remaining_max_commit <= selected_commit`). Verify no early return can skip a source whose
+max commit version exceeds the current candidate's.
 
 ### LSM-004: Memtable rotation atomicity
 
-When the active memtable exceeds `write_buffer_size`, the freeze-and-swap MUST be atomic with respect
-to concurrent readers and writers. A reader must never see a state where both the old (frozen) and
-new (active) memtable are missing entries. A writer must never insert into a frozen memtable.
+When the active memtable exceeds its rotation threshold, the freeze-and-swap MUST be atomic
+with respect to readers and writers. A reader must never see a state where an entry is in
+neither the frozen nor the new active table. Writes into a frozen table MUST be impossible.
+V1 enforces this structurally: `freeze(self)` consumes the mutable table by value and the
+resulting `FrozenTable` has no insert surface (type-level prevention, stronger than a flag);
+rotation runs under `&mut self` behind the runtime mutex, so no writer can race the swap,
+and readers observe pre- or post-rotation snapshots only (DUR-002 covers the republish
+ordering).
 
-**Audit**: Find the memtable rotation code (freeze + new active). Check if there is a window where
-a write could go to neither memtable. Verify the `frozen` flag prevents further writes. Verify
-concurrent readers see either the pre-rotation or post-rotation state, never an intermediate.
+**Audit**: Find `rotate_active` (`branch/state/rotation.rs`) and `MutableTable::freeze`
+(`table/mutable.rs`). Verify freeze consumes by value and `FrozenTable` exposes no mutation.
+Verify rotation is reachable only under the runtime's exclusive access.
 
 ### LSM-005: Bloom filter correctness with rewritten keys
 
@@ -66,27 +84,52 @@ queries an inherited segment, it rewrites the key to the source's branch_id befo
 rewritten key MUST produce the exact same bytes that were used when building the bloom filter.
 Any divergence causes false negatives — data silently invisible.
 
-**Audit**: Find the bloom probe code path for inherited layer lookups. Verify the key rewrite function
-produces byte-identical output to what the segment builder used during bloom construction. Test with
-a key that exists in a parent segment — verify bloom returns `maybe_contains = true` after rewrite.
+**Audit**: The bloom is built over encoded physical-key bytes (`physical_key_bytes()`,
+branch_id included, commit suffix stripped — `TableBloomFilter::build`, `table/builder.rs`).
+Verify the inherited-layer path rewrites the key (`rewrite_physical_key_branch`,
+`branch/identity.rs`) BEFORE building the lookup/probe (`branch/read.rs`), producing bytes
+identical to the source builder's. Note the pruning pin test is `perf-trace`-gated
+(`branch_point_read_prunes_inherited_nonzero_levels_after_key_rewrite`).
 
 ### LSM-006: Block cache keying independence from branches
 
-The block cache is keyed by `(file_id, block_offset)` where `file_id` is derived from the file path.
-Shared segments (accessed from multiple branches via COW) MUST use the same cache entries regardless
-of which branch is accessing them. Cache keys MUST NOT include branch_id.
+The block cache is keyed by `(table identity, block address)` where the table identity is the
+immutable object-identity string — never a path, never the caller. Shared tables (accessed
+from multiple branches via COW inheritance) MUST use the same cache entries regardless of
+which branch is reading. Cache keys MUST NOT include branch_id.
 
-**Audit**: Find the block cache key computation. Verify it uses only file-level identity (path hash),
-not caller identity. Verify a shared segment's blocks are cached once, not per-branch.
+**Audit**: Find `TableBlockCacheKey` (`table/cache.rs`) and its construction from
+`TableCacheTableId::new(identity.as_str())` (`table/reader.rs`). Verify no branch reference
+exists in the cache module. `table_cache_keys_use_table_identity_not_path` pins the
+identity-not-path direction; `table_object_reader_service_shared_cache_hits_across_readers`
+pins cross-reader sharing.
 
-### LSM-007: Segment file immutability
+### LSM-007: Table object immutability
 
-Once a segment file is written and closed, it MUST NOT be modified. All reads use `pread` (positional
-read) against the immutable file. Compaction creates NEW segment files; it never modifies existing ones.
-This guarantees that concurrent readers holding Arc references to old segments always see consistent data.
+Once a table object (`tables/<branch>/<level>/<table_id>`) is published, it MUST NOT be
+modified. Publication is create-only: the object publisher refuses an existing object,
+installs via temp-write + fsync + no-clobber hard link, and all reads are positional against
+the immutable object. Flush and compaction create NEW table objects; nothing rewrites an
+existing one. Concurrent readers holding reader handles to old tables therefore always see
+consistent data.
 
-**Audit**: Grep for any `write`, `truncate`, or `set_len` call on segment `.sst` files outside of
-`SegmentBuilder`. Verify no compaction or maintenance operation modifies an existing segment.
+**Audit**: Verify `TableObjectService::publish_create` goes through
+`ObjectPublisher::publish_durable_create` with `PublishMode::Create` (refusal on existing —
+`backend/local_fs.rs`), and the install path uses no-clobber linking. Grep for any production
+`set_len`/`truncate`/re-`write` on table objects outside test fault-injectors.
+
+### LSM-008: Unique internal-key law
+
+No two rows may share an identical encoded internal key `(physical key, commit version)`
+within a memtable or across the sources of a compaction. Violations are hard
+`DuplicateInternalKey` errors — never silently resolved — because MVCC candidate selection
+depends on the pair's uniqueness. Byte-identical replay redundancy is the one legal
+duplicate shape and is classified explicitly at the replay boundary (ACID-005), never
+inside table machinery.
+
+**Audit**: Verify the memtable insert rejects duplicate internal keys (`table/mutable.rs`),
+sorted-unique validation runs at table build (`table/key.rs`), and compaction's global
+duplicate pass fails closed (`table/compaction.rs`).
 
 ---
 
@@ -103,38 +146,52 @@ For each, verify it is gated on a bottommost check. Cross-reference with RocksDB
 `BottommostLevelCompaction` logic. Note: the `drop_expired` flag controls TTL cleanup (bottommost only),
 but tombstone cleanup for dead keys may be a separate code path — verify both.
 
-### CMP-002: Version pruning respects prune_floor
+### CMP-002: Version pruning respects the retained-version floor
 
-The `CompactionIterator` (or equivalent) MUST:
-- Emit all entries with `commit_id ≥ prune_floor`
-- Emit exactly ONE entry below the floor per logical key (the "floor entry"), unless it's a tombstone
-- Skip all remaining below-floor entries
-- Respect `max_versions` cap
+`BranchCompactionPruningPolicy` MUST:
+- Emit all rows with `commit_version ≥ retained_version_floor` (a version exactly at the floor is kept)
+- Keep exactly ONE below-floor survivor per logical key (the newest below-floor value), dropping
+  the rest as `OlderVersion`
+- Keep below-floor tombstones under `DropOlderVersions` (tombstone elision is CMP-001/CMP-007's
+  separate, bottommost-gated policy)
+- Respect the `max_versions` cap
+- Combine the version floor with the timestamp floor (`row_is_below_floors`)
 
-When `prune_floor == 0`, all versions pass through unchanged (no pruning).
+When the floor is 0, all versions pass through unchanged. Every pruning run is additionally
+gated by the full safety proof (ARCH-005).
 
-**Audit**: Find the compaction iterator. Verify the pruning logic against these rules. Test edge cases:
-`prune_floor == 0`, `prune_floor == u64::MAX`, key with only tombstone below floor, key with only
-one version exactly at floor.
+**Audit**: Find `BranchCompactionPruningPolicy` and `decide_below_floor_value`
+(`branch/pruning.rs`). Verify the rules above, including floor==0 pass-through, exactly-at-floor
+kept, only-tombstone-below-floor kept, and the `row_is_below_floors` version+timestamp combine.
 
 ### CMP-003: Grandparent overlap control
 
-When compacting L_n → L_{n+1}, output segment splitting MUST respect the `MAX_GRANDPARENT_OVERLAP`
-threshold to prevent pathological write amplification during the *next* compaction (L_{n+1} → L_{n+2}).
-The splitting predicate tracks cumulative overlap with L_{n+2} files and forces a split when exceeded.
+When compacting L_n → L_{n+1}, output table splitting MUST respect the per-request
+`max_overlap_bytes` threshold to prevent pathological write amplification during the *next*
+compaction (L_{n+1} → L_{n+2}). The cut predicate tracks cumulative overlap with
+grandparent-level (output_level+1) boundaries and forces a cut when exceeded — but never
+mid-key (CMP-008) and never on an empty output.
 
-**Audit**: Find the grandparent-aware split predicate. Verify the byte accumulation is correct. Check
-what happens when the output key jumps past multiple grandparent files at once. Compare with RocksDB's
-`MaxGrandParentOverlapBytes`.
+**Audit**: Find `GrandparentCutTracker::should_cut_before` (`table/compaction.rs`) and its
+wiring via `grandparent_cut_hints` at output_level+1 (`branch/state/compaction.rs`). Verify
+the accumulation loop handles the output key jumping past multiple grandparent boundaries
+at once.
 
-### CMP-004: Compaction manifest-before-delete ordering
+### CMP-004: Compaction publish-before-reclaim ordering
 
-The storage manifest MUST be updated BEFORE old segment files are deleted. If the system crashes after
-deleting old files but before writing the manifest, recovery would reference missing segments.
+The per-branch table manifest MUST be durably published BEFORE any superseded table object
+becomes reclaimable. V1's shape: install the new layout and record objects → publish the
+table manifest (crash-safe temp + fsync + rename) → only then enqueue the retention mark;
+physical deletion happens in the deferred Quarantine→Purge sweep, never inline with the
+install. The sweep cannot delete objects referenced by the last durably-confirmed manifest
+or by any in-flight publication (ARCH-009's frontier pin). A crash at any point therefore
+leaves recovery a manifest whose every listed object exists.
 
-**Audit**: Find every compaction method that deletes old segments. Verify `write_branch_manifest()` is
-called BEFORE any `delete_segment_if_unreferenced()` call. Verify the manifest write is crash-safe
-(temp file + rename).
+**Audit**: Trace `install_prepared_durable_compaction` →
+`publish_compaction_outcome_manifest` (`lifecycle/rewrite_publication.rs`) → the GC mark
+enqueued after publish (`lifecycle/durable/maintenance.rs`). Verify no deletion is reachable
+before the manifest publish. The recovery direction is pinned by
+`strict_recovery_rejects_missing_manifest_listed_table_object`.
 
 ### CMP-005: Dynamic level sizing correctness
 
@@ -155,37 +212,76 @@ Verify refresh is called after every segment version swap.
 
 ### CMP-006: Concurrent compaction and flush safety
 
-A flush may insert a new L0 segment while compaction is reading L0 segments. Compaction snapshots the
-segment list at start. The swap step filters out compacted segments (by Arc identity) and preserves
-any segments added concurrently by flush. New segments MUST NOT be lost or duplicated.
+A flush may install a new L0 table while a background compaction over older L0 tables is in
+flight. The compaction install snapshots the current levels at install time and removes ONLY
+its candidate input tables, matched by CONTENT IDENTITY (`table_matches_ref`: identity +
+branch + level + kind), never by pointer equality — so a concurrently-flushed table is
+preserved, L0 index positions are re-based by identity, and a stale candidate set is refused
+("identity is stale"). Tables MUST NOT be lost or duplicated across the swap. Installs are
+serialized under the runtime mutex.
 
-**Audit**: Find the segment version swap in each compaction method. Verify the filter uses `Arc::ptr_eq`
-(identity, not value equality). Verify the new version includes both the compaction output AND any
-concurrently-flushed segments.
+**Audit**: Find `remove_compacted_tables` and `require_candidate_current`
+(`branch/state/compaction.rs`). Verify identity-based filtering and the stale-candidate
+refusal. `branch_compaction_l0_to_l1_prepared_plan_publishes_around_concurrent_flush` pins
+the concurrent-flush survival.
+
+### CMP-007: Tombstone elision refuses resurrection risk
+
+Even at bottommost, tombstone elision MUST be refused when dropping a below-floor tombstone
+would resurrect a strictly-lower-commit surviving live row of the same key. The bottommost
+gate (CMP-001) alone does not capture this: a below-floor live survivor kept by CMP-002's
+one-survivor rule can sit UNDER the tombstone being elided in the same output.
+
+**Audit**: Find `candidate_has_tombstone_resurrection_risk` inside
+`validate_policy_specific_safety` (`branch/pruning.rs`); verify `DropTombstones` fails closed
+with `TombstoneResurrectionRisk` when the risk holds, and that the check runs against the
+actual candidate row set, not level shape alone.
+
+### CMP-008: All versions of a physical key land in one output table
+
+Neither the size-split predicate nor the grandparent-cut predicate may cut a compaction
+output mid-key: every version of a physical key in the input set lands in the same output
+table. A mid-key cut would let table-level bounds separate versions that MVCC candidate
+selection assumes co-located.
+
+**Audit**: Verify both `should_split_before` and `GrandparentCutTracker::should_cut_before`
+(`table/compaction.rs`) refuse to cut while the next row shares the pending output's last
+physical key.
 
 ---
 
 ## COW — Copy-on-Write Branching Invariants
 
-### COW-001: Shared segment deletion requires zero refcount
+### COW-001: Shared table deletion requires proven unreachability
 
-A segment file referenced by any branch's inherited layer MUST NOT be deleted. Every `.sst` file
-deletion path must check the `SegmentRefRegistry`. Untracked segments (refcount never incremented)
-are treated as unshared and can be deleted freely.
+A table object referenced by ANY branch — through an owned level, an inherited layer, or an
+in-memory pin — MUST NOT be deleted. V1 decides deletability by a stateless reachability
+proof, not runtime refcounts: each retention pass unions every branch's durable manifest
+references (`live_table_objects`) with every branch's in-memory pins
+(`in_memory_pinned_table_objects` iterates ALL branches), and only objects in neither set
+become quarantine candidates. There is no "untracked = free to delete" class — an object is
+either proven unreachable or it is retained. (The pre-V1 `SegmentRefRegistry`/refcount model
+is gone; its names are a forbidden-string guard in the retention tests.)
 
-**Audit**: Grep for every `fs::remove_file` call on `.sst` files. Verify each goes through
-`delete_segment_if_unreferenced` or equivalent refcount check. A single missing check means
-compaction on a parent branch can silently corrupt all child branches.
+**Audit**: Find `LifecycleTableObjectRetentionOutcome::new`
+(`lifecycle/table_reachability.rs`) and the all-branch pin collection
+(`lifecycle/durable/maintenance.rs`). Verify the union covers owned + inherited + pinned
+across every branch including deleted-but-surviving descriptors, and that the only physical
+delete path is the quarantine sweep over proven-unreachable objects.
 
-### COW-002: Fork refcount increment before guard release
+### COW-002: Fork capture is atomic against source maintenance
 
-During `fork_branch`, segment refcounts for all inherited segments MUST be incremented BEFORE the
-source branch's DashMap guard is released. If the guard is released first, a concurrent compaction
-on the source could delete a segment between guard release and refcount increment.
+A fork MUST capture the source branch's table set with no window in which concurrent
+maintenance on the source could reclaim a table between capture and the child's reference
+becoming visible. V1 enforces this by serialization, not refcount ordering: the whole fork
+(capture + child attach) runs under the runtime slot lock, and the next retention pass
+already sees the child's references (COW-001's all-branch union), so no gap exists in which
+the child's inherited tables are unreachable. (The pre-V1 DashMap-guard/refcount race this
+entry originally described cannot occur — there are no per-branch guards and no refcounts.)
 
-**Audit**: Find the fork_branch implementation. Trace the ordering: source guard acquisition →
-segment snapshot → guard release → refcount increment. If there is a gap between release and
-increment, identify the race window and assess impact.
+**Audit**: Find `fork_branch_at_version` (`api/runtime/mod.rs`) and verify the slot lock is
+held across capture and attach. Verify the retention pass's reachability union (COW-001)
+includes the new child's inherited layers on the first pass after the fork.
 
 ### COW-003: Inherited layer version gate
 
@@ -193,9 +289,11 @@ When reading through an inherited layer, the effective version ceiling is `min(m
 Entries with `commit_id > fork_version` MUST be invisible to the child branch. This ensures branch
 isolation — parent writes after the fork are invisible to the child.
 
-**Audit**: Find every read path that accesses inherited layers (point lookup, range scan, history,
-list). Verify each applies the `min(max_version, fork_version)` filter. Verify the RewritingIterator
-applies the version gate.
+**Audit**: Find `BranchEffectiveReadBound::for_inherited_layer` and `row_version_in_bound`
+(`branch/read.rs`). Verify every inherited-layer access site (point, history, summary, all
+scan variants) applies the bound. Tests:
+`forked_branch_isolated_from_parent_post_fork_commits`,
+`forked_branch_at_timestamp_before_fork_returns_parent_row`.
 
 ### COW-004: Materialization preserves commit_ids
 
@@ -203,28 +301,73 @@ When inherited entries are materialized into the child's own segments, the origi
 MUST be preserved, not reassigned. Reassigning would break: (a) MVCC reads at the fork_version
 (the entries would be invisible), (b) merge base computation (ancestor state would be lost).
 
-**Audit**: Find the materialization function. Verify the InternalKey rewrite only changes the
-branch_id prefix (first 16 bytes) and preserves the commit_id suffix (last 8 bytes).
+**Audit**: Find `rewrite_row_branch` (`branch/identity.rs`, called from materialization).
+Verify the rewrite swaps only the structured key's branch identity and preserves commit
+version and commit timestamp on both the put and tombstone arms.
 
-### COW-005: Recovery resolves inherited layers after all branches are loaded
+### COW-005: Recovery loads all branch state before fork children re-materialize
 
-Inherited layer resolution requires looking up source branch segments by filename. All source
-branches MUST be loaded (with their segments opened) before any child branch resolves its
-inherited layers. A two-pass recovery (first pass: load own segments; second pass: resolve
-inherited) satisfies this.
+All branch descriptors and all per-branch table manifests MUST be recovered before any
+layer-less fork child re-materializes from its source (`rebuild_fork_snapshot_rows`); a
+multi-pass loop handles fork chains. Layered children recover their inherited layers from
+their OWN manifest, never from a directory scan of the source. A Deleted source is skipped
+by the rebuild — sound ONLY because DUR-008 refuses deleting a source while a layer-less
+child depends on it (this is a hard invariant pair, not a warning-with-data-loss).
 
-**Audit**: Find the recovery/segment-loading code. Verify inherited layers are resolved in a
-second pass after all branches' own segments are loaded. Check: what happens if a source branch
-is missing (directory deleted)? Is this a hard error or a warning with data loss?
+**Audit**: Find `recover_per_branch_table_manifests` and the rebuild loop
+(`lifecycle/durable/bootstrap.rs`). Verify manifest recovery completes before any rebuild,
+the loop converges for fork chains, and the Deleted-source skip is paired with DUR-008's
+delete refusal.
 
-### COW-006: Refcount rebuild on recovery
+### COW-006: Post-recovery reachability is recomputed, never trusted
 
-After crash recovery, segment refcounts MUST be rebuilt from all branches' inherited layers.
-The rebuilt refcounts MUST match what they were before the crash (accounting for any in-flight
-operations that were not durable).
+Table reachability after a crash MUST be recomputed statelessly from durable state — every
+branch's recovered manifest plus live pins — never restored from a persisted counter. There
+is no durable refcount to rebuild or trust: the first retention pass after recovery derives
+the full reachable set from scratch (COW-001's union), so a crash cannot leave a stale count
+that either leaks objects forever or frees a reachable one.
 
-**Audit**: Find the refcount rebuild code in recovery. Verify it iterates ALL branches' inherited
-layers and increments for each referenced segment. Verify no double-counting.
+**Audit**: Verify no persisted reachability/refcount state exists (the retention tests'
+forbidden-string guard covers the old names); verify the retention pass derives its set
+purely from recovered manifests + in-memory pins each time it runs
+(`lifecycle/table_reachability.rs`).
+
+### COW-007: WAL replay is generation-fenced by `created_at`
+
+WAL records carry no branch generation, so a record for a branch id whose name was deleted
+and re-created is indistinguishable from the current generation's by id alone. Replay MUST
+skip records at `commit_version <= descriptor.created_at` (the dead predecessor generation's
+band) while still counting the skipped record's version into the recovered clock
+(`replayed_max`) — the version was really allocated. Branch creation stamps `created_at`
+with the globally visible version at creation, making the fence exact: every predecessor
+record is `<= created_at`, every own record is `> created_at`.
+
+**Audit**: Find `record_predates_current_generation` and its replay call site
+(`lifecycle/durable/bootstrap.rs`); verify fenced records still fold into `replayed_max`.
+Truth table: `generation_fence_truth_table` (`lifecycle/tests/recovery.rs`). Origin:
+#2826/#2832. The checkpoint-row twin of this fence lives in DUR-010.
+
+### COW-008: Durable base restore is generation-fenced
+
+A per-branch table manifest surviving from a DEAD generation of a re-created parentless
+branch (its max commit version `<= created_at`) MUST be skipped at recovery — restoring it
+would resurrect the deleted generation's base state under the new name.
+
+**Audit**: Find the fence inside `recover_per_branch_table_manifests`
+(`lifecycle/durable/bootstrap.rs`). Truth table: `base_restore_generation_fence_truth_table`
+(`lifecycle/tests/recovery.rs`). Origin: #2830/#2834.
+
+### COW-009: Fork layer structure and flattening precedence
+
+Inherited-layer attach MUST validate structure: layers nearest-first (fork_version
+descending), unique source ids, none self-referential, none Unavailable
+(`validate_inherited_attach`). Fork snapshot flattening MUST give own rows precedence over
+inherited rows on key collision, and cap each inherited layer's contribution at
+`min(watermark, layer.fork_version)` (`fork_snapshot_rows`).
+
+**Audit**: Verify both functions (`branch/state/fork.rs`, `branch/state/snapshot.rs`)
+enforce the stated rules; the validation tests live in
+`branch/tests/inheritance_materialization/`.
 
 ---
 
@@ -242,21 +385,25 @@ Check that no fallthrough path bypasses the filter. Check inherited layer reads 
 
 ### MVCC-002: Tombstone semantics
 
-A tombstone at `commit_id = V` means "key deleted at version V." For readers at `max_version ≥ V`,
-the key MUST return "not found" — the tombstone shadows all older versions. For readers at
-`max_version < V`, the key exists at its previous version. Tombstones MUST be emitted by
-`MvccIterator` (the caller decides filtering). Point lookups MUST treat tombstones as "not found."
-History queries MUST include tombstones.
+A tombstone at `commit_version = V` means "key deleted at version V." For readers at
+`max_version ≥ V`, the key MUST return "not found" — the tombstone shadows all older
+versions. For readers at `max_version < V`, the key exists at its previous version. Point
+lookups MUST treat tombstones as "not found" (`candidate_into_visible_row` returns None);
+history queries MUST include tombstones; scans filter them, with explicit
+`scan_*_including_tombstones` variants for callers that need them
+(`read_point_or_tombstone` is the tombstone-visible point verb).
 
-**Audit**: Find the point lookup caller that checks for tombstones. Verify it returns `None` (not the
-tombstone value). Find the history query. Verify it includes tombstones. Find the scan/list path.
-Verify it filters out tombstones.
+**Audit**: In `branch/read.rs`: verify `candidate_into_visible_row` maps a tombstone
+candidate to None; verify history includes tombstones; verify the plain scan variants filter
+while the `_including_tombstones` variants pass them through.
 
 ### MVCC-003: Global version counter monotonicity
 
-The global version counter (`TransactionManager::version`) MUST be monotonically increasing.
-`allocate_version()` MUST return unique, increasing values. No two transactions may receive the
-same commit_version. Version gaps are acceptable (failed transactions).
+The commit-version allocator (`CommitVersionAllocator`, lock-serialized `allocate_next`,
+overflow-checked via `checked_next` → `VersionAllocatorOverflow`) MUST hand out unique,
+strictly increasing values. No two commits may receive the same version. Version gaps are
+acceptable (failed commits burn their allocation — see the version-gap contract in the
+commit-runtime scaffold).
 
 Monotonicity is WITHIN a durable lineage: after a crash that legally sheds unsynced
 acks (Standard mode), recovery resumes the counter above every DURABLE reference and
@@ -268,8 +415,8 @@ state-matched watermark above the recovered domain and its stale acks collided w
 re-issued versions — a phantom `LostAck`; the harness now truncates its model at the
 reopen's recovered visible version under lossy families).
 
-**Audit**: Find the version allocation function. Verify it uses `fetch_add(1)` or equivalent
-atomic operation. Verify the overflow check at `u64::MAX`. Verify recovery restores the counter
+**Audit**: Find `CommitVersionAllocator::allocate_next` (`commit/allocator.rs`) and its
+overflow guard. Verify recovery restores the counter
 to at least the maximum of: the checkpoint watermark, the replayed WAL max (fenced records
 included), the restored branch states' max committed version, AND the branch catalog's version
 anchors (`descriptor_version_anchor`: `created_at`, fork anchors, deletion watermarks — deleted
@@ -284,26 +431,32 @@ slice). Re-issue contract: `reopen_version_domain_bound` + the model truncation 
 `reopen_version_domain_bound_applies_only_to_lossy_reopens` (simulation/mod.rs) pins
 the family gate.
 
-### MVCC-004: Snapshot capture happens before version allocation
+### MVCC-004: Reads snapshot only fully-published state
 
-A transaction's snapshot version (`start_version`) MUST be captured BEFORE any concurrent
-transaction's `allocate_version()` could make new data visible. Otherwise, the snapshot
-could include data from a transaction that hasn't finished applying yet.
+A read view MUST reflect only commits that are fully applied and published: rows land first,
+the visible frontier advances second (monotonic `VisibleVersionTracker::publish_visible`),
+and off-lock readers load the frontier (Acquire) BEFORE reading structure — so a reader can
+never capture a version whose writes are still in flight. (V1 has no transaction
+`start_version`; the per-operation read view plays that role. The exhaustive interleaving
+coverage of this ordering is DUR-001/002/003's loom lane — this entry states the MVCC-facing
+consequence.)
 
-**Audit**: Find where `start_version` is captured (transaction creation). Verify it reads
-`current_version()` which reflects only fully-applied transactions. Verify that a transaction's
-version is allocated AFTER its writes are validated but the writes are not yet visible.
+**Audit**: Verify `publish_visible` (`commit/visibility.rs`) is monotonic and called only
+after apply; verify the read path loads the visible frontier before structure
+(`branch/read.rs`, the V-before-S order).
 
-### MVCC-005: No snapshot pinning gap
+### MVCC-005: No read-pinning gap for pruning
 
-Active transactions pin the GC safe point. The `gc_safe_version` MUST be ≤ the minimum snapshot
-version of any active transaction. If GC prunes versions below `gc_safe_version`, and an active
-transaction holds a snapshot at a lower version, that transaction will see missing data.
+Version pruning MUST never drop a row a live read view could still serve. The pruning proof's
+`pinned_view_floor` MUST be ≥ `retained_version_floor`, and `retained_version_floor` MUST be
+≤ the visible version — enforced as hard proof-validation rules, so a pruning run with any
+outstanding older pinned view fails closed rather than pruning under it. (The pre-V1
+`gc_safe_version`/active-transaction-drain model is gone; pinned read views are the V1
+pinning mechanism, and ARCH-005 holds the full proof-gate law.)
 
-**Audit**: Find the `gc_safe_version` advancement logic. Verify it only advances when `active_count`
-drains to 0. Verify `gc_safe_point()` returns `min(current_version - 1, gc_safe_version)` and
-returns 0 when active transactions exist but no drain has occurred. Verify the prune_floor
-passed to compaction never exceeds `gc_safe_point()`.
+**Audit**: Find `BranchCompactionPruningProof::validate_static` (`branch/pruning.rs`) and
+verify both inequalities are rejected on violation. Test:
+`row_pruning_proof_pinned_view_below_floor_rejects` (`branch/tests/row_pruning.rs`).
 
 ### MVCC-006: TTL expiration does not resurrect old versions
 
@@ -311,8 +464,39 @@ When the newest visible version of a key has expired (TTL elapsed), the read pat
 "not found" — it MUST NOT fall through to an older, non-expired version. The expired version
 is the authoritative state. (Design decision: expired = gone, not expired = reveal older.)
 
-**Audit**: Find the point lookup path. Verify that when the first matching entry is expired,
-the function returns `None` without checking older versions. Verify this is the intended semantic.
+**Audit**: Find the point lookup path. Verify that when the selected newest candidate is
+expired (`row_is_expired_at` via `candidate_into_visible_row`), the function returns `None`
+without falling through to older versions. Nuance: this layer evaluates TTL only for
+timestamped (as-of) reads; latest-verb TTL is enforced above it.
+
+### MVCC-007: Commit timestamps are monotonically floored
+
+Commit timestamps MUST never regress: generated timestamps clamp UP to the monotonic floor,
+an explicit timestamp below the floor is rejected, and recovery catches the floor up to the
+recovered maximum. Timeline ordering (DUR-013's derived index) and as-of resolution depend
+on this floor.
+
+**Audit**: Find `CommitTimestampGuard` (`commit/allocator.rs`); verify the clamp-up,
+below-floor rejection, and recovery catch-up arms. Tests: `commit_timestamp_guard_*`
+(`commit/tests/allocator.rs`).
+
+### MVCC-008: The recovered clock resumes above every catalog anchor
+
+After ANY recovery, the version allocator MUST resume strictly above the maximum of: the
+checkpoint watermark, the replayed WAL maximum (generation-fenced records included), every
+restored branch state's max committed version, AND every catalog descriptor's version
+anchors — `created_at`, fork anchors, deletion watermarks — including DELETED descriptors
+(`descriptor_version_anchor` over `list_branches(true)`). The catalog term is load-bearing:
+lifecycle publishes are durably fenced, so the catalog can survive a crash that sheds the
+WAL and every branch state; a counter restarted below its anchors re-issues versions the
+catalog already attributes to other content, generation fences then eat legitimate commits,
+and fork rebuilds materialize the wrong parent slice (#2850). Promoted from MVCC-003's
+recovery prose because it is regressible independently of allocator monotonicity.
+
+**Audit**: Find `catalog_anchor_max` in the recovered-clock computation
+(`lifecycle/durable/bootstrap.rs`). The single regression to check for: a
+`list_branches(false)` (excluding deleted) at this site. MVCC-003's re-issue contract tests
+cover the lossy-domain interplay.
 
 ---
 
@@ -320,77 +504,105 @@ the function returns `None` without checking older versions. Verify this is the 
 
 ### ACID-001: Single WAL record per transaction
 
-Each transaction MUST produce exactly ONE `WalRecord` containing the complete writeset (all puts,
-deletes, CAS results). This ensures atomicity of recovery — a transaction is either fully replayed
-or not at all. Partial WAL records (truncated by crash) are detected by CRC32 and discarded.
+Each commit MUST produce exactly ONE `WalRecord` containing its complete stamped writeset.
+This ensures atomicity of recovery — a commit is either fully replayed or not at all.
+Partial (torn) final records are detected at decode and repaired as provably-unacked
+(DUR-005 bounds when a repair is legal). Since W3.1c the payload is the user rows only —
+the commit stamp is durable on the record itself, not as materialized timeline rows
+(DUR-013).
 
-**Audit**: Find the WAL record construction in the commit protocol. Verify it bundles all writes
-into a single `TransactionPayload` → single `WalRecord`. Verify no code path writes multiple
-WAL records for a single transaction.
+**Audit**: Find `prepare_commit_rows` (`commit/cache.rs`) and `build_wal_record`
+(`commit/durable.rs`). Verify all mutations compose into one `WalCommitPayload` → one
+`WalRecord`, appended once; verify no path writes multiple records per commit. Tests:
+`single_record` (testkit durable contract), `single_record_service`
+(`service/wal/tests/corruption.rs`).
 
-### ACID-002: WAL before storage
+### ACID-002: WAL before storage; post-WAL failure fail-closes through the gate
 
-The commit protocol MUST write the WAL record BEFORE applying writes to storage. If storage
-application fails after WAL write, the transaction is still durable (recovery replays from WAL).
-If WAL write fails, the transaction MUST NOT be applied to storage.
+The durable commit protocol MUST order: validate → admit → conflict-check → allocate → WAL
+append → storage apply → visible publish. A WAL-append failure returns before any apply.
+A storage-apply or publish failure AFTER a durable WAL append is NOT reported as success
+and NOT swallowed: it records a `CommitUnresolvedDurable` gate fact and returns a
+durability-uncertain error; the global unresolved-durable gate then blocks cross-branch
+visible-version advance past the in-flight version until replay reconciles and clears
+exactly the matching fact. BS5 write groups preserve the same law with caller-sequenced
+durability: `append_deferring_durability` accumulates like Standard, and one covering
+`force_durable` must precede any covered ack or visible publish.
 
-**Audit**: Find the commit method. Verify the ordering: validate → allocate version → WAL append →
-apply_writes. Verify that WAL failure causes abort (no storage application). Verify that storage
-failure after WAL is logged but the commit is still reported as successful.
+**Audit**: Trace `commit/durable.rs`: WAL-failure early return; the durable-but-not-visible
+arm recording the gate fact and erroring; the gate check at admission. Verify replay clears
+only the exact matching fact (`commit/replay.rs`). For groups: verify the covering-sync
+ordering (`api/runtime/commit_group.rs`, DUR-003/DUR-004 hold the adjacent ordering law).
 
-### ACID-003: Per-branch lock prevents TOCTOU
+### ACID-003: Per-branch commit guard prevents TOCTOU
 
-For read-write transactions (non-blind-write), the per-branch commit lock MUST be held from
-validation through version allocation and storage application. Without this, a concurrent
-transaction could modify storage between validation and apply, causing a stale validation
-to be acted upon.
+Every mutating commit MUST hold the per-branch commit guard from admission through apply and
+publish. The guard is a nonblocking fail-fast token (`CommitBranchGuard`, RAII), not a
+blocking lock: same-branch contention is a documented fail-fast; retry policy belongs above
+the commit runtime. Without the guard, a concurrent commit could mutate the branch between
+conflict validation and apply, acting on a stale validation.
 
-**Audit**: Find the per-branch lock acquisition. Verify it is held continuously from validation
-start through apply_writes completion. Verify blind writes (empty read_set) correctly skip the
-lock without violating isolation.
+**Audit**: Find `admit_mutating_commit` (`commit/branch_registry.rs`) and verify it is
+unconditional for every mutating batch, and the RAII `_admission_guard` lives through apply +
+publish in both `commit/durable.rs` and `commit/cache.rs`.
 
-### ACID-004: Blind write safety
+### ACID-004: Blind writes are guarded commits that skip only conflict sources
 
-Blind writes (no prior reads, no CAS, no JSON snapshots) skip the per-branch lock and validation.
-This is safe because: (a) each blind write gets a unique version via atomic `allocate_version()`,
-(b) concurrent blind writes create distinct versions — highest wins at read time, (c) MVCC
-prevents readers from seeing partially-applied blind writes (all entries share the same version).
+There is NO blind-write fast path in V1: writes without read facts take the same admission,
+per-branch guard, allocation, WAL, apply, and publish path as every mutating commit. What a
+blind write legitimately skips is conflict-SOURCE capture — with no read/CAS facts there is
+nothing to validate against, so the (potentially expensive) conflict source is not built.
+Safety needs no special argument: the guard serializes same-branch commits, and MVCC-004
+keeps unpublished versions invisible.
 
-**Audit**: Find the blind write fast path. Verify it correctly identifies blind writes (all read-related
-sets empty). Verify no reader can snapshot at the blind write's version before apply completes.
-Specifically: `allocate_version()` increments the global counter. A concurrent `current_version()`
-call returns the new value. A reader creating a snapshot at this version would try to read data
-that might not be in the memtable yet. Verify whether this race exists and its impact.
+**Audit**: Verify `commit_conflict_validation_needs_source` gates only source construction
+(`commit/durable.rs`) and that no code path bypasses `admit_mutating_commit` for an
+empty-read-set batch. Grep for any resurrected "blind" fast path — its existence would be
+the regression.
 
 ### ACID-005: Recovery replay is idempotent
 
 WAL replay MUST be idempotent — replaying the same record twice produces the same state as
-replaying it once. This is required because a crash during recovery could cause a second
-recovery to re-replay some records. Idempotence holds because memtable put with the same
-`(key, version)` overwrites with the same value.
+replaying it once (a crash during recovery can cause re-replay). V1 enforces this by
+EXPLICIT duplicate classification, not silent overwrite: `classify_replay_rows` inspects the
+target state and maps each record to Absent → apply, byte-identical Exact → AlreadyApplied
+(skipped and counted), value Mismatch / Partial overlap → fail closed. Divergent bytes at a
+replayed internal key are corruption, never resolved by overwrite.
 
-**Audit**: Find the WAL replay callback. Verify it uses `put_with_version_mode` with the original
-commit_version from the WAL record. Verify that inserting the same `(key, version)` pair twice
-into the SkipMap produces one entry, not two.
+**Audit**: Find `classify_replay_rows` / `ReplayDuplicateState` (`commit/replay.rs`). Verify
+all four arms and that the fail-closed arms are reachable from the recovery path. Tests:
+`commit/tests/replay.rs`.
 
-### ACID-006: DurabilityMode::Always provides fsync-per-commit
+### ACID-006: Always mode is fsync-before-visible
 
-In `Always` mode, the WAL MUST be fsynced to stable storage before the commit returns.
-After the commit returns, a crash MUST NOT lose the transaction.
+In `Always` mode, the WAL bytes covering a commit MUST be fsynced before the commit's
+visibility publishes and before its ack returns; a crash after the ack MUST NOT lose the
+commit. Solo path: `force_durable()` runs inline (flush the pending append buffer, THEN
+sync — flush-before-fsync is load-bearing), and `require_append_satisfies_policy` rejects an
+unforced Always append. Group path: the leader's ONE covering fsync precedes the phase-2
+publish for every member (DUR-003/DUR-004 hold the surrounding ordering).
 
-**Audit**: Find the `maybe_sync` function. Verify that in `Always` mode, `segment.sync()` is called
-on every append. Verify `sync()` calls `flush()` (BufWriter → OS) then `sync_all()` or `sync_data()`
-(OS → disk). If `flush()` is missing, data in the BufWriter is lost on crash even after "fsync."
+**Audit**: Verify `force_durable` orders flush-then-sync (`service/wal.rs`); verify the
+unforced-Always rejection (`commit/durable.rs`); verify the group's covering-sync-before-
+publish (`lifecycle/durable/bootstrap.rs`, `api/runtime/commit_group.rs`). Contract tests:
+`check_always_success`, `check_unforced_always_rejection` (testkit durable contract).
 
-### ACID-007: Standard mode durability window is bounded
+### ACID-007: Standard mode is deferred durability — shed-on-crash is the contract
 
-In `Standard` mode, fsync is periodic (every `interval_ms` or `batch_size` commits, whichever first).
-The data loss window MUST NOT exceed `interval_ms`. If the background flush thread stalls beyond
-`interval_ms` without a sync, an inline fsync MUST be triggered.
+`Standard` mode promises NO time-bounded fsync window. Commits publish visibility with no
+covering fsync; unsynced acks are LEGALLY shed by a crash. Durability advances only at
+explicit events — segment rotation seals, checkpoints, and close all `force_durable` — and
+the sync-attested watermark (DUR-005) records exactly what is promised, so recovery restores
+a prefix of acknowledged history and never fabricates beyond it. The 500ms append-buffer
+trickle-flush is a WRITE (bounding abrupt-kill exposure of buffered bytes), not an fsync,
+and promises nothing. There is no interval/batch fsync configuration and no background sync
+thread; `DurabilityPolicy` is bare `Standard | Always`.
 
-**Audit**: Find the Standard mode logic in `maybe_sync`. Verify the safety-net threshold. Find the
-background flush thread (if it exists). Verify it calls `sync_if_overdue` periodically. If the
-background thread doesn't exist, verify the safety-net covers all cases.
+**Audit**: Verify the Standard group finish captures no sync ticket and publishes without a
+covering fsync (`lifecycle/durable/bootstrap.rs`); verify durability events at rotation,
+checkpoint, and close (`service/wal.rs`); verify no time-based fsync mechanism exists. The
+shed-prefix direction is pinned by the process-crash testkit
+(`sigkilled_child_recovers_a_prefix_of_acknowledged_history`).
 
 ---
 
@@ -398,17 +610,19 @@ background thread doesn't exist, verify the safety-net covers all cases.
 
 ### ARCH-001: One version domain for GC
 
-All data-bearing entries in KV storage (including EventLog events, StateCell values, JSON documents,
-Vector records, and Branch metadata) are stored as KV entries with a `Txn(u64)` commit_version.
-The GC safe point (`gc_safe_version`) is computed in the Txn version domain and protects ALL
-entries regardless of their primitive type.
+All data-bearing entries (KV pairs, JSON documents, event-log events, vector records, graph
+elements, and branch metadata) are stored as branch-aware KV rows stamped with ONE
+commit_version domain. Retention floors and pruning operate in that single domain and
+protect ALL rows regardless of primitive type.
 
-EventLog's `Sequence(u64)` and StateCell's `Counter(u64)` are metadata stored WITHIN the KV value,
-not independent version axes. GC prunes by Txn commit_version, which correctly prunes all types.
+Event sequence numbers (`EventSequence(u64)`) are payload metadata stored within the row,
+not an independent version axis. Pruning by commit_version therefore correctly governs every
+primitive.
 
-**Audit**: Find where EventLog entries are stored in KV. Verify the KV entry has a Txn commit_version
-(from the transaction). Find where StateCell values are stored. Verify same. Verify that `gc_safe_point`
-and `prune_floor` operate in the Txn domain and that this correctly governs all primitive types.
+**Audit**: Verify every engine primitive persists through one `CommitPlan` → one
+commit_version (engine `persistence/adapter.rs`, the per-primitive services). Verify
+`EventSequence` lives in the key/value payload (engine `data/event/types.rs`), never as a
+version axis. Verify pruning floors are commit-version-domain only (`branch/pruning.rs`).
 
 ### ARCH-002: One atomic publication boundary
 
@@ -416,120 +630,145 @@ All writes in a transaction share a single commit_version. A reader at `max_vers
 sees NONE of them. A reader at `max_version ≥ commit_version` sees ALL of them. There is no
 intermediate state where some writes are visible and others are not.
 
-Secondary indexes (HNSW vector, BM25 search) are updated AFTER storage application and are
-NOT part of the atomic boundary. They are eventually consistent — a query through the search
-index may temporarily miss newly-committed entries. KV queries are always authoritative.
+The vector index (V1's only secondary index) is updated AFTER storage application, in a
+separate commit off the write path — eventually consistent by design; a query through the
+index may temporarily miss newly-committed entries. KV rows are always authoritative.
 
-**Audit**: Verify all entries in a transaction get the same commit_version. Verify no reader can
-snapshot at commit_version V while `apply_writes` for V is still in progress (for read-write
-transactions, the per-branch lock prevents this; for blind writes, verify the race analysis).
-Verify secondary index updates are documented as eventually consistent.
+**Audit**: Verify all rows in a commit share one stamp (`prepare_commit_rows`,
+`commit/cache.rs`). Verify no reader can observe version V while its apply is in flight
+(the guard + MVCC-004's publish ordering). Verify the vector index update is a separate
+post-apply commit (engine `data/vector/service.rs`).
 
-### ARCH-003: KV storage is the single source of truth
+### ARCH-003: KV rows are the single source of truth
 
-All persistent state lives in the `SegmentedStore`. Secondary indexes (HNSW, BM25) are derived
-and can be fully rebuilt from KV storage. Losing a secondary index MUST NOT lose any data —
-only search/query performance is affected until rebuild.
+All persistent state lives in branch-aware KV rows. Derived state (vector index artifacts —
+V1's only secondary index) can be fully rebuilt from the rows; losing it MUST NOT lose data —
+queries degrade to exact KV scans until rebuild. Source rows are authoritative; derived
+state may accelerate retrieval, never replace it (engine charter rule 26).
 
-**Audit**: For each secondary index (vector HNSW, search BM25), verify that a full rebuild from
-KV storage produces identical results. Find the recovery code for each — verify it scans KV
-and rebuilds from scratch. Verify no secondary index contains information that cannot be
-derived from KV.
+**Audit**: Verify vector artifacts rebuild fully from KV (engine `data/vector/artifact.rs`)
+and index loss degrades to the exact scan path (`data/vector/service.rs`). KNOWN GAP: the
+production recovery path does not auto-rebuild vector artifacts (the seal/build primitives
+are testkit-wired); data-safety holds via the scan fallback — verify that fallback is
+reachable when artifacts are absent.
 
 ### ARCH-004: One recovery model with deterministic ordering
 
-Recovery follows a fixed sequence: MANIFEST → snapshot → WAL replay → segment recovery →
-inherited layer resolution → refcount rebuild → version counter restoration → secondary index rebuild.
+Recovery follows one fixed sequence: manifest/assembly → checkpoint install → quarantine
+inventory → per-branch table-manifest recovery → flush-watermark validation →
+orphaned-delta detection → WAL replay → checkpoint/manifest COMBINE → timeline re-seed →
+fork-child re-materialization → recovered-clock restoration. Each step's output MUST NOT
+depend on a later step's output. Replay MUST be deterministic (same records → same state)
+and idempotent (ACID-005). There is one version domain — `WalRecord` is keyed by
+commit_version; no separate txn-id axis exists to diverge.
 
-Each step's output MUST NOT depend on a later step's output (no circular dependencies).
-Replay MUST be deterministic: same WAL records → same final state. Replay MUST be idempotent:
-multiple recoveries → same result.
+**Audit**: Trace `LifecycleRecoveryRuntime::recover` (`lifecycle/recovery.rs`) and
+`complete_recovery` (`lifecycle/durable/bootstrap.rs`). Verify the step order and the
+absence of forward dependencies. The DST whole-DB simulation is the volume lane for
+determinism/idempotence.
 
-**Audit**: Find the master recovery sequence (Database startup). Trace the ordering of each step.
-Verify no step reads state that a later step produces. Verify the WAL watermark (filtering by
-`txn_id`) is consistent with the version domain (commit_version) — specifically that txn_id
-ordering and commit_version ordering don't diverge in a way that causes missed or duplicate replays.
+### ARCH-005: Pruning proceeds only under a complete, fresh safety proof
 
-### ARCH-005: GC respects active snapshots AND branch inheritance
+Below-floor row deletion MUST be gated by a `BranchCompactionPruningProof` that jointly
+attests, in ONE validation: `retained_version_floor ≤ visible_version`,
+`pinned_view_floor ≥ retained_version_floor` (MVCC-005), no readable inherited layers over
+the candidates, candidate tables not shared with any other branch, table-manifest coverage
+≥ the floor, healthy recovery state — and a branch-state fingerprint binding the proof to
+the actual current contents (a stale proof is refused). This proof-gate model replaces the
+pre-V1 global `gc_safe_point`; COW children remain safe because shared tables are excluded
+by the not-shared gate and retained by COW-001's reachability.
 
-Compaction pruning (prune_floor) MUST be ≤ `gc_safe_point()`, which is ≤ the minimum active
-snapshot version. Additionally, COW inherited layers hold Arc references to old segment files,
-preventing their deletion. But compaction creates NEW segments with pruned entries — the pruning
-is safe because the old segments (with unpruned entries) remain accessible through the Arc references.
+**Audit**: Find `BranchCompactionPruningProof::{validate_static, validate_for_branch}`
+(`branch/pruning.rs`) and the call site before policy execution
+(`branch/state/compaction.rs`). Verify a proof missing ANY gate is rejected and the
+fingerprint freshness check is load-bearing.
 
-**Audit**: Find where `prune_floor` is passed to compaction. Verify it comes from `gc_safe_point()`.
-Verify `gc_safe_point()` accounts for active transactions and returns 0 when safety requires it.
-Verify that COW children read from Arc'd segment snapshots (not the parent's current version),
-so compaction on the parent doesn't affect the child's view.
+### ARCH-006: RETIRED (2026-08-19) — transaction timeout
 
-### ARCH-006: Transaction timeout prevents GC starvation
+Retired: its subject was removed. V1 has no public manual transactions, no long-lived
+transaction handles, and no `gc_safe_version` to starve — reads capture short-lived
+per-operation read views, and pruning safety is the proof-gate law (ARCH-005/MVCC-005).
+The ID is preserved per the no-renumber rule. If long-lived read pins ever return (e.g. a
+public snapshot surface), resurrect this entry as a pin-lifetime bound.
 
-Long-running transactions pin `gc_safe_version`, preventing version pruning. The system MUST
-enforce a transaction timeout (default: 5 minutes) that rejects commits of expired transactions.
-Without this, a leaked transaction handle could cause unbounded version accumulation.
+### ARCH-007: Durable authorities are enumerated, with declared coupling points
 
-**Audit**: Find the transaction timeout constant. Find where it's checked (commit path). Verify
-that an expired transaction's commit fails and its active_count is decremented, allowing
-gc_safe_version to advance.
+V1's durable authorities are: the `DatabaseManifest` (identity, codec, active WAL segment,
+snapshot watermark/id, `flushed_through_commit_id`), per-branch `TableManifest`s, the
+`BranchCatalogManifest`, the `PendingReleasesManifest`, and the sync-attested
+`meta/wal-watermark` singleton (deliberately OUTSIDE the manifest family — DUR-005). Each
+governs its own domain; cross-domain reads are limited to DECLARED coupling points, of which
+the load-bearing one is `flushed_through_commit_id`: recovery reads it to detect an orphaned
+delta and to run the checkpoint/manifest COMBINE (DUR-010). Undeclared cross-authority reads
+are the regression this entry guards against.
 
-### ARCH-007: Manifest and WAL are separate authority domains
+**Audit**: Enumerate the authorities (`format/manifest.rs`, `layout/mod.rs` for the
+watermark). Verify recovery's cross-domain reads are exactly the declared set
+(`lifecycle/recovery.rs` — orphaned-delta detection and the COMBINE); flag any new
+durability-manifest field consulted for table-loading decisions or vice versa.
 
-The system has TWO manifest files that serve different purposes:
-1. **Durability MANIFEST** (database-level): UUID, codec, snapshot info, active WAL segment
-2. **Storage manifests** (per-branch): segment filenames, levels, inherited layers
+### ARCH-008: Fork version creates an implicit retention floor for shared tables
 
-These MUST NOT conflict. The durability MANIFEST governs the recovery protocol (which snapshot, which
-WAL segments). Storage manifests govern segment loading (which files, which levels). Neither depends
-on the other's correctness — they are independent authority domains.
+When branch B inherits tables from A at fork version V, rows with `commit_version ≤ V` in
+those tables MUST remain accessible to B for as long as B's layer references them. The chain:
+tables are immutable (LSM-007); A's compaction creates NEW tables; the superseded shared
+tables stay retained because B's inherited-layer references keep them reachable
+(`SharedTableRegistry` runtime references + COW-001's manifest reachability + ARCH-005's
+not-shared pruning gate); B reads the unchanged old tables. DUR-008 covers the adjacent
+layer-less-child case where retention rides the SOURCE branch itself.
 
-**Audit**: Verify the two manifest systems are independent. Find each manifest's read and write paths.
-Verify no code reads a durability MANIFEST field to make a storage manifest decision, or vice versa.
+**Audit**: Verify the chain end to end: `is_runtime_referenced`/`is_reachable`
+(`branch/facts.rs`), the reachability snapshot rebuild, and the `candidate_tables_not_shared`
+pruning gate. A pruning or sweep path that consults none of these is the regression.
 
-### ARCH-008: Fork_version creates an implicit retention floor for shared segments
+### ARCH-009: Manifest-frontier deletion pin
 
-When branch B inherits segments from A at fork_version V, the entries in those segments with
-commit_id ≤ V MUST remain accessible to B. Since B holds Arc references to the OLD segment files
-(pre-compaction), and segment files are immutable (LSM-007), compaction on A does not modify
-the shared files. A's compaction creates new segments and tries to delete old ones — but the
-refcount check (COW-001) prevents deletion while B references them.
+A table object is physically deletable ONLY when referenced by neither the last
+durably-confirmed per-branch manifest nor any in-flight (pending) publication. Deletion is
+always a post-publish Quarantine→Purge sweep — never inline with an install (CMP-004's
+ordering law generalized to every object class). This is the object-store generalization
+that makes crash-at-any-point recovery sound: whatever manifest recovery selects, its listed
+objects exist.
 
-**Audit**: Verify the complete chain: (1) B holds Arc to A's segments, (2) A's compaction creates
-new files, (3) old file deletion is blocked by refcount, (4) B reads from the unchanged old files.
-If any link breaks, B sees corrupted or missing data.
+**Audit**: Find `manifest_frontier_pinned_objects` (`lifecycle/table_manifest.rs`) and its
+consumption in `reclaim_pinned_table_objects` (`lifecycle/durable/maintenance.rs`). Verify
+both frontier legs (confirmed + pending) pin, and no deletion path bypasses the sweep.
 
 ---
 
 ## SCALE — Scale-Span Invariants (Pi Zero to Billion-Key Server)
 
-### SCALE-001: No hardcoded constant assumes server-class resources
+### SCALE-001: One memory budget scales the engine; defaults do not auto-scale (recorded gap)
 
-Every memory-consuming default MUST be either configurable via `StorageConfig` or derived from a
-resource-aware computation (e.g., `auto_detect_capacity()`). No hardcoded constant should cause
-OOM on a 512MB device with default configuration.
+All memory sizing derives from ONE knob: `StorageMemoryBudget` (minimum 1 MiB) splits a
+declared total into the seven runtime pools (`StorageRuntimeBudget`), and level sizing is
+data-derived (`nonzero_level_targets_from_level_bytes` — no server-scale byte constants).
+Small devices are served by SETTING the budget, not by defaults: the default total is a
+fixed 512 MiB (240 MiB block cache), and host auto-detection deliberately does not exist
+(`low_memory_profile_does_not_auto_detect_host_memory` pins this). RECORDED GAP (#2905): at
+defaults, a Pi-Zero-class device exceeds available RAM — either explicit-budget-required
+must become loud product guidance or host-aware derivation must be added; until that call,
+this entry states current truth, not the aspiration.
 
-Specifically:
-- Block cache default MUST NOT exceed 25% of available RAM on the target device
-- Write buffer size MUST NOT exceed 10% of available RAM
-- `auto_detect_capacity()` MUST NOT clamp to a minimum that exceeds available RAM
-- Level sizing constants (`LEVEL_BASE_BYTES`, `MAX_GRANDPARENT_OVERLAP`) MUST be derived from
-  actual data size, not hardcoded to server-scale values
+**Audit**: Verify `StorageMemoryBudget::new` (`api/options.rs`) and the pool split + default
+constants (`lifecycle/budget.rs`). Verify level targets derive from `per_level_bytes`
+(`lifecycle/compaction.rs`). Check #2905's status before treating the default-fit clause as
+satisfied.
 
-**Audit**: Find every constant in the storage crate that controls a memory allocation size or
-threshold. For each, compute what percentage of 350MB (Pi Zero usable RAM) it represents at its
-default value. Flag any constant ≥ 25% of 350MB that is not configurable or auto-scaled.
+### SCALE-002: The budget splits into validated pools; durable totals gauge, cache totals cap
 
-### SCALE-002: Memory budget propagates to all consumers
+The declared total splits into seven pools whose sum MUST validate ≤ total. Enforcement
+differs BY MODE, by design: cache mode fail-closes on the total
+(`resource_exhausted.storage_api.memory_budget`); durable mode treats the projected total as
+a soft observability gauge — `require_projected_mutating_commit_budget` admits over budget
+and warns (BS4.5a: durable progress is never wedged by a gauge). Individual pools still
+bound their consumers (reader metadata under `table_reader_bytes`, memtables under the
+mutable pools).
 
-A single `memory_budget` configuration (or equivalent set of `StorageConfig` fields) MUST control
-the total memory footprint. Setting `block_cache_size = 16MB` and `write_buffer_size = 4MB` MUST
-actually result in those limits being respected — no internal code path should override, ignore,
-or supplement these with additional uncapped allocations.
-
-**Audit**: For each `StorageConfig` field, trace from config parsing to the point where the value
-is consumed by the storage engine. Verify no intermediate code overrides the value. Verify there
-are no major memory consumers outside `StorageConfig` control (e.g., DashMap growth, segment index
-pinning, bloom filter pinning, HNSW index). For uncapped consumers, quantify their memory usage
-as a function of data size.
+**Audit**: Verify the pool-sum validation (`lifecycle/budget.rs`), the cache hard-cap test
+(`cache_memory_budget_cap_still_fails_closed`, `api/tests/cache.rs`), the durable soft-gauge
+arm (`lifecycle/durable/bootstrap.rs`), and the differential soak
+(`config_differential_soak_across_seeds`).
 
 ### SCALE-003: On-disk format is word-size portable
 
@@ -548,10 +787,11 @@ On 32-bit ARM (Pi Zero 1 / ARMv6), `AtomicU64` is emulated via a global lock —
 `load`, and `store` on any `AtomicU64` contends on the same mutex. The number of `AtomicU64`
 operations per read and per write MUST be bounded and small (ideally ≤ 5 per operation).
 
-**Audit**: Trace a single point-read (`get_versioned`) and a single write (`put_with_version_mode`)
-through the storage engine. Count every `AtomicU64` operation touched (version counter, memtable
-stats, block cache hit/miss counters, timestamp tracking). Assess whether the count is acceptable
-on a single-core ARM device with emulated atomics.
+**Audit**: Trace one point read (`select_ordered_visible_point_candidate`) and one commit
+(`commit/cache.rs` execute) through the engine. Count `AtomicU64` touches — the hot ones are
+the visible frontier (`api/runtime/background.rs`), the timestamp floor
+(`api/runtime/mod.rs`), and the budget gauge (`lifecycle/budget.rs`). No guard currently
+bounds the count — flag any new per-row (rather than per-operation) atomic.
 
 ### SCALE-005: Write amplification is bounded and documented
 
@@ -559,73 +799,86 @@ LSM write amplification directly impacts SD card write endurance. The theoretica
 for the default configuration MUST be documented. On flash storage, total write amplification
 (user writes × LSM amplification × filesystem/FTL amplification) determines device lifetime.
 
-**Audit**: Calculate write amplification for the default config: L0 trigger=4, multiplier=10,
-7 levels. For each level transition, compute the amplification factor. Sum to get worst-case total.
-Then compute: for a 32GB SD card with 10K P/E cycles, how many total user bytes can be written
-before the card wears out? Is this acceptable for the target workload (10K keys, moderate write rate)?
+**Audit**: Current shape: L0 trigger 4 (`LEVEL_ZERO_COMPACTION_THRESHOLD`), growth factor 10
+(`NONZERO_LEVEL_TARGET_GROWTH_FACTOR`), 8 levels (`DEFAULT_MAX_LEVEL_COUNT`,
+`branch/config.rs`). The live regression gate is `SCALED_COMPACTION_AMPLIFICATION_GATE = 4`
+(`api/tests/mod.rs`) — verify it still gates. RECORDED GAP (#2906): the endurance derivation
+document this entry requires does not exist yet.
 
-### SCALE-006: Compaction does not starve user operations on single-core
+### SCALE-006: Maintenance pressure control is deferral + throttle + lanes, not a bandwidth limiter
 
-On a single-core device, compaction I/O competes directly with user reads and writes. Compaction
-MUST be throttleable to prevent starvation. The `RateLimiter` (if used) MUST be configurable to
-a rate appropriate for SD card bandwidth.
+Compaction/user contention is controlled by three mechanisms, none a byte-rate limiter:
+(1) budget-pressure deferral of OPTIONAL maintenance (`defers_optional_maintenance` gates
+the optional compaction arms; required admission maintenance never defers — SCALE-011);
+(2) graded write admission (`LifecycleWriteThrottlePolicy` delays writers under pressure);
+(3) lane caps — compaction lanes and subcompactions each reducible to 1
+(`STRATA_COMPACTION_LANES`, `STRATA_SUBCOMPACTIONS`). There is no bandwidth limiter and no
+full-pause knob; a "pause compaction" need is met by lane reduction plus deferral.
 
-**Audit**: Find every compaction code path. Verify each uses the `RateLimiter` (if configured).
-Find where the rate limiter is instantiated — is the rate configurable via `StorageConfig`? What
-is the default rate? On a 10 MB/s SD card, is the default rate appropriate? Is there a way to
-pause compaction entirely (for burst write periods on slow storage)?
+**Audit**: Verify the three mechanisms at their sites (`lifecycle/budget.rs`,
+`lifecycle/config.rs` + the delay site in `api/runtime/mod.rs`,
+`lifecycle/durable/maintenance.rs` for the lane env knobs).
 
 ### SCALE-007: Thread count is bounded and configurable
 
-On a single-core device, each background thread adds scheduling overhead and ~8MB stack memory.
-The total number of threads spawned by the engine MUST be bounded and should be configurable.
-On a Pi Zero, no more than 2-3 threads total (main + background flush + optional compaction).
+On a single-core device, each background thread adds scheduling overhead and stack memory.
+The engine's thread count MUST be bounded and configurable: background workers via
+`with_background_worker_count` (default 4; durable minimum 1; cache mode runs 0),
+subcompactions as bounded ephemeral `thread::scope` teams (`STRATA_SUBCOMPACTIONS`,
+default 1). A constrained device runs durable with 1 worker.
 
-**Audit**: Find every `thread::spawn`, `thread::Builder`, `rayon`, or `tokio::spawn` call in the
-engine and storage crates. List all background threads. Verify they can be disabled or reduced
-on resource-constrained devices. Compute the total stack memory overhead.
+**Audit**: Find the worker spawn loop (`lifecycle/background.rs`) and the option surface
+(`api/options.rs` — including the durable ≥1 rejection). Grep for any unbounded
+`thread::spawn` outside the worker pool and subcompaction scopes.
 
-### SCALE-008: Billion-key segment metadata fits in memory
+### SCALE-008: Billion-key table metadata is budget-bounded, disk-resident by default
 
-At billion-key scale with thousands of segments, pinned segment metadata (bloom filter partitions,
-index blocks) must fit within the block cache budget. The total pinned memory MUST NOT exceed the
-pinned budget (10% of block cache capacity by default).
+At billion-key scale with thousands of table objects, reader metadata MUST stay within its
+OWN budget pool — `table_reader_bytes` (default 32 MiB) — with table content disk-resident
+and block-cached (the BS4.4 disk-resident flip), not pinned in memory. There is no "pinned
+10% of block cache" tier; exceeding the reader pool evicts readers rather than failing or
+growing unboundedly. Note "pinned" elsewhere in this catalog means GC reachability, not
+memory.
 
-**Audit**: For a dataset with 1B keys at 100 bytes each (100GB total data), calculate:
-- Number of segments across 7 levels at `TARGET_FILE_SIZE=64MB`
-- Pinned bloom filter memory per segment (at configured bits/key per level)
-- Pinned index block memory per segment
-- Total pinned memory vs pinned budget (10% of block cache)
-If pinned metadata exceeds the budget, assess whether bloom/index pinning degrades gracefully
-(evicted to non-pinned cache tier) or fails hard.
+**Audit**: Verify the reader pool bound (`DEFAULT_TABLE_READER_BYTES`,
+`lifecycle/budget.rs`) and reader eviction under pressure (`service/table.rs`). For a
+1B-key/100GB dataset at `DEFAULT_COMPACTION_TARGET_OUTPUT_BYTES` (64 MiB), sanity-check
+open-reader metadata against the pool.
 
-### SCALE-009: MergeIterator scales to high source counts
+### SCALE-009: Merge cursor scales to high source counts
 
-The `MergeIterator` uses linear scan (O(N) per `next()` call, where N = source count). This is
-optimal for 1-3 sources but degrades at higher counts. At billion-key scale, compaction merges
-can involve 10+ sources (L0 files + overlapping L1 files). The iterator MUST either switch to a
-heap-based merge at high source counts or document the performance cliff.
+The compaction/read merge cursor MUST not degrade linearly at high source counts: V1's
+`MergeTableCursor` switches from linear scan to a `BinaryHeap` at `MERGE_HEAP_THRESHOLD`
+(4 sources). The requirement this entry once flagged as a cliff is satisfied — the audit's
+job is to keep it satisfied.
 
-**Audit**: Find the MergeIterator. Verify the source count at which linear scan becomes slower than
-a binary heap (typically N ≥ 6-8). Find the maximum source count that can occur in practice for
-each compaction type (compact_branch, compact_l0_to_l1, compact_level). If any can exceed 8 sources,
-assess the performance impact.
+**Audit**: Verify the threshold switch (`table/cursor.rs`) and the heap-path test
+(`heap_merge_covers_sixteen_sources_with_shared_key_order`, `table/tests/cursor.rs`).
 
-### SCALE-010: Feature degradation is explicit, not OOM
+### SCALE-010: Feature degradation is explicit, not OOM (engine/intelligence scope)
 
-Features that require significant memory (HNSW vector indexes, BM25 search, auto-embed model
-loading) MUST be disableable without affecting core KV/JSON/Event/State functionality. Running
-out of memory MUST produce a clear error, not a silent crash or data corruption.
+Memory-heavy optional features (vector index artifacts, autoembedding model loading) MUST be
+absent-by-default and degrade explicitly: vector search without an index falls back to the
+exact KV scan (ARCH-003); a missing embedding provider surfaces a typed error
+(`inference.missing_api_key` class), never a crash; core KV/JSON/event/graph primitives
+never depend on any of them. NOTE: this entry's subject lives in the engine and intelligence
+crates — it is the one entry in this catalog audited OUTSIDE crates/storage.
 
-**Audit**: For each optional feature (vector search, BM25 search, auto-embed), verify:
-1. It can be disabled via configuration
-2. Disabling it does not break core primitives
-3. Enabling it on a memory-constrained device produces a clear error if memory is insufficient,
-   rather than OOM-killing the process
-4. There is a brute-force fallback for vector search on small collections
+**Audit**: In crates/engine: verify the vector scan fallback (`data/vector/service.rs`) and
+that no core primitive imports the vector/intelligence surfaces. In crates/intelligence:
+verify the missing-provider typed-error path.
 
----
+### SCALE-011: Optional maintenance defers under pressure; required maintenance never does
 
+Budget pressure MUST defer only OPTIONAL maintenance (shape-improving compaction); REQUIRED
+admission maintenance (whatever unblocks writes or durability) runs regardless — deferring
+it would wedge the engine exactly when pressure is highest. The split is the
+`defers_optional_maintenance` predicate consulted at the optional arms only.
+
+**Audit**: Verify `defers_optional_maintenance` (`lifecycle/budget.rs`) gates the optional
+compaction sites (`lifecycle/compaction.rs`, `lifecycle/durable/maintenance.rs`) and that no
+required-admission arm consults it. DUR-009's registry law governs the predicate's
+authority.
 
 ---
 
@@ -876,6 +1129,68 @@ re-consults in `timeline_view_or_index` / `timeline_version_at_or_before` /
 `fork_at_version_inside_surviving_timeline_coverage_succeeds_after_lossy_crash`
 (api/tests/branch.rs) pins the end-to-end choreography with its shed-version refusal
 direction control. The whole-DB DST sweep (seeds 83 154 164 178) is the volume lane.
+
+### DUR-012: A checkpoint-attesting manifest requires its WAL chain on disk
+
+A `DatabaseManifest` that attests a published checkpoint proves durable history existed, so
+the WAL chain through that watermark MUST exist on disk at open. With zero segment objects,
+a fresh empty log would present a gutted store as a healthy empty database — strict open
+REFUSES (`recovery corruption`); explicit lossy open proceeds, recovers what the checkpoint
+holds, and records `WalCommittedSuffixMissing` (never healthy). A manifest with no
+checkpoint attestation (first creation torn early) may recreate freely — nothing
+acknowledged can exist yet. Testkit corollary: every checkpoint-attesting fixture must seed
+its attested segment (the #2902 class).
+
+**Audit**: Find `checkpoint_attested_wal_chain_missing` and the strict refusal
+(`lifecycle/durable.rs`); the lossy fault push (`lifecycle/recovery.rs`). Direction pins:
+`strict_open_still_refuses_a_checkpoint_attested_store_with_no_wal`,
+`lossy_recovery_degrades_when_checkpoint_attested_wal_chain_is_missing`
+(`lifecycle/tests/recovery.rs`). Origin: #2765/#2777.
+
+### DUR-013: The timeline is derived — single observation funnel, provable bounds
+
+Commits materialize NO timeline rows (W3.1c). The retained-timeline index is the only
+current timeline source: it observes each commit's stamp at the single apply funnel —
+`retained_timeline().observe(...)` in `append_committed_rows_atomically` /
+`append_committed_row` (`branch/state/append.rs`), with the batch path observing only after
+full-batch success so a rollback leaves no trace. Completeness is a LIFECYCLE-layer mark
+(`mark_complete_from_birth` for in-process creation; recovery seeds/marks per DUR-011) —
+direct state construction is incomplete-by-default. Consumers materialize views from the
+index (`timeline_view_or_index`), re-consult after seeding on the scan fallback, and CLAMP
+any bound above the index tip to the tip's provable prefix (`bounded_prefix`) — a bound
+beyond the tip is unprovable, never proven-absent. Testkit corollary: harness oracles read
+the index, never a timeline-space scan (the #2848/#2896 class).
+
+**Audit**: Verify `prepare_commit_rows` emits no timeline rows (`commit/cache.rs`); verify
+`observe` has no caller outside the append funnel; verify the batch-path late observation;
+verify `timeline_view_or_index` and both lookup surfaces clamp and re-seed
+(`api/runtime/data.rs`, `timeline_index.rs`). DUR-011 holds the content-vs-coverage
+authority law this mechanism serves.
+
+### DUR-014: Maintenance failures are classified into the ring, never bare-counted
+
+Every maintenance task failure MUST route through `record_failure_detail` into the bounded
+failure ring (`MaintenanceFailureRecord { kind, reason, source_error_code }`, capacity 4) —
+the bare `failed` counter is never the only evidence. The ring is what lets test lanes and
+operators classify a red instantly (#2763/#2773); a failure path that skips it regresses
+triage to archaeology. Legal-race cancellations are ring-SILENT by DUR-009 (Canceled is not
+a failure).
+
+**Audit**: Verify every failure arm in the maintenance executor calls
+`record_failure_detail` (`lifecycle/durable/maintenance.rs`); verify ring capacity and
+shape. Test: `active_task_failure_during_close_drain_records_kind_and_error_code`
+(`lifecycle/tests/maintenance.rs`).
+
+### DUR-015: Durable assembly's object listings are exactly the two WAL scans
+
+Durable assembly performs exactly TWO directory listings, both of the WAL prefix: the
+segment-loss inventory check (#2690) and the writer-resume reconciliation scan (#2555).
+Anything else listing objects during assembly is a side-effect violation — assembly must
+not browse the store it has not yet recovered.
+
+**Audit**: The testkit pin (`testkit/lifecycle/durable.rs`, the two-scan listing law in
+`check_durable_standard_create`) instruments the backend and fails on any third listing.
+Verify the pin still asserts exactly two and the fault-injection CI lane runs it.
 
 ## How to Use This Catalog
 
