@@ -738,22 +738,28 @@ both frontier legs (confirmed + pending) pin, and no deletion path bypasses the 
 
 ## SCALE — Scale-Span Invariants (Pi Zero to Billion-Key Server)
 
-### SCALE-001: One memory budget scales the engine; defaults do not auto-scale (recorded gap)
+### SCALE-001: One memory budget scales the engine; the default derives from the host
 
 All memory sizing derives from ONE knob: `StorageMemoryBudget` (minimum 1 MiB) splits a
 declared total into the seven runtime pools (`StorageRuntimeBudget`), and level sizing is
 data-derived (`nonzero_level_targets_from_level_bytes` — no server-scale byte constants).
-Small devices are served by SETTING the budget, not by defaults: the default total is a
-fixed 512 MiB (240 MiB block cache), and host auto-detection deliberately does not exist
-(`low_memory_profile_does_not_auto_detect_host_memory` pins this). RECORDED GAP (#2905): at
-defaults, a Pi-Zero-class device exceeds available RAM — either explicit-budget-required
-must become loud product guidance or host-aware derivation must be added; until that call,
-this entry states current truth, not the aspiration.
+The budget is a CEILING, never a reservation: the block cache and memtables grow with use,
+so an empty database occupies structs, not its budget. When no budget is set, the product
+open path (`StorageBudgetPolicy::DerivedFromHost`) derives the default at open time from
+the host: 25% of usable memory — the smaller of `MemAvailable` and the cgroup limit, so a
+container limit wins over host RAM — clamped to `[1 MiB, 8 GiB]` (#2905: a 384 GiB host
+must not derive 96 GiB; a 350 MiB device derives ~87 MiB and opens). A host that reports no
+facts (macOS/Windows/wasm today) falls back to the fixed 512 MiB default; the open summary
+records the provenance (`StorageBudgetSource`). `StorageBudgetPolicy::Default` stays the
+fixed budget so test lanes remain deterministic; `STRATA_HOST_MEMORY_BYTES` overrides the
+probe for CI/DST/perf lanes.
 
-**Audit**: Verify `StorageMemoryBudget::new` (`api/options.rs`) and the pool split + default
-constants (`lifecycle/budget.rs`). Verify level targets derive from `per_level_bytes`
-(`lifecycle/compaction.rs`). Check #2905's status before treating the default-fit clause as
-satisfied.
+**Audit**: `derive_default_budget_bytes` + the probe (`host_memory.rs`) and
+`resolve_budget_policy` (`api/runtime/open_close.rs`) — verify the 25%/min/clamp truth
+table, the cgroup-wins-over-host case, the no-facts fallback, and that engine's
+`apply_memory_budget` selects `DerivedFromHost` only when no explicit budget is given. Verify
+no allocation reserves against the ceiling (`TableBlockCache::new` starts empty;
+`StorageBudgetLedger` usage is 0 at open).
 
 ### SCALE-002: The budget splits into validated pools; durable totals gauge, cache totals cap
 

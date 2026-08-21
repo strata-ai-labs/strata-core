@@ -79,8 +79,9 @@ pub use options::{
 };
 pub use outcome::{
     CommitAdmissionPressureReason, CommitAdmissionPressureSeverity, CommitAdmissionStatus,
-    CommitAdmissionSummary, CommitSummary, RecoveryHealthSummary, StorageCloseSummary,
-    StorageOpenDisposition, StorageOpenOutcome, StorageOpenSummary, StorageRuntimeState,
+    CommitAdmissionSummary, CommitSummary, RecoveryHealthSummary, StorageBudgetSource,
+    StorageCloseSummary, StorageOpenDisposition, StorageOpenOutcome, StorageOpenSummary,
+    StorageRuntimeState,
 };
 pub use read::{
     HistoryReadOutcome, HistoryReadRequest, ImmutableSourceScanReadOutcome,

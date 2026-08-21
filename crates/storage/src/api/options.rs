@@ -37,10 +37,16 @@ pub enum StorageMode {
     DistributedCandidate,
 }
 
+/// How an open without an explicit `memory_budget` sizes storage.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StorageBudgetPolicy {
+    /// The fixed built-in default (512 MiB) — deterministic, the choice for test lanes.
     Default,
+    /// Derive the default from host memory at open (25% of usable memory, clamped to
+    /// `[1 MiB, 8 GiB]`, container-limit aware); falls back to the fixed default when
+    /// the host reports nothing. The product open path uses this (#2905).
+    DerivedFromHost,
 }
 
 /// Minimum supported explicit storage memory budget. Below this the derived per-pool split would

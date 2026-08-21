@@ -12,6 +12,7 @@ use crate::data::json::JsonService;
 use crate::data::kv::{KvService, ProductSpace};
 use crate::data::vector::{VectorArtifactStore, VectorService};
 use crate::diagnostics::{EngineError, EngineResult};
+pub use crate::persistence::MemoryBudgetSource;
 use crate::persistence::{
     close_summary_is_durable, PersistenceOpenSummary, PersistenceOpenTarget, StoragePersistence,
 };
@@ -41,6 +42,7 @@ pub struct DatabaseOpenSummary {
     target: DatabaseOpenTarget,
     created: bool,
     durable: bool,
+    memory_budget_source: MemoryBudgetSource,
 }
 
 impl DatabaseOpenSummary {
@@ -52,7 +54,15 @@ impl DatabaseOpenSummary {
             target,
             created: persistence.created(),
             durable: persistence.durable(),
+            memory_budget_source: persistence.memory_budget_source(),
         }
+    }
+
+    #[must_use]
+    /// Where the opened database's storage memory budget came from: explicit,
+    /// derived from host memory at open, or the fixed default.
+    pub const fn memory_budget_source(self) -> MemoryBudgetSource {
+        self.memory_budget_source
     }
 
     #[must_use]

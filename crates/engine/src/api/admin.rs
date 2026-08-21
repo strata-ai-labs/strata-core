@@ -13,7 +13,8 @@ use crate::diagnostics::{EngineError, EngineResult};
 use crate::persistence::StoragePersistence;
 
 use super::{
-    ControlHealthStatus, DatabaseOpenSummary, DatabaseOpenTarget, SpaceCatalogDiagnostics,
+    ControlHealthStatus, DatabaseOpenSummary, DatabaseOpenTarget, MemoryBudgetSource,
+    SpaceCatalogDiagnostics,
 };
 
 /// Health status reported by admin commands.
@@ -52,6 +53,8 @@ pub struct AdminDatabaseInfo {
     pub branch_count: u64,
     /// Registered space count for the selected branch.
     pub space_count: u64,
+    /// Provenance and total of the storage memory budget (#2905).
+    pub memory_budget: MemoryBudgetSource,
     /// True while the database handle is open.
     pub open: bool,
 }
@@ -245,6 +248,7 @@ impl<'a> AdminService<'a> {
             default_branch: self.control.default_branch().clone(),
             branch_count: u64::try_from(self.control.active_branch_count()).unwrap_or(u64::MAX),
             space_count,
+            memory_budget: self.summary.memory_budget_source(),
             open: self.open,
         })
     }

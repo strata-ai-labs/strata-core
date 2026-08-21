@@ -27,6 +27,34 @@ pub enum StorageRuntimeState {
     Failed,
 }
 
+/// Where the opened runtime's memory budget came from (#2905 provenance).
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageBudgetSource {
+    /// The caller set `memory_budget` (or a test profile) explicitly.
+    Explicit { total_bytes: u64 },
+    /// Derived from host memory at open: 25% of `usable_host_bytes`, clamped.
+    DerivedFromHost {
+        total_bytes: u64,
+        usable_host_bytes: u64,
+    },
+    /// The fixed built-in default, because the policy asked for it or the host
+    /// reported no memory facts.
+    FixedDefault { total_bytes: u64 },
+}
+
+impl StorageBudgetSource {
+    /// The resolved total, whatever its provenance.
+    #[must_use]
+    pub const fn total_bytes(self) -> u64 {
+        match self {
+            Self::Explicit { total_bytes }
+            | Self::DerivedFromHost { total_bytes, .. }
+            | Self::FixedDefault { total_bytes } => total_bytes,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorageOpenSummary {
     mode: StorageMode,
@@ -37,6 +65,7 @@ pub struct StorageOpenSummary {
     maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy,
     durable_recovery_facts: bool,
     backend_capabilities_used: bool,
+    budget_source: StorageBudgetSource,
 }
 
 impl StorageOpenSummary {
@@ -56,6 +85,7 @@ impl StorageOpenSummary {
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
             durable_recovery_facts: false,
             backend_capabilities_used: false,
+            budget_source: StorageBudgetSource::FixedDefault { total_bytes: 0 },
         }
     }
 
@@ -69,6 +99,7 @@ impl StorageOpenSummary {
         maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy,
         durable_recovery_facts: bool,
         backend_capabilities_used: bool,
+        budget_source: StorageBudgetSource,
     ) -> Self {
         Self {
             mode,
@@ -79,7 +110,15 @@ impl StorageOpenSummary {
             maintenance_scheduling_policy,
             durable_recovery_facts,
             backend_capabilities_used,
+            budget_source,
         }
+    }
+
+    /// Where the runtime's memory budget came from: explicit, derived from host
+    /// memory, or the fixed default.
+    #[must_use]
+    pub const fn budget_source(self) -> StorageBudgetSource {
+        self.budget_source
     }
 
     #[must_use]

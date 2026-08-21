@@ -6,6 +6,13 @@ use std::env;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    // #2905: strata-idl replays commands against a scratch executor to verify
+    // fixtures/examples and render docs. The default memory budget derives from
+    // host memory, which would make `admin.info`'s memory_budget golden
+    // host-dependent. Pin the host-memory probe so every replay derives the
+    // same 512 MiB (2 GiB / 4) budget — this tool is the sole determinism seam
+    // for IDL goldens; STRATA_HOST_MEMORY_BYTES is the documented override.
+    env::set_var("STRATA_HOST_MEMORY_BYTES", "2147483648");
     let Some(command) = env::args().nth(1) else {
         eprintln!(
             "usage: cargo run -p strata-executor --features idl-tooling --bin strata-idl -- <generate|check|generate-cli|check-cli|generate-docs|check-docs|verify-examples|verify-fixtures [--update]>"

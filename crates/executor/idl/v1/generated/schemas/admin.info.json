@@ -21,6 +21,10 @@
           "description": "True when storage is durable.",
           "type": "boolean"
         },
+        "memory_budget": {
+          "$ref": "#/$defs/AdminMemoryBudget",
+          "description": "Storage memory budget: its total and where it came from (#2905)."
+        },
         "open": {
           "description": "True while the database handle is open.",
           "type": "boolean"
@@ -48,9 +52,60 @@
         "default_branch",
         "branch_count",
         "space_count",
+        "memory_budget",
         "open"
       ],
       "type": "object"
+    },
+    "AdminMemoryBudget": {
+      "additionalProperties": false,
+      "description": "Storage memory budget provenance and total for `admin.info`.",
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/AdminMemoryBudgetSource",
+          "description": "Where the budget came from."
+        },
+        "total_bytes": {
+          "description": "The resolved storage memory budget total, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "usable_host_bytes": {
+          "description": "The usable host memory the derivation started from, in bytes — present\nonly when `source` is `derived_from_host`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "total_bytes",
+        "source"
+      ],
+      "type": "object"
+    },
+    "AdminMemoryBudgetSource": {
+      "description": "How an opened database's storage memory budget was chosen.",
+      "oneOf": [
+        {
+          "const": "explicit",
+          "description": "The caller set a memory budget explicitly.",
+          "type": "string"
+        },
+        {
+          "const": "derived_from_host",
+          "description": "Derived at open from host memory (25% of usable memory, clamped to `[1 MiB, 8 GiB]`).",
+          "type": "string"
+        },
+        {
+          "const": "fixed_default",
+          "description": "The fixed built-in default (the host reported no memory facts, or a deterministic open).",
+          "type": "string"
+        }
+      ]
     },
     "AdminOpenTarget": {
       "description": "Database open target exposed in admin outputs.",

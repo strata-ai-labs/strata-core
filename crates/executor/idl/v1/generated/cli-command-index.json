@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "91b8ea4feb4600cb539e483192e1c25f515164c28add5e6abde077da191cf681",
+    "checksum_sha256": "dfbfde2b4d24fbe3d2ab0c557d0bed581cc375a2b09a405bf7c1502d7c8dc852",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -4378,7 +4378,7 @@
       "kind": "read.summary",
       "title": "Read database info",
       "summary": "Read database identity and a catalog summary.",
-      "description": "Returns database identity and a catalog summary for one branch: engine version, open target, whether this open created the database, durability, the default branch, the active branch count, and the registered space count for the selected branch. The branch defaults to the handle branch when omitted.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "description": "Returns database identity and a catalog summary for one branch: engine version, open target, whether this open created the database, durability, the default branch, the active branch count, the registered space count for the selected branch, and the resolved storage `memory_budget` (its `total_bytes` and its `source` — `explicit`, `derived_from_host`, or `fixed_default`). When no budget is set, the engine derives the default from host memory at open — 25% of usable memory, clamped to a ceiling — so `memory_budget` reveals what the database is actually sized to. The branch defaults to the handle branch when omitted.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
       "docs": "/docs/admin/info",
       "feature": "core",
       "access": "read",

@@ -109,8 +109,38 @@ pub struct AdminDatabaseInfo {
     pub branch_count: u64,
     /// Registered space count for the selected branch.
     pub space_count: u64,
+    /// Storage memory budget: its total and where it came from (#2905).
+    pub memory_budget: AdminMemoryBudget,
     /// True while the database handle is open.
     pub open: bool,
+}
+
+/// Storage memory budget provenance and total for `admin.info`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AdminMemoryBudget {
+    /// The resolved storage memory budget total, in bytes.
+    pub total_bytes: u64,
+    /// Where the budget came from.
+    pub source: AdminMemoryBudgetSource,
+    /// The usable host memory the derivation started from, in bytes — present
+    /// only when `source` is `derived_from_host`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usable_host_bytes: Option<u64>,
+}
+
+/// How an opened database's storage memory budget was chosen.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum AdminMemoryBudgetSource {
+    /// The caller set a memory budget explicitly.
+    Explicit,
+    /// Derived at open from host memory (25% of usable memory, clamped to `[1 MiB, 8 GiB]`).
+    DerivedFromHost,
+    /// The fixed built-in default (the host reported no memory facts, or a deterministic open).
+    FixedDefault,
 }
 
 /// Health output.

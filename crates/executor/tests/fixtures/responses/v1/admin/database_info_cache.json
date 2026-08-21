@@ -8,6 +8,11 @@
     "default_branch": "default",
     "branch_count": 1,
     "space_count": 1,
-    "open": true
+    "open": true,
+    "memory_budget": {
+      "total_bytes": 536870912,
+      "source": "derived_from_host",
+      "usable_host_bytes": 2147483648
+    }
   }
 }

@@ -24,6 +24,7 @@ pub use branch::{
 pub use control::{ControlDiagnostics, ControlHealthStatus, SpaceCatalogDiagnostics};
 pub use database::{
     CloseOutcome, Database, DatabaseOpenOutcome, DatabaseOpenSummary, DatabaseOpenTarget,
+    MemoryBudgetSource,
 };
 pub use event::{
     EventAppendOutcome, EventBatchAppendEntry, EventBatchAppendItemOutcome,

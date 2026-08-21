@@ -7,6 +7,7 @@ mod plan;
 mod row;
 mod space;
 
+pub use adapter::MemoryBudgetSource;
 pub(crate) use adapter::{
     close_summary_is_durable, PersistenceBranchCleanup, PersistenceBranchOutcome,
     PersistenceBranchParent, PersistenceBranchStatus, PersistenceBranchSummary,
