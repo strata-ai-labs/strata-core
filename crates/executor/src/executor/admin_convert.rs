@@ -4,9 +4,10 @@ use super::{
     EngineAdminDescribeSummary, EngineAdminGraphSummary, EngineAdminHealthStatus,
     EngineAdminHealthSummary, EngineAdminMetricsSummary, EngineAdminPrimitiveSummary,
     EngineAdminVectorCollectionSummary, EngineControlHealthStatus, EngineDatabaseOpenTarget,
-    EngineSpaceCreateOutcome, EngineSpaceDeleteOutcome, Output, OutputAdminCapabilities,
-    OutputAdminConfig, OutputAdminControlStatus, OutputAdminDatabaseInfo, OutputAdminDescribe,
-    OutputAdminGraph, OutputAdminHealth, OutputAdminHealthStatus, OutputAdminMetrics,
+    EngineMemoryBudgetSource, EngineSpaceCreateOutcome, EngineSpaceDeleteOutcome, Output,
+    OutputAdminCapabilities, OutputAdminConfig, OutputAdminControlStatus, OutputAdminDatabaseInfo,
+    OutputAdminDescribe, OutputAdminGraph, OutputAdminHealth, OutputAdminHealthStatus,
+    OutputAdminMemoryBudget, OutputAdminMemoryBudgetSource, OutputAdminMetrics,
     OutputAdminOpenTarget, OutputAdminPrimitives, OutputAdminVectorCollection,
 };
 
@@ -60,7 +61,38 @@ pub(super) fn output_admin_info(info: &EngineAdminDatabaseInfo) -> OutputAdminDa
         default_branch: info.default_branch.as_str().to_owned(),
         branch_count: info.branch_count,
         space_count: info.space_count,
+        memory_budget: output_admin_memory_budget(info.memory_budget),
         open: info.open,
+    }
+}
+
+fn output_admin_memory_budget(source: EngineMemoryBudgetSource) -> OutputAdminMemoryBudget {
+    match source {
+        EngineMemoryBudgetSource::Explicit { total_bytes } => OutputAdminMemoryBudget {
+            total_bytes,
+            source: OutputAdminMemoryBudgetSource::Explicit,
+            usable_host_bytes: None,
+        },
+        EngineMemoryBudgetSource::DerivedFromHost {
+            total_bytes,
+            usable_host_bytes,
+        } => OutputAdminMemoryBudget {
+            total_bytes,
+            source: OutputAdminMemoryBudgetSource::DerivedFromHost,
+            usable_host_bytes: Some(usable_host_bytes),
+        },
+        EngineMemoryBudgetSource::FixedDefault { total_bytes } => OutputAdminMemoryBudget {
+            total_bytes,
+            source: OutputAdminMemoryBudgetSource::FixedDefault,
+            usable_host_bytes: None,
+        },
+        // The engine enum is #[non_exhaustive]; report an unknown future
+        // provenance as the fixed default rather than failing the command.
+        other => OutputAdminMemoryBudget {
+            total_bytes: other.total_bytes(),
+            source: OutputAdminMemoryBudgetSource::FixedDefault,
+            usable_host_bytes: None,
+        },
     }
 }
 
@@ -183,5 +215,41 @@ pub(super) fn output_space_delete(outcome: &EngineSpaceDeleteOutcome) -> Output 
         deleted_rows: outcome.deleted_rows(),
         effect: delete_effect(outcome.deleted()),
         commit: outcome.commit().map(commit_receipt),
+    }
+}
+
+#[cfg(test)]
+mod memory_budget_tests {
+    use super::{
+        output_admin_memory_budget, EngineMemoryBudgetSource, OutputAdminMemoryBudgetSource,
+    };
+
+    #[test]
+    fn explicit_maps_total_with_no_host_basis() {
+        let out =
+            output_admin_memory_budget(EngineMemoryBudgetSource::Explicit { total_bytes: 123 });
+        assert_eq!(out.total_bytes, 123);
+        assert_eq!(out.source, OutputAdminMemoryBudgetSource::Explicit);
+        assert_eq!(out.usable_host_bytes, None);
+    }
+
+    #[test]
+    fn derived_maps_total_and_carries_the_host_basis() {
+        let out = output_admin_memory_budget(EngineMemoryBudgetSource::DerivedFromHost {
+            total_bytes: 456,
+            usable_host_bytes: 789,
+        });
+        assert_eq!(out.total_bytes, 456);
+        assert_eq!(out.source, OutputAdminMemoryBudgetSource::DerivedFromHost);
+        assert_eq!(out.usable_host_bytes, Some(789));
+    }
+
+    #[test]
+    fn fixed_default_maps_total_with_no_host_basis() {
+        let out =
+            output_admin_memory_budget(EngineMemoryBudgetSource::FixedDefault { total_bytes: 512 });
+        assert_eq!(out.total_bytes, 512);
+        assert_eq!(out.source, OutputAdminMemoryBudgetSource::FixedDefault);
+        assert_eq!(out.usable_host_bytes, None);
     }
 }

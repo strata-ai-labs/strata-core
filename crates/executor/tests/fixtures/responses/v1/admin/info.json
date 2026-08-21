@@ -7,7 +7,12 @@
     "open": true,
     "space_count": 1,
     "target": "cache",
-    "version": "1.0.0"
+    "version": "1.0.0",
+    "memory_budget": {
+      "total_bytes": 536870912,
+      "source": "derived_from_host",
+      "usable_host_bytes": 2147483648
+    }
   },
   "type": "database_info"
 }

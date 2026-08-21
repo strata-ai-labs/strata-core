@@ -66,6 +66,11 @@ fn public_response_family_goldens_match_public_json() {
                 default_branch: "default".to_owned(),
                 branch_count: 1,
                 space_count: 1,
+                memory_budget: strata_executor::AdminMemoryBudget {
+                    total_bytes: 536_870_912,
+                    source: strata_executor::AdminMemoryBudgetSource::DerivedFromHost,
+                    usable_host_bytes: Some(2_147_483_648),
+                },
                 open: true,
             }),
             include_str!("../fixtures/responses/v1/admin/database_info_cache.json"),

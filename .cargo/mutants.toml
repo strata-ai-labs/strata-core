@@ -43,6 +43,14 @@ exclude_globs = [
 
 # Reasoned equivalent-mutant exclusions (regexes over mutant names):
 exclude_re = [
+    # #2905 provenance mirror: `MemoryBudgetSource::from_storage` maps storage's
+    # 3-variant StorageBudgetSource onto the engine mirror, plus a `_` fallback
+    # forced by the source enum being #[non_exhaustive]. The fallback is
+    # deliberately identical to the explicit FixedDefault arm (unknown future
+    # provenance is reported as the fixed default), so deleting the explicit
+    # FixedDefault arm is behavior-preserving — an equivalent mutant no test can
+    # kill without an unconstructable unknown variant.
+    "delete match arm StorageBudgetSource::FixedDefault.* in MemoryBudgetSource::from_storage",
     # W3.3 batching beat: a pure throughput heuristic — replacing the pause
     # with () is semantics-preserving by design (differently-batched fsyncs,
     # never fewer). No noise-free observer exists.

@@ -487,6 +487,7 @@ fn durable_open_degraded_health_survives_boundary_mapping() {
         StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
         true,
         true,
+        crate::api::StorageBudgetSource::FixedDefault { total_bytes: 0 },
     );
 
     assert_eq!(summary.recovery_health(), RecoveryHealthSummary::Degraded);

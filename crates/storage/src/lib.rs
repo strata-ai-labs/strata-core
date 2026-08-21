@@ -21,6 +21,7 @@ mod config;
 mod debug_trace;
 mod error;
 mod format;
+mod host_memory;
 mod layout;
 mod lifecycle;
 mod object;

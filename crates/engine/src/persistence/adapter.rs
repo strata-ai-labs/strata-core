@@ -10,10 +10,11 @@ use strata_storage::api::{
     BranchRequest, BranchStatus as StorageBranchStatus, BranchSummary as StorageBranchSummary,
     CommitBatch, CommitDurabilitySummary, CommitMutation, CommitOptions, HistoryReadRequest,
     ImmutableSourceScanReadRequest, PointReadRequest, PrefixScanReadRequest, ReadBound, ReadLimit,
-    ScanRange, ScanReadRequest, StorageApiError, StorageApiErrorClass, StorageCachePreheatPolicy,
-    StorageCloseSummary, StorageDurabilityPolicy, StorageImmutableSource, StorageKey,
-    StorageMemoryBudget, StorageOpenDisposition, StorageOpenOptions, StorageReadRow,
-    StorageRuntime, StorageRuntimeState, StorageSpaceId, StorageValue,
+    ScanRange, ScanReadRequest, StorageApiError, StorageApiErrorClass, StorageBudgetPolicy,
+    StorageBudgetSource, StorageCachePreheatPolicy, StorageCloseSummary, StorageDurabilityPolicy,
+    StorageImmutableSource, StorageKey, StorageMemoryBudget, StorageOpenDisposition,
+    StorageOpenOptions, StorageReadRow, StorageRuntime, StorageRuntimeState, StorageSpaceId,
+    StorageValue,
 };
 use strata_storage::api::{
     MaintenanceRequest, MaintenanceScope,
@@ -42,9 +43,71 @@ pub(crate) enum PersistenceOpenTarget {
 pub(crate) struct PersistenceOpenSummary {
     created: bool,
     durable: bool,
+    memory_budget_source: MemoryBudgetSource,
+}
+
+/// Engine-owned mirror of the storage budget provenance (#2905): consumers of
+/// the engine never see storage types.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryBudgetSource {
+    /// The caller set a memory budget explicitly.
+    Explicit {
+        /// The explicit total, in bytes.
+        total_bytes: u64,
+    },
+    /// Derived at open from host memory (25% of usable memory, clamped to `[1 MiB, 8 GiB]`).
+    DerivedFromHost {
+        /// The derived total, in bytes.
+        total_bytes: u64,
+        /// The usable host memory the derivation started from (the smaller of
+        /// available memory and the cgroup limit), in bytes.
+        usable_host_bytes: u64,
+    },
+    /// The fixed built-in default (the host reported no memory facts, or a deterministic open).
+    FixedDefault {
+        /// The fixed default total, in bytes.
+        total_bytes: u64,
+    },
+}
+
+impl MemoryBudgetSource {
+    /// The resolved total, whatever its provenance.
+    #[must_use]
+    pub const fn total_bytes(self) -> u64 {
+        match self {
+            Self::Explicit { total_bytes }
+            | Self::DerivedFromHost { total_bytes, .. }
+            | Self::FixedDefault { total_bytes } => total_bytes,
+        }
+    }
+
+    const fn from_storage(source: StorageBudgetSource) -> Self {
+        match source {
+            StorageBudgetSource::Explicit { total_bytes } => Self::Explicit { total_bytes },
+            StorageBudgetSource::DerivedFromHost {
+                total_bytes,
+                usable_host_bytes,
+            } => Self::DerivedFromHost {
+                total_bytes,
+                usable_host_bytes,
+            },
+            StorageBudgetSource::FixedDefault { total_bytes } => Self::FixedDefault { total_bytes },
+            // Storage's enum is non_exhaustive; an unknown future provenance is
+            // reported as the fixed default rather than failing the open.
+            _ => Self::FixedDefault {
+                total_bytes: source.total_bytes(),
+            },
+        }
+    }
 }
 
 impl PersistenceOpenSummary {
+    #[must_use]
+    pub(crate) const fn memory_budget_source(self) -> MemoryBudgetSource {
+        self.memory_budget_source
+    }
+
     #[must_use]
     pub(crate) const fn created(self) -> bool {
         self.created
@@ -341,6 +404,7 @@ impl StoragePersistence {
             }
         };
         let created = matches!(summary.disposition(), StorageOpenDisposition::Created);
+        let memory_budget_source = MemoryBudgetSource::from_storage(summary.budget_source());
         Ok((
             Self {
                 runtime,
@@ -351,7 +415,11 @@ impl StoragePersistence {
                 #[cfg(any(test, feature = "testkit"))]
                 corruption: CorruptionSchedule::default(),
             },
-            PersistenceOpenSummary { created, durable },
+            PersistenceOpenSummary {
+                created,
+                durable,
+                memory_budget_source,
+            },
         ))
     }
 
@@ -993,7 +1061,9 @@ fn apply_memory_budget(
             let budget = StorageMemoryBudget::new(bytes).map_err(map_storage_error)?;
             Ok(options.with_memory_budget(budget))
         }
-        None => Ok(options),
+        // No explicit budget: the product path derives the default from host
+        // memory at open (#2905) — a ceiling, never a reservation.
+        None => Ok(options.with_budget_policy(StorageBudgetPolicy::DerivedFromHost)),
     }
 }
 

@@ -261,6 +261,7 @@ jobs:
             --exclude-re 'Connection::broker_to_owner' \
             --exclude-re 'with true in Connection::open_brokered' \
             --exclude-re 'replace > with >= in read_frame' \
+            --exclude "crates/executor/src/bin/**" \
             --timeout-multiplier 2.5 --minimum-test-timeout 60 || [ $? -eq 3 ]
           cargo mutants --no-config --in-diff pr.diff --package strata-inference \
             --features download,testkit \

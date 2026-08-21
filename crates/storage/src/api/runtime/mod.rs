@@ -66,7 +66,7 @@ use super::{
     MaintenanceWalGrowthSummary, MaintenanceWalGrowthTrigger, PointReadOutcome, PointReadRequest,
     PrefixScanReadRequest, ReadBound, ReadLimit, RecoveryHealthSummary, ScanReadOutcome,
     ScanReadRequest, StorageApiError, StorageApiErrorClass, StorageApiLowerLayer, StorageApiResult,
-    StorageBackend, StorageBackgroundMaintenanceOptions, StorageBudgetPolicy,
+    StorageBackend, StorageBackgroundMaintenanceOptions, StorageBudgetPolicy, StorageBudgetSource,
     StorageCachePreheatPolicy, StorageCloseSummary, StorageDurabilityPolicy, StorageKey,
     StorageMaintenanceSchedulingPolicy, StorageMode, StorageOpenDisposition, StorageOpenOptions,
     StorageOpenOutcome, StorageOpenSummary, StorageReadRow, StorageRuntimeState, StorageSpaceId,
@@ -551,7 +551,7 @@ fn assemble_durable_runtime(
     DiagnosticsRecoveryReport,
     LifecycleConfig,
 )> {
-    let plan = lifecycle_plan(options)?;
+    let (plan, budget_source) = lifecycle_plan(options)?;
     let wal_config = wal_service_config(options)?;
     let request = LifecycleDurableLocalOpenRequest::new(
         plan,
@@ -575,7 +575,12 @@ fn assemble_durable_runtime(
     let runtime = shell
         .complete_recovery(&recovery)
         .map_err(map_lifecycle_error)?;
-    let summary = map_open_summary(runtime.open_outcome(), options.mode(), options);
+    let summary = map_open_summary(
+        runtime.open_outcome(),
+        options.mode(),
+        options,
+        budget_source,
+    );
     let recovery_report = map_diagnostics_recovery(runtime.current_recovery_health());
     let config = runtime.open_plan().lifecycle_config();
     Ok((runtime, summary, recovery_report, config))
@@ -2246,12 +2251,10 @@ impl<'a> StorageRuntime<'a> {
     ) -> StorageApiResult<StorageOpenOutcome<'a>> {
         let executor_mode = background_executor_mode(options.maintenance_scheduling_policy());
         let background_config = options.background_maintenance();
-        let request = LifecycleCacheOpenRequest::new(
-            lifecycle_plan(options)?,
-            DEFAULT_BRANCH_ID,
-            default_branch_generation()?,
-        )
-        .map_err(map_lifecycle_error)?;
+        let (plan, budget_source) = lifecycle_plan(options)?;
+        let request =
+            LifecycleCacheOpenRequest::new(plan, DEFAULT_BRANCH_ID, default_branch_generation()?)
+                .map_err(map_lifecycle_error)?;
         let runtime = LifecycleCacheRuntime::open(
             request,
             backend.as_backend(),
@@ -2260,7 +2263,12 @@ impl<'a> StorageRuntime<'a> {
             default_timestamp_source(),
         )
         .map_err(map_lifecycle_error)?;
-        let summary = map_open_summary(runtime.open_outcome(), options.mode(), options);
+        let summary = map_open_summary(
+            runtime.open_outcome(),
+            options.mode(),
+            options,
+            budget_source,
+        );
         let recovery = map_diagnostics_recovery(runtime.open_outcome().recovery_health());
         let config = runtime.open_plan().lifecycle_config();
         let mode_policy = runtime.open_plan().lifecycle_policy();

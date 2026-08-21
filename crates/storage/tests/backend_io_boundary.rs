@@ -10,7 +10,16 @@ use std::path::Path;
 fn production_filesystem_io_stays_inside_localfs_backend() {
     let root = common::crate_root();
     let src = root.join("src");
-    let allowed = root.join("src/backend/local_fs.rs");
+    // The object-store backend is the sole home for DATABASE filesystem IO.
+    // `host_memory.rs` is a second, deliberately narrow exemption (#2905): it
+    // reads ONLY read-only host introspection pseudo-files (`/proc/meminfo`,
+    // the cgroup limit files) to derive the default memory budget — never the
+    // durable store — and touching /proc from the object-store backend would
+    // be a worse coupling than this explicit allowance.
+    let allowed = [
+        root.join("src/backend/local_fs.rs"),
+        root.join("src/host_memory.rs"),
+    ];
     let mut files = Vec::new();
     common::source_guard_helpers::collect_rs_files(&src, &mut files);
 
@@ -47,8 +56,8 @@ fn production_delete_contract_exposes_no_parallel_delete_api() {
     );
 }
 
-fn should_scan_for_filesystem_io(file: &Path, allowed: &Path) -> bool {
-    is_production_source(file) && file != allowed
+fn should_scan_for_filesystem_io(file: &Path, allowed: &[std::path::PathBuf]) -> bool {
+    is_production_source(file) && !allowed.iter().any(|permitted| permitted == file)
 }
 
 fn is_production_source(file: &Path) -> bool {
@@ -137,9 +146,20 @@ fn display_relative(root: &Path, file: &Path) -> String {
 #[test]
 fn filesystem_boundary_scan_skips_localfs_backend_and_test_sources() {
     let root = Path::new("/crate");
-    let allowed = root.join("src/backend/local_fs.rs");
+    let local_fs = root.join("src/backend/local_fs.rs");
+    let allowed = [local_fs.clone(), root.join("src/host_memory.rs")];
 
-    assert!(!should_scan_for_filesystem_io(&allowed, &allowed));
+    assert!(!should_scan_for_filesystem_io(&local_fs, &allowed));
+    // The host-memory probe is the second permitted filesystem-IO site (#2905).
+    assert!(!should_scan_for_filesystem_io(
+        &root.join("src/host_memory.rs"),
+        &allowed
+    ));
+    // A different production module is still scanned.
+    assert!(should_scan_for_filesystem_io(
+        &root.join("src/lifecycle/recovery.rs"),
+        &allowed
+    ));
     assert!(!should_scan_for_filesystem_io(
         &root.join("src/testkit/backend.rs"),
         &allowed
