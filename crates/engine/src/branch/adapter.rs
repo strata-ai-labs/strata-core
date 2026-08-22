@@ -144,6 +144,8 @@ pub(crate) trait CapabilityBranchAdapter {
 mod tests {
     use super::{CapabilityBranchAdapter, ComparableEntity, DerivedDisposition, EntitySummary};
 
+    use strata_core::CommitVersion;
+
     use crate::data::kv::ProductSpace;
     use crate::diagnostics::{EngineError, EngineErrorClass, EngineResult};
     use crate::persistence::{PersistenceReadRow, RowClass};
@@ -227,6 +229,7 @@ mod tests {
         assert_eq!(entity.identity(), b"alpha");
         assert_eq!(entity.space(), &space);
         assert_eq!(entity.summary(), &EntitySummary::Present(b"one".to_vec()));
+        assert_eq!(entity.version(), CommitVersion::new(1));
         assert!(!entity.is_tombstone());
     }
 
