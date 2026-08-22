@@ -3,6 +3,7 @@
 mod name;
 mod service;
 
+pub(crate) mod adapter;
 pub(crate) mod catalog;
 
 pub use name::BranchName;
