@@ -82,6 +82,7 @@ Milestone implementation plans:
 10. `docs/architecture/implementation-plans/m9-m9t-implementation-plan.md`
 11. `docs/architecture/implementation-plans/m10-m10t-implementation-plan.md`
 12. `docs/architecture/implementation-plans/m11-m11t-implementation-plan.md`
+13. `docs/architecture/implementation-plans/m12-m12t-implementation-plan.md`
 
 ## Architecture Integration Review
 
@@ -249,6 +250,8 @@ Milestone scheduling is a DAG, not a strict serial chain:
    `M6`.
 9. `M10` depends on the product surfaces from `M6`, `M8`, and `M9`.
 10. `M11` depends on all previous milestone gates.
+11. `M12` is post-V1 feature work; it depends on the shipped V1 branch substrate
+    (`M4`/`M6`) and the engine branch-operation and capability-adapter contract.
 
 ## Progress Nomenclature
 
@@ -333,6 +336,7 @@ Milestone code map:
 | Phase 9 | `M9` | StrataHub V1 integration |
 | Phase 10 | `M10` | Executor, CLI, SDK, tests, benches, and docs cutover |
 | Phase 11 | `M11` | V1 readiness hardening |
+| Phase 12 | `M12` | Advanced branch operations (post-V1) |
 
 Each milestone implementation plan should start with an epic table:
 
