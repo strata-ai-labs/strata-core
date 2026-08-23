@@ -137,6 +137,13 @@ pub enum Command {
         /// Branch name.
         branch: String,
     },
+    /// Compares two branches.
+    BranchDiff {
+        /// The first branch (the `A` side).
+        branch_a: String,
+        /// The second branch (the `B` side).
+        branch_b: String,
+    },
     /// Creates an empty root branch.
     BranchCreate {
         /// Branch name.
@@ -1766,6 +1773,7 @@ impl Command {
             Self::SpaceDelete { .. } => "space_delete",
             Self::BranchList {} => "branch_list",
             Self::BranchGet { .. } => "branch_get",
+            Self::BranchDiff { .. } => "branch_diff",
             Self::BranchCreate { .. } => "branch_create",
             Self::BranchForkCurrent { .. } => "branch_fork_current",
             Self::BranchForkAtVersion { .. } => "branch_fork_at_version",

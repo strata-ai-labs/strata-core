@@ -408,9 +408,13 @@ pub(crate) enum BranchCommand {
         /// Branch name.
         branch: String,
     },
-    /// Deferred branch diff command.
-    #[command(hide = true)]
-    Diff(DeferredArgs),
+    /// Compare two branches.
+    Diff {
+        /// The first branch (the `A` side).
+        branch_a: String,
+        /// The second branch (the `B` side).
+        branch_b: String,
+    },
     /// Deferred branch merge command.
     #[command(hide = true)]
     Merge(DeferredArgs),

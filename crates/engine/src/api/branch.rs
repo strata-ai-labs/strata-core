@@ -262,7 +262,6 @@ impl BranchCreateOutcome {
 
 /// A data capability covered by a branch comparison.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
 pub enum ComparedCapability {
     /// The key-value capability.
     KeyValue,

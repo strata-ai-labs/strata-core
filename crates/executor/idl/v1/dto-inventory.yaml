@@ -49,6 +49,7 @@ response_models:
   - StatusValue<EventChainVerification>
   - Page<BranchItem, String>
   - StatusResponse<BranchItem>
+  - StatusResponse<BranchComparisonItem>
   - MutationAck<BranchItem>
   - MutationAck<BranchDelete>
   - MutationAck<SpaceCreate>

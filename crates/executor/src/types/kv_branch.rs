@@ -497,3 +497,135 @@ impl SampleItem {
         self.timestamp
     }
 }
+
+/// The data capability a branch comparison entry belongs to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ComparedCapability {
+    /// The key-value capability.
+    KeyValue,
+    /// The JSON document capability.
+    Json,
+}
+
+/// One entity that differs between two branches, exposed through the command
+/// boundary. `identity` is the capability's space-relative logical key.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ComparedEntityItem {
+    identity: Bytes,
+    version: u64,
+}
+
+impl ComparedEntityItem {
+    /// Creates a compared entity item.
+    pub const fn new(identity: Bytes, version: u64) -> Self {
+        Self { identity, version }
+    }
+
+    /// Returns the entity's space-relative logical key.
+    pub const fn identity(&self) -> &Bytes {
+        &self.identity
+    }
+
+    /// Returns the commit version observed on the reported side.
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+}
+
+/// The differing entities for one capability within one space. `added` are
+/// present on branch B but not A, `removed` on A but not B, `modified` on both
+/// with differing values.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct SpaceComparisonItem {
+    space: String,
+    capability: ComparedCapability,
+    added: Vec<ComparedEntityItem>,
+    removed: Vec<ComparedEntityItem>,
+    modified: Vec<ComparedEntityItem>,
+}
+
+impl SpaceComparisonItem {
+    /// Creates a space comparison item.
+    pub fn new(
+        space: String,
+        capability: ComparedCapability,
+        added: Vec<ComparedEntityItem>,
+        removed: Vec<ComparedEntityItem>,
+        modified: Vec<ComparedEntityItem>,
+    ) -> Self {
+        Self {
+            space,
+            capability,
+            added,
+            removed,
+            modified,
+        }
+    }
+
+    /// Returns the space this comparison covers.
+    pub fn space(&self) -> &str {
+        &self.space
+    }
+
+    /// Returns the capability this comparison covers.
+    pub const fn capability(&self) -> ComparedCapability {
+        self.capability
+    }
+
+    /// Entities present on branch B but not branch A.
+    pub fn added(&self) -> &[ComparedEntityItem] {
+        &self.added
+    }
+
+    /// Entities present on branch A but not branch B.
+    pub fn removed(&self) -> &[ComparedEntityItem] {
+        &self.removed
+    }
+
+    /// Entities present on both branches with differing values.
+    pub fn modified(&self) -> &[ComparedEntityItem] {
+        &self.modified
+    }
+}
+
+/// The result of comparing two branches, exposed through the command boundary.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BranchComparisonItem {
+    branch_a: String,
+    branch_b: String,
+    spaces: Vec<SpaceComparisonItem>,
+}
+
+impl BranchComparisonItem {
+    /// Creates a branch comparison item.
+    pub fn new(branch_a: String, branch_b: String, spaces: Vec<SpaceComparisonItem>) -> Self {
+        Self {
+            branch_a,
+            branch_b,
+            spaces,
+        }
+    }
+
+    /// Returns the first branch of the comparison (the `A` side).
+    pub fn branch_a(&self) -> &str {
+        &self.branch_a
+    }
+
+    /// Returns the second branch of the comparison (the `B` side).
+    pub fn branch_b(&self) -> &str {
+        &self.branch_b
+    }
+
+    /// Returns the per-capability, per-space comparisons.
+    pub fn spaces(&self) -> &[SpaceComparisonItem] {
+        &self.spaces
+    }
+}

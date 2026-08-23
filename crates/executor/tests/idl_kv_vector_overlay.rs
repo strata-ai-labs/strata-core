@@ -31,6 +31,7 @@ const REQUIRED_ARROW: &[&str] = &["arrow.import", "arrow.export"];
 const REQUIRED_BRANCH: &[&str] = &[
     "branch.list",
     "branch.get",
+    "branch.diff",
     "branch.create",
     "branch.fork",
     "branch.fork_at_version",

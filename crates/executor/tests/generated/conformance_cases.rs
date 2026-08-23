@@ -326,6 +326,28 @@ fn branch_delete_replay_observes_a_declared_output() {
     support::replay_observes_declared(&["requests/v1/branches/create.json"], "requests/v1/branches/delete.json", &["branch_delete_result"], false);
 }
 
+// ---- branch.diff ----
+
+#[test]
+fn branch_diff_request_wire_roundtrip_is_idempotent() {
+    support::request_roundtrip_idempotent("requests/v1/branches/diff.json");
+}
+
+#[test]
+fn branch_diff_response_wire_roundtrip_is_idempotent() {
+    support::response_roundtrip_idempotent("responses/v1/branches/diff.json");
+}
+
+#[test]
+fn branch_diff_request_rejects_unknown_keys_at_closed_objects() {
+    support::unknown_keys_rejected("requests/v1/branches/diff.json", &[""]);
+}
+
+#[test]
+fn branch_diff_replay_observes_a_declared_output() {
+    support::replay_observes_declared(&["requests/v1/kv/put.json", "requests/v1/branches/create.json"], "requests/v1/branches/diff.json", &["branch_comparison"], false);
+}
+
 // ---- branch.fork ----
 
 #[test]

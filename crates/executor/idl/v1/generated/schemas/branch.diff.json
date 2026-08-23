@@ -1,0 +1,149 @@
+{
+  "$defs": {
+    "BranchComparisonItem": {
+      "additionalProperties": false,
+      "description": "The result of comparing two branches, exposed through the command boundary.",
+      "properties": {
+        "branch_a": {
+          "type": "string"
+        },
+        "branch_b": {
+          "type": "string"
+        },
+        "spaces": {
+          "items": {
+            "$ref": "#/$defs/SpaceComparisonItem"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "branch_a",
+        "branch_b",
+        "spaces"
+      ],
+      "type": "object"
+    },
+    "Bytes": {
+      "contentEncoding": "base64",
+      "description": "Binary payload encoded as a standard base64 string.",
+      "type": "string"
+    },
+    "ComparedCapability": {
+      "description": "The data capability a branch comparison entry belongs to.",
+      "oneOf": [
+        {
+          "const": "key_value",
+          "description": "The key-value capability.",
+          "type": "string"
+        },
+        {
+          "const": "json",
+          "description": "The JSON document capability.",
+          "type": "string"
+        }
+      ]
+    },
+    "ComparedEntityItem": {
+      "additionalProperties": false,
+      "description": "One entity that differs between two branches, exposed through the command\nboundary. `identity` is the capability's space-relative logical key.",
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/Bytes"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "identity",
+        "version"
+      ],
+      "type": "object"
+    },
+    "SpaceComparisonItem": {
+      "additionalProperties": false,
+      "description": "The differing entities for one capability within one space. `added` are\npresent on branch B but not A, `removed` on A but not B, `modified` on both\nwith differing values.",
+      "properties": {
+        "added": {
+          "items": {
+            "$ref": "#/$defs/ComparedEntityItem"
+          },
+          "type": "array"
+        },
+        "capability": {
+          "$ref": "#/$defs/ComparedCapability"
+        },
+        "modified": {
+          "items": {
+            "$ref": "#/$defs/ComparedEntityItem"
+          },
+          "type": "array"
+        },
+        "removed": {
+          "items": {
+            "$ref": "#/$defs/ComparedEntityItem"
+          },
+          "type": "array"
+        },
+        "space": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "space",
+        "capability",
+        "added",
+        "removed",
+        "modified"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/branch.diff.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "branch.diff",
+  "request": {
+    "additionalProperties": false,
+    "description": "Compares two branches.",
+    "properties": {
+      "branch_a": {
+        "description": "The first branch (the `A` side).",
+        "type": "string"
+      },
+      "branch_b": {
+        "description": "The second branch (the `B` side).",
+        "type": "string"
+      },
+      "type": {
+        "const": "branch_diff",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "branch_a",
+      "branch_b"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Branch comparison result.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/BranchComparisonItem"
+      },
+      "type": {
+        "const": "branch_comparison",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

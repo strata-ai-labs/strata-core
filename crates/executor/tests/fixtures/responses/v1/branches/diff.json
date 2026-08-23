@@ -1,0 +1,21 @@
+{
+  "data": {
+    "branch_a": "default",
+    "branch_b": "feature",
+    "spaces": [
+      {
+        "added": [],
+        "capability": "key_value",
+        "modified": [],
+        "removed": [
+          {
+            "identity": "YQ==",
+            "version": 3
+          }
+        ],
+        "space": "default"
+      }
+    ]
+  },
+  "type": "branch_comparison"
+}
