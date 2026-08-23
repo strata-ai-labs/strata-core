@@ -39,6 +39,7 @@ $ strata branch diff default experiment
 
 | Name | Type | Required | Description |
 |---|---|---|---|
+| `at_timestamp` | `integer` | no | Optional timestamp in microseconds; compare each branch as of it. |
 | `branch_a` | `string` | yes | The first branch (the `A` side). |
 | `branch_b` | `string` | yes | The second branch (the `B` side). |
 

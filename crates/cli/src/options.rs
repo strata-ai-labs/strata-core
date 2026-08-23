@@ -414,6 +414,9 @@ pub(crate) enum BranchCommand {
         branch_a: String,
         /// The second branch (the `B` side).
         branch_b: String,
+        /// Optional read timestamp in microseconds; compare each branch as of it.
+        #[arg(long)]
+        as_of: Option<u64>,
     },
     /// Deferred branch merge command.
     #[command(hide = true)]

@@ -109,6 +109,15 @@
     "additionalProperties": false,
     "description": "Compares two branches.",
     "properties": {
+      "at_timestamp": {
+        "description": "Optional timestamp in microseconds; compare each branch as of it.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
       "branch_a": {
         "description": "The first branch (the `A` side).",
         "type": "string"

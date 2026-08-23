@@ -51,9 +51,11 @@ impl Executor {
             } => self.execute_space_delete(branch.as_deref(), &space, force),
             Command::BranchList {} => self.execute_branch_list(),
             Command::BranchGet { branch } => self.execute_branch_get(&branch),
-            Command::BranchDiff { branch_a, branch_b } => {
-                self.execute_branch_diff(&branch_a, &branch_b)
-            }
+            Command::BranchDiff {
+                branch_a,
+                branch_b,
+                at_timestamp,
+            } => self.execute_branch_diff(&branch_a, &branch_b, at_timestamp),
             Command::BranchCreate { branch } => self.execute_branch_create(&branch),
             Command::BranchForkCurrent { source, branch } => {
                 self.execute_branch_fork_current(&source, &branch)

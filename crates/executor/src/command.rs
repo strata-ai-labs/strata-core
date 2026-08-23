@@ -143,6 +143,9 @@ pub enum Command {
         branch_a: String,
         /// The second branch (the `B` side).
         branch_b: String,
+        /// Optional timestamp in microseconds; compare each branch as of it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at_timestamp: Option<u64>,
     },
     /// Creates an empty root branch.
     BranchCreate {

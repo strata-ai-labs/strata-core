@@ -14,7 +14,8 @@ use crate::persistence::{
 
 use super::BranchName;
 use crate::api::{
-    BranchCleanupSummary, BranchComparison, BranchCreateOutcome, BranchDeleteOutcome, BranchSummary,
+    BranchCleanupSummary, BranchComparison, BranchCreateOutcome, BranchDeleteOutcome,
+    BranchStateSelector, BranchSummary,
 };
 
 /// Service for product branch operations.
@@ -222,6 +223,7 @@ impl<'a> BranchService<'a> {
         &mut self,
         branch_a: &BranchName,
         branch_b: &BranchName,
+        selector: BranchStateSelector,
     ) -> EngineResult<BranchComparison> {
         self.control.require_healthy()?;
         let record_a = self
@@ -244,7 +246,7 @@ impl<'a> BranchService<'a> {
                     format!("branch `{branch_b}` does not exist"),
                 )
             })?;
-        super::compare::compare_records(self.persistence, &record_a, &record_b)
+        super::compare::compare_records(self.persistence, &record_a, &record_b, selector)
     }
 
     /// Deletes an active product branch.

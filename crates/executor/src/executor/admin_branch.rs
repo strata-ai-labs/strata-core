@@ -1,8 +1,9 @@
 use super::{
     branch_cleanup_item, branch_comparison, branch_item, branch_name, delete_effect,
     output_admin_config, output_admin_describe, output_admin_health, output_admin_info,
-    output_admin_metrics, output_space_create, output_space_delete, product_space, CommitVersion,
-    Executor, ExecutorResult, Output, PageInfo, Timestamp, DEFAULT_BRANCH,
+    output_admin_metrics, output_space_create, output_space_delete, product_space,
+    BranchStateSelector, CommitVersion, Executor, ExecutorResult, Output, PageInfo, Timestamp,
+    DEFAULT_BRANCH,
 };
 
 impl Executor {
@@ -194,10 +195,18 @@ impl Executor {
         &mut self,
         branch_a: &str,
         branch_b: &str,
+        at_timestamp: Option<u64>,
     ) -> ExecutorResult<Output> {
         let branch_a = branch_name(Some(branch_a), DEFAULT_BRANCH)?;
         let branch_b = branch_name(Some(branch_b), DEFAULT_BRANCH)?;
-        let comparison = self.database.branches()?.compare(&branch_a, &branch_b)?;
+        let selector = match at_timestamp {
+            None => BranchStateSelector::Current,
+            Some(micros) => BranchStateSelector::AtTimestamp(Timestamp::from_micros(micros)),
+        };
+        let comparison = self
+            .database
+            .branches()?
+            .compare(&branch_a, &branch_b, selector)?;
         Ok(Output::BranchComparison(branch_comparison(&comparison)))
     }
 
