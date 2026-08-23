@@ -12,16 +12,9 @@
 //! of the adapter — the workflow feeds scanned rows to [`CapabilityBranchAdapter::interpret_row`].
 //! Adapters return facts; they never commit.
 //!
-//! M12A1 defines the comparison-serving surface. Promotion, selected-copy, and
-//! undo methods extend this trait at later M12 slices, where the post-V1
-//! branch-operation absence guard is retired. The trait and its types are the
-//! milestone foundation; their first non-test consumer is the M12B compare
-//! workflow, so until that lands they are otherwise unreferenced.
-#![allow(
-    dead_code,
-    reason = "M12A1 foundation: the trait and its types are consumed by the M12B \
-              compare workflow; defined here as the milestone foundation"
-)]
+//! The comparison-serving surface is consumed by the M12B compare workflow.
+//! Promotion, selected-copy, and undo methods extend this trait at later M12
+//! slices, where the post-V1 branch-operation absence guard is retired.
 
 use strata_core::CommitVersion;
 
@@ -34,6 +27,13 @@ use crate::persistence::{PersistenceReadRow, RowClass};
 /// Authored rows are user data that participates in comparison and promotion;
 /// the remaining variants classify derived rows per the contract's
 /// derived-state disposition rules.
+// The non-`Authored` variants are the disposition taxonomy for derived
+// capabilities; they are constructed when derived-capability adapters land
+// (M12G). Compare consumes only `Authored` today.
+#[allow(
+    dead_code,
+    reason = "derived-disposition variants are constructed by derived-capability adapters (M12G)"
+)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DerivedDisposition {
     /// Authored user data — participates in comparison and promotion.
@@ -66,21 +66,14 @@ pub(crate) enum EntitySummary {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ComparableEntity {
     identity: Vec<u8>,
-    space: ProductSpace,
     summary: EntitySummary,
     version: CommitVersion,
 }
 
 impl ComparableEntity {
-    pub(crate) fn new(
-        identity: Vec<u8>,
-        space: ProductSpace,
-        summary: EntitySummary,
-        version: CommitVersion,
-    ) -> Self {
+    pub(crate) fn new(identity: Vec<u8>, summary: EntitySummary, version: CommitVersion) -> Self {
         Self {
             identity,
-            space,
             summary,
             version,
         }
@@ -89,11 +82,6 @@ impl ComparableEntity {
     /// The capability's space-relative logical key.
     pub(crate) fn identity(&self) -> &[u8] {
         &self.identity
-    }
-
-    /// The space the entity belongs to.
-    pub(crate) fn space(&self) -> &ProductSpace {
-        &self.space
     }
 
     /// The value summary at this branch state.
@@ -201,7 +189,6 @@ mod tests {
             };
             Ok(ComparableEntity::new(
                 identity,
-                space.clone(),
                 summary,
                 row.commit_version(),
             ))
@@ -227,7 +214,6 @@ mod tests {
             .interpret_row(&space, &row)
             .expect("decodes a present row");
         assert_eq!(entity.identity(), b"alpha");
-        assert_eq!(entity.space(), &space);
         assert_eq!(entity.summary(), &EntitySummary::Present(b"one".to_vec()));
         assert_eq!(entity.version(), CommitVersion::new(1));
         assert!(!entity.is_tombstone());

@@ -18,8 +18,9 @@ pub use admin::{
     AdminPingSummary, AdminPrimitiveSummary, AdminService, AdminVectorCollectionSummary,
 };
 pub use branch::{
-    BranchCleanupSummary, BranchCreateOutcome, BranchDeleteOutcome, BranchParentSummary,
-    BranchStatus, BranchSummary,
+    BranchCleanupSummary, BranchComparison, BranchCreateOutcome, BranchDeleteOutcome,
+    BranchParentSummary, BranchStatus, BranchSummary, ComparedCapability, ComparedEntity,
+    SpaceComparison,
 };
 pub use control::{ControlDiagnostics, ControlHealthStatus, SpaceCatalogDiagnostics};
 pub use database::{

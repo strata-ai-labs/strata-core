@@ -9,11 +9,6 @@
 //!
 //! `KvBranchAdapter` is consumed in production by the M12B compare workflow;
 //! until that lands it is exercised only by this module's tests.
-#![allow(
-    dead_code,
-    reason = "M12A2: KvBranchAdapter is consumed by the M12B compare workflow"
-)]
-
 use crate::branch::adapter::{
     CapabilityBranchAdapter, ComparableEntity, DerivedDisposition, EntitySummary,
 };
@@ -57,7 +52,6 @@ impl CapabilityBranchAdapter for KvBranchAdapter {
         };
         Ok(ComparableEntity::new(
             key.into_bytes(),
-            space.clone(),
             summary,
             row.commit_version(),
         ))
@@ -97,7 +91,6 @@ mod tests {
             .interpret_row(&space, &row)
             .expect("decodes a present KV row");
         assert_eq!(entity.identity(), b"alpha");
-        assert_eq!(entity.space(), &space);
         assert_eq!(entity.summary(), &EntitySummary::Present(b"one".to_vec()));
         assert_eq!(entity.version(), CommitVersion::new(1));
         assert!(!entity.is_tombstone());

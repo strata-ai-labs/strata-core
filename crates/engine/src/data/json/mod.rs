@@ -1,10 +1,12 @@
 //! JSON document capability.
 
+mod adapter;
 mod document;
 mod outcome;
 mod service;
 mod types;
 
+pub(crate) use adapter::JsonBranchAdapter;
 pub use outcome::{
     JsonBatchDeleteOutcome, JsonBatchSetItemOutcome, JsonBatchSetOutcome, JsonDeleteOutcome,
     JsonHistory, JsonHistoryRow, JsonListPage, JsonSample, JsonSampleRow, JsonVersionedValue,

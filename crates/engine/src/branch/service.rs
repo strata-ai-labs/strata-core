@@ -13,7 +13,9 @@ use crate::persistence::{
 };
 
 use super::BranchName;
-use crate::api::{BranchCleanupSummary, BranchCreateOutcome, BranchDeleteOutcome, BranchSummary};
+use crate::api::{
+    BranchCleanupSummary, BranchComparison, BranchCreateOutcome, BranchDeleteOutcome, BranchSummary,
+};
 
 /// Service for product branch operations.
 pub struct BranchService<'a> {
@@ -211,6 +213,38 @@ impl<'a> BranchService<'a> {
                 persistence.fork_branch_at_timestamp(branch_id, source_id, timestamp, generation)
             },
         )
+    }
+
+    /// Compares two branches, reporting the authored entities that differ,
+    /// grouped by capability and space. The comparison is directional from
+    /// `branch_a` to `branch_b`. Derived rows are omitted by default.
+    pub fn compare(
+        &mut self,
+        branch_a: &BranchName,
+        branch_b: &BranchName,
+    ) -> EngineResult<BranchComparison> {
+        self.control.require_healthy()?;
+        let record_a = self
+            .control
+            .lookup_branch(branch_a)
+            .cloned()
+            .ok_or_else(|| {
+                EngineError::not_found(
+                    "not_found.engine.branch",
+                    format!("branch `{branch_a}` does not exist"),
+                )
+            })?;
+        let record_b = self
+            .control
+            .lookup_branch(branch_b)
+            .cloned()
+            .ok_or_else(|| {
+                EngineError::not_found(
+                    "not_found.engine.branch",
+                    format!("branch `{branch_b}` does not exist"),
+                )
+            })?;
+        super::compare::compare_records(self.persistence, &record_a, &record_b)
     }
 
     /// Deletes an active product branch.

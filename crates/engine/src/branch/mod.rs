@@ -5,6 +5,7 @@ mod service;
 
 pub(crate) mod adapter;
 pub(crate) mod catalog;
+pub(crate) mod compare;
 
 pub use name::BranchName;
 pub(crate) use name::SYSTEM_BRANCH;

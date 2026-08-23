@@ -7,6 +7,7 @@ use crate::branch::catalog::{
     BranchStatus as CatalogBranchStatus,
 };
 use crate::branch::BranchName;
+use crate::data::kv::ProductSpace;
 
 /// Product branch status exposed by the engine.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -256,5 +257,152 @@ impl BranchCreateOutcome {
     /// Returns the created branch summary.
     pub const fn branch(&self) -> &BranchSummary {
         &self.branch
+    }
+}
+
+/// A data capability covered by a branch comparison.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ComparedCapability {
+    /// The key-value capability.
+    KeyValue,
+    /// The JSON document capability.
+    Json,
+}
+
+/// One entity that differs between two branches, identified by its
+/// space-relative logical key and the commit version observed on the reported
+/// side.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComparedEntity {
+    identity: Vec<u8>,
+    version: CommitVersion,
+}
+
+impl ComparedEntity {
+    pub(crate) fn new(identity: Vec<u8>, version: CommitVersion) -> Self {
+        Self { identity, version }
+    }
+
+    #[must_use]
+    /// Returns the entity's space-relative logical key.
+    pub fn identity(&self) -> &[u8] {
+        &self.identity
+    }
+
+    #[must_use]
+    /// Returns the commit version observed on the reported side.
+    pub const fn version(&self) -> CommitVersion {
+        self.version
+    }
+}
+
+/// The differing entities for one capability within one space.
+///
+/// The comparison is directional from branch A to branch B: `added` are present
+/// on B but not A, `removed` are present on A but not B, and `modified` are
+/// present on both with differing values.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpaceComparison {
+    space: ProductSpace,
+    capability: ComparedCapability,
+    added: Vec<ComparedEntity>,
+    removed: Vec<ComparedEntity>,
+    modified: Vec<ComparedEntity>,
+}
+
+impl SpaceComparison {
+    pub(crate) fn new(
+        space: ProductSpace,
+        capability: ComparedCapability,
+        added: Vec<ComparedEntity>,
+        removed: Vec<ComparedEntity>,
+        modified: Vec<ComparedEntity>,
+    ) -> Self {
+        Self {
+            space,
+            capability,
+            added,
+            removed,
+            modified,
+        }
+    }
+
+    #[must_use]
+    /// Returns the space this comparison covers.
+    pub fn space(&self) -> &ProductSpace {
+        &self.space
+    }
+
+    #[must_use]
+    /// Returns the capability this comparison covers.
+    pub const fn capability(&self) -> ComparedCapability {
+        self.capability
+    }
+
+    #[must_use]
+    /// Entities present on branch B but not branch A.
+    pub fn added(&self) -> &[ComparedEntity] {
+        &self.added
+    }
+
+    #[must_use]
+    /// Entities present on branch A but not branch B.
+    pub fn removed(&self) -> &[ComparedEntity] {
+        &self.removed
+    }
+
+    #[must_use]
+    /// Entities present on both branches with differing values.
+    pub fn modified(&self) -> &[ComparedEntity] {
+        &self.modified
+    }
+}
+
+/// The result of comparing two branches: the entities that differ, grouped by
+/// capability and space. Derived rows are omitted by default.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BranchComparison {
+    branch_a: BranchName,
+    branch_b: BranchName,
+    spaces: Vec<SpaceComparison>,
+}
+
+impl BranchComparison {
+    pub(crate) fn new(
+        branch_a: BranchName,
+        branch_b: BranchName,
+        spaces: Vec<SpaceComparison>,
+    ) -> Self {
+        Self {
+            branch_a,
+            branch_b,
+            spaces,
+        }
+    }
+
+    #[must_use]
+    /// The first branch of the comparison (the `A` side).
+    pub fn branch_a(&self) -> &BranchName {
+        &self.branch_a
+    }
+
+    #[must_use]
+    /// The second branch of the comparison (the `B` side).
+    pub fn branch_b(&self) -> &BranchName {
+        &self.branch_b
+    }
+
+    #[must_use]
+    /// The per-capability, per-space comparisons that contain at least one
+    /// difference.
+    pub fn comparisons(&self) -> &[SpaceComparison] {
+        &self.spaces
+    }
+
+    #[must_use]
+    /// Whether the two branches have no differing authored entities.
+    pub fn is_empty(&self) -> bool {
+        self.spaces.is_empty()
     }
 }
