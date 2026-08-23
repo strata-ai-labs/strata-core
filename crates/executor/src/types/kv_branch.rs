@@ -629,3 +629,38 @@ impl BranchComparisonItem {
         &self.spaces
     }
 }
+
+#[cfg(test)]
+mod branch_comparison_tests {
+    use super::{
+        BranchComparisonItem, Bytes, ComparedCapability, ComparedEntityItem, SpaceComparisonItem,
+    };
+
+    #[test]
+    fn branch_comparison_item_exposes_every_part() {
+        let entity = ComparedEntityItem::new(Bytes::from(&b"alpha"[..]), 7);
+        assert_eq!(entity.identity(), &Bytes::from(&b"alpha"[..]));
+        assert_eq!(entity.version(), 7);
+
+        let space = SpaceComparisonItem::new(
+            "default".to_owned(),
+            ComparedCapability::Json,
+            vec![ComparedEntityItem::new(Bytes::from(&b"add"[..]), 1)],
+            vec![ComparedEntityItem::new(Bytes::from(&b"rem"[..]), 2)],
+            vec![ComparedEntityItem::new(Bytes::from(&b"mod"[..]), 3)],
+        );
+        assert_eq!(space.space(), "default");
+        assert_eq!(space.capability(), ComparedCapability::Json);
+        assert_eq!(space.added().len(), 1);
+        assert_eq!(space.added()[0].identity(), &Bytes::from(&b"add"[..]));
+        assert_eq!(space.removed()[0].identity(), &Bytes::from(&b"rem"[..]));
+        assert_eq!(space.modified()[0].identity(), &Bytes::from(&b"mod"[..]));
+
+        let comparison =
+            BranchComparisonItem::new("default".to_owned(), "feature".to_owned(), vec![space]);
+        assert_eq!(comparison.branch_a(), "default");
+        assert_eq!(comparison.branch_b(), "feature");
+        assert_eq!(comparison.spaces().len(), 1);
+        assert_eq!(comparison.spaces()[0].space(), "default");
+    }
+}
