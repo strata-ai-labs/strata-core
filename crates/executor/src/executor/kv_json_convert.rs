@@ -1,13 +1,15 @@
 use super::{
     output_json_index_type, BatchExistsItemResult, BatchGetItemResult, BatchItem, BatchItemResult,
-    BranchCleanupItem, BranchCleanupSummary, BranchItem, BranchParentItem, BranchStatus,
-    BranchSummary, Bytes, CommitDurability, CommitOutcome, CommitReceipt, CommitVersion,
-    EngineBranchStatus, EngineJsonIndexDefinition, EngineJsonSample, EngineJsonValue,
-    EngineJsonVersionedValue, ExecutorError, HistoryItem, HistoryResult, JsonBatchGetItemResult,
-    JsonBatchItemResult, JsonHistory, JsonHistoryItem, JsonHistoryRow, JsonIndexDefinition,
-    JsonListPage, JsonSampleItem, JsonSampleRow, KvHistory, KvHistoryRow, KvKey, KvSample,
-    KvScanRow, KvVersionedValue, MutationEffect, MutationEffectKind, Output,
-    OutputJsonVersionedValue, PageInfo, SampleItem, ScanItem, Timestamp, VersionedValue,
+    BranchCleanupItem, BranchCleanupSummary, BranchComparisonItem, BranchItem, BranchParentItem,
+    BranchStatus, BranchSummary, Bytes, CommitDurability, CommitOutcome, CommitReceipt,
+    CommitVersion, ComparedCapability, ComparedEntityItem, EngineBranchComparison,
+    EngineBranchStatus, EngineComparedCapability, EngineComparedEntity, EngineJsonIndexDefinition,
+    EngineJsonSample, EngineJsonValue, EngineJsonVersionedValue, EngineSpaceComparison,
+    ExecutorError, HistoryItem, HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult,
+    JsonHistory, JsonHistoryItem, JsonHistoryRow, JsonIndexDefinition, JsonListPage,
+    JsonSampleItem, JsonSampleRow, KvHistory, KvHistoryRow, KvKey, KvSample, KvScanRow,
+    KvVersionedValue, MutationEffect, MutationEffectKind, Output, OutputJsonVersionedValue,
+    PageInfo, SampleItem, ScanItem, SpaceComparisonItem, Timestamp, VersionedValue,
 };
 
 pub(super) fn bytes_from_key(key: &KvKey) -> Bytes {
@@ -412,4 +414,36 @@ pub(super) fn json_index_definition(definition: &EngineJsonIndexDefinition) -> J
         definition.created_version(),
         definition.created_timestamp(),
     )
+}
+
+pub(super) fn branch_comparison(comparison: &EngineBranchComparison) -> BranchComparisonItem {
+    let spaces = comparison
+        .comparisons()
+        .iter()
+        .map(|space: &EngineSpaceComparison| {
+            SpaceComparisonItem::new(
+                space.space().as_str().to_owned(),
+                compared_capability(space.capability()),
+                space.added().iter().map(compared_entity).collect(),
+                space.removed().iter().map(compared_entity).collect(),
+                space.modified().iter().map(compared_entity).collect(),
+            )
+        })
+        .collect();
+    BranchComparisonItem::new(
+        comparison.branch_a().as_str().to_owned(),
+        comparison.branch_b().as_str().to_owned(),
+        spaces,
+    )
+}
+
+fn compared_entity(entity: &EngineComparedEntity) -> ComparedEntityItem {
+    ComparedEntityItem::new(Bytes::from(entity.identity()), entity.version().as_u64())
+}
+
+const fn compared_capability(capability: EngineComparedCapability) -> ComparedCapability {
+    match capability {
+        EngineComparedCapability::KeyValue => ComparedCapability::KeyValue,
+        EngineComparedCapability::Json => ComparedCapability::Json,
+    }
 }

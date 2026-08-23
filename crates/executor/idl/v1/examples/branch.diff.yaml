@@ -1,0 +1,11 @@
+caption: Compare a fork against the branch it came from.
+steps:
+  - call: kv.put
+    args: { key: config, value: base }
+  - call: branch.fork
+    args: { source: default, branch: experiment }
+  - call: kv.put
+    args: { key: config, value: tuned, branch: experiment }
+    note: diverge on the fork
+  - call: branch.diff
+    args: { branch_a: default, branch_b: experiment }

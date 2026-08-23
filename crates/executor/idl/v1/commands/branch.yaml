@@ -29,6 +29,20 @@ commands:
         - requests/v1/branches/create.json
       request: requests/v1/branches/get.json
       response: responses/v1/branches/get.json
+  - id: branch.diff
+    kind: read.status
+    title: Compare branches
+    input: Command::BranchDiff
+    output: Output::BranchComparison
+    result: BranchComparisonItem
+    response_model: StatusResponse<BranchComparisonItem>
+    prose: commands/branch.diff.md
+    fixtures:
+      setup:
+        - requests/v1/kv/put.json
+        - requests/v1/branches/create.json
+      request: requests/v1/branches/diff.json
+      response: responses/v1/branches/diff.json
   - id: branch.create
     kind: mutation.create
     title: Create empty branch

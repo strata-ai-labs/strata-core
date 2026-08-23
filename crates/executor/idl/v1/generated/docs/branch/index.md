@@ -11,6 +11,7 @@ section: branch
 |---|---|
 | [Create empty branch](/docs/branch/create) | Create a new empty root branch. |
 | [Delete branch](/docs/branch/delete) | Delete an active branch and release its storage claims. |
+| [Compare branches](/docs/branch/diff) | Compare two branches and report the entities that differ. |
 | [Fork branch from current head](/docs/branch/fork) | Fork a new branch from the current head of a source branch. |
 | [Fork branch at timestamp](/docs/branch/fork_at_timestamp) | Fork a new branch from a retained source timestamp. |
 | [Fork branch at version](/docs/branch/fork_at_version) | Fork a new branch from a retained source commit version. |

@@ -1,8 +1,8 @@
 use super::{
-    branch_cleanup_item, branch_item, branch_name, delete_effect, output_admin_config,
-    output_admin_describe, output_admin_health, output_admin_info, output_admin_metrics,
-    output_space_create, output_space_delete, product_space, CommitVersion, Executor,
-    ExecutorResult, Output, PageInfo, Timestamp, DEFAULT_BRANCH,
+    branch_cleanup_item, branch_comparison, branch_item, branch_name, delete_effect,
+    output_admin_config, output_admin_describe, output_admin_health, output_admin_info,
+    output_admin_metrics, output_space_create, output_space_delete, product_space, CommitVersion,
+    Executor, ExecutorResult, Output, PageInfo, Timestamp, DEFAULT_BRANCH,
 };
 
 impl Executor {
@@ -188,6 +188,17 @@ impl Executor {
         let branch = branch_name(Some(branch), DEFAULT_BRANCH)?;
         let summary = self.database.branches()?.get(&branch)?;
         Ok(Output::Branch(branch_item(&summary)))
+    }
+
+    pub(super) fn execute_branch_diff(
+        &mut self,
+        branch_a: &str,
+        branch_b: &str,
+    ) -> ExecutorResult<Output> {
+        let branch_a = branch_name(Some(branch_a), DEFAULT_BRANCH)?;
+        let branch_b = branch_name(Some(branch_b), DEFAULT_BRANCH)?;
+        let comparison = self.database.branches()?.compare(&branch_a, &branch_b)?;
+        Ok(Output::BranchComparison(branch_comparison(&comparison)))
     }
 
     pub(super) fn execute_branch_create(&mut self, branch: &str) -> ExecutorResult<Output> {

@@ -3,15 +3,16 @@
 use crate::types::{
     AdminConfig, AdminDatabaseInfo, AdminDescribe, AdminHealth, AdminIpcStatus, AdminIpcStop,
     AdminMetrics, ArrowExportResult, ArrowImportResult, BatchExistsItemResult, BatchExistsPresence,
-    BatchGetItemResult, BatchItemResult, BatchResult, BranchCleanupItem, BranchItem, Bytes,
-    CommitReceipt, EventBatchAppendItemResult, EventChainVerification, EventVersionedData,
-    GraphBatchItemResult, GraphBfsData, GraphBindingHit, GraphCdlpData, GraphEdgeDataOutput,
-    GraphInfoData, GraphLccData, GraphNeighborHit, GraphNodeDataOutput, GraphOntologyData,
-    GraphOntologySummaryData, GraphPagerankData, GraphSsspData, GraphWccData, HistoryResult,
-    JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition,
-    JsonSampleItem, Maybe, MaybeJsonValue, MaybeJsonVersionedValue, MutationEffect, PageInfo,
-    SampleItem, ScanItem, VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo,
-    VectorHistoryResult, VectorIndexQueryResult, VectorMatch, VectorVersionedData, VersionedValue,
+    BatchGetItemResult, BatchItemResult, BatchResult, BranchCleanupItem, BranchComparisonItem,
+    BranchItem, Bytes, CommitReceipt, EventBatchAppendItemResult, EventChainVerification,
+    EventVersionedData, GraphBatchItemResult, GraphBfsData, GraphBindingHit, GraphCdlpData,
+    GraphEdgeDataOutput, GraphInfoData, GraphLccData, GraphNeighborHit, GraphNodeDataOutput,
+    GraphOntologyData, GraphOntologySummaryData, GraphPagerankData, GraphSsspData, GraphWccData,
+    HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
+    JsonIndexDefinition, JsonSampleItem, Maybe, MaybeJsonValue, MaybeJsonVersionedValue,
+    MutationEffect, PageInfo, SampleItem, ScanItem, VectorBatchGetItemResult,
+    VectorBatchItemResult, VectorCollectionInfo, VectorHistoryResult, VectorIndexQueryResult,
+    VectorMatch, VectorVersionedData, VersionedValue,
 };
 use serde::{Deserialize, Serialize};
 
@@ -95,6 +96,8 @@ pub enum Output {
     },
     /// One branch summary.
     Branch(BranchItem),
+    /// Branch comparison result.
+    BranchComparison(BranchComparisonItem),
     /// Branch list.
     Branches {
         /// Branches in this page.

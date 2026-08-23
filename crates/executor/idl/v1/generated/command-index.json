@@ -909,6 +909,69 @@
       }
     },
     {
+      "id": "branch.diff",
+      "family": "branch",
+      "op": "diff",
+      "kind": "read.status",
+      "title": "Compare branches",
+      "summary": "Compare two branches and report the entities that differ.",
+      "description": "Compares two branches and reports the authored key-value and JSON entities that\ndiffer, grouped by capability and space: entries `added` on `branch_b`,\n`removed` relative to `branch_a`, and `modified` on both sides. The comparison\nis directional from `branch_a` to `branch_b`. Derived rows are omitted; a\nmissing branch is rejected with `not_found.engine.branch`.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/branch/diff",
+      "cli": {
+        "path": [
+          "branch",
+          "diff"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_branch_diff",
+        "description": "Use this when the user wants to see what changed between two branches — which keys and documents were added, removed, or modified."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::BranchDiff",
+      "output": "Output::BranchComparison",
+      "outputs": [
+        "Output::BranchComparison"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<BranchComparisonItem>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name_reserved"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/branches/diff.json",
+        "response": "responses/v1/branches/diff.json",
+        "setup": [
+          "requests/v1/kv/put.json",
+          "requests/v1/branches/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/branch.yaml",
+        "prose": "commands/branch.diff.md"
+      }
+    },
+    {
       "id": "branch.fork",
       "family": "branch",
       "op": "fork",
