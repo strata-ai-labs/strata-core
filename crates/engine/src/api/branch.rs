@@ -419,3 +419,177 @@ impl BranchComparison {
         self.spaces.is_empty()
     }
 }
+
+/// A conflict-resolution strategy for previewing or promoting a branch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PromotionStrategy {
+    /// Refuse the promotion when any conflict exists.
+    Strict,
+    /// Apply the source side's value or tombstone for each conflict.
+    SourceWins,
+}
+
+/// How two branches diverged on one entity since their branch point.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConflictKind {
+    /// Both sides changed the entity to different present values.
+    ValueDivergence,
+    /// One side changed the value while the other deleted the entity.
+    ModifyDeleteDivergence,
+}
+
+/// What the selected strategy would do with a conflict.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConflictStrategyResult {
+    /// The conflict blocks the promotion (`Strict`).
+    Refused,
+    /// The source value or tombstone would overwrite the target (`SourceWins`).
+    SourceWins,
+}
+
+/// One conflicting entity between two branches, relative to their branch point.
+///
+/// `source_value` / `target_value` are the current values on each side, with
+/// `None` meaning the entity is absent (a deletion/tombstone).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreviewConflict {
+    capability: ComparedCapability,
+    space: ProductSpace,
+    identity: Vec<u8>,
+    source_value: Option<Vec<u8>>,
+    target_value: Option<Vec<u8>>,
+    kind: ConflictKind,
+    strategy_result: ConflictStrategyResult,
+}
+
+impl PreviewConflict {
+    pub(crate) fn new(
+        capability: ComparedCapability,
+        space: ProductSpace,
+        identity: Vec<u8>,
+        source_value: Option<Vec<u8>>,
+        target_value: Option<Vec<u8>>,
+        kind: ConflictKind,
+        strategy_result: ConflictStrategyResult,
+    ) -> Self {
+        Self {
+            capability,
+            space,
+            identity,
+            source_value,
+            target_value,
+            kind,
+            strategy_result,
+        }
+    }
+
+    /// The capability the conflicting entity belongs to.
+    #[must_use]
+    pub const fn capability(&self) -> ComparedCapability {
+        self.capability
+    }
+
+    /// The space the conflicting entity belongs to.
+    #[must_use]
+    pub fn space(&self) -> &ProductSpace {
+        &self.space
+    }
+
+    /// The capability's space-relative logical key.
+    #[must_use]
+    pub fn identity(&self) -> &[u8] {
+        &self.identity
+    }
+
+    /// The source side's current value, or `None` if deleted.
+    #[must_use]
+    pub fn source_value(&self) -> Option<&[u8]> {
+        self.source_value.as_deref()
+    }
+
+    /// The target side's current value, or `None` if deleted.
+    #[must_use]
+    pub fn target_value(&self) -> Option<&[u8]> {
+        self.target_value.as_deref()
+    }
+
+    /// How the two sides diverged.
+    #[must_use]
+    pub const fn kind(&self) -> ConflictKind {
+        self.kind
+    }
+
+    /// What the selected strategy would do with this conflict.
+    #[must_use]
+    pub const fn strategy_result(&self) -> ConflictStrategyResult {
+        self.strategy_result
+    }
+}
+
+/// The result of previewing a promotion of `source` into `target`.
+///
+/// Preview is read-only: it derives the branch point from lineage, runs a
+/// three-way comparison, and reports the conflicts that would arise, without
+/// mutating either branch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BranchPreview {
+    source: BranchName,
+    target: BranchName,
+    branch_point: CommitVersion,
+    strategy: PromotionStrategy,
+    conflicts: Vec<PreviewConflict>,
+}
+
+impl BranchPreview {
+    pub(crate) fn new(
+        source: BranchName,
+        target: BranchName,
+        branch_point: CommitVersion,
+        strategy: PromotionStrategy,
+        conflicts: Vec<PreviewConflict>,
+    ) -> Self {
+        Self {
+            source,
+            target,
+            branch_point,
+            strategy,
+            conflicts,
+        }
+    }
+
+    /// The branch whose changes would be promoted.
+    #[must_use]
+    pub fn source(&self) -> &BranchName {
+        &self.source
+    }
+
+    /// The branch that would receive the promotion.
+    #[must_use]
+    pub fn target(&self) -> &BranchName {
+        &self.target
+    }
+
+    /// The derived branch point (shared commit version) the preview compared against.
+    #[must_use]
+    pub const fn branch_point(&self) -> CommitVersion {
+        self.branch_point
+    }
+
+    /// The strategy the preview was evaluated under.
+    #[must_use]
+    pub const fn strategy(&self) -> PromotionStrategy {
+        self.strategy
+    }
+
+    /// The conflicts a promotion would encounter.
+    #[must_use]
+    pub fn conflicts(&self) -> &[PreviewConflict] {
+        &self.conflicts
+    }
+
+    /// Whether the promotion is conflict-free.
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.conflicts.is_empty()
+    }
+}

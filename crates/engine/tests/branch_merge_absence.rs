@@ -1,39 +1,32 @@
 //! Branch merge/revert/cherry-pick absence guard (TCP3.7, issue #2635).
 //!
-//! CLAUDE.md hard rule 20 says branch merge/revert/cherry-pick are **absent**
-//! in V1 — there is no entrypoint, so there is no strict-refusal surface yet.
-//! Of the named branch invariants (generation monotonicity, empty-branch
-//! creation, cross-branch rejection, recreate-after-delete), this was the only
-//! one with no test of any kind: a hard rule describing a surface that does not
-//! exist and is not enforced.
+//! CLAUDE.md hard rule 20 says branch merge, revert, and cherry-pick — the
+//! **mutating** promotion operations that write a new commit — are absent in
+//! V1. This guard enforces that: it scans the engine source for the distinctive
+//! vocabulary those surfaces would introduce and fails if any appears.
 //!
-//! This guard turns "unverified absence" into "enforced absence". It scans the
-//! engine source for the distinctive vocabulary a branch merge/revert/
-//! cherry-pick surface would introduce and fails if any appears. When the
-//! post-V1 merge work lands, this test fails by design — the implementer must
-//! then delete it, amend rule 20, and add the strict-refusal tests the rule
-//! promises, so the typed-refusal surface can never ship untested.
+//! M12C narrowed this guard rather than deleting it. Read-only **preview
+//! promotion** (merge-base, three-way diff) landed in M12C, so those tokens are
+//! no longer forbidden. The mutating operations stay absent and guarded until
+//! their slices (M12D promote, M12E cherry-pick, M12F revert); each must, when
+//! it lands, drop its token here, amend rule 20, and add its strict-refusal
+//! tests, so the typed-refusal surface can never ship untested.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Distinctive branch-operation tokens. Each is absent from engine source
-/// today; a merge/revert/cherry-pick family (fork, diff, three-way diff, merge,
-/// merge-base, cherry-pick, revert — see the branch-operation contract) would
-/// introduce them. Deliberately compound so they do not collide with the
-/// implemented, unrelated merges: vector candidate reranking
-/// (`merge_and_rerank_candidates`) and document-level JSON merge (rule 21).
+/// Distinctive tokens the still-absent **mutating** branch operations would
+/// introduce (merge/promote, cherry-pick, revert). Deliberately compound so
+/// they do not collide with implemented, unrelated merges: vector candidate
+/// reranking (`merge_and_rerank_candidates`) and document-level JSON merge
+/// (rule 21). Preview's `merge_base`/`three_way` tokens were removed in M12C.
 const FORBIDDEN: &[&str] = &[
     "cherry_pick",
     "cherry-pick",
     "branch_cherry_pick",
     "branch_merge",
     "merge_branch",
-    "merge_base",
-    "merge-base",
     "branch_revert",
-    "three_way",
-    "three-way",
 ];
 
 #[test]
@@ -50,10 +43,10 @@ fn branch_merge_revert_cherry_pick_stay_absent_in_v1() {
     }
     assert!(
         offenders.is_empty(),
-        "branch merge/revert/cherry-pick vocabulary appeared in engine source, \
-         but CLAUDE.md rule 20 states these are absent in V1. If you are landing \
-         the post-V1 merge surface: amend rule 20, add its strict-refusal tests, \
-         then delete this guard. Offenders:\n{}",
+        "mutating branch merge/revert/cherry-pick vocabulary appeared in engine \
+         source, but CLAUDE.md rule 20 states these are absent in V1. If you are \
+         landing that surface: amend rule 20, add its strict-refusal tests, then \
+         drop its token from FORBIDDEN. Offenders:\n{}",
         offenders.join("\n")
     );
 }
