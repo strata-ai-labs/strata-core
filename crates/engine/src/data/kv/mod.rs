@@ -1,5 +1,6 @@
 //! Byte-oriented KV capability.
 
+mod adapter;
 mod outcome;
 mod service;
 mod types;
