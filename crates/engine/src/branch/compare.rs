@@ -9,7 +9,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::api::{BranchComparison, ComparedCapability, ComparedEntity, SpaceComparison};
+use crate::api::{
+    BranchComparison, BranchStateSelector, ComparedCapability, ComparedEntity, SpaceComparison,
+};
 use crate::branch::adapter::{CapabilityBranchAdapter, ComparableEntity, DerivedDisposition};
 use crate::branch::catalog::BranchCatalogRecord;
 use crate::control::space::registered_spaces;
@@ -17,6 +19,14 @@ use crate::data::json::JsonBranchAdapter;
 use crate::data::kv::{KvBranchAdapter, ProductSpace};
 use crate::diagnostics::EngineResult;
 use crate::persistence::{ReadSelector, StoragePersistence};
+
+/// Maps the public branch-state selector to the internal storage read selector.
+const fn read_selector(selector: BranchStateSelector) -> ReadSelector {
+    match selector {
+        BranchStateSelector::Current => ReadSelector::Latest,
+        BranchStateSelector::AtTimestamp(timestamp) => ReadSelector::AtTimestamp(timestamp),
+    }
+}
 
 /// The capabilities compared today, in report order, each with its adapter.
 fn capability_adapters() -> Vec<(ComparedCapability, Box<dyn CapabilityBranchAdapter>)> {
@@ -27,18 +37,19 @@ fn capability_adapters() -> Vec<(ComparedCapability, Box<dyn CapabilityBranchAda
 }
 
 /// The present (non-tombstone) entities of one capability in one space at the
-/// branch's current state, keyed by identity for set difference.
+/// selected branch state, keyed by identity for set difference.
 fn present_entities(
     persistence: &mut StoragePersistence,
     record: &BranchCatalogRecord,
     adapter: &dyn CapabilityBranchAdapter,
     space: &ProductSpace,
+    selector: ReadSelector,
 ) -> EngineResult<BTreeMap<Vec<u8>, ComparableEntity>> {
     let rows = persistence.scan_prefix(
         record.storage_branch_id(),
         adapter.row_class(),
         adapter.space_prefix(space),
-        ReadSelector::Latest,
+        selector,
         None,
     )?;
     let mut present = BTreeMap::new();
@@ -59,7 +70,9 @@ pub(crate) fn compare_records(
     persistence: &mut StoragePersistence,
     record_a: &BranchCatalogRecord,
     record_b: &BranchCatalogRecord,
+    selector: BranchStateSelector,
 ) -> EngineResult<BranchComparison> {
+    let read = read_selector(selector);
     let mut spaces = registered_spaces(persistence, record_a)?;
     for space in registered_spaces(persistence, record_b)? {
         if !spaces.contains(&space) {
@@ -75,8 +88,8 @@ pub(crate) fn compare_records(
             if adapter.derived_disposition() != DerivedDisposition::Authored {
                 continue;
             }
-            let side_a = present_entities(persistence, record_a, adapter.as_ref(), space)?;
-            let side_b = present_entities(persistence, record_b, adapter.as_ref(), space)?;
+            let side_a = present_entities(persistence, record_a, adapter.as_ref(), space, read)?;
+            let side_b = present_entities(persistence, record_b, adapter.as_ref(), space, read)?;
 
             let mut added = Vec::new();
             let mut modified = Vec::new();
@@ -114,4 +127,26 @@ pub(crate) fn compare_records(
         record_b.name().clone(),
         comparisons,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_selector;
+
+    use strata_core::Timestamp;
+
+    use crate::api::BranchStateSelector;
+    use crate::persistence::ReadSelector;
+
+    #[test]
+    fn selector_maps_to_the_matching_read_selector() {
+        assert_eq!(
+            read_selector(BranchStateSelector::Current),
+            ReadSelector::Latest
+        );
+        assert_eq!(
+            read_selector(BranchStateSelector::AtTimestamp(Timestamp::from_micros(42))),
+            ReadSelector::AtTimestamp(Timestamp::from_micros(42))
+        );
+    }
 }

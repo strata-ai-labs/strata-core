@@ -759,7 +759,15 @@ fn branch_command(command: BranchCommand) -> Result<Command, CliError> {
             (None, None) | (Some(_), Some(_)) => Command::BranchForkCurrent { source, branch },
         },
         BranchCommand::Delete { branch } => Command::BranchDelete { branch },
-        BranchCommand::Diff { branch_a, branch_b } => Command::BranchDiff { branch_a, branch_b },
+        BranchCommand::Diff {
+            branch_a,
+            branch_b,
+            as_of,
+        } => Command::BranchDiff {
+            branch_a,
+            branch_b,
+            at_timestamp: as_of,
+        },
         BranchCommand::Merge(_) => return Err(deferred_command("branch merge")),
         BranchCommand::Tag(_) => return Err(deferred_command("branch tag")),
         BranchCommand::Note(_) => return Err(deferred_command("branch note")),

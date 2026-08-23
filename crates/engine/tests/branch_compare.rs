@@ -4,8 +4,8 @@ mod common;
 
 use serde_json::json;
 use strata_engine::{
-    BranchComparison, ComparedCapability, ComparedEntity, EngineErrorClass, JsonDocumentId,
-    JsonPath, JsonValue, SpaceComparison,
+    BranchComparison, BranchStateSelector, ComparedCapability, ComparedEntity, EngineErrorClass,
+    JsonDocumentId, JsonPath, JsonValue, SpaceComparison,
 };
 
 use common::{branch, key, open_cache_database, space, value};
@@ -90,7 +90,11 @@ fn compare_reports_kv_and_json_added_removed_modified() {
     let comparison = database
         .branches()
         .expect("branch service opens")
-        .compare(&branch("default"), &branch("feature"))
+        .compare(
+            &branch("default"),
+            &branch("feature"),
+            BranchStateSelector::Current,
+        )
         .expect("compare succeeds");
 
     assert_eq!(comparison.branch_a().as_str(), "default");
@@ -129,7 +133,11 @@ fn compare_of_an_unchanged_fork_is_empty() {
     let comparison = database
         .branches()
         .expect("branch service opens")
-        .compare(&branch("default"), &branch("feature"))
+        .compare(
+            &branch("default"),
+            &branch("feature"),
+            BranchStateSelector::Current,
+        )
         .expect("compare succeeds");
     assert!(comparison.is_empty());
     assert!(comparison.comparisons().is_empty());
@@ -158,7 +166,11 @@ fn compare_reports_a_space_present_on_only_one_branch() {
     let comparison = database
         .branches()
         .expect("branch service opens")
-        .compare(&branch("default"), &branch("feature"))
+        .compare(
+            &branch("default"),
+            &branch("feature"),
+            BranchStateSelector::Current,
+        )
         .expect("compare succeeds");
 
     let extra_diff =
@@ -174,8 +186,114 @@ fn compare_with_a_missing_branch_is_not_found() {
     let error = database
         .branches()
         .expect("branch service opens")
-        .compare(&branch("default"), &branch("ghost"))
+        .compare(
+            &branch("default"),
+            &branch("ghost"),
+            BranchStateSelector::Current,
+        )
         .expect_err("a missing branch is rejected");
     assert_eq!(error.class(), EngineErrorClass::NotFound);
     assert_eq!(error.code(), "not_found.engine.branch");
+}
+
+#[test]
+fn compare_at_a_timestamp_reads_each_branch_frontier() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+
+    // Feature writes first; default writes only afterward. So at the feature
+    // write's timestamp, default has not written `k` yet.
+    let feature_timestamp = {
+        let mut kv = database
+            .kv(branch("feature"), space("default"))
+            .expect("feature KV opens");
+        kv.put(key(b"k"), value(b"same"))
+            .expect("feature put")
+            .commit()
+            .timestamp()
+    };
+    {
+        let mut kv = database
+            .kv(branch("default"), space("default"))
+            .expect("default KV opens");
+        kv.put(key(b"k"), value(b"same")).expect("default k first");
+        kv.put(key(b"k"), value(b"changed"))
+            .expect("default k changed");
+    }
+
+    // Current: default k=changed, feature k=same -> modified.
+    let current = database
+        .branches()
+        .expect("branch service opens")
+        .compare(
+            &branch("default"),
+            &branch("feature"),
+            BranchStateSelector::Current,
+        )
+        .expect("current compare succeeds");
+    let kv_now =
+        find(&current, ComparedCapability::KeyValue, "default").expect("current KV diff present");
+    assert_eq!(identities(kv_now.modified()), vec![b"k".to_vec()]);
+
+    // As of the feature write's timestamp, default has no `k` yet, so `k` reads
+    // as added on feature rather than modified.
+    let past = database
+        .branches()
+        .expect("branch service opens")
+        .compare(
+            &branch("default"),
+            &branch("feature"),
+            BranchStateSelector::AtTimestamp(feature_timestamp),
+        )
+        .expect("at-timestamp compare succeeds");
+    let kv_past =
+        find(&past, ComparedCapability::KeyValue, "default").expect("at-timestamp KV diff present");
+    assert_eq!(identities(kv_past.added()), vec![b"k".to_vec()]);
+    assert!(kv_past.modified().is_empty());
+}
+
+#[test]
+fn compare_at_a_timestamp_after_a_branch_latest_is_history_unavailable() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    {
+        let mut kv = database
+            .kv(branch("default"), space("default"))
+            .expect("default KV opens");
+        kv.put(key(b"k"), value(b"v1")).expect("default put");
+    }
+    // Feature commits last, so its timestamp is after default's latest.
+    let feature_timestamp = {
+        let mut kv = database
+            .kv(branch("feature"), space("default"))
+            .expect("feature KV opens");
+        kv.put(key(b"k"), value(b"v2"))
+            .expect("feature put")
+            .commit()
+            .timestamp()
+    };
+
+    // Reading default as of a timestamp after its latest commit does not clamp;
+    // it raises, and the workflow surfaces the diagnostic.
+    let error = database
+        .branches()
+        .expect("branch service opens")
+        .compare(
+            &branch("default"),
+            &branch("feature"),
+            BranchStateSelector::AtTimestamp(feature_timestamp),
+        )
+        .expect_err("a timestamp after a branch's latest is rejected");
+    assert_eq!(
+        error.code(),
+        "history_unavailable.engine.persistence_history"
+    );
 }

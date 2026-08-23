@@ -260,6 +260,20 @@ impl BranchCreateOutcome {
     }
 }
 
+/// Selects the branch state a comparison reads. `Current` reads the live head of
+/// each branch; `AtTimestamp` reads each branch as of the commit frontier
+/// at-or-before the timestamp (a timestamp after a branch's latest raises rather
+/// than clamping). Version selectors are intentionally absent: a commit version
+/// resolves against a single branch's timeline, so it is not meaningful across
+/// two branches.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BranchStateSelector {
+    /// The live head of each branch.
+    Current,
+    /// A timestamp resolved to each branch's retained version frontier.
+    AtTimestamp(Timestamp),
+}
+
 /// A data capability covered by a branch comparison.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ComparedCapability {

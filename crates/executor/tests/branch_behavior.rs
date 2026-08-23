@@ -6,7 +6,10 @@
 //! fork/delete semantics at the executor boundary, and checks the branch
 //! convenience facade against the explicit commands.
 
-use strata_executor::{Bytes, Command, Executor, ExecutorErrorClass, Output, DEFAULT_BRANCH};
+use strata_executor::{
+    BranchComparisonItem, Bytes, Command, ComparedCapability, Executor, ExecutorErrorClass, Output,
+    SpaceComparisonItem, DEFAULT_BRANCH,
+};
 
 fn bytes(value: &str) -> Bytes {
     Bytes::from(value)
@@ -220,4 +223,61 @@ fn branch_facade_matches_explicit_commands() {
             branch: "child".to_owned(),
         }
     );
+}
+
+fn diff(
+    executor: &mut Executor,
+    branch_a: &str,
+    branch_b: &str,
+    at_timestamp: Option<u64>,
+) -> BranchComparisonItem {
+    match executor
+        .execute(Command::BranchDiff {
+            branch_a: branch_a.to_owned(),
+            branch_b: branch_b.to_owned(),
+            at_timestamp,
+        })
+        .expect("diff succeeds")
+    {
+        Output::BranchComparison(comparison) => comparison,
+        output => panic!("unexpected diff output: {output:?}"),
+    }
+}
+
+fn kv_space<'a>(comparison: &'a BranchComparisonItem, space: &str) -> &'a SpaceComparisonItem {
+    comparison
+        .spaces()
+        .iter()
+        .find(|entry| entry.capability() == ComparedCapability::KeyValue && entry.space() == space)
+        .expect("a key-value diff for the space")
+}
+
+#[test]
+fn branch_diff_reports_changes_and_honors_as_of() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    executor
+        .execute(Command::BranchForkCurrent {
+            source: "default".to_owned(),
+            branch: "feature".to_owned(),
+        })
+        .expect("fork succeeds");
+
+    // Feature writes first; default writes only afterward, then changes.
+    let (_, feature_timestamp) = put(&mut executor, Some("feature"), "k", "same");
+    put(&mut executor, Some("default"), "k", "same");
+    put(&mut executor, Some("default"), "k", "changed");
+
+    // Current: default k=changed vs feature k=same -> modified.
+    let current = diff(&mut executor, "default", "feature", None);
+    let kv_now = kv_space(&current, "default");
+    assert_eq!(kv_now.modified().len(), 1);
+    assert_eq!(kv_now.modified()[0].identity().as_slice(), b"k");
+    assert!(kv_now.added().is_empty());
+
+    // As of the feature write's timestamp, default has no `k` yet -> added.
+    let past = diff(&mut executor, "default", "feature", Some(feature_timestamp));
+    let kv_past = kv_space(&past, "default");
+    assert_eq!(kv_past.added().len(), 1);
+    assert_eq!(kv_past.added()[0].identity().as_slice(), b"k");
+    assert!(kv_past.modified().is_empty());
 }

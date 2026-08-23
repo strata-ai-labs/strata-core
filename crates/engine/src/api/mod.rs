@@ -19,8 +19,8 @@ pub use admin::{
 };
 pub use branch::{
     BranchCleanupSummary, BranchComparison, BranchCreateOutcome, BranchDeleteOutcome,
-    BranchParentSummary, BranchStatus, BranchSummary, ComparedCapability, ComparedEntity,
-    SpaceComparison,
+    BranchParentSummary, BranchStateSelector, BranchStatus, BranchSummary, ComparedCapability,
+    ComparedEntity, SpaceComparison,
 };
 pub use control::{ControlDiagnostics, ControlHealthStatus, SpaceCatalogDiagnostics};
 pub use database::{
