@@ -5,6 +5,7 @@ mod outcome;
 mod service;
 mod types;
 
+pub(crate) use adapter::KvBranchAdapter;
 pub use outcome::{
     KvBatchDeleteOutcome, KvBatchPutOutcome, KvDeleteOutcome, KvHistory, KvHistoryRow, KvListPage,
     KvSample, KvScanRow, KvVersionedValue, KvWriteOutcome,
