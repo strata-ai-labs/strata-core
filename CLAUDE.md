@@ -76,7 +76,7 @@ core  ← storage  ← engine  ← intelligence  ← executor / CLI / SDK
 17. Every capability declares lifecycle, branch adapter, search adapter, relationship adapter, and derived-state hooks.
 18. Cross-branch references are rejected.
 19. Empty branch creation is required.
-20. Branch compare and preview-promotion (merge-base and three-way diff, read-only) are present as of the M12 branch-operations work. The **mutating** promotion operations — merge/promote, cherry-pick, revert (each writes a new commit) — remain absent in V1. Their absence is enforced by a guard (`crates/engine/tests/branch_merge_absence.rs`), narrowed in M12C to the mutating vocabulary only; each mutating op lands with its strict-refusal tests (M12D promote, M12E cherry-pick, M12F revert) and drops its token from the guard when it does.
+20. Branch compare, preview-promotion (merge-base and three-way diff, read-only), and **promote (merge)** are present as of the M12 branch-operations work. Promote applies a source branch's changes into a target as a single atomic commit under `Strict` (refuse on conflict with `conflict.engine.promotion` and zero target mutation) or `SourceWins` strategies, recording authoritative promotion lineage on the target. The remaining **mutating** promotion operations — cherry-pick and revert (each writes a new commit) — remain absent in V1. Their absence is enforced by a guard (`crates/engine/tests/branch_merge_absence.rs`), narrowed as each op lands (M12C dropped preview vocabulary, M12D1 dropped merge vocabulary); each remaining op lands with its strict-refusal tests (M12E cherry-pick, M12F revert) and drops its token from the guard when it does.
 21. JSON merge is document-level (V1).
 
 ### Retrieval and derived state

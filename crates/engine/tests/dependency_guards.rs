@@ -795,10 +795,16 @@ fn product_scope_stays_limited_to_current_primitives() {
     // artifact export is sanctioned engine scope per
     // docs/architecture/engine/dataset-clone-artifact-contract.md (the
     // roadmap's export/import substrate), implemented in src/artifact/.
+    //
+    // "Merge" left this list in M12D1 when branch promote landed: promotion is
+    // sanctioned engine scope per
+    // docs/architecture/engine/branch-operation-and-capability-adapter-contract.md,
+    // implemented in src/branch/promote.rs (the promotion lineage record is
+    // `BranchMergeRecord`). Cherry-pick and revert stay forbidden here and in
+    // the branch_merge_absence guard until their M12E/M12F slices.
     let forbidden = [
         "Retrieval",
         "Ipc",
-        "Merge",
         "Diff",
         "Restore",
         "Revert",

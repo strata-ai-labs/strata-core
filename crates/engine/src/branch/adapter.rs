@@ -16,11 +16,11 @@
 //! Promotion, selected-copy, and undo methods extend this trait at later M12
 //! slices, where the post-V1 branch-operation absence guard is retired.
 
-use strata_core::CommitVersion;
+use strata_core::{BranchId, CommitVersion};
 
 use crate::data::kv::ProductSpace;
 use crate::diagnostics::EngineResult;
-use crate::persistence::{PersistenceReadRow, RowClass};
+use crate::persistence::{PersistenceReadRow, RowAddress, RowClass, RowMutation};
 
 /// How a capability's rows are treated across branch workflows.
 ///
@@ -126,6 +126,31 @@ pub(crate) trait CapabilityBranchAdapter {
         space: &ProductSpace,
         row: &PersistenceReadRow,
     ) -> EngineResult<ComparableEntity>;
+
+    /// Build the row mutation that writes `summary` for `identity` in `space`
+    /// onto branch `branch_id` — the write-side inverse of
+    /// [`CapabilityBranchAdapter::interpret_row`], used by promotion to apply a
+    /// resolved change onto a target branch (contract §Promotion rule 6).
+    ///
+    /// The default reconstructs the storage key as `space_prefix(space)`
+    /// followed by `identity` — exactly what `interpret_row` strips — and emits
+    /// a `Put` for a present value or a `Delete` for an absent one. Capabilities
+    /// whose authored rows are not a plain space-prefixed key override this.
+    fn write_mutation(
+        &self,
+        branch_id: BranchId,
+        space: &ProductSpace,
+        identity: &[u8],
+        summary: &EntitySummary,
+    ) -> RowMutation {
+        let mut key = self.space_prefix(space);
+        key.extend_from_slice(identity);
+        let address = RowAddress::new(branch_id, self.row_class(), key);
+        match summary {
+            EntitySummary::Present(value) => RowMutation::put(address, value.clone()),
+            EntitySummary::Absent => RowMutation::delete(address),
+        }
+    }
 }
 
 #[cfg(test)]

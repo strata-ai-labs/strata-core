@@ -2,7 +2,9 @@
 
 use strata_core::{CommitVersion, Timestamp};
 
-use crate::branch::catalog::{BranchCatalogRecord, BranchParentRecord, BranchStatus};
+use crate::branch::catalog::{
+    BranchCatalogRecord, BranchMergeRecord, BranchParentRecord, BranchStatus,
+};
 use crate::control::ControlPlane;
 use crate::data::vector::{decode_vector_index_manifest, encode_vector_index_manifest};
 use crate::diagnostics::{EngineError, EngineResult};
@@ -15,7 +17,7 @@ use crate::persistence::{
 use super::BranchName;
 use crate::api::{
     BranchCleanupSummary, BranchComparison, BranchCreateOutcome, BranchDeleteOutcome,
-    BranchPreview, BranchStateSelector, BranchSummary, PromotionStrategy,
+    BranchPreview, BranchStateSelector, BranchSummary, PromotionOutcome, PromotionStrategy,
 };
 
 /// Service for product branch operations.
@@ -272,6 +274,86 @@ impl<'a> BranchService<'a> {
             )
         })?;
         super::preview::preview_branches(self.persistence, &source_record, &target_record, strategy)
+    }
+
+    /// Promotes `source` into `target`: derives the branch point from lineage,
+    /// runs a three-way merge, and applies the source's changes onto the target
+    /// as a single atomic commit. The source branch is never modified.
+    ///
+    /// `Strict` refuses with `conflict.engine.promotion` and zero target
+    /// mutation when any conflict exists; `SourceWins` applies the source value
+    /// or tombstone for each conflict and reports what it overwrote or deleted.
+    /// A clean promotion that applies nothing leaves the target unchanged and
+    /// writes no commit.
+    pub fn promote(
+        &mut self,
+        source: &BranchName,
+        target: &BranchName,
+        strategy: PromotionStrategy,
+    ) -> EngineResult<PromotionOutcome> {
+        self.control.require_healthy()?;
+        let source_record = self.control.lookup_branch(source).cloned().ok_or_else(|| {
+            EngineError::not_found(
+                "not_found.engine.branch",
+                format!("branch `{source}` does not exist"),
+            )
+        })?;
+        let target_record = self.control.lookup_branch(target).cloned().ok_or_else(|| {
+            EngineError::not_found(
+                "not_found.engine.branch",
+                format!("branch `{target}` does not exist"),
+            )
+        })?;
+
+        let plan = super::promote::plan_promotion(
+            self.persistence,
+            &source_record,
+            &target_record,
+            strategy,
+        )?;
+
+        if strategy == PromotionStrategy::Strict && !plan.conflicts.is_empty() {
+            return Err(EngineError::conflict(
+                "conflict.engine.promotion",
+                format!(
+                    "strict promotion of `{source}` into `{target}` refused: {} conflict(s)",
+                    plan.conflicts.len()
+                ),
+            ));
+        }
+
+        let target_version = if plan.mutations.is_empty() {
+            None
+        } else {
+            let outcome = self.persistence.commit(&CommitPlan::new(
+                target_record.storage_branch_id(),
+                plan.mutations,
+                Some(target_record.generation()),
+            ))?;
+            // Record authoritative promotion lineage on the target (contract
+            // §Promotion rule 7): which source branch was incorporated, and the
+            // target commit that incorporated it.
+            let merge = BranchMergeRecord::new(
+                source_record.name().clone(),
+                source_record.branch_id(),
+                source_record.generation(),
+                outcome.version(),
+                Some(outcome.timestamp()),
+            );
+            self.persist_catalog_record(target_record.clone().with_merge_parent(merge))?;
+            Some(outcome.version())
+        };
+
+        Ok(PromotionOutcome::new(
+            source_record.name().clone(),
+            target_record.name().clone(),
+            plan.branch_point,
+            strategy,
+            target_version,
+            plan.applied,
+            plan.deleted,
+            plan.conflicts,
+        ))
     }
 
     /// Deletes an active product branch.

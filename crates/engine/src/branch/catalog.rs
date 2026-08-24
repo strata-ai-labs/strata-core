@@ -74,6 +74,59 @@ impl BranchParentRecord {
     }
 }
 
+/// A recorded promotion (merge) edge: the target branch incorporated a source
+/// branch's changes at a committed target version.
+///
+/// This is the authoritative lineage a promotion writes onto the target record
+/// (contract §Promotion rule 7). It pins which source branch — by name, id, and
+/// generation — was promoted and the target commit that incorporated it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BranchMergeRecord {
+    source_name: BranchName,
+    source_branch_id: BranchId,
+    source_generation: u64,
+    merged_at: CommitVersion,
+    merged_timestamp: Option<Timestamp>,
+}
+
+impl BranchMergeRecord {
+    pub(crate) const fn new(
+        source_name: BranchName,
+        source_branch_id: BranchId,
+        source_generation: u64,
+        merged_at: CommitVersion,
+        merged_timestamp: Option<Timestamp>,
+    ) -> Self {
+        Self {
+            source_name,
+            source_branch_id,
+            source_generation,
+            merged_at,
+            merged_timestamp,
+        }
+    }
+
+    pub(crate) fn source_name(&self) -> &BranchName {
+        &self.source_name
+    }
+
+    pub(crate) const fn source_branch_id(&self) -> BranchId {
+        self.source_branch_id
+    }
+
+    pub(crate) const fn source_generation(&self) -> u64 {
+        self.source_generation
+    }
+
+    pub(crate) const fn merged_at(&self) -> CommitVersion {
+        self.merged_at
+    }
+
+    pub(crate) const fn merged_timestamp(&self) -> Option<Timestamp> {
+        self.merged_timestamp
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchCatalogRecord {
     name: BranchName,
@@ -82,6 +135,7 @@ pub(crate) struct BranchCatalogRecord {
     generation: u64,
     status: BranchStatus,
     parent: Option<BranchParentRecord>,
+    merge_parent: Option<BranchMergeRecord>,
     created_at: Option<CommitVersion>,
     deleted_at: Option<CommitVersion>,
     state_revision: u64,
@@ -96,6 +150,7 @@ impl BranchCatalogRecord {
             generation: DEFAULT_BRANCH_GENERATION,
             status: BranchStatus::Active,
             parent: None,
+            merge_parent: None,
             created_at: None,
             deleted_at: None,
             state_revision: 0,
@@ -137,6 +192,7 @@ impl BranchCatalogRecord {
             generation,
             status,
             parent,
+            merge_parent: None,
             created_at,
             deleted_at,
             state_revision,
@@ -175,6 +231,13 @@ impl BranchCatalogRecord {
         self
     }
 
+    /// Records a promotion (merge) edge onto this record. A branch may only
+    /// carry the most recent promotion edge in V1.
+    pub(crate) fn with_merge_parent(mut self, merge_parent: BranchMergeRecord) -> Self {
+        self.merge_parent = Some(merge_parent);
+        self
+    }
+
     pub(crate) const fn branch_id(&self) -> BranchId {
         self.branch_id
     }
@@ -197,6 +260,10 @@ impl BranchCatalogRecord {
 
     pub(crate) const fn parent(&self) -> Option<&BranchParentRecord> {
         self.parent.as_ref()
+    }
+
+    pub(crate) const fn merge_parent(&self) -> Option<&BranchMergeRecord> {
+        self.merge_parent.as_ref()
     }
 
     pub(crate) const fn created_at(&self) -> Option<CommitVersion> {
