@@ -2,14 +2,17 @@ use super::{
     output_json_index_type, BatchExistsItemResult, BatchGetItemResult, BatchItem, BatchItemResult,
     BranchCleanupItem, BranchCleanupSummary, BranchComparisonItem, BranchItem, BranchParentItem,
     BranchStatus, BranchSummary, Bytes, CommitDurability, CommitOutcome, CommitReceipt,
-    CommitVersion, ComparedCapability, ComparedEntityItem, EngineBranchComparison,
-    EngineBranchStatus, EngineComparedCapability, EngineComparedEntity, EngineJsonIndexDefinition,
-    EngineJsonSample, EngineJsonValue, EngineJsonVersionedValue, EngineSpaceComparison,
-    ExecutorError, HistoryItem, HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult,
-    JsonHistory, JsonHistoryItem, JsonHistoryRow, JsonIndexDefinition, JsonListPage,
-    JsonSampleItem, JsonSampleRow, KvHistory, KvHistoryRow, KvKey, KvSample, KvScanRow,
-    KvVersionedValue, MutationEffect, MutationEffectKind, Output, OutputJsonVersionedValue,
-    PageInfo, SampleItem, ScanItem, SpaceComparisonItem, Timestamp, VersionedValue,
+    CommitVersion, ComparedCapability, ComparedEntityItem, ConflictKind, ConflictStrategyResult,
+    EngineBranchComparison, EngineBranchStatus, EngineComparedCapability, EngineComparedEntity,
+    EngineConflictKind, EngineConflictStrategyResult, EngineJsonIndexDefinition, EngineJsonSample,
+    EngineJsonValue, EngineJsonVersionedValue, EnginePreviewConflict, EnginePromotedEntity,
+    EnginePromotionOutcome, EnginePromotionStrategy, EngineSpaceComparison, ExecutorError,
+    HistoryItem, HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistory,
+    JsonHistoryItem, JsonHistoryRow, JsonIndexDefinition, JsonListPage, JsonSampleItem,
+    JsonSampleRow, KvHistory, KvHistoryRow, KvKey, KvSample, KvScanRow, KvVersionedValue,
+    MutationEffect, MutationEffectKind, Output, OutputJsonVersionedValue, PageInfo,
+    PreviewConflictItem, PromotedEntityItem, PromotionOutcomeItem, PromotionStrategy, SampleItem,
+    ScanItem, SpaceComparisonItem, Timestamp, VersionedValue,
 };
 
 pub(super) fn bytes_from_key(key: &KvKey) -> Bytes {
@@ -445,5 +448,72 @@ const fn compared_capability(capability: EngineComparedCapability) -> ComparedCa
     match capability {
         EngineComparedCapability::KeyValue => ComparedCapability::KeyValue,
         EngineComparedCapability::Json => ComparedCapability::Json,
+    }
+}
+
+pub(super) fn branch_promotion(outcome: &EnginePromotionOutcome) -> PromotionOutcomeItem {
+    PromotionOutcomeItem::new(
+        outcome.source().as_str().to_owned(),
+        outcome.target().as_str().to_owned(),
+        outcome.branch_point().as_u64(),
+        wire_promotion_strategy(outcome.strategy()),
+        outcome.target_version().map(CommitVersion::as_u64),
+        outcome.applied().iter().map(promoted_entity).collect(),
+        outcome.deleted().iter().map(promoted_entity).collect(),
+        outcome.conflicts().iter().map(preview_conflict).collect(),
+    )
+}
+
+fn promoted_entity(entity: &EnginePromotedEntity) -> PromotedEntityItem {
+    PromotedEntityItem::new(
+        compared_capability(entity.capability()),
+        entity.space().as_str().to_owned(),
+        Bytes::from(entity.identity()),
+        entity.value().map(Bytes::from),
+    )
+}
+
+fn preview_conflict(conflict: &EnginePreviewConflict) -> PreviewConflictItem {
+    PreviewConflictItem::new(
+        compared_capability(conflict.capability()),
+        conflict.space().as_str().to_owned(),
+        Bytes::from(conflict.identity()),
+        conflict.source_value().map(Bytes::from),
+        conflict.target_value().map(Bytes::from),
+        wire_conflict_kind(conflict.kind()),
+        wire_conflict_strategy_result(conflict.strategy_result()),
+    )
+}
+
+/// Maps the wire promotion strategy onto the engine strategy (command → engine).
+pub(super) const fn engine_promotion_strategy(
+    strategy: PromotionStrategy,
+) -> EnginePromotionStrategy {
+    match strategy {
+        PromotionStrategy::Strict => EnginePromotionStrategy::Strict,
+        PromotionStrategy::SourceWins => EnginePromotionStrategy::SourceWins,
+    }
+}
+
+const fn wire_promotion_strategy(strategy: EnginePromotionStrategy) -> PromotionStrategy {
+    match strategy {
+        EnginePromotionStrategy::Strict => PromotionStrategy::Strict,
+        EnginePromotionStrategy::SourceWins => PromotionStrategy::SourceWins,
+    }
+}
+
+const fn wire_conflict_kind(kind: EngineConflictKind) -> ConflictKind {
+    match kind {
+        EngineConflictKind::ValueDivergence => ConflictKind::ValueDivergence,
+        EngineConflictKind::ModifyDeleteDivergence => ConflictKind::ModifyDeleteDivergence,
+    }
+}
+
+const fn wire_conflict_strategy_result(
+    result: EngineConflictStrategyResult,
+) -> ConflictStrategyResult {
+    match result {
+        EngineConflictStrategyResult::Refused => ConflictStrategyResult::Refused,
+        EngineConflictStrategyResult::SourceWins => ConflictStrategyResult::SourceWins,
     }
 }

@@ -630,10 +630,255 @@ impl BranchComparisonItem {
     }
 }
 
+/// The conflict-resolution strategy for a promotion, exposed through the command
+/// boundary.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum PromotionStrategy {
+    /// Refuse the promotion when any conflict exists.
+    #[default]
+    Strict,
+    /// Apply the source side's value or tombstone for each conflict.
+    SourceWins,
+}
+
+/// How two branches diverged on one entity since their branch point.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictKind {
+    /// Both sides changed the entity to different present values.
+    ValueDivergence,
+    /// One side changed the value while the other deleted the entity.
+    ModifyDeleteDivergence,
+}
+
+/// What the selected strategy did with a conflict.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictStrategyResult {
+    /// The conflict blocked the promotion (`strict`).
+    Refused,
+    /// The source value or tombstone overwrote the target (`source_wins`).
+    SourceWins,
+}
+
+/// One entity a promotion applied to the target branch, exposed through the
+/// command boundary. `value` is absent for a propagated deletion.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct PromotedEntityItem {
+    capability: ComparedCapability,
+    space: String,
+    identity: Bytes,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    value: Option<Bytes>,
+}
+
+impl PromotedEntityItem {
+    /// Creates a promoted entity item.
+    pub const fn new(
+        capability: ComparedCapability,
+        space: String,
+        identity: Bytes,
+        value: Option<Bytes>,
+    ) -> Self {
+        Self {
+            capability,
+            space,
+            identity,
+            value,
+        }
+    }
+
+    /// Returns the capability the promoted entity belongs to.
+    pub const fn capability(&self) -> ComparedCapability {
+        self.capability
+    }
+
+    /// Returns the space the promoted entity belongs to.
+    pub fn space(&self) -> &str {
+        &self.space
+    }
+
+    /// Returns the entity's space-relative logical key.
+    pub const fn identity(&self) -> &Bytes {
+        &self.identity
+    }
+
+    /// Returns the value written to the target, or `None` for a deletion.
+    pub const fn value(&self) -> Option<&Bytes> {
+        self.value.as_ref()
+    }
+}
+
+/// One conflicting entity a promotion encountered, exposed through the command
+/// boundary. `source_value`/`target_value` are absent for a deletion.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct PreviewConflictItem {
+    capability: ComparedCapability,
+    space: String,
+    identity: Bytes,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_value: Option<Bytes>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_value: Option<Bytes>,
+    kind: ConflictKind,
+    strategy_result: ConflictStrategyResult,
+}
+
+impl PreviewConflictItem {
+    /// Creates a preview conflict item.
+    pub const fn new(
+        capability: ComparedCapability,
+        space: String,
+        identity: Bytes,
+        source_value: Option<Bytes>,
+        target_value: Option<Bytes>,
+        kind: ConflictKind,
+        strategy_result: ConflictStrategyResult,
+    ) -> Self {
+        Self {
+            capability,
+            space,
+            identity,
+            source_value,
+            target_value,
+            kind,
+            strategy_result,
+        }
+    }
+
+    /// Returns the capability the conflicting entity belongs to.
+    pub const fn capability(&self) -> ComparedCapability {
+        self.capability
+    }
+
+    /// Returns the space the conflicting entity belongs to.
+    pub fn space(&self) -> &str {
+        &self.space
+    }
+
+    /// Returns the entity's space-relative logical key.
+    pub const fn identity(&self) -> &Bytes {
+        &self.identity
+    }
+
+    /// Returns the source side's value, or `None` if deleted.
+    pub const fn source_value(&self) -> Option<&Bytes> {
+        self.source_value.as_ref()
+    }
+
+    /// Returns the target side's value, or `None` if deleted.
+    pub const fn target_value(&self) -> Option<&Bytes> {
+        self.target_value.as_ref()
+    }
+
+    /// Returns how the two sides diverged.
+    pub const fn kind(&self) -> ConflictKind {
+        self.kind
+    }
+
+    /// Returns what the strategy did with this conflict.
+    pub const fn strategy_result(&self) -> ConflictStrategyResult {
+        self.strategy_result
+    }
+}
+
+/// The result of promoting one branch into another, exposed through the command
+/// boundary. `target_version` is absent when the promotion applied nothing.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct PromotionOutcomeItem {
+    source: String,
+    target: String,
+    branch_point: u64,
+    strategy: PromotionStrategy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_version: Option<u64>,
+    applied: Vec<PromotedEntityItem>,
+    deleted: Vec<PromotedEntityItem>,
+    conflicts: Vec<PreviewConflictItem>,
+}
+
+impl PromotionOutcomeItem {
+    /// Creates a promotion outcome item.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        source: String,
+        target: String,
+        branch_point: u64,
+        strategy: PromotionStrategy,
+        target_version: Option<u64>,
+        applied: Vec<PromotedEntityItem>,
+        deleted: Vec<PromotedEntityItem>,
+        conflicts: Vec<PreviewConflictItem>,
+    ) -> Self {
+        Self {
+            source,
+            target,
+            branch_point,
+            strategy,
+            target_version,
+            applied,
+            deleted,
+            conflicts,
+        }
+    }
+
+    /// Returns the branch whose changes were promoted.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Returns the branch that received the promotion.
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+
+    /// Returns the derived branch point the promotion merged against.
+    pub const fn branch_point(&self) -> u64 {
+        self.branch_point
+    }
+
+    /// Returns the strategy the promotion was applied under.
+    pub const fn strategy(&self) -> PromotionStrategy {
+        self.strategy
+    }
+
+    /// Returns the target commit version written, or `None` for a no-op.
+    pub const fn target_version(&self) -> Option<u64> {
+        self.target_version
+    }
+
+    /// Returns the source entities written onto the target.
+    pub fn applied(&self) -> &[PromotedEntityItem] {
+        &self.applied
+    }
+
+    /// Returns the target entities deleted by propagated source deletions.
+    pub fn deleted(&self) -> &[PromotedEntityItem] {
+        &self.deleted
+    }
+
+    /// Returns the entities that diverged on both sides.
+    pub fn conflicts(&self) -> &[PreviewConflictItem] {
+        &self.conflicts
+    }
+}
+
 #[cfg(test)]
 mod branch_comparison_tests {
     use super::{
-        BranchComparisonItem, Bytes, ComparedCapability, ComparedEntityItem, SpaceComparisonItem,
+        BranchComparisonItem, Bytes, ComparedCapability, ComparedEntityItem, ConflictKind,
+        ConflictStrategyResult, PreviewConflictItem, PromotedEntityItem, PromotionOutcomeItem,
+        PromotionStrategy, SpaceComparisonItem,
     };
 
     #[test]
@@ -662,5 +907,73 @@ mod branch_comparison_tests {
         assert_eq!(comparison.branch_b(), "feature");
         assert_eq!(comparison.spaces().len(), 1);
         assert_eq!(comparison.spaces()[0].space(), "default");
+    }
+
+    #[test]
+    fn promotion_outcome_item_exposes_every_part() {
+        let applied = PromotedEntityItem::new(
+            ComparedCapability::KeyValue,
+            "default".to_owned(),
+            Bytes::from(&b"shared"[..]),
+            Some(Bytes::from(&b"src"[..])),
+        );
+        assert_eq!(applied.capability(), ComparedCapability::KeyValue);
+        assert_eq!(applied.space(), "default");
+        assert_eq!(applied.identity(), &Bytes::from(&b"shared"[..]));
+        assert_eq!(applied.value(), Some(&Bytes::from(&b"src"[..])));
+
+        let deleted = PromotedEntityItem::new(
+            ComparedCapability::Json,
+            "docs".to_owned(),
+            Bytes::from(&b"md"[..]),
+            None,
+        );
+        assert_eq!(deleted.capability(), ComparedCapability::Json);
+        assert_eq!(deleted.value(), None);
+
+        let conflict = PreviewConflictItem::new(
+            ComparedCapability::KeyValue,
+            "default".to_owned(),
+            Bytes::from(&b"shared"[..]),
+            Some(Bytes::from(&b"src"[..])),
+            Some(Bytes::from(&b"tgt"[..])),
+            ConflictKind::ValueDivergence,
+            ConflictStrategyResult::SourceWins,
+        );
+        assert_eq!(conflict.capability(), ComparedCapability::KeyValue);
+        assert_eq!(conflict.space(), "default");
+        assert_eq!(conflict.identity(), &Bytes::from(&b"shared"[..]));
+        assert_eq!(conflict.source_value(), Some(&Bytes::from(&b"src"[..])));
+        assert_eq!(conflict.target_value(), Some(&Bytes::from(&b"tgt"[..])));
+        assert_eq!(conflict.kind(), ConflictKind::ValueDivergence);
+        assert_eq!(
+            conflict.strategy_result(),
+            ConflictStrategyResult::SourceWins
+        );
+
+        let outcome = PromotionOutcomeItem::new(
+            "feature".to_owned(),
+            "default".to_owned(),
+            3,
+            PromotionStrategy::SourceWins,
+            Some(9),
+            vec![applied],
+            vec![deleted],
+            vec![conflict],
+        );
+        assert_eq!(outcome.source(), "feature");
+        assert_eq!(outcome.target(), "default");
+        assert_eq!(outcome.branch_point(), 3);
+        assert_eq!(outcome.strategy(), PromotionStrategy::SourceWins);
+        assert_eq!(outcome.target_version(), Some(9));
+        assert_eq!(outcome.applied().len(), 1);
+        assert_eq!(
+            outcome.applied()[0].identity(),
+            &Bytes::from(&b"shared"[..])
+        );
+        assert_eq!(outcome.deleted().len(), 1);
+        assert_eq!(outcome.deleted()[0].identity(), &Bytes::from(&b"md"[..]));
+        assert_eq!(outcome.conflicts().len(), 1);
+        assert_eq!(outcome.conflicts()[0].kind(), ConflictKind::ValueDivergence);
     }
 }

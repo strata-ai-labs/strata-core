@@ -71,6 +71,11 @@ impl Executor {
                 timestamp,
             } => self.execute_branch_fork_at_timestamp(&source, &branch, timestamp),
             Command::BranchDelete { branch } => self.execute_branch_delete(&branch),
+            Command::BranchMerge {
+                source,
+                target,
+                strategy,
+            } => self.execute_branch_merge(&source, &target, strategy),
             Command::KvPut {
                 branch,
                 space,

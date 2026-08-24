@@ -768,7 +768,15 @@ fn branch_command(command: BranchCommand) -> Result<Command, CliError> {
             branch_b,
             at_timestamp: as_of,
         },
-        BranchCommand::Merge(_) => return Err(deferred_command("branch merge")),
+        BranchCommand::Merge {
+            source,
+            target,
+            strategy,
+        } => Command::BranchMerge {
+            source,
+            target,
+            strategy: strategy.into(),
+        },
         BranchCommand::Tag(_) => return Err(deferred_command("branch tag")),
         BranchCommand::Note(_) => return Err(deferred_command("branch note")),
     })

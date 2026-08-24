@@ -236,6 +236,58 @@ fn branch_scoped_writes_stay_isolated_across_processes() {
     assert!(stdout(&list).contains("dev") && stdout(&list).contains("default"));
 }
 
+#[test]
+fn branch_merge_promotes_and_honors_the_strategy() {
+    let dir = tempfile::tempdir().expect("tmp");
+    let db = db_arg(dir.path());
+    assert_ok(&strata(&["--db", &db, "kv", "put", "flag", "base"]), "seed");
+    assert_ok(
+        &strata(&["--db", &db, "branch", "fork", "default", "dev"]),
+        "branch fork",
+    );
+    assert_ok(
+        &strata(&["--db", &db, "--branch", "dev", "kv", "put", "flag", "tuned"]),
+        "change on fork",
+    );
+    // Diverge the target too, so the two branches conflict on `flag`.
+    assert_ok(
+        &strata(&["--db", &db, "kv", "put", "flag", "other"]),
+        "change on target",
+    );
+
+    // Strict (the default strategy) refuses the conflict, mutating nothing.
+    let strict = strata(&["--db", &db, "branch", "merge", "dev", "default"]);
+    assert!(
+        !strict.status.success(),
+        "strict merge must refuse a conflict"
+    );
+    assert_eq!(
+        stdout(&strata(&["--db", &db, "kv", "get", "flag"])).trim(),
+        "other",
+        "a refused merge leaves the target unchanged"
+    );
+
+    // Source-wins applies the source (dev) value onto the target (default).
+    assert_ok(
+        &strata(&[
+            "--db",
+            &db,
+            "branch",
+            "merge",
+            "dev",
+            "default",
+            "--strategy",
+            "source-wins",
+        ]),
+        "source-wins merge",
+    );
+    assert_eq!(
+        stdout(&strata(&["--db", &db, "kv", "get", "flag"])).trim(),
+        "tuned",
+        "source-wins promotes the fork's value onto the target",
+    );
+}
+
 // --- vectors ---------------------------------------------------------------
 
 #[test]

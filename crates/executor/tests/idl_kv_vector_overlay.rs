@@ -32,6 +32,7 @@ const REQUIRED_BRANCH: &[&str] = &[
     "branch.list",
     "branch.get",
     "branch.diff",
+    "branch.merge",
     "branch.create",
     "branch.fork",
     "branch.fork_at_version",
