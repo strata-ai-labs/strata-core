@@ -27,6 +27,36 @@ impl BranchStatus {
     }
 }
 
+/// The branch workflow that wrote a pending (in-flight) operation marker, so
+/// reopen recovery can reconcile it. Create/fork and delete are reconciled by
+/// lineage inference (published-membership + storage existence); promote carries
+/// its own finalize-or-roll-back recovery and must be recognised distinctly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BranchOperationKind {
+    CreateOrFork,
+    Delete,
+    Promote,
+}
+
+impl BranchOperationKind {
+    pub(crate) const fn as_u8(self) -> u8 {
+        match self {
+            Self::CreateOrFork => 0,
+            Self::Delete => 1,
+            Self::Promote => 2,
+        }
+    }
+
+    pub(crate) const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::CreateOrFork),
+            1 => Some(Self::Delete),
+            2 => Some(Self::Promote),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchParentRecord {
     name: BranchName,

@@ -14,7 +14,7 @@ use strata_storage::api::{
     StorageBudgetSource, StorageCachePreheatPolicy, StorageCloseSummary, StorageDurabilityPolicy,
     StorageImmutableSource, StorageKey, StorageMemoryBudget, StorageOpenDisposition,
     StorageOpenOptions, StorageReadRow, StorageRuntime, StorageRuntimeState, StorageSpaceId,
-    StorageValue,
+    StorageValue, TimelineBoundsRequest,
 };
 use strata_storage::api::{
     MaintenanceRequest, MaintenanceScope,
@@ -530,6 +530,23 @@ impl StoragePersistence {
     ) -> EngineResult<PersistenceBranchSummary> {
         let outcome = self.branch_action(branch_id, BranchAction::Describe, None)?;
         Ok(outcome.branch())
+    }
+
+    /// The most-recent committed version and timestamp on a branch's timeline, or
+    /// `(None, None)` when the branch has no committed history.
+    ///
+    /// Promotion recovery uses this to learn whether a target branch's data
+    /// commit landed before a crash: a version higher than the pre-promote
+    /// baseline means the data committed and the merge edge should be finalized.
+    pub(crate) fn branch_timeline_head(
+        &mut self,
+        branch_id: BranchId,
+    ) -> EngineResult<(Option<CommitVersion>, Option<Timestamp>)> {
+        let outcome = self
+            .runtime
+            .timeline_bounds(TimelineBoundsRequest::new(branch_id))
+            .map_err(map_storage_error)?;
+        Ok((outcome.max_version(), outcome.max_timestamp()))
     }
 
     pub(crate) fn fork_branch_current(

@@ -3,7 +3,7 @@
 use strata_core::{CommitVersion, Timestamp};
 
 use crate::branch::catalog::{
-    BranchCatalogRecord, BranchMergeRecord, BranchParentRecord, BranchStatus,
+    BranchCatalogRecord, BranchMergeRecord, BranchOperationKind, BranchParentRecord, BranchStatus,
 };
 use crate::control::ControlPlane;
 use crate::data::vector::{decode_vector_index_manifest, encode_vector_index_manifest};
@@ -68,7 +68,11 @@ impl<'a> BranchService<'a> {
         let record = BranchCatalogRecord::root(name, generation);
         self.reject_aliasing_storage_branch(&record)?;
 
-        ControlPlane::begin_branch_operation(self.persistence, &record)?;
+        ControlPlane::begin_branch_operation(
+            self.persistence,
+            &record,
+            BranchOperationKind::CreateOrFork,
+        )?;
         let outcome = match self
             .persistence
             .create_branch(record.storage_branch_id(), generation)
@@ -126,7 +130,11 @@ impl<'a> BranchService<'a> {
         let storage_branch_id = record.storage_branch_id();
         self.reject_aliasing_storage_branch(&record)?;
 
-        ControlPlane::begin_branch_operation(self.persistence, &record)?;
+        ControlPlane::begin_branch_operation(
+            self.persistence,
+            &record,
+            BranchOperationKind::CreateOrFork,
+        )?;
         // #2521: no silent fallback to `create_branch` on a fork error — that
         // fabricated an EMPTY, unparented child (fork_version 0) whenever
         // fork-source history resolution failed, turning a recoverable
@@ -325,14 +333,42 @@ impl<'a> BranchService<'a> {
         let target_version = if plan.mutations.is_empty() {
             None
         } else {
-            let outcome = self.persistence.commit(&CommitPlan::new(
+            // Capture the target's timeline head before mutating, so reopen
+            // recovery can tell whether the data commit landed after a crash.
+            let (baseline, _) = self
+                .persistence
+                .branch_timeline_head(target_record.storage_branch_id())?;
+            let baseline = baseline.unwrap_or(CommitVersion::ZERO);
+            // Recoverable promotion intent (contract §Promotion rule 7): the
+            // target record carrying the source lineage and the baseline (as the
+            // placeholder merge version), written before any target mutation so a
+            // crash in the data-commit → edge-publish window is completed or
+            // rolled back on reopen. The edge publish clears it.
+            let intent = target_record
+                .clone()
+                .with_merge_parent(BranchMergeRecord::new(
+                    source_record.name().clone(),
+                    source_record.branch_id(),
+                    source_record.generation(),
+                    baseline,
+                    None,
+                ));
+            ControlPlane::begin_branch_operation(
+                self.persistence,
+                &intent,
+                BranchOperationKind::Promote,
+            )?;
+
+            let outcome = match self.persistence.commit(&CommitPlan::new(
                 target_record.storage_branch_id(),
                 plan.mutations,
                 Some(target_record.generation()),
-            ))?;
-            // Record authoritative promotion lineage on the target (contract
-            // §Promotion rule 7): which source branch was incorporated, and the
-            // target commit that incorporated it.
+            )) {
+                Ok(outcome) => outcome,
+                Err(error) => return Err(self.clear_pending_after_storage_error(&intent, error)),
+            };
+            // Publish the authoritative promotion lineage with the real target
+            // commit version, atomically clearing the pending intent.
             let merge = BranchMergeRecord::new(
                 source_record.name().clone(),
                 source_record.branch_id(),
@@ -378,7 +414,11 @@ impl<'a> BranchService<'a> {
             )
         })?;
 
-        ControlPlane::begin_branch_operation(self.persistence, &record)?;
+        ControlPlane::begin_branch_operation(
+            self.persistence,
+            &record,
+            BranchOperationKind::Delete,
+        )?;
         let outcome = match self
             .persistence
             .delete_branch(record.storage_branch_id(), record.generation())
@@ -428,7 +468,11 @@ impl<'a> BranchService<'a> {
         let pending = BranchCatalogRecord::root(name.clone(), generation);
         let storage_branch_id = pending.storage_branch_id();
         self.reject_aliasing_storage_branch(&pending)?;
-        ControlPlane::begin_branch_operation(self.persistence, &pending)?;
+        ControlPlane::begin_branch_operation(
+            self.persistence,
+            &pending,
+            BranchOperationKind::CreateOrFork,
+        )?;
         let outcome = match fork(
             self.persistence,
             storage_branch_id,
