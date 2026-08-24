@@ -15,7 +15,7 @@ use crate::persistence::{
 use super::BranchName;
 use crate::api::{
     BranchCleanupSummary, BranchComparison, BranchCreateOutcome, BranchDeleteOutcome,
-    BranchStateSelector, BranchSummary,
+    BranchPreview, BranchStateSelector, BranchSummary, PromotionStrategy,
 };
 
 /// Service for product branch operations.
@@ -247,6 +247,31 @@ impl<'a> BranchService<'a> {
                 )
             })?;
         super::compare::compare_records(self.persistence, &record_a, &record_b, selector)
+    }
+
+    /// Previews promoting `source` into `target`: derives the branch point from
+    /// lineage, runs a three-way comparison, and reports the conflicts a
+    /// promotion would hit, without mutating either branch.
+    pub fn preview(
+        &mut self,
+        source: &BranchName,
+        target: &BranchName,
+        strategy: PromotionStrategy,
+    ) -> EngineResult<BranchPreview> {
+        self.control.require_healthy()?;
+        let source_record = self.control.lookup_branch(source).cloned().ok_or_else(|| {
+            EngineError::not_found(
+                "not_found.engine.branch",
+                format!("branch `{source}` does not exist"),
+            )
+        })?;
+        let target_record = self.control.lookup_branch(target).cloned().ok_or_else(|| {
+            EngineError::not_found(
+                "not_found.engine.branch",
+                format!("branch `{target}` does not exist"),
+            )
+        })?;
+        super::preview::preview_branches(self.persistence, &source_record, &target_record, strategy)
     }
 
     /// Deletes an active product branch.

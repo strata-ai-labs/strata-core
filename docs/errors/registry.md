@@ -250,6 +250,9 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="invalid_argument.engine.branch_name_reserved"></a>
 - `invalid_argument.engine.branch_name_reserved`
 
+<a id="invalid_argument.engine.branch_point"></a>
+- `invalid_argument.engine.branch_point`
+
 <a id="invalid_argument.engine.config_key"></a>
 - `invalid_argument.engine.config_key`
 

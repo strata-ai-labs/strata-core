@@ -76,7 +76,7 @@ core  ← storage  ← engine  ← intelligence  ← executor / CLI / SDK
 17. Every capability declares lifecycle, branch adapter, search adapter, relationship adapter, and derived-state hooks.
 18. Cross-branch references are rejected.
 19. Empty branch creation is required.
-20. Branch merge, revert, and cherry-pick are absent in V1 — no entrypoint exists, so there is nothing to refuse yet. The strict-refusal surface lands with post-V1 merge work; until then absence is enforced by a guard (`crates/engine/tests/branch_merge_absence.rs`), which fails when such an entrypoint appears without its strict-refusal tests.
+20. Branch compare and preview-promotion (merge-base and three-way diff, read-only) are present as of the M12 branch-operations work. The **mutating** promotion operations — merge/promote, cherry-pick, revert (each writes a new commit) — remain absent in V1. Their absence is enforced by a guard (`crates/engine/tests/branch_merge_absence.rs`), narrowed in M12C to the mutating vocabulary only; each mutating op lands with its strict-refusal tests (M12D promote, M12E cherry-pick, M12F revert) and drops its token from the guard when it does.
 21. JSON merge is document-level (V1).
 
 ### Retrieval and derived state

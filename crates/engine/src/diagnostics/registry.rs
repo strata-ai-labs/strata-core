@@ -41,6 +41,7 @@ const INVALID_INPUT_CODES: &[&str] = &[
     "invalid_argument.engine.branch_delete",
     "invalid_argument.engine.branch_name",
     "invalid_argument.engine.branch_name_reserved",
+    "invalid_argument.engine.branch_point",
     "invalid_argument.engine.config_key",
     "invalid_argument.engine.event_batch",
     "invalid_argument.engine.event_metadata",

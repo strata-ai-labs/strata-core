@@ -48,6 +48,7 @@ errors:
   - invalid_argument.executor.graph_analytics_budget
   - invalid_argument.engine.branch_name
   - invalid_argument.engine.branch_name_reserved
+  - invalid_argument.engine.branch_point
   - invalid_argument.engine.branch_delete
   - already_exists.engine.branch
   - history_unavailable.engine.persistence_history
