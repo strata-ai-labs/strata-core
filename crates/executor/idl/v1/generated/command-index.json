@@ -1381,6 +1381,84 @@
       }
     },
     {
+      "id": "branch.preview",
+      "family": "branch",
+      "op": "preview",
+      "kind": "read.status",
+      "title": "Preview branch promotion",
+      "summary": "Preview promoting one branch into another, reporting conflicts without mutating either branch.",
+      "description": "Previews promoting the `source` branch into the `target` branch: it derives the\nbranch point from the recorded fork lineage, runs a three-way comparison, and\nreports the conflicts a promotion would hit — entries both branches changed\ndifferently since the branch point. Preview is read-only: it mutates neither\nbranch.\n\nEach conflict reports what the selected `strategy` would do — `strict` refuses\n(`refused`), `source_wins` overwrites the target with the source value. A preview\nwith no conflicts is clean and a promotion under `strict` would apply. Branches\nwith no shared fork lineage are rejected with\n`invalid_argument.engine.branch_point`.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/branch/preview",
+      "cli": {
+        "path": [
+          "branch",
+          "preview"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_branch_preview",
+        "description": "Use this when the user wants to see what a merge would do — which entries conflict — before promoting one branch into another."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::BranchPreview",
+      "output": "Output::BranchPreview",
+      "outputs": [
+        "Output::BranchPreview"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<BranchPreviewItem>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name_reserved"
+        },
+        {
+          "code": "invalid_argument.engine.branch_point",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_point"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/branches/preview.json",
+        "response": "responses/v1/branches/preview.json",
+        "setup": [
+          "requests/v1/kv/put.json",
+          "requests/v1/branches/fork.json",
+          "requests/v1/branches/merge_source_change.json",
+          "requests/v1/branches/merge_target_change.json"
+        ],
+        "error_cases": [
+          {
+            "setup": [
+              "requests/v1/branches/create.json"
+            ],
+            "request": "requests/v1/branches/preview_unrelated.json",
+            "expected_error": "responses/v1/errors/branches/merge_unrelated.json"
+          }
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/branch.yaml",
+        "prose": "commands/branch.preview.md"
+      }
+    },
+    {
       "id": "event.append",
       "family": "event",
       "op": "append",

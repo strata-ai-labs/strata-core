@@ -192,6 +192,17 @@ pub enum Command {
         #[serde(default)]
         strategy: PromotionStrategy,
     },
+    /// Previews promoting one branch into another, reporting conflicts without
+    /// mutating either branch.
+    BranchPreview {
+        /// The branch whose changes would be promoted.
+        source: String,
+        /// The branch that would receive the promotion.
+        target: String,
+        /// Conflict-resolution strategy to evaluate the preview under.
+        #[serde(default)]
+        strategy: PromotionStrategy,
+    },
     /// Writes one KV entry.
     ///
     /// # Guaranteed semantics
@@ -1793,6 +1804,7 @@ impl Command {
             Self::BranchForkAtTimestamp { .. } => "branch_fork_at_timestamp",
             Self::BranchDelete { .. } => "branch_delete",
             Self::BranchMerge { .. } => "branch_merge",
+            Self::BranchPreview { .. } => "branch_preview",
             Self::KvPut { .. } => "kv_put",
             Self::KvGet { .. } => "kv_get",
             Self::KvDelete { .. } => "kv_delete",

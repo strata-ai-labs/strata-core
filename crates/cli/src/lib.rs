@@ -777,6 +777,15 @@ fn branch_command(command: BranchCommand) -> Result<Command, CliError> {
             target,
             strategy: strategy.into(),
         },
+        BranchCommand::Preview {
+            source,
+            target,
+            strategy,
+        } => Command::BranchPreview {
+            source,
+            target,
+            strategy: strategy.into(),
+        },
         BranchCommand::Tag(_) => return Err(deferred_command("branch tag")),
         BranchCommand::Note(_) => return Err(deferred_command("branch note")),
     })

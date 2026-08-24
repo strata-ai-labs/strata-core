@@ -18,3 +18,4 @@ section: branch
 | [Read one branch](/docs/branch/get) | Read one branch summary by name. |
 | [List branches](/docs/branch/list) | List active branches with their lineage facts. |
 | [Promote branch](/docs/branch/merge) | Promote one branch's changes into another as a single atomic commit. |
+| [Preview branch promotion](/docs/branch/preview) | Preview promoting one branch into another, reporting conflicts without mutating either branch. |

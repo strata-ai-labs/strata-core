@@ -1,18 +1,19 @@
 use super::{
     output_json_index_type, BatchExistsItemResult, BatchGetItemResult, BatchItem, BatchItemResult,
     BranchCleanupItem, BranchCleanupSummary, BranchComparisonItem, BranchItem, BranchParentItem,
-    BranchStatus, BranchSummary, Bytes, CommitDurability, CommitOutcome, CommitReceipt,
-    CommitVersion, ComparedCapability, ComparedEntityItem, ConflictKind, ConflictStrategyResult,
-    EngineBranchComparison, EngineBranchStatus, EngineComparedCapability, EngineComparedEntity,
-    EngineConflictKind, EngineConflictStrategyResult, EngineJsonIndexDefinition, EngineJsonSample,
-    EngineJsonValue, EngineJsonVersionedValue, EnginePreviewConflict, EnginePromotedEntity,
-    EnginePromotionOutcome, EnginePromotionStrategy, EngineSpaceComparison, ExecutorError,
-    HistoryItem, HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistory,
-    JsonHistoryItem, JsonHistoryRow, JsonIndexDefinition, JsonListPage, JsonSampleItem,
-    JsonSampleRow, KvHistory, KvHistoryRow, KvKey, KvSample, KvScanRow, KvVersionedValue,
-    MutationEffect, MutationEffectKind, Output, OutputJsonVersionedValue, PageInfo,
-    PreviewConflictItem, PromotedEntityItem, PromotionOutcomeItem, PromotionStrategy, SampleItem,
-    ScanItem, SpaceComparisonItem, Timestamp, VersionedValue,
+    BranchPreviewItem, BranchStatus, BranchSummary, Bytes, CommitDurability, CommitOutcome,
+    CommitReceipt, CommitVersion, ComparedCapability, ComparedEntityItem, ConflictKind,
+    ConflictStrategyResult, EngineBranchComparison, EngineBranchPreview, EngineBranchStatus,
+    EngineComparedCapability, EngineComparedEntity, EngineConflictKind,
+    EngineConflictStrategyResult, EngineJsonIndexDefinition, EngineJsonSample, EngineJsonValue,
+    EngineJsonVersionedValue, EnginePreviewConflict, EnginePromotedEntity, EnginePromotionOutcome,
+    EnginePromotionStrategy, EngineSpaceComparison, ExecutorError, HistoryItem, HistoryResult,
+    JsonBatchGetItemResult, JsonBatchItemResult, JsonHistory, JsonHistoryItem, JsonHistoryRow,
+    JsonIndexDefinition, JsonListPage, JsonSampleItem, JsonSampleRow, KvHistory, KvHistoryRow,
+    KvKey, KvSample, KvScanRow, KvVersionedValue, MutationEffect, MutationEffectKind, Output,
+    OutputJsonVersionedValue, PageInfo, PreviewConflictItem, PromotedEntityItem,
+    PromotionOutcomeItem, PromotionStrategy, SampleItem, ScanItem, SpaceComparisonItem, Timestamp,
+    VersionedValue,
 };
 
 pub(super) fn bytes_from_key(key: &KvKey) -> Bytes {
@@ -461,6 +462,16 @@ pub(super) fn branch_promotion(outcome: &EnginePromotionOutcome) -> PromotionOut
         outcome.applied().iter().map(promoted_entity).collect(),
         outcome.deleted().iter().map(promoted_entity).collect(),
         outcome.conflicts().iter().map(preview_conflict).collect(),
+    )
+}
+
+pub(super) fn branch_preview(preview: &EngineBranchPreview) -> BranchPreviewItem {
+    BranchPreviewItem::new(
+        preview.source().as_str().to_owned(),
+        preview.target().as_str().to_owned(),
+        preview.branch_point().as_u64(),
+        wire_promotion_strategy(preview.strategy()),
+        preview.conflicts().iter().map(preview_conflict).collect(),
     )
 }
 

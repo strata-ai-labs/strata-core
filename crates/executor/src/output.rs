@@ -4,15 +4,15 @@ use crate::types::{
     AdminConfig, AdminDatabaseInfo, AdminDescribe, AdminHealth, AdminIpcStatus, AdminIpcStop,
     AdminMetrics, ArrowExportResult, ArrowImportResult, BatchExistsItemResult, BatchExistsPresence,
     BatchGetItemResult, BatchItemResult, BatchResult, BranchCleanupItem, BranchComparisonItem,
-    BranchItem, Bytes, CommitReceipt, EventBatchAppendItemResult, EventChainVerification,
-    EventVersionedData, GraphBatchItemResult, GraphBfsData, GraphBindingHit, GraphCdlpData,
-    GraphEdgeDataOutput, GraphInfoData, GraphLccData, GraphNeighborHit, GraphNodeDataOutput,
-    GraphOntologyData, GraphOntologySummaryData, GraphPagerankData, GraphSsspData, GraphWccData,
-    HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
-    JsonIndexDefinition, JsonSampleItem, Maybe, MaybeJsonValue, MaybeJsonVersionedValue,
-    MutationEffect, PageInfo, PromotionOutcomeItem, SampleItem, ScanItem, VectorBatchGetItemResult,
-    VectorBatchItemResult, VectorCollectionInfo, VectorHistoryResult, VectorIndexQueryResult,
-    VectorMatch, VectorVersionedData, VersionedValue,
+    BranchItem, BranchPreviewItem, Bytes, CommitReceipt, EventBatchAppendItemResult,
+    EventChainVerification, EventVersionedData, GraphBatchItemResult, GraphBfsData,
+    GraphBindingHit, GraphCdlpData, GraphEdgeDataOutput, GraphInfoData, GraphLccData,
+    GraphNeighborHit, GraphNodeDataOutput, GraphOntologyData, GraphOntologySummaryData,
+    GraphPagerankData, GraphSsspData, GraphWccData, HistoryResult, JsonBatchGetItemResult,
+    JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition, JsonSampleItem, Maybe,
+    MaybeJsonValue, MaybeJsonVersionedValue, MutationEffect, PageInfo, PromotionOutcomeItem,
+    SampleItem, ScanItem, VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo,
+    VectorHistoryResult, VectorIndexQueryResult, VectorMatch, VectorVersionedData, VersionedValue,
 };
 use serde::{Deserialize, Serialize};
 
@@ -100,6 +100,8 @@ pub enum Output {
     BranchComparison(BranchComparisonItem),
     /// Branch promotion (merge) result.
     BranchMerge(PromotionOutcomeItem),
+    /// Branch promotion preview result.
+    BranchPreview(BranchPreviewItem),
     /// Branch list.
     Branches {
         /// Branches in this page.

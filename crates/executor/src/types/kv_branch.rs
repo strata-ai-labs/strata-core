@@ -873,12 +873,75 @@ impl PromotionOutcomeItem {
     }
 }
 
+/// The result of previewing a promotion of `source` into `target`, exposed
+/// through the command boundary. Preview is read-only: it reports the conflicts
+/// a promotion would hit without mutating either branch.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BranchPreviewItem {
+    source: String,
+    target: String,
+    branch_point: u64,
+    strategy: PromotionStrategy,
+    conflicts: Vec<PreviewConflictItem>,
+}
+
+impl BranchPreviewItem {
+    /// Creates a branch preview item.
+    pub fn new(
+        source: String,
+        target: String,
+        branch_point: u64,
+        strategy: PromotionStrategy,
+        conflicts: Vec<PreviewConflictItem>,
+    ) -> Self {
+        Self {
+            source,
+            target,
+            branch_point,
+            strategy,
+            conflicts,
+        }
+    }
+
+    /// Returns the branch whose changes would be promoted.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Returns the branch that would receive the promotion.
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+
+    /// Returns the derived branch point the preview compared against.
+    pub const fn branch_point(&self) -> u64 {
+        self.branch_point
+    }
+
+    /// Returns the strategy the preview was evaluated under.
+    pub const fn strategy(&self) -> PromotionStrategy {
+        self.strategy
+    }
+
+    /// Returns the conflicts a promotion would encounter.
+    pub fn conflicts(&self) -> &[PreviewConflictItem] {
+        &self.conflicts
+    }
+
+    /// Returns whether the promotion is conflict-free.
+    pub fn is_clean(&self) -> bool {
+        self.conflicts.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod branch_comparison_tests {
     use super::{
-        BranchComparisonItem, Bytes, ComparedCapability, ComparedEntityItem, ConflictKind,
-        ConflictStrategyResult, PreviewConflictItem, PromotedEntityItem, PromotionOutcomeItem,
-        PromotionStrategy, SpaceComparisonItem,
+        BranchComparisonItem, BranchPreviewItem, Bytes, ComparedCapability, ComparedEntityItem,
+        ConflictKind, ConflictStrategyResult, PreviewConflictItem, PromotedEntityItem,
+        PromotionOutcomeItem, PromotionStrategy, SpaceComparisonItem,
     };
 
     #[test]
@@ -975,5 +1038,40 @@ mod branch_comparison_tests {
         assert_eq!(outcome.deleted()[0].identity(), &Bytes::from(&b"md"[..]));
         assert_eq!(outcome.conflicts().len(), 1);
         assert_eq!(outcome.conflicts()[0].kind(), ConflictKind::ValueDivergence);
+    }
+
+    #[test]
+    fn branch_preview_item_exposes_every_part() {
+        let conflict = PreviewConflictItem::new(
+            ComparedCapability::KeyValue,
+            "default".to_owned(),
+            Bytes::from(&b"shared"[..]),
+            Some(Bytes::from(&b"src"[..])),
+            Some(Bytes::from(&b"tgt"[..])),
+            ConflictKind::ValueDivergence,
+            ConflictStrategyResult::Refused,
+        );
+        let preview = BranchPreviewItem::new(
+            "feature".to_owned(),
+            "default".to_owned(),
+            3,
+            PromotionStrategy::Strict,
+            vec![conflict],
+        );
+        assert_eq!(preview.source(), "feature");
+        assert_eq!(preview.target(), "default");
+        assert_eq!(preview.branch_point(), 3);
+        assert_eq!(preview.strategy(), PromotionStrategy::Strict);
+        assert_eq!(preview.conflicts().len(), 1);
+        assert!(!preview.is_clean());
+
+        let clean = BranchPreviewItem::new(
+            "feature".to_owned(),
+            "default".to_owned(),
+            3,
+            PromotionStrategy::Strict,
+            vec![],
+        );
+        assert!(clean.is_clean());
     }
 }

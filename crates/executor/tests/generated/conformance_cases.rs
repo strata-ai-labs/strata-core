@@ -490,6 +490,33 @@ fn branch_merge_replay_observes_a_declared_output() {
     support::replay_observes_declared(&["requests/v1/kv/put.json", "requests/v1/branches/fork.json", "requests/v1/branches/merge_source_change.json"], "requests/v1/branches/merge.json", &["branch_merge"], false);
 }
 
+// ---- branch.preview ----
+
+#[test]
+fn branch_preview_request_wire_roundtrip_is_idempotent() {
+    support::request_roundtrip_idempotent("requests/v1/branches/preview.json");
+}
+
+#[test]
+fn branch_preview_response_wire_roundtrip_is_idempotent() {
+    support::response_roundtrip_idempotent("responses/v1/branches/preview.json");
+}
+
+#[test]
+fn branch_preview_request_rejects_unknown_keys_at_closed_objects() {
+    support::unknown_keys_rejected("requests/v1/branches/preview.json", &[""]);
+}
+
+#[test]
+fn branch_preview_error_case_0_envelope_matches() {
+    support::error_case_envelope_matches(&["requests/v1/branches/create.json"], "requests/v1/branches/preview_unrelated.json", "responses/v1/errors/branches/merge_unrelated.json", false);
+}
+
+#[test]
+fn branch_preview_replay_observes_a_declared_output() {
+    support::replay_observes_declared(&["requests/v1/kv/put.json", "requests/v1/branches/fork.json", "requests/v1/branches/merge_source_change.json", "requests/v1/branches/merge_target_change.json"], "requests/v1/branches/preview.json", &["branch_preview"], false);
+}
+
 // ---- event.append ----
 
 #[test]

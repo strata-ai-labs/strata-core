@@ -32,6 +32,7 @@
 - [Read one branch](https://stratadb.org/docs/branch/get.md): Read one branch summary by name.
 - [List branches](https://stratadb.org/docs/branch/list.md): List active branches with their lineage facts.
 - [Promote branch](https://stratadb.org/docs/branch/merge.md): Promote one branch's changes into another as a single atomic commit.
+- [Preview branch promotion](https://stratadb.org/docs/branch/preview.md): Preview promoting one branch into another, reporting conflicts without mutating either branch.
 
 ## event
 
