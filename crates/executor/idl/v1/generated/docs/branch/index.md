@@ -17,3 +17,4 @@ section: branch
 | [Fork branch at version](/docs/branch/fork_at_version) | Fork a new branch from a retained source commit version. |
 | [Read one branch](/docs/branch/get) | Read one branch summary by name. |
 | [List branches](/docs/branch/list) | List active branches with their lineage facts. |
+| [Promote branch](/docs/branch/merge) | Promote one branch's changes into another as a single atomic commit. |

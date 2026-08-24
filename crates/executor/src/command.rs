@@ -8,7 +8,7 @@ use crate::types::{
     BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry, BatchVectorEntry, Bytes,
     EventRangeDirection, GraphAnalyticsBudget, GraphBatchOperation, GraphBindingTarget,
     GraphBulkEdge, GraphBulkNode, GraphDeletePolicy, GraphDirection, GraphEntityBinding,
-    GraphPropertyDef, JsonIndexType, VectorDistanceMetric, VectorMetadataFilter,
+    GraphPropertyDef, JsonIndexType, PromotionStrategy, VectorDistanceMetric, VectorMetadataFilter,
 };
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -181,6 +181,16 @@ pub enum Command {
     BranchDelete {
         /// Branch name.
         branch: String,
+    },
+    /// Promotes one branch's changes into another as a single atomic commit.
+    BranchMerge {
+        /// The branch whose changes are promoted.
+        source: String,
+        /// The branch that receives the promotion.
+        target: String,
+        /// Conflict-resolution strategy (`strict` refuses on conflict).
+        #[serde(default)]
+        strategy: PromotionStrategy,
     },
     /// Writes one KV entry.
     ///
@@ -1782,6 +1792,7 @@ impl Command {
             Self::BranchForkAtVersion { .. } => "branch_fork_at_version",
             Self::BranchForkAtTimestamp { .. } => "branch_fork_at_timestamp",
             Self::BranchDelete { .. } => "branch_delete",
+            Self::BranchMerge { .. } => "branch_merge",
             Self::KvPut { .. } => "kv_put",
             Self::KvGet { .. } => "kv_get",
             Self::KvDelete { .. } => "kv_delete",
@@ -1918,6 +1929,7 @@ impl Command {
                 | Self::BranchForkAtVersion { .. }
                 | Self::BranchForkAtTimestamp { .. }
                 | Self::BranchDelete { .. }
+                | Self::BranchMerge { .. }
                 | Self::KvPut { .. }
                 | Self::KvDelete { .. }
                 | Self::KvBatchPut { .. }

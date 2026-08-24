@@ -1,0 +1,20 @@
+{
+  "data": {
+    "applied": [
+      {
+        "capability": "key_value",
+        "identity": "YQ==",
+        "space": "default",
+        "value": "dHdv"
+      }
+    ],
+    "branch_point": 3,
+    "conflicts": [],
+    "deleted": [],
+    "source": "feature-fork",
+    "strategy": "strict",
+    "target": "default",
+    "target_version": 9
+  },
+  "type": "branch_merge"
+}

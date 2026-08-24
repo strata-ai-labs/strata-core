@@ -29,6 +29,12 @@ kinds:
     response_model: MutationAck<{result}>
     snippets:
       - mutation-ack.md
+  - id: mutation.merge
+    access: write
+    commit: commits_on_success
+    response_model: MutationAck<{result}>
+    snippets:
+      - mutation-ack.md
   - id: read.get
     access: read
     commit: none

@@ -52,6 +52,7 @@ response_models:
   - StatusResponse<BranchComparisonItem>
   - MutationAck<BranchItem>
   - MutationAck<BranchDelete>
+  - MutationAck<PromotionOutcomeItem>
   - MutationAck<SpaceCreate>
   - MutationAck<SpaceDelete>
   - MutationAck<GraphInfoData>

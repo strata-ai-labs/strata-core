@@ -418,9 +418,16 @@ pub(crate) enum BranchCommand {
         #[arg(long)]
         as_of: Option<u64>,
     },
-    /// Deferred branch merge command.
-    #[command(hide = true)]
-    Merge(DeferredArgs),
+    /// Promote one branch's changes into another.
+    Merge {
+        /// The branch whose changes are promoted.
+        source: String,
+        /// The branch that receives the promotion.
+        target: String,
+        /// Conflict-resolution strategy.
+        #[arg(long, value_enum, default_value_t = CliMergeStrategy::Strict)]
+        strategy: CliMergeStrategy,
+    },
     /// Deferred branch tag command.
     #[command(hide = true)]
     Tag(DeferredArgs),
@@ -885,6 +892,24 @@ pub(crate) enum VectorCollectionCommand {
         /// Collection name.
         collection: String,
     },
+}
+
+/// Branch promotion (merge) conflict-resolution strategy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum CliMergeStrategy {
+    /// Refuse the promotion when any conflict exists.
+    Strict,
+    /// Apply the source side's value or tombstone for each conflict.
+    SourceWins,
+}
+
+impl From<CliMergeStrategy> for strata_executor::PromotionStrategy {
+    fn from(value: CliMergeStrategy) -> Self {
+        match value {
+            CliMergeStrategy::Strict => Self::Strict,
+            CliMergeStrategy::SourceWins => Self::SourceWins,
+        }
+    }
 }
 
 /// Vector metric.

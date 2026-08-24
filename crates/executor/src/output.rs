@@ -10,7 +10,7 @@ use crate::types::{
     GraphOntologyData, GraphOntologySummaryData, GraphPagerankData, GraphSsspData, GraphWccData,
     HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
     JsonIndexDefinition, JsonSampleItem, Maybe, MaybeJsonValue, MaybeJsonVersionedValue,
-    MutationEffect, PageInfo, SampleItem, ScanItem, VectorBatchGetItemResult,
+    MutationEffect, PageInfo, PromotionOutcomeItem, SampleItem, ScanItem, VectorBatchGetItemResult,
     VectorBatchItemResult, VectorCollectionInfo, VectorHistoryResult, VectorIndexQueryResult,
     VectorMatch, VectorVersionedData, VersionedValue,
 };
@@ -98,6 +98,8 @@ pub enum Output {
     Branch(BranchItem),
     /// Branch comparison result.
     BranchComparison(BranchComparisonItem),
+    /// Branch promotion (merge) result.
+    BranchMerge(PromotionOutcomeItem),
     /// Branch list.
     Branches {
         /// Branches in this page.
