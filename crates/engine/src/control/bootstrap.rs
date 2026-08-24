@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::api::{ControlDiagnostics, ControlHealthStatus, SpaceCatalogDiagnostics};
 use crate::branch::catalog::{
-    BranchCatalogRecord, BranchStatus, DEFAULT_BRANCH_GENERATION, SYSTEM_BRANCH_ID,
+    BranchCatalogRecord, BranchMergeRecord, BranchOperationKind, BranchStatus,
+    DEFAULT_BRANCH_GENERATION, SYSTEM_BRANCH_ID,
 };
 use crate::branch::BranchName;
 use crate::diagnostics::{EngineError, EngineErrorClass, EngineResult};
@@ -164,6 +165,7 @@ impl ControlPlane {
     pub(crate) fn begin_branch_operation(
         persistence: &mut StoragePersistence,
         record: &BranchCatalogRecord,
+        kind: BranchOperationKind,
     ) -> EngineResult<()> {
         let names = [record.name().clone()];
         let mutations = vec![
@@ -176,7 +178,7 @@ impl ControlPlane {
                     RowClass::BranchControl,
                     branch_pending_key(record.name().as_str()),
                 ),
-                encode_pending_branch_record(record),
+                encode_pending_branch_record(record, kind),
             ),
         ];
         persistence.commit(&CommitPlan::new(SYSTEM_BRANCH_ID, mutations, None))?;
@@ -485,17 +487,24 @@ fn recover_pending_branch_operations(
             RowClass::BranchControl,
             branch_pending_key(name.as_str()),
         )?;
-        let pending = decode_pending_branch_record(&row)?;
-        recover_one_pending_branch_operation(persistence, &pending, &published)?;
+        let (kind, pending) = decode_pending_branch_record(&row)?;
+        recover_one_pending_branch_operation(persistence, kind, &pending, &published)?;
     }
     Ok(())
 }
 
 fn recover_one_pending_branch_operation(
     persistence: &mut StoragePersistence,
+    kind: BranchOperationKind,
     pending: &BranchCatalogRecord,
     published: &BTreeSet<BranchName>,
 ) -> EngineResult<()> {
+    // A promotion mutates an already-published, existing target branch, so the
+    // create/fork/delete inference below (which keys on published-membership and
+    // storage existence) cannot recognise it — it must be routed by its kind.
+    if let BranchOperationKind::Promote = kind {
+        return recover_pending_promotion(persistence, pending);
+    }
     let storage_branch_id = pending.storage_branch_id();
     if published.contains(pending.name()) {
         // Interrupted delete: the branch is still published as active because
@@ -524,6 +533,43 @@ fn recover_one_pending_branch_operation(
             persistence.delete_branch(storage_branch_id, pending.generation())?;
         }
         clear_pending_branch_marker(persistence, pending.name(), None)
+    }
+}
+
+/// Reconciles an interrupted promotion (M12D2). The pending record IS the
+/// target branch record; its `merge_parent` carries the source facts and, as the
+/// placeholder `merged_at`, the target's pre-promote baseline version.
+///
+/// A promotion commits target data, then publishes the merge edge. Recovery
+/// learns which side of that window the crash landed on by comparing the
+/// baseline to the target's current timeline head: a higher head means the data
+/// commit landed, so the merge edge is finalized with the real commit version
+/// (auto complete-forward); an unchanged head means nothing was applied, so the
+/// marker is cleared and the target is left as it was (roll back).
+fn recover_pending_promotion(
+    persistence: &mut StoragePersistence,
+    pending: &BranchCatalogRecord,
+) -> EngineResult<()> {
+    let Some(intent) = pending.merge_parent() else {
+        // A promotion intent must carry its source lineage; without it there is
+        // nothing to finalize. Clear the marker rather than fail recovery.
+        return clear_pending_branch_marker(persistence, pending.name(), None);
+    };
+    let baseline = intent.merged_at();
+    let (latest_version, latest_timestamp) =
+        persistence.branch_timeline_head(pending.storage_branch_id())?;
+    match latest_version {
+        Some(latest) if latest > baseline => {
+            let completed = pending.clone().with_merge_parent(BranchMergeRecord::new(
+                intent.source_name().clone(),
+                intent.source_branch_id(),
+                intent.source_generation(),
+                latest,
+                latest_timestamp,
+            ));
+            clear_pending_branch_marker(persistence, pending.name(), Some(&completed))
+        }
+        _ => clear_pending_branch_marker(persistence, pending.name(), None),
     }
 }
 
@@ -562,7 +608,9 @@ fn clear_pending_branch_marker(
 mod tests {
     use super::{bootstrap_new_database, control_address, load_existing_database, ControlPlane};
     use crate::api::ControlHealthStatus;
-    use crate::branch::catalog::{BranchCatalogRecord, SYSTEM_BRANCH_ID};
+    use crate::branch::catalog::{
+        BranchCatalogRecord, BranchMergeRecord, BranchOperationKind, SYSTEM_BRANCH_ID,
+    };
     use crate::branch::BranchName;
     use crate::control::records::{
         decode_pending_branch_index, encode_branch_index, encode_branch_record,
@@ -573,8 +621,9 @@ mod tests {
         branch_catalog_key, branch_default_key, branch_index_key, branch_pending_index_key,
         capability_registry_key, database_identity_key, local_instance_identity_key,
         migration_registry_key, reserved_space_key, storage_registry_key, CommitPlan,
-        PersistenceOpenTarget, ReadSelector, RowClass, RowMutation, StoragePersistence,
+        PersistenceOpenTarget, ReadSelector, RowAddress, RowClass, RowMutation, StoragePersistence,
     };
+    use strata_core::{BranchId, CommitVersion};
 
     fn pending_names(persistence: &mut StoragePersistence) -> Vec<BranchName> {
         let row = persistence
@@ -622,8 +671,12 @@ mod tests {
 
         // Crash after the pending marker but before catalog activation, with no
         // storage branch created yet.
-        ControlPlane::begin_branch_operation(&mut persistence, &record)
-            .expect("pending row writes");
+        ControlPlane::begin_branch_operation(
+            &mut persistence,
+            &record,
+            BranchOperationKind::CreateOrFork,
+        )
+        .expect("pending row writes");
 
         // Recovery un-bricks the database: load succeeds, the branch is absent,
         // and the pending marker is cleared.
@@ -645,8 +698,12 @@ mod tests {
 
         // Crash after the storage branch was created but before catalog
         // activation.
-        ControlPlane::begin_branch_operation(&mut persistence, &record)
-            .expect("pending row writes");
+        ControlPlane::begin_branch_operation(
+            &mut persistence,
+            &record,
+            BranchOperationKind::CreateOrFork,
+        )
+        .expect("pending row writes");
         persistence
             .create_branch(record.storage_branch_id(), record.generation())
             .expect("storage branch created");
@@ -677,8 +734,12 @@ mod tests {
 
         // Crash after the delete's pending marker but before catalog activation;
         // the storage branch was not yet deleted.
-        ControlPlane::begin_branch_operation(&mut persistence, &feature)
-            .expect("pending row writes");
+        ControlPlane::begin_branch_operation(
+            &mut persistence,
+            &feature,
+            BranchOperationKind::Delete,
+        )
+        .expect("pending row writes");
 
         // Recovery abandons the delete: the branch stays active.
         let control =
@@ -699,8 +760,12 @@ mod tests {
         let feature = publish_branch(&mut control, &mut persistence, "feature");
 
         // Crash after the storage delete completed but before catalog activation.
-        ControlPlane::begin_branch_operation(&mut persistence, &feature)
-            .expect("pending row writes");
+        ControlPlane::begin_branch_operation(
+            &mut persistence,
+            &feature,
+            BranchOperationKind::Delete,
+        )
+        .expect("pending row writes");
         persistence
             .delete_branch(feature.storage_branch_id(), feature.generation())
             .expect("storage branch deleted");
@@ -1073,5 +1138,106 @@ mod tests {
                 None,
             ))
             .expect("control row put writes");
+    }
+
+    /// Commits one KV row to a branch's storage timeline, returning the version,
+    /// so promotion-recovery tests can move the target's timeline head.
+    fn commit_target_data(
+        persistence: &mut StoragePersistence,
+        target: &BranchCatalogRecord,
+        key: &[u8],
+        value: &[u8],
+    ) -> CommitVersion {
+        persistence
+            .commit(&CommitPlan::new(
+                target.storage_branch_id(),
+                vec![RowMutation::put(
+                    RowAddress::new(target.storage_branch_id(), RowClass::Kv, key.to_vec()),
+                    value.to_vec(),
+                )],
+                None,
+            ))
+            .expect("target data commits")
+            .version()
+    }
+
+    /// Writes a Promote intent for `target` carrying the source lineage and the
+    /// given baseline (the pre-promote timeline head), as `promote` does.
+    fn begin_promote_intent(
+        persistence: &mut StoragePersistence,
+        target: &BranchCatalogRecord,
+        baseline: CommitVersion,
+    ) {
+        let intent = target.clone().with_merge_parent(BranchMergeRecord::new(
+            BranchName::new("feature").expect("valid branch"),
+            BranchId::from_bytes([0x2a; BranchId::BYTE_LEN]),
+            1,
+            baseline,
+            None,
+        ));
+        ControlPlane::begin_branch_operation(persistence, &intent, BranchOperationKind::Promote)
+            .expect("promote intent writes");
+    }
+
+    #[test]
+    fn interrupted_promotion_with_committed_data_finalizes_the_merge_edge() {
+        let (mut persistence, _) =
+            StoragePersistence::open(PersistenceOpenTarget::Cache).expect("cache opens");
+        bootstrap_default(&mut persistence);
+        let control =
+            load_existing_database(&mut persistence, None).expect("initial load succeeds");
+        let target = control
+            .lookup_branch(&BranchName::new("default").expect("valid branch"))
+            .cloned()
+            .expect("default branch");
+
+        // Baseline: the target's timeline head before the promotion.
+        let baseline = commit_target_data(&mut persistence, &target, b"k", b"v0");
+        begin_promote_intent(&mut persistence, &target, baseline);
+        // The data commit landed (head advances past the baseline) before a crash.
+        let merged = commit_target_data(&mut persistence, &target, b"k", b"v1");
+        assert!(merged > baseline);
+
+        // Recovery finalizes the merge edge with the real committed version.
+        let control =
+            load_existing_database(&mut persistence, None).expect("recovery opens the database");
+        let recovered = control
+            .lookup_branch(&BranchName::new("default").expect("valid branch"))
+            .expect("default branch");
+        let edge = recovered
+            .merge_parent()
+            .expect("recovery finalized the merge edge");
+        assert_eq!(edge.source_name().as_str(), "feature");
+        assert_eq!(edge.merged_at(), merged);
+        assert!(pending_names(&mut persistence).is_empty());
+    }
+
+    #[test]
+    fn interrupted_promotion_without_committed_data_rolls_back() {
+        let (mut persistence, _) =
+            StoragePersistence::open(PersistenceOpenTarget::Cache).expect("cache opens");
+        bootstrap_default(&mut persistence);
+        let control =
+            load_existing_database(&mut persistence, None).expect("initial load succeeds");
+        let target = control
+            .lookup_branch(&BranchName::new("default").expect("valid branch"))
+            .cloned()
+            .expect("default branch");
+
+        // Baseline is a real version; the data commit never lands, so the head
+        // stays equal to the baseline (exercises the `latest > baseline` boundary).
+        let baseline = commit_target_data(&mut persistence, &target, b"k", b"v0");
+        begin_promote_intent(&mut persistence, &target, baseline);
+
+        let control =
+            load_existing_database(&mut persistence, None).expect("recovery opens the database");
+        let recovered = control
+            .lookup_branch(&BranchName::new("default").expect("valid branch"))
+            .expect("default branch");
+        assert!(
+            recovered.merge_parent().is_none(),
+            "an unpromoted target must not record a merge edge"
+        );
+        assert!(pending_names(&mut persistence).is_empty());
     }
 }

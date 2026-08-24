@@ -3,7 +3,7 @@
 use strata_core::{BranchId, CommitVersion, Timestamp};
 
 use crate::branch::catalog::{
-    BranchCatalogRecord, BranchMergeRecord, BranchParentRecord, BranchStatus,
+    BranchCatalogRecord, BranchMergeRecord, BranchOperationKind, BranchParentRecord, BranchStatus,
 };
 use crate::branch::BranchName;
 use crate::data::kv::ProductSpace;
@@ -178,14 +178,32 @@ pub(crate) fn decode_branch_record(bytes: &[u8]) -> EngineResult<BranchCatalogRe
     decode_branch_like(bytes, BRANCH_MAGIC, "branch catalog")
 }
 
-pub(crate) fn encode_pending_branch_record(record: &BranchCatalogRecord) -> Vec<u8> {
+pub(crate) fn encode_pending_branch_record(
+    record: &BranchCatalogRecord,
+    kind: BranchOperationKind,
+) -> Vec<u8> {
     let mut out = versioned_payload(PENDING_MAGIC);
+    // The operation kind is prefixed BEFORE the shared body: appending it would
+    // collide with the body's own tolerant trailing merge-edge field (M12D1).
+    out.push(kind.as_u8());
     encode_branch_body(&mut out, record);
     out
 }
 
-pub(crate) fn decode_pending_branch_record(bytes: &[u8]) -> EngineResult<BranchCatalogRecord> {
-    decode_branch_like(bytes, PENDING_MAGIC, "pending branch record")
+pub(crate) fn decode_pending_branch_record(
+    bytes: &[u8],
+) -> EngineResult<(BranchOperationKind, BranchCatalogRecord)> {
+    let mut cursor = Cursor::new(expect_payload(bytes, PENDING_MAGIC)?);
+    let kind =
+        BranchOperationKind::from_u8(cursor.u8("pending operation kind")?).ok_or_else(|| {
+            EngineError::corruption(
+                "data_loss.engine.branch_catalog",
+                "pending branch record has an invalid operation kind",
+            )
+        })?;
+    let record = decode_branch_body(&mut cursor, "pending branch record")?;
+    cursor.finish("pending branch record")?;
+    Ok((kind, record))
 }
 
 pub(crate) fn encode_space_index(spaces: &[ProductSpace]) -> EngineResult<Vec<u8>> {
@@ -274,6 +292,18 @@ fn decode_branch_like(
     description: &'static str,
 ) -> EngineResult<BranchCatalogRecord> {
     let mut cursor = Cursor::new(expect_payload(bytes, magic)?);
+    let record = decode_branch_body(&mut cursor, description)?;
+    cursor.finish(description)?;
+    Ok(record)
+}
+
+/// Decodes the shared branch-record body from an open cursor, without consuming
+/// the payload header or asserting end-of-input. Both the catalog decoder and
+/// the pending decoder (which prefixes an operation-kind byte) reuse this.
+fn decode_branch_body(
+    cursor: &mut Cursor<'_>,
+    description: &'static str,
+) -> EngineResult<BranchCatalogRecord> {
     let name = BranchName::new(cursor.name(description)?)?;
     let branch_id = cursor.branch_id("branch id")?;
     let storage_branch_id = cursor.branch_id("storage branch id")?;
@@ -288,7 +318,7 @@ fn decode_branch_like(
             ))
         }
     };
-    let parent = decode_parent(&mut cursor, description)?;
+    let parent = decode_parent(cursor, description)?;
     let created_at = cursor.optional_commit_version("created version")?;
     let deleted_at = cursor.optional_commit_version("deleted version")?;
     let state_revision = cursor.u64("state revision")?;
@@ -297,9 +327,8 @@ fn decode_branch_like(
     let merge_parent = if cursor.is_empty() {
         None
     } else {
-        decode_merge_parent(&mut cursor, description)?
+        decode_merge_parent(cursor, description)?
     };
-    cursor.finish(description)?;
     let record = BranchCatalogRecord::new(
         name,
         branch_id,
@@ -604,14 +633,15 @@ mod tests {
     use super::{
         decode_branch_index, decode_branch_record, decode_capability_registry,
         decode_database_identity, decode_local_instance_identity, decode_migration_registry,
-        decode_reserved_system_space, decode_space_index, decode_space_record,
-        decode_storage_registry, encode_branch_index, encode_branch_record,
+        decode_pending_branch_record, decode_reserved_system_space, decode_space_index,
+        decode_space_record, decode_storage_registry, encode_branch_index, encode_branch_record,
         encode_capability_registry, encode_database_identity, encode_local_instance_identity,
-        encode_migration_registry, encode_reserved_system_space, encode_space_index,
-        encode_space_record, encode_storage_registry, DatabaseIdentityRecord, CAPABILITY_MAGIC,
-        CORE_CONTROL_STORAGE_SPACE_IDS, IDENTITY_MAGIC, MIGRATION_MAGIC, REGISTRY_MAGIC,
+        encode_migration_registry, encode_pending_branch_record, encode_reserved_system_space,
+        encode_space_index, encode_space_record, encode_storage_registry, DatabaseIdentityRecord,
+        CAPABILITY_MAGIC, CORE_CONTROL_STORAGE_SPACE_IDS, IDENTITY_MAGIC, MIGRATION_MAGIC,
+        PENDING_MAGIC, REGISTRY_MAGIC,
     };
-    use crate::branch::catalog::{BranchCatalogRecord, BranchMergeRecord};
+    use crate::branch::catalog::{BranchCatalogRecord, BranchMergeRecord, BranchOperationKind};
     use crate::branch::BranchName;
     use crate::data::kv::ProductSpace;
     use crate::diagnostics::EngineErrorClass;
@@ -731,6 +761,62 @@ mod tests {
         let decoded = decode_branch_record(&bytes).expect("older row must still decode");
         assert!(decoded.merge_parent().is_none());
         assert_eq!(decoded, record);
+    }
+
+    #[test]
+    fn pending_branch_record_round_trips_each_operation_kind() {
+        for kind in [
+            BranchOperationKind::CreateOrFork,
+            BranchOperationKind::Delete,
+            BranchOperationKind::Promote,
+        ] {
+            let record =
+                BranchCatalogRecord::root(BranchName::new("feature").expect("valid branch"), 1);
+            let (decoded_kind, decoded) =
+                decode_pending_branch_record(&encode_pending_branch_record(&record, kind))
+                    .expect("pending record decodes");
+            assert_eq!(decoded_kind, kind);
+            assert_eq!(decoded, record);
+        }
+    }
+
+    #[test]
+    fn pending_branch_record_preserves_a_promote_intent_merge_edge() {
+        // A promote intent carries the source lineage and baseline in its
+        // merge_parent; both the op-kind prefix and the body must survive.
+        let record =
+            BranchCatalogRecord::root(BranchName::new("default").expect("valid branch"), 1)
+                .with_merge_parent(BranchMergeRecord::new(
+                    BranchName::new("feature").expect("valid branch"),
+                    BranchId::from_bytes([0x2a; BranchId::BYTE_LEN]),
+                    2,
+                    CommitVersion::new(7),
+                    None,
+                ));
+        let (kind, decoded) = decode_pending_branch_record(&encode_pending_branch_record(
+            &record,
+            BranchOperationKind::Promote,
+        ))
+        .expect("promote intent decodes");
+        assert_eq!(kind, BranchOperationKind::Promote);
+        assert_eq!(decoded, record);
+        assert_eq!(
+            decoded.merge_parent().expect("edge").merged_at(),
+            CommitVersion::new(7)
+        );
+    }
+
+    #[test]
+    fn pending_branch_record_rejects_an_invalid_operation_kind() {
+        let record =
+            BranchCatalogRecord::root(BranchName::new("feature").expect("valid branch"), 1);
+        let mut bytes = encode_pending_branch_record(&record, BranchOperationKind::Promote);
+        // The op-kind byte immediately follows the versioned header (magic + 0 + version).
+        bytes[PENDING_MAGIC.len() + 2] = 0xFF;
+        let error =
+            decode_pending_branch_record(&bytes).expect_err("an invalid op kind is rejected");
+        assert_eq!(error.class(), EngineErrorClass::Corruption);
+        assert_eq!(error.code(), "data_loss.engine.branch_catalog");
     }
 
     #[test]
