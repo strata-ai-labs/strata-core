@@ -55,6 +55,9 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="conflict.engine.persistence"></a>
 - `conflict.engine.persistence`
 
+<a id="conflict.engine.promotion"></a>
+- `conflict.engine.promotion`
+
 <a id="corruption.engine.artifact_payload"></a>
 - `corruption.engine.artifact_payload`
 

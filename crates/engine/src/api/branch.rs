@@ -3,8 +3,8 @@
 use strata_core::{BranchId, CommitVersion, Timestamp};
 
 use crate::branch::catalog::{
-    BranchCatalogRecord, BranchParentRecord as CatalogBranchParentRecord,
-    BranchStatus as CatalogBranchStatus,
+    BranchCatalogRecord, BranchMergeRecord as CatalogBranchMergeRecord,
+    BranchParentRecord as CatalogBranchParentRecord, BranchStatus as CatalogBranchStatus,
 };
 use crate::branch::BranchName;
 use crate::data::kv::ProductSpace;
@@ -70,6 +70,59 @@ impl BranchParentSummary {
     }
 }
 
+/// Promotion (merge) lineage recorded on a branch: which source branch was
+/// most recently promoted into it, and the target commit that incorporated it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BranchMergeSummary {
+    source_name: BranchName,
+    source_branch_id: BranchId,
+    source_generation: u64,
+    merged_at: CommitVersion,
+    merged_timestamp: Option<Timestamp>,
+}
+
+impl BranchMergeSummary {
+    pub(crate) fn from_catalog(record: &CatalogBranchMergeRecord) -> Self {
+        Self {
+            source_name: record.source_name().clone(),
+            source_branch_id: record.source_branch_id(),
+            source_generation: record.source_generation(),
+            merged_at: record.merged_at(),
+            merged_timestamp: record.merged_timestamp(),
+        }
+    }
+
+    #[must_use]
+    /// Returns the promoted source branch name.
+    pub fn source_name(&self) -> &BranchName {
+        &self.source_name
+    }
+
+    #[must_use]
+    /// Returns the promoted source branch id.
+    pub const fn source_branch_id(&self) -> BranchId {
+        self.source_branch_id
+    }
+
+    #[must_use]
+    /// Returns the source branch generation at promotion time.
+    pub const fn source_generation(&self) -> u64 {
+        self.source_generation
+    }
+
+    #[must_use]
+    /// Returns the target commit version that incorporated the source.
+    pub const fn merged_at(&self) -> CommitVersion {
+        self.merged_at
+    }
+
+    #[must_use]
+    /// Returns the target commit timestamp, when storage reported it.
+    pub const fn merged_timestamp(&self) -> Option<Timestamp> {
+        self.merged_timestamp
+    }
+}
+
 /// Product branch summary exposed to executor layers.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BranchSummary {
@@ -78,6 +131,7 @@ pub struct BranchSummary {
     generation: u64,
     status: BranchStatus,
     parent: Option<BranchParentSummary>,
+    merge_parent: Option<BranchMergeSummary>,
     created_at: Option<CommitVersion>,
     deleted_at: Option<CommitVersion>,
     state_revision: u64,
@@ -91,6 +145,7 @@ impl BranchSummary {
             generation: record.generation(),
             status: branch_status_from_catalog(record.status()),
             parent: record.parent().map(BranchParentSummary::from_catalog),
+            merge_parent: record.merge_parent().map(BranchMergeSummary::from_catalog),
             created_at: record.created_at(),
             deleted_at: record.deleted_at(),
             state_revision: record.state_revision(),
@@ -125,6 +180,13 @@ impl BranchSummary {
     /// Returns fork parent facts, when this branch was forked.
     pub const fn parent(&self) -> Option<&BranchParentSummary> {
         self.parent.as_ref()
+    }
+
+    #[must_use]
+    /// Returns promotion (merge) lineage, when a promotion has landed on this
+    /// branch. Only the most recent promotion is recorded in V1.
+    pub const fn merge_parent(&self) -> Option<&BranchMergeSummary> {
+        self.merge_parent.as_ref()
     }
 
     #[must_use]
@@ -523,6 +585,155 @@ impl PreviewConflict {
     #[must_use]
     pub const fn strategy_result(&self) -> ConflictStrategyResult {
         self.strategy_result
+    }
+}
+
+/// One entity a promotion applied to the target branch: the source-side value
+/// written (`value = Some`) or a deletion propagated from the source
+/// (`value = None`), identified by capability, space, and space-relative key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PromotedEntity {
+    capability: ComparedCapability,
+    space: ProductSpace,
+    identity: Vec<u8>,
+    value: Option<Vec<u8>>,
+}
+
+impl PromotedEntity {
+    pub(crate) fn new(
+        capability: ComparedCapability,
+        space: ProductSpace,
+        identity: Vec<u8>,
+        value: Option<Vec<u8>>,
+    ) -> Self {
+        Self {
+            capability,
+            space,
+            identity,
+            value,
+        }
+    }
+
+    /// The capability the promoted entity belongs to.
+    #[must_use]
+    pub const fn capability(&self) -> ComparedCapability {
+        self.capability
+    }
+
+    /// The space the promoted entity belongs to.
+    #[must_use]
+    pub fn space(&self) -> &ProductSpace {
+        &self.space
+    }
+
+    /// The capability's space-relative logical key.
+    #[must_use]
+    pub fn identity(&self) -> &[u8] {
+        &self.identity
+    }
+
+    /// The value written to the target, or `None` for a propagated deletion.
+    #[must_use]
+    pub fn value(&self) -> Option<&[u8]> {
+        self.value.as_deref()
+    }
+}
+
+/// The result of promoting `source` into `target`.
+///
+/// A promotion writes one atomic commit on the target when it applies any
+/// mutations (`target_version = Some`); a clean no-op applies none
+/// (`target_version = None`) and leaves the target unchanged. `applied` and
+/// `deleted` report the source changes carried in; `conflicts` records entities
+/// that diverged on both sides and the strategy that resolved them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PromotionOutcome {
+    source: BranchName,
+    target: BranchName,
+    branch_point: CommitVersion,
+    strategy: PromotionStrategy,
+    target_version: Option<CommitVersion>,
+    applied: Vec<PromotedEntity>,
+    deleted: Vec<PromotedEntity>,
+    conflicts: Vec<PreviewConflict>,
+}
+
+impl PromotionOutcome {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        source: BranchName,
+        target: BranchName,
+        branch_point: CommitVersion,
+        strategy: PromotionStrategy,
+        target_version: Option<CommitVersion>,
+        applied: Vec<PromotedEntity>,
+        deleted: Vec<PromotedEntity>,
+        conflicts: Vec<PreviewConflict>,
+    ) -> Self {
+        Self {
+            source,
+            target,
+            branch_point,
+            strategy,
+            target_version,
+            applied,
+            deleted,
+            conflicts,
+        }
+    }
+
+    /// The branch whose changes were promoted.
+    #[must_use]
+    pub fn source(&self) -> &BranchName {
+        &self.source
+    }
+
+    /// The branch that received the promotion.
+    #[must_use]
+    pub fn target(&self) -> &BranchName {
+        &self.target
+    }
+
+    /// The derived branch point the promotion merged against.
+    #[must_use]
+    pub const fn branch_point(&self) -> CommitVersion {
+        self.branch_point
+    }
+
+    /// The strategy the promotion was applied under.
+    #[must_use]
+    pub const fn strategy(&self) -> PromotionStrategy {
+        self.strategy
+    }
+
+    /// The target commit version the promotion wrote, or `None` for a no-op.
+    #[must_use]
+    pub const fn target_version(&self) -> Option<CommitVersion> {
+        self.target_version
+    }
+
+    /// The source entities written onto the target.
+    #[must_use]
+    pub fn applied(&self) -> &[PromotedEntity] {
+        &self.applied
+    }
+
+    /// The target entities deleted by propagated source deletions.
+    #[must_use]
+    pub fn deleted(&self) -> &[PromotedEntity] {
+        &self.deleted
+    }
+
+    /// The entities that diverged on both sides, with their strategy result.
+    #[must_use]
+    pub fn conflicts(&self) -> &[PreviewConflict] {
+        &self.conflicts
+    }
+
+    /// Whether the promotion applied no mutations (the target was unchanged).
+    #[must_use]
+    pub fn is_noop(&self) -> bool {
+        self.target_version.is_none()
     }
 }
 

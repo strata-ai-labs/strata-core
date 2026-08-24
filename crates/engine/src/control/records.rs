@@ -2,7 +2,9 @@
 
 use strata_core::{BranchId, CommitVersion, Timestamp};
 
-use crate::branch::catalog::{BranchCatalogRecord, BranchParentRecord, BranchStatus};
+use crate::branch::catalog::{
+    BranchCatalogRecord, BranchMergeRecord, BranchParentRecord, BranchStatus,
+};
 use crate::branch::BranchName;
 use crate::data::kv::ProductSpace;
 use crate::diagnostics::{EngineError, EngineResult};
@@ -290,8 +292,15 @@ fn decode_branch_like(
     let created_at = cursor.optional_commit_version("created version")?;
     let deleted_at = cursor.optional_commit_version("deleted version")?;
     let state_revision = cursor.u64("state revision")?;
+    // A row written before promotion edges existed ends here; a newer row carries
+    // the merge-edge flag (and, if set, its fields).
+    let merge_parent = if cursor.is_empty() {
+        None
+    } else {
+        decode_merge_parent(&mut cursor, description)?
+    };
     cursor.finish(description)?;
-    Ok(BranchCatalogRecord::new(
+    let record = BranchCatalogRecord::new(
         name,
         branch_id,
         storage_branch_id,
@@ -301,7 +310,38 @@ fn decode_branch_like(
         created_at,
         deleted_at,
         state_revision,
-    ))
+    );
+    Ok(match merge_parent {
+        Some(merge) => record.with_merge_parent(merge),
+        None => record,
+    })
+}
+
+fn decode_merge_parent(
+    cursor: &mut Cursor<'_>,
+    description: &'static str,
+) -> EngineResult<Option<BranchMergeRecord>> {
+    match cursor.u8("merge parent flag")? {
+        0 => Ok(None),
+        1 => {
+            let source_name = BranchName::new(cursor.name(description)?)?;
+            let source_branch_id = cursor.branch_id("merge source branch id")?;
+            let source_generation = cursor.u64("merge source generation")?;
+            let merged_at = CommitVersion::new(cursor.u64("merged version")?);
+            let merged_timestamp = cursor.optional_timestamp("merged timestamp")?;
+            Ok(Some(BranchMergeRecord::new(
+                source_name,
+                source_branch_id,
+                source_generation,
+                merged_at,
+                merged_timestamp,
+            )))
+        }
+        _ => Err(EngineError::corruption(
+            "data_loss.engine.branch_catalog",
+            "branch record has an invalid merge parent flag",
+        )),
+    }
 }
 
 fn encode_branch_body(out: &mut Vec<u8>, record: &BranchCatalogRecord) {
@@ -327,6 +367,20 @@ fn encode_branch_body(out: &mut Vec<u8>, record: &BranchCatalogRecord) {
     write_optional_commit_version(out, record.created_at());
     write_optional_commit_version(out, record.deleted_at());
     out.extend_from_slice(&record.state_revision().to_be_bytes());
+    // Promotion (merge) edge — appended after the original fixed body so rows
+    // written before promotion existed still decode (they carry no trailing
+    // bytes and read back as `None`; see `decode_branch_like`).
+    match record.merge_parent() {
+        Some(merge) => {
+            out.push(1);
+            write_name(out, merge.source_name().as_str());
+            out.extend_from_slice(merge.source_branch_id().as_bytes());
+            out.extend_from_slice(&merge.source_generation().to_be_bytes());
+            out.extend_from_slice(&merge.merged_at().as_u64().to_be_bytes());
+            write_optional_timestamp(out, merge.merged_timestamp());
+        }
+        None => out.push(0),
+    }
 }
 
 fn decode_parent(
@@ -454,6 +508,13 @@ impl<'a> Cursor<'a> {
         remaining
     }
 
+    /// Whether the cursor has consumed every byte, without advancing. Used to
+    /// tolerate branch-record rows written before the promotion (merge) edge was
+    /// appended: an older row simply has no trailing merge-edge bytes.
+    const fn is_empty(&self) -> bool {
+        self.offset >= self.bytes.len()
+    }
+
     fn u8(&mut self, field: &'static str) -> EngineResult<u8> {
         self.take(1, field).map(|bytes| bytes[0])
     }
@@ -550,10 +611,11 @@ mod tests {
         encode_space_record, encode_storage_registry, DatabaseIdentityRecord, CAPABILITY_MAGIC,
         CORE_CONTROL_STORAGE_SPACE_IDS, IDENTITY_MAGIC, MIGRATION_MAGIC, REGISTRY_MAGIC,
     };
-    use crate::branch::catalog::BranchCatalogRecord;
+    use crate::branch::catalog::{BranchCatalogRecord, BranchMergeRecord};
     use crate::branch::BranchName;
     use crate::data::kv::ProductSpace;
     use crate::diagnostics::EngineErrorClass;
+    use strata_core::{BranchId, CommitVersion, Timestamp};
 
     #[test]
     fn database_identity_rejects_truncated_payload() {
@@ -637,6 +699,37 @@ mod tests {
             BranchCatalogRecord::root(BranchName::new("default").expect("valid branch"), 1);
         let decoded =
             decode_branch_record(&encode_branch_record(&record)).expect("record must decode");
+        assert_eq!(decoded, record);
+    }
+
+    #[test]
+    fn branch_record_round_trips_a_promotion_merge_edge() {
+        let record = BranchCatalogRecord::root(BranchName::new("main").expect("valid branch"), 3)
+            .with_merge_parent(BranchMergeRecord::new(
+                BranchName::new("feature").expect("valid branch"),
+                BranchId::from_bytes([0x2a; BranchId::BYTE_LEN]),
+                2,
+                CommitVersion::new(42),
+                Some(Timestamp::from_micros(1_700_000)),
+            ));
+        let decoded =
+            decode_branch_record(&encode_branch_record(&record)).expect("record must decode");
+        assert_eq!(decoded, record);
+        assert!(decoded.merge_parent().is_some());
+    }
+
+    #[test]
+    fn branch_record_written_before_merge_edges_decodes_as_no_merge_parent() {
+        // A row predating the promotion edge carries no trailing merge-edge
+        // bytes; dropping the trailing flag byte reproduces that older shape.
+        let record =
+            BranchCatalogRecord::root(BranchName::new("default").expect("valid branch"), 1);
+        let mut bytes = encode_branch_record(&record);
+        bytes
+            .pop()
+            .expect("encoding has a trailing merge-edge flag");
+        let decoded = decode_branch_record(&bytes).expect("older row must still decode");
+        assert!(decoded.merge_parent().is_none());
         assert_eq!(decoded, record);
     }
 

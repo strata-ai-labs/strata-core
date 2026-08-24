@@ -26,12 +26,25 @@ use crate::data::kv::{KvBranchAdapter, ProductSpace};
 use crate::diagnostics::{EngineError, EngineResult};
 use crate::persistence::{ReadSelector, StoragePersistence};
 
+/// The authored capabilities previewed and promoted today, in report order.
+const AUTHORED_CAPABILITIES: [ComparedCapability; 2] =
+    [ComparedCapability::KeyValue, ComparedCapability::Json];
+
+/// The branch adapter for one capability. Single source of truth for the
+/// capability→adapter mapping, shared by preview and promotion.
+pub(crate) fn adapter_for(capability: ComparedCapability) -> Box<dyn CapabilityBranchAdapter> {
+    match capability {
+        ComparedCapability::KeyValue => Box::new(KvBranchAdapter),
+        ComparedCapability::Json => Box::new(JsonBranchAdapter),
+    }
+}
+
 /// The capabilities previewed today, in report order, each with its adapter.
 fn capability_adapters() -> Vec<(ComparedCapability, Box<dyn CapabilityBranchAdapter>)> {
-    vec![
-        (ComparedCapability::KeyValue, Box::new(KvBranchAdapter)),
-        (ComparedCapability::Json, Box::new(JsonBranchAdapter)),
-    ]
+    AUTHORED_CAPABILITIES
+        .iter()
+        .map(|&capability| (capability, adapter_for(capability)))
+        .collect()
 }
 
 /// The branch point of a direct fork lineage: the ancestor's storage branch and
@@ -114,7 +127,7 @@ fn entity_states(
     Ok(states)
 }
 
-fn value_of(summary: Option<&EntitySummary>) -> Option<Vec<u8>> {
+pub(crate) fn value_of(summary: Option<&EntitySummary>) -> Option<Vec<u8>> {
     match summary {
         Some(EntitySummary::Present(bytes)) => Some(bytes.clone()),
         _ => None,
@@ -124,27 +137,39 @@ fn value_of(summary: Option<&EntitySummary>) -> Option<Vec<u8>> {
 /// Whether a side's state differs from the branch-point state for an entity. An
 /// entity absent from a side's map is absent on that side (its inherited rows
 /// are visible in the scan, so a missing key is a genuine absence).
-fn changed(side: Option<&EntitySummary>, base: Option<&EntitySummary>) -> bool {
+pub(crate) fn changed(side: Option<&EntitySummary>, base: Option<&EntitySummary>) -> bool {
     normalized(side) != normalized(base)
 }
 
-fn normalized(summary: Option<&EntitySummary>) -> &EntitySummary {
+pub(crate) fn normalized(summary: Option<&EntitySummary>) -> &EntitySummary {
     summary.unwrap_or(&EntitySummary::Absent)
 }
 
-/// Previews promoting `source` into `target`: derives the branch point and runs
-/// the three-way comparison, reporting conflicts without mutating either branch.
-pub(crate) fn preview_branches(
+/// One entity's three-way state across a promotion's branch point, source, and
+/// target — emitted for every identity that changed on at least one side since
+/// the branch point. Shared by preview (which reports conflicts) and promotion
+/// (which turns source changes into target mutations).
+pub(crate) struct ThreeWayEntity {
+    pub(crate) capability: ComparedCapability,
+    pub(crate) space: ProductSpace,
+    pub(crate) identity: Vec<u8>,
+    pub(crate) base: Option<EntitySummary>,
+    pub(crate) source: Option<EntitySummary>,
+    pub(crate) target: Option<EntitySummary>,
+}
+
+/// Runs the three-way scan (branch point → source, branch point → target) over
+/// every authored capability and space, returning the branch-point version and,
+/// for each identity that changed on at least one side, its three summaries.
+///
+/// The branch point is derived from lineage (a direct fork edge in M12C1);
+/// unrelated branches are rejected with `invalid_argument.engine.branch_point`.
+pub(crate) fn three_way(
     persistence: &mut StoragePersistence,
     source: &BranchCatalogRecord,
     target: &BranchCatalogRecord,
-    strategy: PromotionStrategy,
-) -> EngineResult<BranchPreview> {
+) -> EngineResult<(CommitVersion, Vec<ThreeWayEntity>)> {
     let base = resolve_base_point(source, target)?;
-    let strategy_result = match strategy {
-        PromotionStrategy::Strict => ConflictStrategyResult::Refused,
-        PromotionStrategy::SourceWins => ConflictStrategyResult::SourceWins,
-    };
 
     let mut spaces = registered_spaces(persistence, source)?;
     for space in registered_spaces(persistence, target)? {
@@ -155,7 +180,7 @@ pub(crate) fn preview_branches(
     spaces.sort();
 
     let adapters = capability_adapters();
-    let mut conflicts = Vec::new();
+    let mut entities = Vec::new();
     for space in &spaces {
         for (capability, adapter) in &adapters {
             if adapter.derived_disposition() != DerivedDisposition::Authored {
@@ -193,40 +218,75 @@ pub(crate) fn preview_branches(
                 let source_value = source_states.get(identity);
                 let target_value = target_states.get(identity);
 
-                let source_changed = changed(source_value, base_value);
-                let target_changed = changed(target_value, base_value);
-                if !(source_changed && target_changed) {
+                if !(changed(source_value, base_value) || changed(target_value, base_value)) {
                     continue;
                 }
-                if normalized(source_value) == normalized(target_value) {
-                    continue; // both sides converged on the same change
-                }
 
-                let source_present = matches!(source_value, Some(EntitySummary::Present(_)));
-                let target_present = matches!(target_value, Some(EntitySummary::Present(_)));
-                let kind = if source_present && target_present {
-                    ConflictKind::ValueDivergence
-                } else {
-                    ConflictKind::ModifyDeleteDivergence
-                };
-
-                conflicts.push(PreviewConflict::new(
-                    *capability,
-                    space.clone(),
-                    identity.clone(),
-                    value_of(source_value),
-                    value_of(target_value),
-                    kind,
-                    strategy_result,
-                ));
+                entities.push(ThreeWayEntity {
+                    capability: *capability,
+                    space: space.clone(),
+                    identity: identity.clone(),
+                    base: base_value.cloned(),
+                    source: source_value.cloned(),
+                    target: target_value.cloned(),
+                });
             }
         }
+    }
+
+    Ok((base.version, entities))
+}
+
+/// Previews promoting `source` into `target`: derives the branch point and runs
+/// the three-way comparison, reporting conflicts without mutating either branch.
+pub(crate) fn preview_branches(
+    persistence: &mut StoragePersistence,
+    source: &BranchCatalogRecord,
+    target: &BranchCatalogRecord,
+    strategy: PromotionStrategy,
+) -> EngineResult<BranchPreview> {
+    let strategy_result = match strategy {
+        PromotionStrategy::Strict => ConflictStrategyResult::Refused,
+        PromotionStrategy::SourceWins => ConflictStrategyResult::SourceWins,
+    };
+    let (branch_point, entities) = three_way(persistence, source, target)?;
+
+    let mut conflicts = Vec::new();
+    for entity in &entities {
+        let source_value = entity.source.as_ref();
+        let target_value = entity.target.as_ref();
+        let base_value = entity.base.as_ref();
+
+        if !(changed(source_value, base_value) && changed(target_value, base_value)) {
+            continue;
+        }
+        if normalized(source_value) == normalized(target_value) {
+            continue; // both sides converged on the same change
+        }
+
+        let source_present = matches!(entity.source, Some(EntitySummary::Present(_)));
+        let target_present = matches!(entity.target, Some(EntitySummary::Present(_)));
+        let kind = if source_present && target_present {
+            ConflictKind::ValueDivergence
+        } else {
+            ConflictKind::ModifyDeleteDivergence
+        };
+
+        conflicts.push(PreviewConflict::new(
+            entity.capability,
+            entity.space.clone(),
+            entity.identity.clone(),
+            value_of(source_value),
+            value_of(target_value),
+            kind,
+            strategy_result,
+        ));
     }
 
     Ok(BranchPreview::new(
         source.name().clone(),
         target.name().clone(),
-        base.version,
+        branch_point,
         strategy,
         conflicts,
     ))

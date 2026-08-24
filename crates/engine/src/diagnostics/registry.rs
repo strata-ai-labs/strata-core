@@ -133,6 +133,7 @@ const CONFLICT_CODES: &[&str] = &[
     "already_exists.engine.vector_collection",
     "conflict.engine.branch_generation",
     "conflict.engine.persistence",
+    "conflict.engine.promotion",
     "failed_precondition.engine.graph_negative_weight",
     "failed_precondition.engine.graph_ontology_edge_type",
     "failed_precondition.engine.graph_ontology_endpoint_type",
