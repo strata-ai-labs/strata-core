@@ -72,6 +72,29 @@ commands:
             - requests/v1/branches/create.json
           request: requests/v1/branches/merge_unrelated.json
           expected_error: responses/v1/errors/branches/merge_unrelated.json
+  - id: branch.preview
+    kind: read.status
+    title: Preview branch promotion
+    input: Command::BranchPreview
+    output: Output::BranchPreview
+    result: BranchPreviewItem
+    response_model: StatusResponse<BranchPreviewItem>
+    errors+:
+      - invalid_argument.engine.branch_point
+    prose: commands/branch.preview.md
+    fixtures:
+      setup:
+        - requests/v1/kv/put.json
+        - requests/v1/branches/fork.json
+        - requests/v1/branches/merge_source_change.json
+        - requests/v1/branches/merge_target_change.json
+      request: requests/v1/branches/preview.json
+      response: responses/v1/branches/preview.json
+      error_cases:
+        - setup:
+            - requests/v1/branches/create.json
+          request: requests/v1/branches/preview_unrelated.json
+          expected_error: responses/v1/errors/branches/merge_unrelated.json
   - id: branch.create
     kind: mutation.create
     title: Create empty branch

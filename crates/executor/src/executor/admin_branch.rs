@@ -1,9 +1,9 @@
 use super::{
-    branch_cleanup_item, branch_comparison, branch_item, branch_name, branch_promotion,
-    delete_effect, engine_promotion_strategy, output_admin_config, output_admin_describe,
-    output_admin_health, output_admin_info, output_admin_metrics, output_space_create,
-    output_space_delete, product_space, BranchStateSelector, CommitVersion, Executor,
-    ExecutorResult, Output, PageInfo, PromotionStrategy, Timestamp, DEFAULT_BRANCH,
+    branch_cleanup_item, branch_comparison, branch_item, branch_name, branch_preview,
+    branch_promotion, delete_effect, engine_promotion_strategy, output_admin_config,
+    output_admin_describe, output_admin_health, output_admin_info, output_admin_metrics,
+    output_space_create, output_space_delete, product_space, BranchStateSelector, CommitVersion,
+    Executor, ExecutorResult, Output, PageInfo, PromotionStrategy, Timestamp, DEFAULT_BRANCH,
 };
 
 impl Executor {
@@ -224,6 +224,22 @@ impl Executor {
             engine_promotion_strategy(strategy),
         )?;
         Ok(Output::BranchMerge(branch_promotion(&outcome)))
+    }
+
+    pub(super) fn execute_branch_preview(
+        &mut self,
+        source: &str,
+        target: &str,
+        strategy: PromotionStrategy,
+    ) -> ExecutorResult<Output> {
+        let source = branch_name(Some(source), DEFAULT_BRANCH)?;
+        let target = branch_name(Some(target), DEFAULT_BRANCH)?;
+        let preview = self.database.branches()?.preview(
+            &source,
+            &target,
+            engine_promotion_strategy(strategy),
+        )?;
+        Ok(Output::BranchPreview(branch_preview(&preview)))
     }
 
     pub(super) fn execute_branch_create(&mut self, branch: &str) -> ExecutorResult<Output> {

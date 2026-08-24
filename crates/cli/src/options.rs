@@ -428,6 +428,16 @@ pub(crate) enum BranchCommand {
         #[arg(long, value_enum, default_value_t = CliMergeStrategy::Strict)]
         strategy: CliMergeStrategy,
     },
+    /// Preview promoting one branch into another, reporting conflicts.
+    Preview {
+        /// The branch whose changes would be promoted.
+        source: String,
+        /// The branch that would receive the promotion.
+        target: String,
+        /// Conflict-resolution strategy to evaluate the preview under.
+        #[arg(long, value_enum, default_value_t = CliMergeStrategy::Strict)]
+        strategy: CliMergeStrategy,
+    },
     /// Deferred branch tag command.
     #[command(hide = true)]
     Tag(DeferredArgs),
@@ -1897,6 +1907,7 @@ mod tests {
         "branch list",
         "branch merge",
         "branch note",
+        "branch preview",
         "branch tag",
         "clone",
         "command print",

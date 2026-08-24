@@ -1,0 +1,12 @@
+caption: Preview promoting a fork into the branch it came from.
+steps:
+  - call: kv.put
+    args: { key: config, value: base }
+  - call: branch.fork
+    args: { source: default, branch: experiment }
+  - call: kv.put
+    args: { key: config, value: tuned, branch: experiment }
+    note: change on the fork
+  - call: branch.preview
+    args: { source: experiment, target: default, strategy: strict }
+    note: a clean preview — no conflicting changes on default

@@ -50,6 +50,7 @@ response_models:
   - Page<BranchItem, String>
   - StatusResponse<BranchItem>
   - StatusResponse<BranchComparisonItem>
+  - StatusResponse<BranchPreviewItem>
   - MutationAck<BranchItem>
   - MutationAck<BranchDelete>
   - MutationAck<PromotionOutcomeItem>

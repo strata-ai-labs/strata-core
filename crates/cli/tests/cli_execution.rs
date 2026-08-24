@@ -288,6 +288,40 @@ fn branch_merge_promotes_and_honors_the_strategy() {
     );
 }
 
+#[test]
+fn branch_preview_reports_conflicts_without_mutating() {
+    let dir = tempfile::tempdir().expect("tmp");
+    let db = db_arg(dir.path());
+    assert_ok(&strata(&["--db", &db, "kv", "put", "flag", "base"]), "seed");
+    assert_ok(
+        &strata(&["--db", &db, "branch", "fork", "default", "dev"]),
+        "branch fork",
+    );
+    assert_ok(
+        &strata(&["--db", &db, "--branch", "dev", "kv", "put", "flag", "tuned"]),
+        "change on fork",
+    );
+    assert_ok(
+        &strata(&["--db", &db, "kv", "put", "flag", "other"]),
+        "change on target",
+    );
+
+    let preview = strata(&["--db", &db, "branch", "preview", "dev", "default"]);
+    assert_ok(&preview, "branch preview");
+    // Preview is read-only: the target keeps its value.
+    assert_eq!(
+        stdout(&strata(&["--db", &db, "kv", "get", "flag"])).trim(),
+        "other",
+        "preview must not mutate the target",
+    );
+    let dev_read = strata(&["--db", &db, "--branch", "dev", "kv", "get", "flag"]);
+    assert_eq!(
+        stdout(&dev_read).trim(),
+        "tuned",
+        "preview must not mutate the source"
+    );
+}
+
 // --- vectors ---------------------------------------------------------------
 
 #[test]

@@ -76,6 +76,11 @@ impl Executor {
                 target,
                 strategy,
             } => self.execute_branch_merge(&source, &target, strategy),
+            Command::BranchPreview {
+                source,
+                target,
+                strategy,
+            } => self.execute_branch_preview(&source, &target, strategy),
             Command::KvPut {
                 branch,
                 space,

@@ -1,0 +1,20 @@
+{
+  "data": {
+    "branch_point": 3,
+    "conflicts": [
+      {
+        "capability": "key_value",
+        "identity": "YQ==",
+        "kind": "value_divergence",
+        "source_value": "dHdv",
+        "space": "default",
+        "strategy_result": "refused",
+        "target_value": "dGhyZWU="
+      }
+    ],
+    "source": "feature-fork",
+    "strategy": "strict",
+    "target": "default"
+  },
+  "type": "branch_preview"
+}

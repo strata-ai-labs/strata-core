@@ -1,0 +1,201 @@
+{
+  "$defs": {
+    "BranchPreviewItem": {
+      "additionalProperties": false,
+      "description": "The result of previewing a promotion of `source` into `target`, exposed\nthrough the command boundary. Preview is read-only: it reports the conflicts\na promotion would hit without mutating either branch.",
+      "properties": {
+        "branch_point": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "conflicts": {
+          "items": {
+            "$ref": "#/$defs/PreviewConflictItem"
+          },
+          "type": "array"
+        },
+        "source": {
+          "type": "string"
+        },
+        "strategy": {
+          "$ref": "#/$defs/PromotionStrategy"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "target",
+        "branch_point",
+        "strategy",
+        "conflicts"
+      ],
+      "type": "object"
+    },
+    "Bytes": {
+      "contentEncoding": "base64",
+      "description": "Binary payload encoded as a standard base64 string.",
+      "type": "string"
+    },
+    "ComparedCapability": {
+      "description": "The data capability a branch comparison entry belongs to.",
+      "oneOf": [
+        {
+          "const": "key_value",
+          "description": "The key-value capability.",
+          "type": "string"
+        },
+        {
+          "const": "json",
+          "description": "The JSON document capability.",
+          "type": "string"
+        }
+      ]
+    },
+    "ConflictKind": {
+      "description": "How two branches diverged on one entity since their branch point.",
+      "oneOf": [
+        {
+          "const": "value_divergence",
+          "description": "Both sides changed the entity to different present values.",
+          "type": "string"
+        },
+        {
+          "const": "modify_delete_divergence",
+          "description": "One side changed the value while the other deleted the entity.",
+          "type": "string"
+        }
+      ]
+    },
+    "ConflictStrategyResult": {
+      "description": "What the selected strategy did with a conflict.",
+      "oneOf": [
+        {
+          "const": "refused",
+          "description": "The conflict blocked the promotion (`strict`).",
+          "type": "string"
+        },
+        {
+          "const": "source_wins",
+          "description": "The source value or tombstone overwrote the target (`source_wins`).",
+          "type": "string"
+        }
+      ]
+    },
+    "PreviewConflictItem": {
+      "additionalProperties": false,
+      "description": "One conflicting entity a promotion encountered, exposed through the command\nboundary. `source_value`/`target_value` are absent for a deletion.",
+      "properties": {
+        "capability": {
+          "$ref": "#/$defs/ComparedCapability"
+        },
+        "identity": {
+          "$ref": "#/$defs/Bytes"
+        },
+        "kind": {
+          "$ref": "#/$defs/ConflictKind"
+        },
+        "source_value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Bytes"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "space": {
+          "type": "string"
+        },
+        "strategy_result": {
+          "$ref": "#/$defs/ConflictStrategyResult"
+        },
+        "target_value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Bytes"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "capability",
+        "space",
+        "identity",
+        "kind",
+        "strategy_result"
+      ],
+      "type": "object"
+    },
+    "PromotionStrategy": {
+      "description": "The conflict-resolution strategy for a promotion, exposed through the command\nboundary.",
+      "oneOf": [
+        {
+          "const": "strict",
+          "description": "Refuse the promotion when any conflict exists.",
+          "type": "string"
+        },
+        {
+          "const": "source_wins",
+          "description": "Apply the source side's value or tombstone for each conflict.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/branch.preview.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "branch.preview",
+  "request": {
+    "additionalProperties": false,
+    "description": "Previews promoting one branch into another, reporting conflicts without\nmutating either branch.",
+    "properties": {
+      "source": {
+        "description": "The branch whose changes would be promoted.",
+        "type": "string"
+      },
+      "strategy": {
+        "$ref": "#/$defs/PromotionStrategy",
+        "default": "strict",
+        "description": "Conflict-resolution strategy to evaluate the preview under."
+      },
+      "target": {
+        "description": "The branch that would receive the promotion.",
+        "type": "string"
+      },
+      "type": {
+        "const": "branch_preview",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "source",
+      "target"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Branch promotion preview result.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/BranchPreviewItem"
+      },
+      "type": {
+        "const": "branch_preview",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}
