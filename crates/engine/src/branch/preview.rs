@@ -23,12 +23,16 @@ use crate::branch::catalog::BranchCatalogRecord;
 use crate::control::space::registered_spaces;
 use crate::data::json::JsonBranchAdapter;
 use crate::data::kv::{KvBranchAdapter, ProductSpace};
+use crate::data::vector::VectorBranchAdapter;
 use crate::diagnostics::{EngineError, EngineResult};
 use crate::persistence::{ReadSelector, StoragePersistence};
 
 /// The authored capabilities previewed and promoted today, in report order.
-const AUTHORED_CAPABILITIES: [ComparedCapability; 2] =
-    [ComparedCapability::KeyValue, ComparedCapability::Json];
+const AUTHORED_CAPABILITIES: [ComparedCapability; 3] = [
+    ComparedCapability::KeyValue,
+    ComparedCapability::Json,
+    ComparedCapability::Vector,
+];
 
 /// The branch adapter for one capability. Single source of truth for the
 /// capability→adapter mapping, shared by preview and promotion.
@@ -36,11 +40,14 @@ pub(crate) fn adapter_for(capability: ComparedCapability) -> Box<dyn CapabilityB
     match capability {
         ComparedCapability::KeyValue => Box::new(KvBranchAdapter),
         ComparedCapability::Json => Box::new(JsonBranchAdapter),
+        ComparedCapability::Vector => Box::new(VectorBranchAdapter),
     }
 }
 
-/// The capabilities previewed today, in report order, each with its adapter.
-fn capability_adapters() -> Vec<(ComparedCapability, Box<dyn CapabilityBranchAdapter>)> {
+/// The authored capabilities in report order, each with its adapter. The single
+/// registry shared by compare, preview, and promotion — register a capability
+/// once here and all three cover it.
+pub(crate) fn capability_adapters() -> Vec<(ComparedCapability, Box<dyn CapabilityBranchAdapter>)> {
     AUTHORED_CAPABILITIES
         .iter()
         .map(|&capability| (capability, adapter_for(capability)))

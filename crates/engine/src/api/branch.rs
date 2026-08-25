@@ -343,6 +343,8 @@ pub enum ComparedCapability {
     KeyValue,
     /// The JSON document capability.
     Json,
+    /// The vector capability.
+    Vector,
 }
 
 /// One entity that differs between two branches, identified by its

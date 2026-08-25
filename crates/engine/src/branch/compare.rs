@@ -9,14 +9,12 @@
 
 use std::collections::BTreeMap;
 
-use crate::api::{
-    BranchComparison, BranchStateSelector, ComparedCapability, ComparedEntity, SpaceComparison,
-};
+use crate::api::{BranchComparison, BranchStateSelector, ComparedEntity, SpaceComparison};
 use crate::branch::adapter::{CapabilityBranchAdapter, ComparableEntity, DerivedDisposition};
 use crate::branch::catalog::BranchCatalogRecord;
+use crate::branch::preview::capability_adapters;
 use crate::control::space::registered_spaces;
-use crate::data::json::JsonBranchAdapter;
-use crate::data::kv::{KvBranchAdapter, ProductSpace};
+use crate::data::kv::ProductSpace;
 use crate::diagnostics::EngineResult;
 use crate::persistence::{ReadSelector, StoragePersistence};
 
@@ -26,14 +24,6 @@ const fn read_selector(selector: BranchStateSelector) -> ReadSelector {
         BranchStateSelector::Current => ReadSelector::Latest,
         BranchStateSelector::AtTimestamp(timestamp) => ReadSelector::AtTimestamp(timestamp),
     }
-}
-
-/// The capabilities compared today, in report order, each with its adapter.
-fn capability_adapters() -> Vec<(ComparedCapability, Box<dyn CapabilityBranchAdapter>)> {
-    vec![
-        (ComparedCapability::KeyValue, Box::new(KvBranchAdapter)),
-        (ComparedCapability::Json, Box::new(JsonBranchAdapter)),
-    ]
 }
 
 /// The present (non-tombstone) entities of one capability in one space at the

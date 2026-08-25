@@ -17,6 +17,11 @@
           "const": "json",
           "description": "The JSON document capability.",
           "type": "string"
+        },
+        {
+          "const": "vector",
+          "description": "The vector capability.",
+          "type": "string"
         }
       ]
     },
