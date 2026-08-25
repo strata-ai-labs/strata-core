@@ -1,5 +1,6 @@
 //! Event log primitive.
 
+mod adapter;
 mod hash;
 mod outcome;
 mod record;
@@ -19,5 +20,6 @@ pub use types::{
     EventBatchAppendEntry, EventPayload, EventRangeDirection, EventSequence, EventType,
 };
 
+pub(crate) use adapter::EventBranchAdapter;
 pub(crate) use hash::compute_event_hash;
 pub(crate) use types::EventHash;

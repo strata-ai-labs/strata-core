@@ -345,6 +345,8 @@ pub enum ComparedCapability {
     Json,
     /// The vector capability.
     Vector,
+    /// The event capability (comparison only).
+    Event,
 }
 
 /// One entity that differs between two branches, identified by its

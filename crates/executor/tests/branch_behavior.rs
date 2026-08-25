@@ -333,3 +333,32 @@ fn branch_diff_reports_vector_changes() {
     assert_eq!(vector.modified().len(), 1, "v1 diverged");
     assert!(vector.added().is_empty() && vector.removed().is_empty());
 }
+
+#[test]
+fn branch_diff_reports_event_changes() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    executor
+        .execute(Command::BranchForkCurrent {
+            source: "default".to_owned(),
+            branch: "feature".to_owned(),
+        })
+        .expect("fork succeeds");
+    executor
+        .execute(Command::EventAppend {
+            branch: Some("feature".to_owned()),
+            space: None,
+            event_type: "tool_call".to_owned(),
+            payload: serde_json::json!({ "tool": "search" }),
+        })
+        .expect("append an event on feature");
+
+    // The diff reports the event capability with the feature-appended event added.
+    let comparison = diff(&mut executor, "default", "feature", None);
+    let events = comparison
+        .spaces()
+        .iter()
+        .find(|entry| entry.capability() == ComparedCapability::Event && entry.space() == "default")
+        .expect("an event diff for the space");
+    assert_eq!(events.added().len(), 1, "feature appended one event");
+    assert!(events.modified().is_empty() && events.removed().is_empty());
+}

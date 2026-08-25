@@ -450,6 +450,7 @@ const fn compared_capability(capability: EngineComparedCapability) -> ComparedCa
         EngineComparedCapability::KeyValue => ComparedCapability::KeyValue,
         EngineComparedCapability::Json => ComparedCapability::Json,
         EngineComparedCapability::Vector => ComparedCapability::Vector,
+        EngineComparedCapability::Event => ComparedCapability::Event,
     }
 }
 
