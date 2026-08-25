@@ -8,7 +8,7 @@
 
 use strata_executor::{
     BranchComparisonItem, Bytes, Command, ComparedCapability, Executor, ExecutorErrorClass, Output,
-    SpaceComparisonItem, DEFAULT_BRANCH,
+    SpaceComparisonItem, VectorDistanceMetric, DEFAULT_BRANCH,
 };
 
 fn bytes(value: &str) -> Bytes {
@@ -280,4 +280,56 @@ fn branch_diff_reports_changes_and_honors_as_of() {
     assert_eq!(kv_past.added().len(), 1);
     assert_eq!(kv_past.added()[0].identity().as_slice(), b"k");
     assert!(kv_past.modified().is_empty());
+}
+
+#[test]
+fn branch_diff_reports_vector_changes() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    executor
+        .execute(Command::VectorCreateCollection {
+            branch: None,
+            space: None,
+            collection: "emb".to_owned(),
+            dimension: 2,
+            metric: VectorDistanceMetric::Cosine,
+        })
+        .expect("create collection");
+    executor
+        .execute(Command::VectorUpsert {
+            branch: None,
+            space: None,
+            collection: "emb".to_owned(),
+            key: "v1".to_owned(),
+            vector: vec![0.0, 1.0],
+            metadata: None,
+        })
+        .expect("upsert v1 on default");
+    executor
+        .execute(Command::BranchForkCurrent {
+            source: "default".to_owned(),
+            branch: "feature".to_owned(),
+        })
+        .expect("fork succeeds");
+    executor
+        .execute(Command::VectorUpsert {
+            branch: Some("feature".to_owned()),
+            space: None,
+            collection: "emb".to_owned(),
+            key: "v1".to_owned(),
+            vector: vec![9.0, 9.0],
+            metadata: None,
+        })
+        .expect("change v1 on feature");
+
+    // The diff reports the vector capability with v1 modified.
+    let comparison = diff(&mut executor, "default", "feature", None);
+    let vector = comparison
+        .spaces()
+        .iter()
+        .find(|entry| {
+            entry.capability() == ComparedCapability::Vector && entry.space() == "default"
+        })
+        .expect("a vector diff for the space");
+    assert_eq!(vector.modified().len(), 1, "v1 diverged");
+    assert!(vector.added().is_empty() && vector.removed().is_empty());
 }
