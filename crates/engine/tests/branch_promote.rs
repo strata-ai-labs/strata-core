@@ -365,6 +365,108 @@ fn promote_with_no_changes_is_a_noop_and_writes_no_commit() {
 }
 
 #[test]
+fn test_promotion_registers_source_only_spaces_on_the_target() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // feature creates a new space `extra` and writes a KV row into it.
+    database
+        .spaces(branch("feature"))
+        .expect("space service opens")
+        .create(space("extra"))
+        .expect("space create succeeds");
+    database
+        .kv(branch("feature"), space("extra"))
+        .expect("KV opens")
+        .put(key(b"k"), value(b"v"))
+        .expect("kv put succeeds");
+
+    // Precondition: the target does not yet know the `extra` space.
+    assert!(!database
+        .spaces(branch("default"))
+        .expect("space service opens")
+        .exists(&space("extra"))
+        .expect("exists succeeds"));
+
+    let outcome = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("promote succeeds");
+    assert!(outcome.conflicts().is_empty());
+
+    // The promoted row must land in a space the target's catalog registers, so
+    // catalog-driven paths (listing, admin, diff) can see it — not orphaned.
+    assert!(
+        database
+            .spaces(branch("default"))
+            .expect("space service opens")
+            .exists(&space("extra"))
+            .expect("exists succeeds"),
+        "promotion must register the source-only space on the target"
+    );
+    // And the promoted KV row is readable through that registered space.
+    assert_branch_value(&mut database, "default", "extra", b"k", b"v");
+}
+
+#[test]
+fn test_promotion_registers_multiple_source_only_spaces_in_one_index() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    for name in ["extra_a", "extra_b"] {
+        database
+            .spaces(branch("feature"))
+            .expect("space service opens")
+            .create(space(name))
+            .expect("space create succeeds");
+        database
+            .kv(branch("feature"), space(name))
+            .expect("KV opens")
+            .put(key(b"k"), value(name.as_bytes()))
+            .expect("kv put succeeds");
+    }
+
+    database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("promote succeeds");
+
+    // Both source-only spaces must survive in the target's single rewritten
+    // space index — a per-space index write would clobber all but the last.
+    let listed = database
+        .spaces(branch("default"))
+        .expect("space service opens")
+        .list()
+        .expect("list succeeds");
+    assert!(
+        listed.iter().any(|s| s.as_str() == "extra_a"),
+        "extra_a must be registered"
+    );
+    assert!(
+        listed.iter().any(|s| s.as_str() == "extra_b"),
+        "extra_b must be registered"
+    );
+    assert_branch_value(&mut database, "default", "extra_a", b"k", b"extra_a");
+    assert_branch_value(&mut database, "default", "extra_b", b"k", b"extra_b");
+}
+
+#[test]
 fn promote_of_unrelated_branches_is_rejected() {
     let mut database = open_cache_database().expect("cache open succeeds");
     database
