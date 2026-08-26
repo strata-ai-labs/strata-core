@@ -65,8 +65,15 @@ db.kv.put("k", "v2")
 db.kv.get("k", as_of=r.commit.timestamp)   # b"v1"
 ```
 
-There is no merge command in this line — bring work across branches by
-re-applying writes.
+Bring work across branches with compare and merge. `branch diff` reports what
+differs between two branches across every primitive; `branch preview` reports
+the conflicts a merge would hit without touching either branch; `branch merge`
+promotes a source branch's changes into a target as one atomic commit, under
+`strict` (refuse on any conflict) or `source-wins`. Key-value, JSON, and vectors
+merge; events and graphs are diff-only (append-only and structural data do not
+three-way merge). These are live in the CLI, wire, and MCP surfaces today (see
+CLI equivalents below); the Python `db.branches.diff/preview/merge` helpers land
+with the next SDK release.
 
 ## Errors: recover by code, never by message
 
@@ -109,6 +116,8 @@ strata ./mydb kv put greeting hello
 strata ./mydb kv get greeting
 strata --json ./mydb kv get greeting     # {"type": ..., "data": ...} envelope
 strata ./mydb branch fork default experiment
+strata ./mydb branch diff default experiment          # what differs, per primitive
+strata ./mydb branch merge experiment default         # promote (strict by default)
 strata <db> mcp serve                    # MCP over stdio (~20 tools)
 ```
 
