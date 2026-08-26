@@ -25,7 +25,7 @@
 
 - [Create empty branch](https://stratadb.org/docs/branch/create.md): Create a new empty root branch.
 - [Delete branch](https://stratadb.org/docs/branch/delete.md): Delete an active branch and release its storage claims.
-- [Compare branches](https://stratadb.org/docs/branch/diff.md): Compare two branches and report the entities that differ.
+- [Compare branches](https://stratadb.org/docs/branch/diff.md): Compare two branches and report the entities that differ across every primitive.
 - [Fork branch from current head](https://stratadb.org/docs/branch/fork.md): Fork a new branch from the current head of a source branch.
 - [Fork branch at timestamp](https://stratadb.org/docs/branch/fork_at_timestamp.md): Fork a new branch from a retained source timestamp.
 - [Fork branch at version](https://stratadb.org/docs/branch/fork_at_version.md): Fork a new branch from a retained source commit version.

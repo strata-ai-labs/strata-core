@@ -1,11 +1,17 @@
-caption: Compare a fork against the branch it came from.
+caption: Compare a fork against the branch it came from, across primitives.
 steps:
+  - call: vector.collection.create
+    args: { collection: notes, dimension: 2, metric: cosine }
   - call: kv.put
     args: { key: config, value: base }
   - call: branch.fork
     args: { source: default, branch: experiment }
   - call: kv.put
     args: { key: config, value: tuned, branch: experiment }
-    note: diverge on the fork
+    note: diverge the key-value entry on the fork
+  - call: vector.upsert
+    args: { collection: notes, key: n1, vector: [0.1, 0.2], branch: experiment }
+    note: add a vector on the fork
   - call: branch.diff
     args: { branch_a: default, branch_b: experiment }
+    note: reports the key-value change and the new vector, grouped by capability
