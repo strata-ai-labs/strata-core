@@ -385,3 +385,209 @@ fn promote_of_unrelated_branches_is_rejected() {
     assert_eq!(error.class(), EngineErrorClass::InvalidInput);
     assert_eq!(error.code(), "invalid_argument.engine.branch_point");
 }
+
+#[test]
+fn test_repeated_promotion_incorporates_prior_merge() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    {
+        let mut kv = database
+            .kv(branch("default"), space("default"))
+            .expect("KV opens");
+        kv.put(key(b"k"), value(b"base")).expect("default base");
+    }
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    {
+        let mut kv = database
+            .kv(branch("feature"), space("default"))
+            .expect("KV opens");
+        kv.put(key(b"k"), value(b"v1")).expect("feature v1");
+    }
+
+    // First promotion incorporates feature@v1 into default.
+    let first = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("first strict promote succeeds");
+    assert!(first.conflicts().is_empty());
+    let first_version = first.target_version().expect("first promote committed");
+    assert_branch_value(&mut database, "default", "default", b"k", b"v1");
+
+    // Feature advances past the merge.
+    {
+        let mut kv = database
+            .kv(branch("feature"), space("default"))
+            .expect("KV opens");
+        kv.put(key(b"k"), value(b"v2")).expect("feature v2");
+    }
+
+    // The second promotion must diff against the recorded merge edge, not the
+    // original fork point: default's k=v1 was itself incorporated from feature,
+    // so it is not a conflicting target-side change.
+    let second = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("second strict promote must not false-conflict");
+    assert!(
+        second.conflicts().is_empty(),
+        "repeated promotion must not conflict on already-merged changes"
+    );
+    // The branch point advanced to the first merge's target commit.
+    assert_eq!(second.branch_point(), first_version);
+    assert_branch_value(&mut database, "default", "default", b"k", b"v2");
+}
+
+#[test]
+fn test_prior_merge_from_another_source_does_not_shift_the_branch_point() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    {
+        let mut kv = database
+            .kv(branch("default"), space("default"))
+            .expect("KV opens");
+        kv.put(key(b"k"), value(b"base")).expect("default base");
+    }
+    // Two features fork from the same base state (default@k=base).
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature_a"))
+        .expect("fork a succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature_b"))
+        .expect("fork b succeeds");
+    {
+        let mut kv = database
+            .kv(branch("feature_a"), space("default"))
+            .expect("KV opens");
+        kv.put(key(b"k"), value(b"a1")).expect("feature_a a1");
+    }
+    {
+        let mut kv = database
+            .kv(branch("feature_b"), space("default"))
+            .expect("KV opens");
+        kv.put(key(b"k"), value(b"b1")).expect("feature_b b1");
+    }
+
+    // Promote feature_a: default now holds a1, with a merge edge from feature_a.
+    database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature_a"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("promote a succeeds");
+    assert_branch_value(&mut database, "default", "default", b"k", b"a1");
+
+    // Promoting feature_b must use feature_b's OWN fork base (k=base), not the
+    // merge edge recorded for feature_a. feature_b changed base->b1 while default
+    // changed base->a1, so this is a genuine conflict — not a clean re-apply.
+    let error = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature_b"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect_err("a merge edge from another source is a genuine conflict");
+    assert_eq!(error.class(), EngineErrorClass::Conflict);
+    assert_eq!(error.code(), "conflict.engine.promotion");
+}
+
+#[test]
+fn test_recreated_source_after_merge_uses_its_own_fork_base() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    {
+        let mut kv = database
+            .kv(branch("default"), space("default"))
+            .expect("KV opens");
+        kv.put(key(b"k"), value(b"base")).expect("default base");
+    }
+    // First incarnation of `feature`: fork, diverge, promote into default.
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork gen1 succeeds");
+    {
+        let mut kv = database
+            .kv(branch("feature"), space("default"))
+            .expect("KV opens");
+        kv.put(key(b"k"), value(b"v1")).expect("feature v1");
+    }
+    database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("promote gen1 succeeds");
+    // default now holds v1, with a merge edge recorded from feature@gen1.
+
+    // default advances locally AFTER the merge, so the stale merge state (v1) and
+    // the state the re-fork will inherit (default_after) genuinely differ.
+    {
+        let mut kv = database
+            .kv(branch("default"), space("default"))
+            .expect("KV opens");
+        kv.put(key(b"k"), value(b"default_after"))
+            .expect("default advances after merge");
+    }
+
+    // Delete `feature` and re-fork it — a new generation reusing the same name
+    // (and thus the same branch id) — from default's new head.
+    database
+        .branches()
+        .expect("branch service opens")
+        .delete(&branch("feature"))
+        .expect("delete gen1 succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("re-fork gen2 succeeds");
+    {
+        let mut kv = database
+            .kv(branch("feature"), space("default"))
+            .expect("KV opens");
+        kv.put(key(b"k"), value(b"w1")).expect("feature gen2 w1");
+    }
+
+    // Promoting the re-forked feature must use ITS OWN fork base (default_after),
+    // not the stale merge edge from the deleted gen1 incarnation. Against its own
+    // fork base, default is unchanged, so this is a clean apply — matching the
+    // stale merge state (v1) instead would falsely conflict on default_after.
+    let outcome = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("re-forked feature promotes cleanly against its own fork base");
+    assert!(
+        outcome.conflicts().is_empty(),
+        "a re-forked source must diff against its own fork, not a stale merge edge"
+    );
+    assert_branch_value(&mut database, "default", "default", b"k", b"w1");
+}

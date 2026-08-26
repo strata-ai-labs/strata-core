@@ -83,6 +83,22 @@ fn resolve_base_point(
     source: &BranchCatalogRecord,
     target: &BranchCatalogRecord,
 ) -> EngineResult<BasePoint> {
+    // A prior promotion of `source` into `target` advances the branch point past
+    // the fork: the target's post-merge state already incorporates the source, so
+    // a repeated promotion diffed against the fork would re-surface already-merged
+    // changes as false conflicts. The recorded merge edge is a valid branch-point
+    // source (contract §Branch Point); read the target's own post-merge state.
+    if let Some(merge) = target.merge_parent() {
+        if merge.source_branch_id() == source.branch_id()
+            && merge.source_generation() == source.generation()
+        {
+            return Ok(base_point_from(
+                target,
+                merge.merged_at(),
+                merge.merged_timestamp(),
+            ));
+        }
+    }
     if let Some(parent) = target.parent() {
         if parent.branch_id() == source.branch_id() && parent.generation() == source.generation() {
             return Ok(base_point_from(
