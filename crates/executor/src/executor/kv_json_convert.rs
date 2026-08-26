@@ -451,6 +451,9 @@ const fn compared_capability(capability: EngineComparedCapability) -> ComparedCa
         EngineComparedCapability::Json => ComparedCapability::Json,
         EngineComparedCapability::Vector => ComparedCapability::Vector,
         EngineComparedCapability::Event => ComparedCapability::Event,
+        EngineComparedCapability::GraphNode => ComparedCapability::GraphNode,
+        EngineComparedCapability::GraphEdge => ComparedCapability::GraphEdge,
+        EngineComparedCapability::GraphOntology => ComparedCapability::GraphOntology,
     }
 }
 

@@ -27,6 +27,21 @@
           "const": "event",
           "description": "The event capability (comparison only).",
           "type": "string"
+        },
+        {
+          "const": "graph_node",
+          "description": "The graph node capability (comparison only).",
+          "type": "string"
+        },
+        {
+          "const": "graph_edge",
+          "description": "The graph edge capability (comparison only).",
+          "type": "string"
+        },
+        {
+          "const": "graph_ontology",
+          "description": "The graph ontology capability (comparison only).",
+          "type": "string"
         }
       ]
     },
