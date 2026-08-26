@@ -13,13 +13,18 @@
 //! past any index watermark, so a promote that writes authored vector rows keeps
 //! search correct without touching the manifest.
 
+use std::collections::BTreeMap;
+
+use crate::api::{ComparedCapability, ConflictKind, ConflictStrategyResult, PreviewConflict};
 use crate::branch::adapter::{
     CapabilityBranchAdapter, ComparableEntity, DerivedDisposition, EntitySummary,
 };
+use crate::branch::catalog::BranchCatalogRecord;
 use crate::data::kv::ProductSpace;
 use crate::diagnostics::{EngineError, EngineResult};
 use crate::persistence::{
-    decode_vector_key, encode_vector_space_prefix, PersistenceReadRow, RowClass,
+    decode_vector_key, encode_vector_collection_prefix, encode_vector_space_prefix,
+    PersistenceReadRow, ReadSelector, RowAddress, RowClass, RowMutation, StoragePersistence,
 };
 
 /// The vector capability's branch adapter.
@@ -74,6 +79,92 @@ impl CapabilityBranchAdapter for VectorBranchAdapter {
             row.commit_version(),
         ))
     }
+}
+
+/// Plans carrying `source`'s vector collection **configs** into `target` during a
+/// promotion, per space. Collection config rows (`RowClass::VectorCollection`)
+/// are not authored vector data, so the capability adapter above never carries
+/// them; without this, promoted vectors land behind a missing config and reads
+/// fail `not_found.engine.vector_collection`.
+///
+/// A collection's entire config is `(dimension, metric)` — all structural — and
+/// is encoded deterministically, so the stored bytes are a faithful identity:
+/// identical bytes are the same collection; any difference is an incompatible
+/// dimension or metric change (contract Vector minimum: conflict on
+/// metric/dimension). A source-only collection is carried; a collection present
+/// on both with a divergent config is reported as a `ValueDivergence` conflict.
+/// Like any conflicting entity, the source config is queued as a mutation and
+/// only lands when the caller commits — strict refuses on the conflict, source-
+/// wins overwrites.
+pub(crate) fn plan_collection_promotion(
+    persistence: &mut StoragePersistence,
+    source: &BranchCatalogRecord,
+    target: &BranchCatalogRecord,
+    spaces: &[ProductSpace],
+    strategy_result: ConflictStrategyResult,
+) -> EngineResult<(Vec<RowMutation>, Vec<PreviewConflict>)> {
+    let mut mutations = Vec::new();
+    let mut conflicts = Vec::new();
+    for space in spaces {
+        let prefix = encode_vector_collection_prefix(space);
+        let target_configs = collection_config_rows(persistence, target, &prefix)?;
+        for (key, source_value) in collection_config_rows(persistence, source, &prefix)? {
+            match target_configs.get(&key) {
+                Some(target_value) if *target_value == source_value => continue,
+                Some(target_value) => {
+                    let identity = key
+                        .strip_prefix(prefix.as_slice())
+                        .unwrap_or(key.as_slice())
+                        .to_vec();
+                    conflicts.push(PreviewConflict::new(
+                        ComparedCapability::Vector,
+                        space.clone(),
+                        identity,
+                        Some(source_value.clone()),
+                        Some(target_value.clone()),
+                        ConflictKind::ValueDivergence,
+                        strategy_result,
+                    ));
+                }
+                None => {}
+            }
+            mutations.push(RowMutation::put(
+                RowAddress::new(target.storage_branch_id(), RowClass::VectorCollection, key),
+                source_value,
+            ));
+        }
+    }
+    Ok((mutations, conflicts))
+}
+
+/// Every visible collection config row for `record` under `prefix`, keyed by the
+/// full storage key so source and target rows for the same collection align.
+fn collection_config_rows(
+    persistence: &mut StoragePersistence,
+    record: &BranchCatalogRecord,
+    prefix: &[u8],
+) -> EngineResult<BTreeMap<Vec<u8>, Vec<u8>>> {
+    let rows = persistence.scan_prefix(
+        record.storage_branch_id(),
+        RowClass::VectorCollection,
+        prefix.to_vec(),
+        ReadSelector::Latest,
+        None,
+    )?;
+    let mut configs = BTreeMap::new();
+    for row in &rows {
+        if row.is_tombstone() {
+            continue;
+        }
+        let value = row.value().ok_or_else(|| {
+            EngineError::corruption(
+                "data_loss.engine.vector_collection",
+                "stored vector collection row is present but carries no value",
+            )
+        })?;
+        configs.insert(row.key().to_vec(), value.to_vec());
+    }
+    Ok(configs)
 }
 
 #[cfg(test)]

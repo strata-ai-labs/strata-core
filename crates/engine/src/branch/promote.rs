@@ -20,6 +20,7 @@ use crate::branch::adapter::EntitySummary;
 use crate::branch::catalog::BranchCatalogRecord;
 use crate::branch::preview::{adapter_for, changed, normalized, three_way, value_of};
 use crate::control::space::{registered_spaces, registration_mutations_for_many};
+use crate::data::vector::plan_collection_promotion;
 use crate::diagnostics::EngineResult;
 use crate::persistence::{RowMutation, StoragePersistence};
 
@@ -122,6 +123,14 @@ pub(crate) fn plan_promotion(
         target,
         &source_spaces,
     )?);
+
+    // Carry vector collection configs so promoted vectors are usable on the
+    // target rather than orphaned behind a missing collection config (contract
+    // Vector minimum). An incompatible dimension/metric surfaces as a conflict.
+    let (collection_mutations, collection_conflicts) =
+        plan_collection_promotion(persistence, source, target, &source_spaces, strategy_result)?;
+    mutations.extend(collection_mutations);
+    conflicts.extend(collection_conflicts);
 
     Ok(PromotionPlan {
         branch_point,

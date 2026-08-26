@@ -3,8 +3,8 @@
 mod common;
 
 use strata_engine::{
-    BranchStateSelector, ComparedCapability, Database, PromotionStrategy, VectorCollectionName,
-    VectorConfig, VectorDistanceMetric, VectorEmbedding, VectorKey,
+    BranchStateSelector, ComparedCapability, Database, EngineErrorClass, PromotionStrategy,
+    VectorCollectionName, VectorConfig, VectorDistanceMetric, VectorEmbedding, VectorKey,
 };
 
 use common::{branch, open_cache_database, space};
@@ -109,5 +109,185 @@ fn vector_compare_and_promote_across_a_fork() {
             space.added().is_empty() && space.removed().is_empty() && space.modified().is_empty()
         }),
         "vectors are in sync after promote",
+    );
+}
+
+#[test]
+fn test_promotion_carries_source_created_collection_config() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // feature creates a brand-new collection (absent from default) and fills it.
+    database
+        .vector(branch("feature"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create collection");
+    upsert(&mut database, "feature", "v1", vec![0.0, 1.0]);
+
+    // Precondition: the target has no such collection.
+    assert!(database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .collection_info(&collection())
+        .expect("info succeeds")
+        .is_none());
+
+    let outcome = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("strict promote succeeds");
+    assert!(outcome.conflicts().is_empty());
+
+    // The collection config must be carried so the collection is usable on the
+    // target, rather than the promoted vectors being orphaned behind a missing
+    // config (reads would fail not_found.engine.vector_collection).
+    let info = database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .collection_info(&collection())
+        .expect("info succeeds")
+        .expect("source-created collection must be registered on the target");
+    assert_eq!(info.config().dimension(), 2);
+    assert_eq!(info.config().metric(), VectorDistanceMetric::Cosine);
+    // And the promoted vector is readable through the now-usable collection.
+    assert_eq!(
+        database
+            .vector(branch("default"), space("default"))
+            .expect("vector service opens")
+            .count(&collection())
+            .expect("count succeeds"),
+        1,
+        "the promoted vector is visible through the carried collection"
+    );
+}
+
+#[test]
+fn test_promotion_conflicts_on_incompatible_collection_config() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // Both branches independently create the same-named collection with an
+    // incompatible dimension — a structural conflict.
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create default collection");
+    database
+        .vector(branch("feature"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(4, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create feature collection");
+
+    let error = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect_err("incompatible collection config must conflict under strict");
+    assert_eq!(error.class(), EngineErrorClass::Conflict);
+    assert_eq!(error.code(), "conflict.engine.promotion");
+
+    // Strict refused with zero target mutation: default keeps its own config.
+    assert_eq!(
+        database
+            .vector(branch("default"), space("default"))
+            .expect("vector service opens")
+            .collection_info(&collection())
+            .expect("info succeeds")
+            .expect("default collection still present")
+            .config()
+            .dimension(),
+        2,
+        "the target's collection config is untouched by a refused promotion"
+    );
+}
+
+#[test]
+fn test_promotion_carries_collection_in_a_source_only_space() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // feature creates a collection inside a brand-new space, then fills it — the
+    // realistic "new namespace + new collection on a branch" flow. The space is
+    // carried by the space-registration path and the collection by this one.
+    database
+        .spaces(branch("feature"))
+        .expect("space service opens")
+        .create(space("extra"))
+        .expect("space create succeeds");
+    database
+        .vector(branch("feature"), space("extra"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(3, VectorDistanceMetric::Euclidean).expect("valid config"),
+        )
+        .expect("create collection");
+    database
+        .vector(branch("feature"), space("extra"))
+        .expect("vector service opens")
+        .upsert(
+            collection(),
+            VectorKey::new("v1").expect("key"),
+            VectorEmbedding::new(vec![1.0, 2.0, 3.0]).expect("embedding"),
+            None,
+        )
+        .expect("upsert");
+
+    let outcome = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("strict promote succeeds");
+    assert!(outcome.conflicts().is_empty());
+
+    // The new space is registered AND the collection in it is usable on target.
+    let info = database
+        .vector(branch("default"), space("extra"))
+        .expect("vector service opens")
+        .collection_info(&collection())
+        .expect("info succeeds")
+        .expect("collection carried into the newly-registered space");
+    assert_eq!(info.config().dimension(), 3);
+    assert_eq!(info.config().metric(), VectorDistanceMetric::Euclidean);
+    assert_eq!(
+        database
+            .vector(branch("default"), space("extra"))
+            .expect("vector service opens")
+            .count(&collection())
+            .expect("count succeeds"),
+        1
     );
 }
