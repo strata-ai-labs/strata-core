@@ -58,6 +58,41 @@ pub(crate) fn registration_mutations(
     ])
 }
 
+/// The mutations that register every `candidate` space not already present on
+/// `record`, as one atomic batch: the space index is rewritten a single time
+/// (adding all new spaces at once, so callers may pass many without the per-call
+/// index writes clobbering each other) plus one catalog row per newly-added
+/// space. Returns an empty vec when every candidate is already registered.
+pub(crate) fn registration_mutations_for_many(
+    persistence: &mut StoragePersistence,
+    record: &BranchCatalogRecord,
+    candidates: &[ProductSpace],
+) -> EngineResult<Vec<RowMutation>> {
+    let mut spaces = read_required_space_index(persistence, record)?;
+    let added: Vec<ProductSpace> = candidates
+        .iter()
+        .filter(|candidate| !spaces.iter().any(|existing| existing == *candidate))
+        .cloned()
+        .collect();
+    if added.is_empty() {
+        return Ok(Vec::new());
+    }
+    spaces.extend(added.iter().cloned());
+    spaces.sort();
+    spaces.dedup();
+    let mut mutations = vec![RowMutation::put(
+        space_address(record, space_index_key()),
+        encode_space_index(&spaces)?,
+    )];
+    for space in &added {
+        mutations.push(RowMutation::put(
+            space_address(record, space_catalog_key(space.as_str())),
+            encode_space_record(space),
+        ));
+    }
+    Ok(mutations)
+}
+
 pub(crate) fn registered_spaces(
     persistence: &mut StoragePersistence,
     record: &BranchCatalogRecord,

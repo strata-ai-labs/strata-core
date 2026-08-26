@@ -19,6 +19,7 @@ use crate::api::{
 use crate::branch::adapter::EntitySummary;
 use crate::branch::catalog::BranchCatalogRecord;
 use crate::branch::preview::{adapter_for, changed, normalized, three_way, value_of};
+use crate::control::space::{registered_spaces, registration_mutations_for_many};
 use crate::diagnostics::EngineResult;
 use crate::persistence::{RowMutation, StoragePersistence};
 
@@ -108,6 +109,19 @@ pub(crate) fn plan_promotion(
             resolved,
         );
     }
+
+    // Carry source-only spaces so promoted rows land in a space the target's
+    // catalog registers, rather than orphaned outside it — a visible data change
+    // must carry the branch-control metadata that explains it (contract Binding
+    // Decision #8). The registration commits atomically with the data mutations,
+    // so a strict refusal (which never commits the plan) leaves the target
+    // untouched, spaces included.
+    let source_spaces = registered_spaces(persistence, source)?;
+    mutations.extend(registration_mutations_for_many(
+        persistence,
+        target,
+        &source_spaces,
+    )?);
 
     Ok(PromotionPlan {
         branch_point,
