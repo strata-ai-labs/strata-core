@@ -511,6 +511,12 @@ pub enum ComparedCapability {
     Vector,
     /// The event capability (comparison only).
     Event,
+    /// The graph node capability (comparison only).
+    GraphNode,
+    /// The graph edge capability (comparison only).
+    GraphEdge,
+    /// The graph ontology capability (comparison only).
+    GraphOntology,
 }
 
 /// One entity that differs between two branches, exposed through the command

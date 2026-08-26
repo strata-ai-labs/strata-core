@@ -362,3 +362,74 @@ fn branch_diff_reports_event_changes() {
     assert_eq!(events.added().len(), 1, "feature appended one event");
     assert!(events.modified().is_empty() && events.removed().is_empty());
 }
+
+#[test]
+fn branch_diff_reports_graph_changes() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    executor
+        .execute(Command::GraphCreate {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+        })
+        .expect("create graph");
+    executor
+        .execute(Command::GraphAddNode {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            node_id: "doc".to_owned(),
+            properties: None,
+            binding: None,
+            object_type: None,
+        })
+        .expect("add doc node");
+    executor
+        .execute(Command::BranchForkCurrent {
+            source: "default".to_owned(),
+            branch: "feature".to_owned(),
+        })
+        .expect("fork succeeds");
+    executor
+        .execute(Command::GraphAddNode {
+            branch: Some("feature".to_owned()),
+            space: None,
+            graph: "deps".to_owned(),
+            node_id: "chunk".to_owned(),
+            properties: None,
+            binding: None,
+            object_type: None,
+        })
+        .expect("add chunk node on feature");
+    executor
+        .execute(Command::GraphAddEdge {
+            branch: Some("feature".to_owned()),
+            space: None,
+            graph: "deps".to_owned(),
+            src: "doc".to_owned(),
+            edge_type: "contains".to_owned(),
+            dst: "chunk".to_owned(),
+            weight: None,
+            properties: None,
+        })
+        .expect("add edge on feature");
+
+    // The diff reports graph changes per row class: a new node and a new edge.
+    let comparison = diff(&mut executor, "default", "feature", None);
+    let nodes = comparison
+        .spaces()
+        .iter()
+        .find(|entry| {
+            entry.capability() == ComparedCapability::GraphNode && entry.space() == "default"
+        })
+        .expect("a graph node diff for the space");
+    assert_eq!(nodes.added().len(), 1, "one node added on feature");
+    let edges = comparison
+        .spaces()
+        .iter()
+        .find(|entry| {
+            entry.capability() == ComparedCapability::GraphEdge && entry.space() == "default"
+        })
+        .expect("a graph edge diff for the space");
+    assert_eq!(edges.added().len(), 1, "one edge added on feature");
+}

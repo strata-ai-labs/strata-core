@@ -1,5 +1,6 @@
 //! Graph core capability.
 
+mod adapter;
 mod adjacency;
 mod analytics;
 mod iterative;
@@ -10,6 +11,9 @@ mod service;
 mod traversal;
 mod types;
 
+pub(crate) use adapter::{
+    GraphEdgeBranchAdapter, GraphNodeBranchAdapter, GraphOntologyBranchAdapter,
+};
 pub(crate) use adjacency::GraphAdjacencyIndexBuilder;
 pub use adjacency::{GraphAdjacencyEdge, GraphAdjacencyIndex, GraphAnalyticsBudget};
 pub use analytics::{GraphLccResult, GraphSsspResult, GraphWccResult};
