@@ -114,6 +114,15 @@ pub(crate) trait CapabilityBranchAdapter {
     /// How this capability's rows are disposed across branch workflows.
     fn derived_disposition(&self) -> DerivedDisposition;
 
+    /// Whether this capability participates in promotion (merge). Comparison
+    /// covers every authored capability, but promotion applies a three-way merge
+    /// of independent per-entity changes — a model that does not fit append-only,
+    /// sequenced streams, whose divergent appends cannot be reordered or merged.
+    /// Such capabilities are compared but never promoted; the default is `true`.
+    fn supports_promotion(&self) -> bool {
+        true
+    }
+
     /// The storage-key prefix that scopes this capability's rows to one space,
     /// so a branch workflow can enumerate them with a prefix scan.
     fn space_prefix(&self, space: &ProductSpace) -> Vec<u8>;

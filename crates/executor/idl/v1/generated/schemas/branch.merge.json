@@ -22,6 +22,11 @@
           "const": "vector",
           "description": "The vector capability.",
           "type": "string"
+        },
+        {
+          "const": "event",
+          "description": "The event capability (comparison only).",
+          "type": "string"
         }
       ]
     },

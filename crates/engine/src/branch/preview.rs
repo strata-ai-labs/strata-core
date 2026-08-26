@@ -21,26 +21,31 @@ use crate::api::{
 use crate::branch::adapter::{CapabilityBranchAdapter, DerivedDisposition, EntitySummary};
 use crate::branch::catalog::BranchCatalogRecord;
 use crate::control::space::registered_spaces;
+use crate::data::event::EventBranchAdapter;
 use crate::data::json::JsonBranchAdapter;
 use crate::data::kv::{KvBranchAdapter, ProductSpace};
 use crate::data::vector::VectorBranchAdapter;
 use crate::diagnostics::{EngineError, EngineResult};
 use crate::persistence::{ReadSelector, StoragePersistence};
 
-/// The authored capabilities previewed and promoted today, in report order.
-const AUTHORED_CAPABILITIES: [ComparedCapability; 3] = [
+/// The authored capabilities a branch workflow enumerates, in report order.
+/// Comparison covers all of them; promotion additionally filters to those whose
+/// adapter reports `supports_promotion` (see `three_way`).
+const AUTHORED_CAPABILITIES: [ComparedCapability; 4] = [
     ComparedCapability::KeyValue,
     ComparedCapability::Json,
     ComparedCapability::Vector,
+    ComparedCapability::Event,
 ];
 
 /// The branch adapter for one capability. Single source of truth for the
-/// capability→adapter mapping, shared by preview and promotion.
+/// capability→adapter mapping, shared by compare, preview, and promotion.
 pub(crate) fn adapter_for(capability: ComparedCapability) -> Box<dyn CapabilityBranchAdapter> {
     match capability {
         ComparedCapability::KeyValue => Box::new(KvBranchAdapter),
         ComparedCapability::Json => Box::new(JsonBranchAdapter),
         ComparedCapability::Vector => Box::new(VectorBranchAdapter),
+        ComparedCapability::Event => Box::new(EventBranchAdapter),
     }
 }
 
@@ -190,7 +195,13 @@ pub(crate) fn three_way(
     let mut entities = Vec::new();
     for space in &spaces {
         for (capability, adapter) in &adapters {
-            if adapter.derived_disposition() != DerivedDisposition::Authored {
+            // The three-way scan drives promotion and its preview, so it covers
+            // only capabilities that support promotion. Comparison (compare.rs)
+            // uses the same registry but includes every authored capability, so
+            // compare-only capabilities such as event streams still diff.
+            if adapter.derived_disposition() != DerivedDisposition::Authored
+                || !adapter.supports_promotion()
+            {
                 continue;
             }
             let base_states = entity_states(
