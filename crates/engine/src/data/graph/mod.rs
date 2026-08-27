@@ -12,7 +12,8 @@ mod traversal;
 mod types;
 
 pub(crate) use adapter::{
-    GraphEdgeBranchAdapter, GraphNodeBranchAdapter, GraphOntologyBranchAdapter,
+    GraphEdgeBranchAdapter, GraphMetadataBranchAdapter, GraphNodeBranchAdapter,
+    GraphOntologyBranchAdapter,
 };
 pub(crate) use adjacency::GraphAdjacencyIndexBuilder;
 pub use adjacency::{GraphAdjacencyEdge, GraphAdjacencyIndex, GraphAnalyticsBudget};

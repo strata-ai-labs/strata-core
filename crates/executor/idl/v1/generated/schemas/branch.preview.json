@@ -63,6 +63,11 @@
           "type": "string"
         },
         {
+          "const": "graph_metadata",
+          "description": "The graph metadata capability (comparison only).",
+          "type": "string"
+        },
+        {
           "const": "graph_node",
           "description": "The graph node capability (comparison only).",
           "type": "string"
