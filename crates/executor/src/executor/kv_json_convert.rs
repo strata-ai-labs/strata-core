@@ -1,9 +1,9 @@
 use super::{
     output_json_index_type, BatchExistsItemResult, BatchGetItemResult, BatchItem, BatchItemResult,
-    BranchCleanupItem, BranchCleanupSummary, BranchComparisonItem, BranchItem, BranchParentItem,
-    BranchPreviewItem, BranchStatus, BranchSummary, Bytes, CommitDurability, CommitOutcome,
-    CommitReceipt, CommitVersion, ComparedCapability, ComparedEntityItem, ConflictKind,
-    ConflictStrategyResult, DerivedStateDisposition, DerivedStateReportItem,
+    BranchCleanupItem, BranchCleanupSummary, BranchComparisonItem, BranchItem, BranchMergeItem,
+    BranchParentItem, BranchPreviewItem, BranchStatus, BranchSummary, Bytes, CommitDurability,
+    CommitOutcome, CommitReceipt, CommitVersion, ComparedCapability, ComparedEntityItem,
+    ConflictKind, ConflictStrategyResult, DerivedStateDisposition, DerivedStateReportItem,
     EngineBranchComparison, EngineBranchPreview, EngineBranchStatus, EngineComparedCapability,
     EngineComparedEntity, EngineConflictKind, EngineConflictStrategyResult,
     EngineDerivedStateDisposition, EngineDerivedStateReport, EngineJsonIndexDefinition,
@@ -34,6 +34,15 @@ pub(super) fn branch_item(summary: &BranchSummary) -> BranchItem {
                 parent.generation(),
                 parent.fork_version().as_u64(),
                 parent.fork_timestamp().map(Timestamp::as_micros),
+            )
+        }),
+        summary.merge_parent().map(|merge| {
+            BranchMergeItem::new(
+                merge.source_name().as_str().to_owned(),
+                merge.source_branch_id().to_string(),
+                merge.source_generation(),
+                merge.merged_at().as_u64(),
+                merge.merged_timestamp().map(Timestamp::as_micros),
             )
         }),
         summary.created_at().map(CommitVersion::as_u64),
@@ -636,5 +645,82 @@ mod tests {
             .contains(&ComparedCapability::Event));
         assert!(item.target_version().is_some());
         assert!(item.target_timestamp().is_some());
+    }
+
+    #[test]
+    fn branch_item_carries_promotion_lineage_onto_the_wire() {
+        let mut database = Database::open_cache(CacheOpenOptions::new())
+            .map(DatabaseOpenOutcome::into_database)
+            .expect("cache open");
+        let default = || BranchName::new("default").expect("branch");
+        let feature = || BranchName::new("feature").expect("branch");
+
+        // Fork, drop, and re-fork `feature` so its generation is 2 — the wire item
+        // must carry the real generation, not a trivial constant.
+        database
+            .branches()
+            .expect("branch service")
+            .fork_current(&default(), feature())
+            .expect("fork gen1");
+        database
+            .branches()
+            .expect("branch service")
+            .delete(&feature())
+            .expect("delete gen1");
+        database
+            .branches()
+            .expect("branch service")
+            .fork_current(&default(), feature())
+            .expect("fork gen2");
+        database
+            .kv(feature(), ProductSpace::new("default").expect("space"))
+            .expect("kv opens")
+            .put(KvKey::new(b"k").expect("key"), KvValue::new(b"v"))
+            .expect("put");
+        database
+            .branches()
+            .expect("branch service")
+            .promote(&feature(), &default(), PromotionStrategy::Strict)
+            .expect("promote");
+
+        // The target summary records the merge edge; the converter must carry every
+        // field faithfully onto the wire item, not drop or flatten it.
+        let feature_summary = database
+            .branches()
+            .expect("branch service")
+            .get(&feature())
+            .expect("source summary");
+        let summary = database
+            .branches()
+            .expect("branch service")
+            .get(&default())
+            .expect("target summary");
+        let engine_merge = summary
+            .merge_parent()
+            .expect("engine records the merge edge")
+            .clone();
+        assert_eq!(
+            engine_merge.source_generation(),
+            2,
+            "the re-forked feature is generation 2"
+        );
+
+        let item = super::branch_item(&summary);
+        let merge = item
+            .merge_parent()
+            .expect("promotion lineage present on the wire item");
+        assert_eq!(merge.source_name(), "feature");
+        assert_eq!(merge.source_generation(), feature_summary.generation());
+        assert_eq!(
+            merge.source_branch_id(),
+            feature_summary.branch_id().to_string()
+        );
+        assert_eq!(merge.merged_at(), engine_merge.merged_at().as_u64());
+        assert_eq!(
+            merge.merged_timestamp(),
+            engine_merge
+                .merged_timestamp()
+                .map(super::Timestamp::as_micros)
+        );
     }
 }
