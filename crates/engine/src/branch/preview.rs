@@ -154,16 +154,21 @@ fn resolve_base_point(
     // the fork: the target's post-merge state already incorporates the source, so
     // a repeated promotion diffed against the fork would re-surface already-merged
     // changes as false conflicts. The recorded merge edge is a valid branch-point
-    // source (contract §Branch Point); read the target's own post-merge state.
+    // source (contract §Branch Point). The base is the SOURCE's frontier at that
+    // merge (the LCA of source-now and target-now), read by version on the
+    // source's own timeline — NOT the target's post-merge commit, which also
+    // holds target-only rows and would re-surface them as spurious source
+    // deletions on the next promote.
     if let Some(merge) = target.merge_parent() {
         if merge.source_branch_id() == source.branch_id()
             && merge.source_generation() == source.generation()
         {
-            return Ok(base_point_from(
-                target,
-                merge.merged_at(),
-                merge.merged_timestamp(),
-            ));
+            if let Some(source_version) = merge.source_merged_version() {
+                return Ok(base_point_from(source, source_version, None));
+            }
+            // A merge edge written before the source frontier was recorded falls
+            // through to the fork base — non-destructive (it may re-surface
+            // already-merged changes, but never deletes target-only rows).
         }
     }
     if let Some(parent) = target.parent() {

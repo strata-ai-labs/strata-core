@@ -358,12 +358,20 @@ fn decode_merge_parent(
             let source_generation = cursor.u64("merge source generation")?;
             let merged_at = CommitVersion::new(cursor.u64("merged version")?);
             let merged_timestamp = cursor.optional_timestamp("merged timestamp")?;
+            // Tolerant append: a record written before the source-frontier field
+            // existed ends after the timestamp and decodes it as `None`.
+            let source_merged_version = if cursor.is_empty() {
+                None
+            } else {
+                cursor.optional_commit_version("source merged version")?
+            };
             Ok(Some(BranchMergeRecord::new(
                 source_name,
                 source_branch_id,
                 source_generation,
                 merged_at,
                 merged_timestamp,
+                source_merged_version,
             )))
         }
         _ => Err(EngineError::corruption(
@@ -407,6 +415,10 @@ fn encode_branch_body(out: &mut Vec<u8>, record: &BranchCatalogRecord) {
             out.extend_from_slice(&merge.source_generation().to_be_bytes());
             out.extend_from_slice(&merge.merged_at().as_u64().to_be_bytes());
             write_optional_timestamp(out, merge.merged_timestamp());
+            // Appended after the original merge-edge body so rows written before
+            // the source-frontier field existed still decode (they carry no
+            // trailing bytes and read back as `None`).
+            write_optional_commit_version(out, merge.source_merged_version());
         }
         None => out.push(0),
     }
@@ -741,11 +753,41 @@ mod tests {
                 2,
                 CommitVersion::new(42),
                 Some(Timestamp::from_micros(1_700_000)),
+                Some(CommitVersion::new(37)),
             ));
         let decoded =
             decode_branch_record(&encode_branch_record(&record)).expect("record must decode");
         assert_eq!(decoded, record);
-        assert!(decoded.merge_parent().is_some());
+        assert_eq!(
+            decoded
+                .merge_parent()
+                .expect("merge edge survives")
+                .source_merged_version(),
+            Some(CommitVersion::new(37))
+        );
+    }
+
+    #[test]
+    fn merge_edge_written_before_source_frontier_decodes_without_it() {
+        // A merge edge written before the source-frontier field existed ends
+        // after the merged timestamp; the decoder must tolerate the missing
+        // trailing field and read it back as `None` (falls back to the fork base).
+        let record = BranchCatalogRecord::root(BranchName::new("main").expect("valid branch"), 3)
+            .with_merge_parent(BranchMergeRecord::new(
+                BranchName::new("feature").expect("valid branch"),
+                BranchId::from_bytes([0x2a; BranchId::BYTE_LEN]),
+                2,
+                CommitVersion::new(42),
+                Some(Timestamp::from_micros(1_700_000)),
+                Some(CommitVersion::new(37)),
+            ));
+        let mut bytes = encode_branch_record(&record);
+        // Strip the trailing source-frontier field (presence byte + 8-byte version).
+        bytes.truncate(bytes.len() - 9);
+        let decoded = decode_branch_record(&bytes).expect("older merge edge must still decode");
+        let edge = decoded.merge_parent().expect("merge edge survives");
+        assert_eq!(edge.merged_at(), CommitVersion::new(42));
+        assert_eq!(edge.source_merged_version(), None);
     }
 
     #[test]
@@ -792,6 +834,7 @@ mod tests {
                     2,
                     CommitVersion::new(7),
                     None,
+                    Some(CommitVersion::new(5)),
                 ));
         let (kind, decoded) = decode_pending_branch_record(&encode_pending_branch_record(
             &record,
@@ -800,10 +843,9 @@ mod tests {
         .expect("promote intent decodes");
         assert_eq!(kind, BranchOperationKind::Promote);
         assert_eq!(decoded, record);
-        assert_eq!(
-            decoded.merge_parent().expect("edge").merged_at(),
-            CommitVersion::new(7)
-        );
+        let edge = decoded.merge_parent().expect("edge");
+        assert_eq!(edge.merged_at(), CommitVersion::new(7));
+        assert_eq!(edge.source_merged_version(), Some(CommitVersion::new(5)));
     }
 
     #[test]

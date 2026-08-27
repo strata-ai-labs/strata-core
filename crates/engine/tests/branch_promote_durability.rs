@@ -76,6 +76,31 @@ fn promotion_interrupted_before_lineage_publish_finalizes_on_reopen() {
         .merge_parent()
         .expect("recovery finalized the merge edge");
     assert_eq!(edge.source_name().as_str(), "feature");
+
+    // The source frontier captured in the recovered intent must survive
+    // finalization: advancing the source and re-promoting diffs against
+    // source-at-merge, so the new change applies cleanly instead of
+    // false-conflicting against a fork base. (Regression guard that the
+    // crash-recovery path carries the source-frontier version, not just the
+    // live promote path.)
+    {
+        let mut kv = db
+            .kv(branch("feature"), space("default"))
+            .expect("kv opens");
+        kv.put(key(b"k"), value(b"promoted2"))
+            .expect("feature advances past the recovered merge");
+    }
+    let second = db
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("repeated promote after recovery must not false-conflict");
+    assert!(second.conflicts().is_empty());
+    assert_branch_value(&mut db, "default", "default", b"k", b"promoted2");
     db.close().expect("close succeeds");
 }
 
