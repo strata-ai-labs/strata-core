@@ -510,6 +510,11 @@ pub enum ConflictKind {
     ValueDivergence,
     /// One side changed the value while the other deleted the entity.
     ModifyDeleteDivergence,
+    /// The two sides hold structurally incompatible schema for the same entity —
+    /// e.g. a vector collection created on both branches with a different
+    /// dimension or metric. No strategy can merge it, so promotion refuses under
+    /// both `Strict` and `SourceWins` rather than mixing incompatible shapes.
+    IncompatibleCollection,
 }
 
 /// What the selected strategy would do with a conflict.

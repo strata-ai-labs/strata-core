@@ -126,9 +126,10 @@ pub(crate) fn plan_promotion(
 
     // Carry vector collection configs so promoted vectors are usable on the
     // target rather than orphaned behind a missing collection config (contract
-    // Vector minimum). An incompatible dimension/metric surfaces as a conflict.
+    // Vector minimum). An incompatible dimension/metric surfaces as a structural
+    // conflict that refuses the promotion under every strategy (see the service).
     let (collection_mutations, collection_conflicts) =
-        plan_collection_promotion(persistence, source, target, &source_spaces, strategy_result)?;
+        plan_collection_promotion(persistence, source, target, &source_spaces)?;
     mutations.extend(collection_mutations);
     conflicts.extend(collection_conflicts);
 

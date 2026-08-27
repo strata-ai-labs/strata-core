@@ -101,7 +101,6 @@ pub(crate) fn plan_collection_promotion(
     source: &BranchCatalogRecord,
     target: &BranchCatalogRecord,
     spaces: &[ProductSpace],
-    strategy_result: ConflictStrategyResult,
 ) -> EngineResult<(Vec<RowMutation>, Vec<PreviewConflict>)> {
     let mut mutations = Vec::new();
     let mut conflicts = Vec::new();
@@ -110,7 +109,13 @@ pub(crate) fn plan_collection_promotion(
         let target_configs = collection_config_rows(persistence, target, &prefix)?;
         for (key, source_value) in collection_config_rows(persistence, source, &prefix)? {
             match target_configs.get(&key) {
-                Some(target_value) if *target_value == source_value => continue,
+                // Identical config: nothing to carry.
+                Some(target_value) if *target_value == source_value => {}
+                // Divergent config = incompatible dimension/metric (the whole
+                // config is structural). No strategy can merge it: record a
+                // structural conflict and do NOT carry the config, so the service
+                // refuses under every strategy instead of overwriting the target's
+                // collection and mixing vector shapes.
                 Some(target_value) => {
                     let identity = key
                         .strip_prefix(prefix.as_slice())
@@ -122,16 +127,16 @@ pub(crate) fn plan_collection_promotion(
                         identity,
                         Some(source_value.clone()),
                         Some(target_value.clone()),
-                        ConflictKind::ValueDivergence,
-                        strategy_result,
+                        ConflictKind::IncompatibleCollection,
+                        ConflictStrategyResult::Refused,
                     ));
                 }
-                None => {}
+                // Source-only collection: carry its config onto the target.
+                None => mutations.push(RowMutation::put(
+                    RowAddress::new(target.storage_branch_id(), RowClass::VectorCollection, key),
+                    source_value,
+                )),
             }
-            mutations.push(RowMutation::put(
-                RowAddress::new(target.storage_branch_id(), RowClass::VectorCollection, key),
-                source_value,
-            ));
         }
     }
     Ok((mutations, conflicts))
