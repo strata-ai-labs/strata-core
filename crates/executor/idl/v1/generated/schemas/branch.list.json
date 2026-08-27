@@ -27,6 +27,16 @@
           "minimum": 0,
           "type": "integer"
         },
+        "merge_parent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BranchMergeItem"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "name": {
           "type": "string"
         },
@@ -55,6 +65,42 @@
         "generation",
         "status",
         "state_revision"
+      ],
+      "type": "object"
+    },
+    "BranchMergeItem": {
+      "description": "Promotion (merge) lineage exposed through the command boundary: the source\nbranch most recently promoted into this branch and the target commit that\nincorporated it.",
+      "properties": {
+        "merged_at": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "merged_timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source_branch_id": {
+          "type": "string"
+        },
+        "source_generation": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_name",
+        "source_branch_id",
+        "source_generation",
+        "merged_at"
       ],
       "type": "object"
     },

@@ -75,6 +75,63 @@ impl BranchParentItem {
     }
 }
 
+/// Promotion (merge) lineage exposed through the command boundary: the source
+/// branch most recently promoted into this branch and the target commit that
+/// incorporated it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+pub struct BranchMergeItem {
+    source_name: String,
+    source_branch_id: String,
+    source_generation: u64,
+    merged_at: u64,
+    merged_timestamp: Option<u64>,
+}
+
+impl BranchMergeItem {
+    /// Creates branch merge-lineage facts.
+    pub fn new(
+        source_name: String,
+        source_branch_id: String,
+        source_generation: u64,
+        merged_at: u64,
+        merged_timestamp: Option<u64>,
+    ) -> Self {
+        Self {
+            source_name,
+            source_branch_id,
+            source_generation,
+            merged_at,
+            merged_timestamp,
+        }
+    }
+
+    /// Returns the promoted source branch name.
+    pub fn source_name(&self) -> &str {
+        &self.source_name
+    }
+
+    /// Returns the promoted source branch id.
+    pub fn source_branch_id(&self) -> &str {
+        &self.source_branch_id
+    }
+
+    /// Returns the source branch generation at promotion time.
+    pub const fn source_generation(&self) -> u64 {
+        self.source_generation
+    }
+
+    /// Returns the target commit version that incorporated the source.
+    pub const fn merged_at(&self) -> u64 {
+        self.merged_at
+    }
+
+    /// Returns the target commit timestamp, when storage reported it.
+    pub const fn merged_timestamp(&self) -> Option<u64> {
+        self.merged_timestamp
+    }
+}
+
 /// Branch summary exposed through the command boundary.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
@@ -84,6 +141,8 @@ pub struct BranchItem {
     generation: u64,
     status: BranchStatus,
     parent: Option<BranchParentItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    merge_parent: Option<BranchMergeItem>,
     created_at: Option<u64>,
     deleted_at: Option<u64>,
     state_revision: u64,
@@ -98,6 +157,7 @@ impl BranchItem {
         generation: u64,
         status: BranchStatus,
         parent: Option<BranchParentItem>,
+        merge_parent: Option<BranchMergeItem>,
         created_at: Option<u64>,
         deleted_at: Option<u64>,
         state_revision: u64,
@@ -108,6 +168,7 @@ impl BranchItem {
             generation,
             status,
             parent,
+            merge_parent,
             created_at,
             deleted_at,
             state_revision,
@@ -137,6 +198,11 @@ impl BranchItem {
     /// Returns fork parent facts, when any.
     pub const fn parent(&self) -> Option<&BranchParentItem> {
         self.parent.as_ref()
+    }
+
+    /// Returns the promotion (merge) lineage recorded on this branch, when any.
+    pub const fn merge_parent(&self) -> Option<&BranchMergeItem> {
+        self.merge_parent.as_ref()
     }
 
     /// Returns the storage creation version, when known.
