@@ -17,8 +17,8 @@ use crate::persistence::{
 use super::BranchName;
 use crate::api::{
     BranchCleanupSummary, BranchComparison, BranchCreateOutcome, BranchDeleteOutcome,
-    BranchPreview, BranchStateSelector, BranchSummary, ComparedCapability, PromotionOutcome,
-    PromotionStrategy,
+    BranchPreview, BranchStateSelector, BranchSummary, ComparedCapability, ConflictKind,
+    PromotionOutcome, PromotionStrategy,
 };
 
 /// Service for product branch operations.
@@ -321,11 +321,18 @@ impl<'a> BranchService<'a> {
             strategy,
         )?;
 
-        if strategy == PromotionStrategy::Strict && !plan.conflicts.is_empty() {
+        // Structural conflicts (e.g. an incompatible vector collection) cannot be
+        // merged by any strategy, so they refuse the promotion even under
+        // SourceWins; ordinary conflicts refuse only under Strict.
+        let has_structural = plan
+            .conflicts
+            .iter()
+            .any(|conflict| conflict.kind() == ConflictKind::IncompatibleCollection);
+        if has_structural || (strategy == PromotionStrategy::Strict && !plan.conflicts.is_empty()) {
             return Err(EngineError::conflict(
                 "conflict.engine.promotion",
                 format!(
-                    "strict promotion of `{source}` into `{target}` refused: {} conflict(s)",
+                    "promotion of `{source}` into `{target}` refused: {} conflict(s)",
                     plan.conflicts.len()
                 ),
             ));

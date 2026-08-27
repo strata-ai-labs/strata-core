@@ -580,6 +580,7 @@ const fn wire_conflict_kind(kind: EngineConflictKind) -> ConflictKind {
     match kind {
         EngineConflictKind::ValueDivergence => ConflictKind::ValueDivergence,
         EngineConflictKind::ModifyDeleteDivergence => ConflictKind::ModifyDeleteDivergence,
+        EngineConflictKind::IncompatibleCollection => ConflictKind::IncompatibleCollection,
     }
 }
 
@@ -601,6 +602,14 @@ mod tests {
 
     use super::branch_promotion;
     use crate::types::ComparedCapability;
+
+    #[test]
+    fn incompatible_collection_conflict_kind_maps_to_the_wire() {
+        assert_eq!(
+            super::wire_conflict_kind(super::EngineConflictKind::IncompatibleCollection),
+            crate::types::ConflictKind::IncompatibleCollection
+        );
+    }
 
     #[test]
     fn branch_promotion_carries_coverage_onto_the_wire_item() {

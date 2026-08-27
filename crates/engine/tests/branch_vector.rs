@@ -235,6 +235,62 @@ fn test_promotion_conflicts_on_incompatible_collection_config() {
 }
 
 #[test]
+fn test_source_wins_refuses_incompatible_collection() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // Both branches independently create the same collection with incompatible
+    // dimensions — structurally unmergeable.
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create default collection");
+    database
+        .vector(branch("feature"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(4, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create feature collection");
+
+    // Even SourceWins must refuse: incompatible shapes cannot be merged, and
+    // forcing the source config would leave the target mixing dimensions.
+    let error = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::SourceWins,
+        )
+        .expect_err("source-wins must refuse an incompatible collection");
+    assert_eq!(error.class(), EngineErrorClass::Conflict);
+    assert_eq!(error.code(), "conflict.engine.promotion");
+
+    // Zero mutation on the structural refusal: the target keeps its own config.
+    assert_eq!(
+        database
+            .vector(branch("default"), space("default"))
+            .expect("vector service opens")
+            .collection_info(&collection())
+            .expect("info succeeds")
+            .expect("default collection still present")
+            .config()
+            .dimension(),
+        2,
+        "the target's collection is untouched by the refused source-wins promotion"
+    );
+}
+
+#[test]
 fn test_promotion_carries_collection_in_a_source_only_space() {
     let mut database = open_cache_database().expect("cache open succeeds");
     database

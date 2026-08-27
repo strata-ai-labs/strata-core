@@ -62,6 +62,11 @@
           "const": "modify_delete_divergence",
           "description": "One side changed the value while the other deleted the entity.",
           "type": "string"
+        },
+        {
+          "const": "incompatible_collection",
+          "description": "The two sides hold structurally incompatible schema for the same entity\n(e.g. a vector collection created on both with a different dimension or\nmetric); no strategy can merge it, so promotion refuses under both.",
+          "type": "string"
         }
       ]
     },
