@@ -33,6 +33,40 @@ fn capability(comparison: &BranchComparison, want: ComparedCapability) -> Option
 }
 
 #[test]
+fn test_empty_graph_creation_is_visible_in_the_diff() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // feature creates an empty graph — a metadata row only, no nodes or edges.
+    database
+        .graph(branch("feature"), space("default"))
+        .expect("graph service opens")
+        .create_graph(graph())
+        .expect("create graph");
+
+    let comparison = database
+        .branches()
+        .expect("branch service opens")
+        .compare(
+            &branch("default"),
+            &branch("feature"),
+            BranchStateSelector::Current,
+        )
+        .expect("compare succeeds");
+
+    // An empty graph's creation surfaces as a graph-metadata addition — the diff
+    // is not empty just because the graph has no nodes or edges yet.
+    let metadata = capability(&comparison, ComparedCapability::GraphMetadata)
+        .expect("a graph metadata comparison is present");
+    assert_eq!(metadata.added().len(), 1, "the created graph is added");
+    assert!(metadata.modified().is_empty());
+    assert!(metadata.removed().is_empty());
+}
+
+#[test]
 fn graph_is_compared_per_row_class_but_never_promoted() {
     let mut database = open_cache_database().expect("cache open succeeds");
     database

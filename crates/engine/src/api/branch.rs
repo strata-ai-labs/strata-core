@@ -347,6 +347,8 @@ pub enum ComparedCapability {
     Vector,
     /// The event capability (comparison only).
     Event,
+    /// The graph metadata capability (comparison only).
+    GraphMetadata,
     /// The graph node capability (comparison only).
     GraphNode,
     /// The graph edge capability (comparison only).

@@ -1,11 +1,12 @@
 //! Graph capability branch adapters — comparison only.
 //!
-//! Graph is multi-row-class: nodes, edges, and the ontology are each an authored
-//! [`RowClass`], one KV-shaped MVCC row per entity (space prefix + a length-
-//! prefixed identity tuple → version byte + JSON). Each is compared by its own
-//! thin adapter — a graph diff reports node, edge, and ontology changes
-//! separately, which is what a reader wants. The derived rows (reverse-edge maps,
-//! binding index, type index) are rebuildable and excluded.
+//! Graph is multi-row-class: metadata, nodes, edges, and the ontology are each an
+//! authored [`RowClass`], one KV-shaped MVCC row per entity (space prefix + a
+//! length-prefixed identity tuple → version byte + JSON). Each is compared by its
+//! own thin adapter — a graph diff reports metadata, node, edge, and ontology
+//! changes separately, which is what a reader wants; the metadata row makes an
+//! empty graph's creation or deletion visible on its own. The derived rows
+//! (reverse-edge maps, binding index, type index) are rebuildable and excluded.
 //!
 //! Graph is compared but never promoted:
 //! [`CapabilityBranchAdapter::supports_promotion`] is `false` on every graph
@@ -19,9 +20,9 @@ use crate::branch::adapter::{
 use crate::data::kv::ProductSpace;
 use crate::diagnostics::{EngineError, EngineResult};
 use crate::persistence::{
-    decode_graph_edge_key, decode_graph_node_key, encode_graph_edge_space_prefix,
-    encode_graph_node_space_prefix, encode_graph_ontology_space_prefix, PersistenceReadRow,
-    RowClass,
+    decode_graph_edge_key, decode_graph_metadata_key, decode_graph_node_key,
+    encode_graph_edge_space_prefix, encode_graph_metadata_prefix, encode_graph_node_space_prefix,
+    encode_graph_ontology_space_prefix, PersistenceReadRow, RowClass,
 };
 
 /// The space-relative identity of a graph row (its key with the space prefix
@@ -59,6 +60,43 @@ fn interpret(
         summary,
         row.commit_version(),
     ))
+}
+
+/// The graph metadata capability's branch adapter (comparison only). One row per
+/// graph records its existence, so creating or dropping a graph diffs as a single
+/// added or removed entity — an empty graph is not an empty diff.
+pub(crate) struct GraphMetadataBranchAdapter;
+
+impl CapabilityBranchAdapter for GraphMetadataBranchAdapter {
+    fn row_class(&self) -> RowClass {
+        RowClass::GraphMetadata
+    }
+
+    fn derived_disposition(&self) -> DerivedDisposition {
+        DerivedDisposition::Authored
+    }
+
+    fn supports_promotion(&self) -> bool {
+        false
+    }
+
+    fn space_prefix(&self, space: &ProductSpace) -> Vec<u8> {
+        encode_graph_metadata_prefix(space)
+    }
+
+    fn interpret_row(
+        &self,
+        space: &ProductSpace,
+        row: &PersistenceReadRow,
+    ) -> EngineResult<ComparableEntity> {
+        decode_graph_metadata_key(space, row.key())?;
+        interpret(
+            row,
+            &encode_graph_metadata_prefix(space),
+            "data_loss.engine.graph_key",
+            "data_loss.engine.graph_metadata",
+        )
+    }
 }
 
 /// The graph node capability's branch adapter (comparison only).
@@ -171,20 +209,49 @@ impl CapabilityBranchAdapter for GraphOntologyBranchAdapter {
 
 #[cfg(test)]
 mod tests {
-    use super::{GraphEdgeBranchAdapter, GraphNodeBranchAdapter, GraphOntologyBranchAdapter};
+    use super::{
+        GraphEdgeBranchAdapter, GraphMetadataBranchAdapter, GraphNodeBranchAdapter,
+        GraphOntologyBranchAdapter,
+    };
 
     use crate::branch::adapter::{CapabilityBranchAdapter, DerivedDisposition, EntitySummary};
     use crate::data::graph::{GraphEdgeType, GraphName, GraphNodeId};
     use crate::data::kv::ProductSpace;
     use crate::diagnostics::EngineErrorClass;
     use crate::persistence::{
-        encode_graph_edge_key, encode_graph_edge_space_prefix, encode_graph_node_key,
-        encode_graph_node_space_prefix, encode_graph_ontology_space_prefix, PersistenceReadRow,
-        RowClass,
+        encode_graph_edge_key, encode_graph_edge_space_prefix, encode_graph_metadata_key,
+        encode_graph_metadata_prefix, encode_graph_node_key, encode_graph_node_space_prefix,
+        encode_graph_ontology_space_prefix, PersistenceReadRow, RowClass,
     };
 
     fn space() -> ProductSpace {
         ProductSpace::new("default").expect("default is a valid space")
+    }
+
+    fn metadata_row(space: &ProductSpace, graph: &str, value: Option<&[u8]>) -> PersistenceReadRow {
+        let encoded = encode_graph_metadata_key(space, &GraphName::new(graph).expect("graph"));
+        PersistenceReadRow::for_test(encoded, value.map(<[u8]>::to_vec), false)
+    }
+
+    #[test]
+    fn metadata_adapter_decodes_a_present_row_and_reports_facets() {
+        let entity = GraphMetadataBranchAdapter
+            .interpret_row(&space(), &metadata_row(&space(), "deps", Some(b"meta")))
+            .expect("decodes a present metadata row");
+        assert_eq!(entity.summary(), &EntitySummary::Present(b"meta".to_vec()));
+        assert_eq!(
+            GraphMetadataBranchAdapter.row_class(),
+            RowClass::GraphMetadata
+        );
+        assert_eq!(
+            GraphMetadataBranchAdapter.derived_disposition(),
+            DerivedDisposition::Authored
+        );
+        assert!(!GraphMetadataBranchAdapter.supports_promotion());
+        assert_eq!(
+            GraphMetadataBranchAdapter.space_prefix(&space()),
+            encode_graph_metadata_prefix(&space())
+        );
     }
 
     fn node_row(
