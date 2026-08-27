@@ -3,17 +3,18 @@ use super::{
     BranchCleanupItem, BranchCleanupSummary, BranchComparisonItem, BranchItem, BranchParentItem,
     BranchPreviewItem, BranchStatus, BranchSummary, Bytes, CommitDurability, CommitOutcome,
     CommitReceipt, CommitVersion, ComparedCapability, ComparedEntityItem, ConflictKind,
-    ConflictStrategyResult, EngineBranchComparison, EngineBranchPreview, EngineBranchStatus,
-    EngineComparedCapability, EngineComparedEntity, EngineConflictKind,
-    EngineConflictStrategyResult, EngineJsonIndexDefinition, EngineJsonSample, EngineJsonValue,
-    EngineJsonVersionedValue, EnginePreviewConflict, EnginePromotedEntity, EnginePromotionOutcome,
-    EnginePromotionStrategy, EngineSpaceComparison, ExecutorError, HistoryItem, HistoryResult,
-    JsonBatchGetItemResult, JsonBatchItemResult, JsonHistory, JsonHistoryItem, JsonHistoryRow,
-    JsonIndexDefinition, JsonListPage, JsonSampleItem, JsonSampleRow, KvHistory, KvHistoryRow,
-    KvKey, KvSample, KvScanRow, KvVersionedValue, MutationEffect, MutationEffectKind, Output,
-    OutputJsonVersionedValue, PageInfo, PreviewConflictItem, PromotedEntityItem,
-    PromotionOutcomeItem, PromotionStrategy, SampleItem, ScanItem, SpaceComparisonItem, Timestamp,
-    VersionedValue,
+    ConflictStrategyResult, DerivedStateDisposition, DerivedStateReportItem,
+    EngineBranchComparison, EngineBranchPreview, EngineBranchStatus, EngineComparedCapability,
+    EngineComparedEntity, EngineConflictKind, EngineConflictStrategyResult,
+    EngineDerivedStateDisposition, EngineDerivedStateReport, EngineJsonIndexDefinition,
+    EngineJsonSample, EngineJsonValue, EngineJsonVersionedValue, EnginePreviewConflict,
+    EnginePromotedEntity, EnginePromotionOutcome, EnginePromotionStrategy, EngineSpaceComparison,
+    ExecutorError, HistoryItem, HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult,
+    JsonHistory, JsonHistoryItem, JsonHistoryRow, JsonIndexDefinition, JsonListPage,
+    JsonSampleItem, JsonSampleRow, KvHistory, KvHistoryRow, KvKey, KvSample, KvScanRow,
+    KvVersionedValue, MutationEffect, MutationEffectKind, Output, OutputJsonVersionedValue,
+    PageInfo, PreviewConflictItem, ProductSpace, PromotedEntityItem, PromotionOutcomeItem,
+    PromotionStrategy, SampleItem, ScanItem, SpaceComparisonItem, Timestamp, VersionedValue,
 };
 
 pub(super) fn bytes_from_key(key: &KvKey) -> Bytes {
@@ -465,9 +466,18 @@ pub(super) fn branch_promotion(outcome: &EnginePromotionOutcome) -> PromotionOut
         outcome.branch_point().as_u64(),
         wire_promotion_strategy(outcome.strategy()),
         outcome.target_version().map(CommitVersion::as_u64),
+        outcome.target_timestamp().map(Timestamp::as_micros),
         outcome.applied().iter().map(promoted_entity).collect(),
         outcome.deleted().iter().map(promoted_entity).collect(),
         outcome.conflicts().iter().map(preview_conflict).collect(),
+        spaces_covered(outcome.spaces_covered()),
+        capabilities(outcome.capabilities_covered()),
+        capabilities(outcome.capabilities_unsupported()),
+        outcome
+            .derived_state()
+            .iter()
+            .map(derived_state_report)
+            .collect(),
     )
 }
 
@@ -478,7 +488,45 @@ pub(super) fn branch_preview(preview: &EngineBranchPreview) -> BranchPreviewItem
         preview.branch_point().as_u64(),
         wire_promotion_strategy(preview.strategy()),
         preview.conflicts().iter().map(preview_conflict).collect(),
+        spaces_covered(preview.spaces_covered()),
+        capabilities(preview.capabilities_covered()),
+        capabilities(preview.capabilities_unsupported()),
+        preview
+            .derived_state()
+            .iter()
+            .map(derived_state_report)
+            .collect(),
     )
+}
+
+fn spaces_covered(spaces: &[ProductSpace]) -> Vec<String> {
+    spaces
+        .iter()
+        .map(|space| space.as_str().to_owned())
+        .collect()
+}
+
+fn capabilities(capabilities: &[EngineComparedCapability]) -> Vec<ComparedCapability> {
+    capabilities
+        .iter()
+        .map(|capability| compared_capability(*capability))
+        .collect()
+}
+
+fn derived_state_report(report: &EngineDerivedStateReport) -> DerivedStateReportItem {
+    DerivedStateReportItem::new(
+        compared_capability(report.capability()),
+        wire_derived_disposition(report.disposition()),
+    )
+}
+
+const fn wire_derived_disposition(
+    disposition: EngineDerivedStateDisposition,
+) -> DerivedStateDisposition {
+    match disposition {
+        EngineDerivedStateDisposition::Current => DerivedStateDisposition::Current,
+        EngineDerivedStateDisposition::RebuildRequired => DerivedStateDisposition::RebuildRequired,
+    }
 }
 
 fn promoted_entity(entity: &EnginePromotedEntity) -> PromotedEntityItem {
@@ -532,5 +580,61 @@ const fn wire_conflict_strategy_result(
     match result {
         EngineConflictStrategyResult::Refused => ConflictStrategyResult::Refused,
         EngineConflictStrategyResult::SourceWins => ConflictStrategyResult::SourceWins,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use strata_engine::{
+        BranchName, CacheOpenOptions, Database, DatabaseOpenOutcome, KvKey, KvValue, ProductSpace,
+        PromotionStrategy,
+    };
+
+    use super::branch_promotion;
+    use crate::types::ComparedCapability;
+
+    #[test]
+    fn branch_promotion_carries_coverage_onto_the_wire_item() {
+        let mut database = Database::open_cache(CacheOpenOptions::new())
+            .map(DatabaseOpenOutcome::into_database)
+            .expect("cache open");
+        database
+            .branches()
+            .expect("branch service")
+            .fork_current(
+                &BranchName::new("default").expect("branch"),
+                BranchName::new("feature").expect("branch"),
+            )
+            .expect("fork");
+        database
+            .kv(
+                BranchName::new("feature").expect("branch"),
+                ProductSpace::new("default").expect("space"),
+            )
+            .expect("kv opens")
+            .put(KvKey::new(b"k").expect("key"), KvValue::new(b"v"))
+            .expect("put");
+        let outcome = database
+            .branches()
+            .expect("branch service")
+            .promote(
+                &BranchName::new("feature").expect("branch"),
+                &BranchName::new("default").expect("branch"),
+                PromotionStrategy::Strict,
+            )
+            .expect("promote");
+
+        // The converter must carry the engine outcome's coverage onto the wire
+        // item; a dropped field mapping surfaces here.
+        let item = branch_promotion(&outcome);
+        assert!(item.spaces_covered().iter().any(|space| space == "default"));
+        assert!(item
+            .capabilities_covered()
+            .contains(&ComparedCapability::KeyValue));
+        assert!(item
+            .capabilities_unsupported()
+            .contains(&ComparedCapability::Event));
+        assert!(item.target_version().is_some());
+        assert!(item.target_timestamp().is_some());
     }
 }

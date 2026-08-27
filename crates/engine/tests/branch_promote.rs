@@ -2,9 +2,10 @@
 
 mod common;
 
+use serde_json::json;
 use strata_engine::{
-    ComparedCapability, ConflictKind, ConflictStrategyResult, Database, EngineErrorClass,
-    PromotionOutcome, PromotionStrategy,
+    ComparedCapability, ConflictKind, ConflictStrategyResult, Database, DerivedStateDisposition,
+    EngineErrorClass, JsonDocumentId, JsonPath, JsonValue, PromotionOutcome, PromotionStrategy,
 };
 
 use common::{assert_branch_value, branch, key, open_cache_database, space, value};
@@ -362,6 +363,72 @@ fn promote_with_no_changes_is_a_noop_and_writes_no_commit() {
         .get(&branch("default"))
         .expect("target summary");
     assert!(summary.merge_parent().is_none());
+}
+
+#[test]
+fn test_promotion_outcome_reports_coverage_timestamp_and_derived_state() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // feature adds a KV key and a JSON document.
+    database
+        .kv(branch("feature"), space("default"))
+        .expect("KV opens")
+        .put(key(b"k"), value(b"v"))
+        .expect("kv put");
+    database
+        .json(branch("feature"), space("default"))
+        .expect("json opens")
+        .set_or_create(
+            JsonDocumentId::new("doc").expect("id"),
+            &JsonPath::root(),
+            JsonValue::new(json!({"a": 1})).expect("value"),
+        )
+        .expect("json set");
+
+    let outcome = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("strict promote succeeds");
+    assert!(outcome.conflicts().is_empty());
+
+    // Item 8: the target commit version and timestamp.
+    assert!(outcome.target_version().is_some());
+    assert!(outcome.target_timestamp().is_some());
+    // Item 7 / rule 4: capability coverage and unsupported areas.
+    assert!(outcome
+        .capabilities_covered()
+        .contains(&ComparedCapability::KeyValue));
+    assert!(outcome
+        .capabilities_covered()
+        .contains(&ComparedCapability::Json));
+    assert!(outcome
+        .capabilities_covered()
+        .contains(&ComparedCapability::Vector));
+    assert!(outcome
+        .capabilities_unsupported()
+        .contains(&ComparedCapability::Event));
+    assert!(outcome
+        .capabilities_unsupported()
+        .contains(&ComparedCapability::GraphMetadata));
+    // Item 7: the spaces the promotion spanned.
+    assert!(outcome
+        .spaces_covered()
+        .iter()
+        .any(|space| space.as_str() == "default"));
+    // Item 9 / rule 5: promoting JSON leaves its secondary index rebuild-required.
+    assert!(outcome.derived_state().iter().any(|report| {
+        report.capability() == ComparedCapability::Json
+            && report.disposition() == DerivedStateDisposition::RebuildRequired
+    }));
 }
 
 #[test]

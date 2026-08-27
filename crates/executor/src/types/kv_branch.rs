@@ -802,6 +802,48 @@ impl PreviewConflictItem {
     }
 }
 
+/// Whether a capability's derived-state rows remain correct after a promotion or
+/// need rebuilding, exposed through the command boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum DerivedStateDisposition {
+    /// The derived rows remain correct and need no work.
+    Current,
+    /// The derived rows are stale and must be rebuilt before the derived path is
+    /// trusted again; the authoritative rows still serve correct results.
+    RebuildRequired,
+}
+
+/// One capability's derived-state disposition after a promotion or preview.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct DerivedStateReportItem {
+    capability: ComparedCapability,
+    disposition: DerivedStateDisposition,
+}
+
+impl DerivedStateReportItem {
+    /// Creates a derived-state report item.
+    pub const fn new(capability: ComparedCapability, disposition: DerivedStateDisposition) -> Self {
+        Self {
+            capability,
+            disposition,
+        }
+    }
+
+    /// Returns the capability whose derived rows this report describes.
+    pub const fn capability(&self) -> ComparedCapability {
+        self.capability
+    }
+
+    /// Returns the disposition of the capability's derived rows.
+    pub const fn disposition(&self) -> DerivedStateDisposition {
+        self.disposition
+    }
+}
+
 /// The result of promoting one branch into another, exposed through the command
 /// boundary. `target_version` is absent when the promotion applied nothing.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -814,9 +856,19 @@ pub struct PromotionOutcomeItem {
     strategy: PromotionStrategy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     target_version: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_timestamp: Option<u64>,
     applied: Vec<PromotedEntityItem>,
     deleted: Vec<PromotedEntityItem>,
     conflicts: Vec<PreviewConflictItem>,
+    #[serde(default)]
+    spaces_covered: Vec<String>,
+    #[serde(default)]
+    capabilities_covered: Vec<ComparedCapability>,
+    #[serde(default)]
+    capabilities_unsupported: Vec<ComparedCapability>,
+    #[serde(default)]
+    derived_state: Vec<DerivedStateReportItem>,
 }
 
 impl PromotionOutcomeItem {
@@ -828,9 +880,14 @@ impl PromotionOutcomeItem {
         branch_point: u64,
         strategy: PromotionStrategy,
         target_version: Option<u64>,
+        target_timestamp: Option<u64>,
         applied: Vec<PromotedEntityItem>,
         deleted: Vec<PromotedEntityItem>,
         conflicts: Vec<PreviewConflictItem>,
+        spaces_covered: Vec<String>,
+        capabilities_covered: Vec<ComparedCapability>,
+        capabilities_unsupported: Vec<ComparedCapability>,
+        derived_state: Vec<DerivedStateReportItem>,
     ) -> Self {
         Self {
             source,
@@ -838,9 +895,14 @@ impl PromotionOutcomeItem {
             branch_point,
             strategy,
             target_version,
+            target_timestamp,
             applied,
             deleted,
             conflicts,
+            spaces_covered,
+            capabilities_covered,
+            capabilities_unsupported,
+            derived_state,
         }
     }
 
@@ -869,6 +931,11 @@ impl PromotionOutcomeItem {
         self.target_version
     }
 
+    /// Returns the target commit timestamp (µs) written, or `None` for a no-op.
+    pub const fn target_timestamp(&self) -> Option<u64> {
+        self.target_timestamp
+    }
+
     /// Returns the source entities written onto the target.
     pub fn applied(&self) -> &[PromotedEntityItem] {
         &self.applied
@@ -882,6 +949,26 @@ impl PromotionOutcomeItem {
     /// Returns the entities that diverged on both sides.
     pub fn conflicts(&self) -> &[PreviewConflictItem] {
         &self.conflicts
+    }
+
+    /// Returns the spaces the promotion spanned.
+    pub fn spaces_covered(&self) -> &[String] {
+        &self.spaces_covered
+    }
+
+    /// Returns the capabilities the promotion could carry (promotable).
+    pub fn capabilities_covered(&self) -> &[ComparedCapability] {
+        &self.capabilities_covered
+    }
+
+    /// Returns the compare-only capabilities promotion does not carry in V1.
+    pub fn capabilities_unsupported(&self) -> &[ComparedCapability] {
+        &self.capabilities_unsupported
+    }
+
+    /// Returns the derived-state disposition the promotion produced.
+    pub fn derived_state(&self) -> &[DerivedStateReportItem] {
+        &self.derived_state
     }
 }
 
@@ -897,16 +984,29 @@ pub struct BranchPreviewItem {
     branch_point: u64,
     strategy: PromotionStrategy,
     conflicts: Vec<PreviewConflictItem>,
+    #[serde(default)]
+    spaces_covered: Vec<String>,
+    #[serde(default)]
+    capabilities_covered: Vec<ComparedCapability>,
+    #[serde(default)]
+    capabilities_unsupported: Vec<ComparedCapability>,
+    #[serde(default)]
+    derived_state: Vec<DerivedStateReportItem>,
 }
 
 impl BranchPreviewItem {
     /// Creates a branch preview item.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         source: String,
         target: String,
         branch_point: u64,
         strategy: PromotionStrategy,
         conflicts: Vec<PreviewConflictItem>,
+        spaces_covered: Vec<String>,
+        capabilities_covered: Vec<ComparedCapability>,
+        capabilities_unsupported: Vec<ComparedCapability>,
+        derived_state: Vec<DerivedStateReportItem>,
     ) -> Self {
         Self {
             source,
@@ -914,6 +1014,10 @@ impl BranchPreviewItem {
             branch_point,
             strategy,
             conflicts,
+            spaces_covered,
+            capabilities_covered,
+            capabilities_unsupported,
+            derived_state,
         }
     }
 
@@ -946,14 +1050,35 @@ impl BranchPreviewItem {
     pub fn is_clean(&self) -> bool {
         self.conflicts.is_empty()
     }
+
+    /// Returns the spaces the promotion would span.
+    pub fn spaces_covered(&self) -> &[String] {
+        &self.spaces_covered
+    }
+
+    /// Returns the capabilities a promotion could carry (promotable).
+    pub fn capabilities_covered(&self) -> &[ComparedCapability] {
+        &self.capabilities_covered
+    }
+
+    /// Returns the compare-only capabilities promotion does not carry in V1.
+    pub fn capabilities_unsupported(&self) -> &[ComparedCapability] {
+        &self.capabilities_unsupported
+    }
+
+    /// Returns the derived-state disposition a promotion would trigger.
+    pub fn derived_state(&self) -> &[DerivedStateReportItem] {
+        &self.derived_state
+    }
 }
 
 #[cfg(test)]
 mod branch_comparison_tests {
     use super::{
         BranchComparisonItem, BranchPreviewItem, Bytes, ComparedCapability, ComparedEntityItem,
-        ConflictKind, ConflictStrategyResult, PreviewConflictItem, PromotedEntityItem,
-        PromotionOutcomeItem, PromotionStrategy, SpaceComparisonItem,
+        ConflictKind, ConflictStrategyResult, DerivedStateDisposition, DerivedStateReportItem,
+        PreviewConflictItem, PromotedEntityItem, PromotionOutcomeItem, PromotionStrategy,
+        SpaceComparisonItem,
     };
 
     #[test]
@@ -1032,15 +1157,24 @@ mod branch_comparison_tests {
             3,
             PromotionStrategy::SourceWins,
             Some(9),
+            Some(11),
             vec![applied],
             vec![deleted],
             vec![conflict],
+            vec!["default".to_owned()],
+            vec![ComparedCapability::KeyValue],
+            vec![ComparedCapability::Event],
+            vec![DerivedStateReportItem::new(
+                ComparedCapability::Json,
+                DerivedStateDisposition::RebuildRequired,
+            )],
         );
         assert_eq!(outcome.source(), "feature");
         assert_eq!(outcome.target(), "default");
         assert_eq!(outcome.branch_point(), 3);
         assert_eq!(outcome.strategy(), PromotionStrategy::SourceWins);
         assert_eq!(outcome.target_version(), Some(9));
+        assert_eq!(outcome.target_timestamp(), Some(11));
         assert_eq!(outcome.applied().len(), 1);
         assert_eq!(
             outcome.applied()[0].identity(),
@@ -1050,6 +1184,24 @@ mod branch_comparison_tests {
         assert_eq!(outcome.deleted()[0].identity(), &Bytes::from(&b"md"[..]));
         assert_eq!(outcome.conflicts().len(), 1);
         assert_eq!(outcome.conflicts()[0].kind(), ConflictKind::ValueDivergence);
+        assert_eq!(outcome.spaces_covered(), ["default".to_owned()]);
+        assert_eq!(
+            outcome.capabilities_covered(),
+            [ComparedCapability::KeyValue]
+        );
+        assert_eq!(
+            outcome.capabilities_unsupported(),
+            [ComparedCapability::Event]
+        );
+        assert_eq!(outcome.derived_state().len(), 1);
+        assert_eq!(
+            outcome.derived_state()[0].capability(),
+            ComparedCapability::Json
+        );
+        assert_eq!(
+            outcome.derived_state()[0].disposition(),
+            DerivedStateDisposition::RebuildRequired
+        );
     }
 
     #[test]
@@ -1069,6 +1221,13 @@ mod branch_comparison_tests {
             3,
             PromotionStrategy::Strict,
             vec![conflict],
+            vec!["default".to_owned()],
+            vec![ComparedCapability::KeyValue],
+            vec![ComparedCapability::GraphNode],
+            vec![DerivedStateReportItem::new(
+                ComparedCapability::Json,
+                DerivedStateDisposition::RebuildRequired,
+            )],
         );
         assert_eq!(preview.source(), "feature");
         assert_eq!(preview.target(), "default");
@@ -1076,12 +1235,34 @@ mod branch_comparison_tests {
         assert_eq!(preview.strategy(), PromotionStrategy::Strict);
         assert_eq!(preview.conflicts().len(), 1);
         assert!(!preview.is_clean());
+        assert_eq!(preview.spaces_covered(), ["default".to_owned()]);
+        assert_eq!(
+            preview.capabilities_covered(),
+            [ComparedCapability::KeyValue]
+        );
+        assert_eq!(
+            preview.capabilities_unsupported(),
+            [ComparedCapability::GraphNode]
+        );
+        assert_eq!(preview.derived_state().len(), 1);
+        assert_eq!(
+            preview.derived_state()[0].capability(),
+            ComparedCapability::Json
+        );
+        assert_eq!(
+            preview.derived_state()[0].disposition(),
+            DerivedStateDisposition::RebuildRequired
+        );
 
         let clean = BranchPreviewItem::new(
             "feature".to_owned(),
             "default".to_owned(),
             3,
             PromotionStrategy::Strict,
+            vec![],
+            vec!["default".to_owned()],
+            vec![ComparedCapability::KeyValue],
+            vec![ComparedCapability::GraphNode],
             vec![],
         );
         assert!(clean.is_clean());

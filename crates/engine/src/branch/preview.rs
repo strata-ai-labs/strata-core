@@ -15,7 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use strata_core::{BranchId, CommitVersion, Timestamp};
 
 use crate::api::{
-    BranchPreview, ComparedCapability, ConflictKind, ConflictStrategyResult, PreviewConflict,
+    BranchPreview, BranchWorkflowCoverage, ComparedCapability, ConflictKind,
+    ConflictStrategyResult, DerivedStateDisposition, DerivedStateReport, PreviewConflict,
     PromotionStrategy,
 };
 use crate::branch::adapter::{CapabilityBranchAdapter, DerivedDisposition, EntitySummary};
@@ -69,6 +70,69 @@ pub(crate) fn capability_adapters() -> Vec<(ComparedCapability, Box<dyn Capabili
         .iter()
         .map(|&capability| (capability, adapter_for(capability)))
         .collect()
+}
+
+/// Splits the authored capabilities into those a promotion carries (promotable)
+/// and those it does not (compare-only), in report order (contract §Promotion
+/// rule 9 / §Preview rule 4).
+fn capability_coverage() -> (Vec<ComparedCapability>, Vec<ComparedCapability>) {
+    let mut covered = Vec::new();
+    let mut unsupported = Vec::new();
+    for &capability in &AUTHORED_CAPABILITIES {
+        if adapter_for(capability).supports_promotion() {
+            covered.push(capability);
+        } else {
+            unsupported.push(capability);
+        }
+    }
+    (covered, unsupported)
+}
+
+/// The derived-state disposition a promotion carrying `promoted` capabilities
+/// triggers (contract §Promotion rule 9 / §Preview rule 5). JSON secondary index
+/// rows are not maintained by the document carry, so a promoted JSON capability
+/// leaves them stale; vector search stays correct via its query-time
+/// full-collection fallback, so its index needs no rebuild.
+fn derived_state_reports(promoted: &[ComparedCapability]) -> Vec<DerivedStateReport> {
+    let mut reports = Vec::new();
+    if promoted.contains(&ComparedCapability::Json) {
+        reports.push(DerivedStateReport::new(
+            ComparedCapability::Json,
+            DerivedStateDisposition::RebuildRequired,
+        ));
+    }
+    if promoted.contains(&ComparedCapability::Vector) {
+        reports.push(DerivedStateReport::new(
+            ComparedCapability::Vector,
+            DerivedStateDisposition::Current,
+        ));
+    }
+    reports
+}
+
+/// Assembles the coverage facts a promotion outcome and its preview share: the
+/// spaces spanned (source ∪ target), the static promotable/compare-only capability
+/// split, and the derived-state disposition for the `promoted` capabilities.
+pub(crate) fn branch_workflow_coverage(
+    persistence: &mut StoragePersistence,
+    source: &BranchCatalogRecord,
+    target: &BranchCatalogRecord,
+    promoted: &[ComparedCapability],
+) -> EngineResult<BranchWorkflowCoverage> {
+    let (capabilities_covered, capabilities_unsupported) = capability_coverage();
+    let mut spaces_covered = registered_spaces(persistence, source)?;
+    for space in registered_spaces(persistence, target)? {
+        if !spaces_covered.contains(&space) {
+            spaces_covered.push(space);
+        }
+    }
+    spaces_covered.sort();
+    Ok(BranchWorkflowCoverage {
+        spaces_covered,
+        capabilities_covered,
+        capabilities_unsupported,
+        derived_state: derived_state_reports(promoted),
+    })
 }
 
 /// The branch point of a direct fork lineage: the ancestor's storage branch and
@@ -298,10 +362,18 @@ pub(crate) fn preview_branches(
     let (branch_point, entities) = three_way(persistence, source, target)?;
 
     let mut conflicts = Vec::new();
+    let mut promoted = Vec::new();
     for entity in &entities {
         let source_value = entity.source.as_ref();
         let target_value = entity.target.as_ref();
         let base_value = entity.base.as_ref();
+
+        // A source-side change is what a promotion would carry — the capabilities
+        // whose derived state it would disposition. Duplicates are harmless:
+        // `branch_workflow_coverage` tests membership, not multiplicity.
+        if changed(source_value, base_value) {
+            promoted.push(entity.capability);
+        }
 
         if !(changed(source_value, base_value) && changed(target_value, base_value)) {
             continue;
@@ -329,11 +401,13 @@ pub(crate) fn preview_branches(
         ));
     }
 
+    let coverage = branch_workflow_coverage(persistence, source, target, &promoted)?;
     Ok(BranchPreview::new(
         source.name().clone(),
         target.name().clone(),
         branch_point,
         strategy,
         conflicts,
+        coverage,
     ))
 }

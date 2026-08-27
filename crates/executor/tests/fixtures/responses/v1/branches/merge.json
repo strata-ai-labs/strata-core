@@ -9,11 +9,28 @@
       }
     ],
     "branch_point": 3,
+    "capabilities_covered": [
+      "key_value",
+      "json",
+      "vector"
+    ],
+    "capabilities_unsupported": [
+      "event",
+      "graph_metadata",
+      "graph_node",
+      "graph_edge",
+      "graph_ontology"
+    ],
     "conflicts": [],
     "deleted": [],
+    "derived_state": [],
     "source": "feature-fork",
+    "spaces_covered": [
+      "default"
+    ],
     "strategy": "strict",
     "target": "default",
+    "target_timestamp": 9,
     "target_version": 9
   },
   "type": "branch_merge"

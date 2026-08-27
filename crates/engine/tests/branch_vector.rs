@@ -3,8 +3,9 @@
 mod common;
 
 use strata_engine::{
-    BranchStateSelector, ComparedCapability, Database, EngineErrorClass, PromotionStrategy,
-    VectorCollectionName, VectorConfig, VectorDistanceMetric, VectorEmbedding, VectorKey,
+    BranchStateSelector, ComparedCapability, Database, DerivedStateDisposition, EngineErrorClass,
+    PromotionStrategy, VectorCollectionName, VectorConfig, VectorDistanceMetric, VectorEmbedding,
+    VectorKey,
 };
 
 use common::{branch, open_cache_database, space};
@@ -89,6 +90,12 @@ fn vector_compare_and_promote_across_a_fork() {
             .all(|entity| entity.capability() == ComparedCapability::Vector),
         "the promoted entities are vectors",
     );
+    // Promoting vectors keeps search correct via the query-time fallback, so the
+    // derived vector index needs no rebuild (contract §Promotion rule 9).
+    assert!(outcome.derived_state().iter().any(|report| {
+        report.capability() == ComparedCapability::Vector
+            && report.disposition() == DerivedStateDisposition::Current
+    }));
 
     // After the promote the two branches agree: no vector differences remain.
     let after = database

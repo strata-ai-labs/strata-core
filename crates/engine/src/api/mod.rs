@@ -17,11 +17,13 @@ pub use admin::{
     AdminGraphSummary, AdminHealthStatus, AdminHealthSummary, AdminMetricsSummary,
     AdminPingSummary, AdminPrimitiveSummary, AdminService, AdminVectorCollectionSummary,
 };
+pub(crate) use branch::BranchWorkflowCoverage;
 pub use branch::{
     BranchCleanupSummary, BranchComparison, BranchCreateOutcome, BranchDeleteOutcome,
     BranchMergeSummary, BranchParentSummary, BranchPreview, BranchStateSelector, BranchStatus,
     BranchSummary, ComparedCapability, ComparedEntity, ConflictKind, ConflictStrategyResult,
-    PreviewConflict, PromotedEntity, PromotionOutcome, PromotionStrategy, SpaceComparison,
+    DerivedStateDisposition, DerivedStateReport, PreviewConflict, PromotedEntity, PromotionOutcome,
+    PromotionStrategy, SpaceComparison,
 };
 pub use control::{ControlDiagnostics, ControlHealthStatus, SpaceCatalogDiagnostics};
 pub use database::{

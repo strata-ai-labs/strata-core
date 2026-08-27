@@ -17,7 +17,8 @@ use crate::persistence::{
 use super::BranchName;
 use crate::api::{
     BranchCleanupSummary, BranchComparison, BranchCreateOutcome, BranchDeleteOutcome,
-    BranchPreview, BranchStateSelector, BranchSummary, PromotionOutcome, PromotionStrategy,
+    BranchPreview, BranchStateSelector, BranchSummary, ComparedCapability, PromotionOutcome,
+    PromotionStrategy,
 };
 
 /// Service for product branch operations.
@@ -330,8 +331,8 @@ impl<'a> BranchService<'a> {
             ));
         }
 
-        let target_version = if plan.mutations.is_empty() {
-            None
+        let (target_version, target_timestamp) = if plan.mutations.is_empty() {
+            (None, None)
         } else {
             // Capture the target's timeline head before mutating, so reopen
             // recovery can tell whether the data commit landed after a crash.
@@ -377,8 +378,23 @@ impl<'a> BranchService<'a> {
                 Some(outcome.timestamp()),
             );
             self.persist_catalog_record(target_record.clone().with_merge_parent(merge))?;
-            Some(outcome.version())
+            (Some(outcome.version()), Some(outcome.timestamp()))
         };
+
+        // The capabilities actually carried in — their derived state is what the
+        // promotion dispositioned.
+        let mut promoted: Vec<ComparedCapability> = Vec::new();
+        for entity in plan.applied.iter().chain(plan.deleted.iter()) {
+            if !promoted.contains(&entity.capability()) {
+                promoted.push(entity.capability());
+            }
+        }
+        let coverage = super::preview::branch_workflow_coverage(
+            self.persistence,
+            &source_record,
+            &target_record,
+            &promoted,
+        )?;
 
         Ok(PromotionOutcome::new(
             source_record.name().clone(),
@@ -386,9 +402,11 @@ impl<'a> BranchService<'a> {
             plan.branch_point,
             strategy,
             target_version,
+            target_timestamp,
             plan.applied,
             plan.deleted,
             plan.conflicts,
+            coverage,
         ))
     }
 
