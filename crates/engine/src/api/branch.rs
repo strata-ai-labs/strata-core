@@ -651,6 +651,60 @@ impl PromotedEntity {
     }
 }
 
+/// Whether a capability's derived-state rows remain correct after a promotion, or
+/// need rebuilding. The authoritative rows are always correct; this reports the
+/// disposition of the accelerators layered over them (contract §Promotion rule 9).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DerivedStateDisposition {
+    /// The derived rows remain correct and need no work.
+    Current,
+    /// The derived rows are stale and must be rebuilt before the derived path is
+    /// trusted again; the authoritative rows still serve correct results.
+    RebuildRequired,
+}
+
+/// One capability's derived-state disposition after a promotion or preview.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DerivedStateReport {
+    capability: ComparedCapability,
+    disposition: DerivedStateDisposition,
+}
+
+impl DerivedStateReport {
+    pub(crate) const fn new(
+        capability: ComparedCapability,
+        disposition: DerivedStateDisposition,
+    ) -> Self {
+        Self {
+            capability,
+            disposition,
+        }
+    }
+
+    /// The capability whose derived rows this report describes.
+    #[must_use]
+    pub const fn capability(&self) -> ComparedCapability {
+        self.capability
+    }
+
+    /// The disposition of the capability's derived rows.
+    #[must_use]
+    pub const fn disposition(&self) -> DerivedStateDisposition {
+        self.disposition
+    }
+}
+
+/// The coverage facts shared by a promotion outcome and its preview: the spaces
+/// and capabilities the workflow spanned and the derived-state it dispositions.
+/// An internal constructor bundle — the fields surface through the outcome types'
+/// accessors.
+pub(crate) struct BranchWorkflowCoverage {
+    pub(crate) spaces_covered: Vec<ProductSpace>,
+    pub(crate) capabilities_covered: Vec<ComparedCapability>,
+    pub(crate) capabilities_unsupported: Vec<ComparedCapability>,
+    pub(crate) derived_state: Vec<DerivedStateReport>,
+}
+
 /// The result of promoting `source` into `target`.
 ///
 /// A promotion writes one atomic commit on the target when it applies any
@@ -665,9 +719,14 @@ pub struct PromotionOutcome {
     branch_point: CommitVersion,
     strategy: PromotionStrategy,
     target_version: Option<CommitVersion>,
+    target_timestamp: Option<Timestamp>,
     applied: Vec<PromotedEntity>,
     deleted: Vec<PromotedEntity>,
     conflicts: Vec<PreviewConflict>,
+    spaces_covered: Vec<ProductSpace>,
+    capabilities_covered: Vec<ComparedCapability>,
+    capabilities_unsupported: Vec<ComparedCapability>,
+    derived_state: Vec<DerivedStateReport>,
 }
 
 impl PromotionOutcome {
@@ -678,9 +737,11 @@ impl PromotionOutcome {
         branch_point: CommitVersion,
         strategy: PromotionStrategy,
         target_version: Option<CommitVersion>,
+        target_timestamp: Option<Timestamp>,
         applied: Vec<PromotedEntity>,
         deleted: Vec<PromotedEntity>,
         conflicts: Vec<PreviewConflict>,
+        coverage: BranchWorkflowCoverage,
     ) -> Self {
         Self {
             source,
@@ -688,9 +749,14 @@ impl PromotionOutcome {
             branch_point,
             strategy,
             target_version,
+            target_timestamp,
             applied,
             deleted,
             conflicts,
+            spaces_covered: coverage.spaces_covered,
+            capabilities_covered: coverage.capabilities_covered,
+            capabilities_unsupported: coverage.capabilities_unsupported,
+            derived_state: coverage.derived_state,
         }
     }
 
@@ -722,6 +788,37 @@ impl PromotionOutcome {
     #[must_use]
     pub const fn target_version(&self) -> Option<CommitVersion> {
         self.target_version
+    }
+
+    /// The target commit timestamp the promotion wrote, or `None` for a no-op.
+    #[must_use]
+    pub const fn target_timestamp(&self) -> Option<Timestamp> {
+        self.target_timestamp
+    }
+
+    /// The spaces the promotion spanned.
+    #[must_use]
+    pub fn spaces_covered(&self) -> &[ProductSpace] {
+        &self.spaces_covered
+    }
+
+    /// The capabilities the promotion was able to carry (promotable capabilities).
+    #[must_use]
+    pub fn capabilities_covered(&self) -> &[ComparedCapability] {
+        &self.capabilities_covered
+    }
+
+    /// The capabilities promotion does not carry in V1 (compare-only); divergence
+    /// in these is reported by compare but never promoted.
+    #[must_use]
+    pub fn capabilities_unsupported(&self) -> &[ComparedCapability] {
+        &self.capabilities_unsupported
+    }
+
+    /// The derived-state disposition the promotion produced, per capability.
+    #[must_use]
+    pub fn derived_state(&self) -> &[DerivedStateReport] {
+        &self.derived_state
     }
 
     /// The source entities written onto the target.
@@ -761,6 +858,10 @@ pub struct BranchPreview {
     branch_point: CommitVersion,
     strategy: PromotionStrategy,
     conflicts: Vec<PreviewConflict>,
+    spaces_covered: Vec<ProductSpace>,
+    capabilities_covered: Vec<ComparedCapability>,
+    capabilities_unsupported: Vec<ComparedCapability>,
+    derived_state: Vec<DerivedStateReport>,
 }
 
 impl BranchPreview {
@@ -770,6 +871,7 @@ impl BranchPreview {
         branch_point: CommitVersion,
         strategy: PromotionStrategy,
         conflicts: Vec<PreviewConflict>,
+        coverage: BranchWorkflowCoverage,
     ) -> Self {
         Self {
             source,
@@ -777,6 +879,10 @@ impl BranchPreview {
             branch_point,
             strategy,
             conflicts,
+            spaces_covered: coverage.spaces_covered,
+            capabilities_covered: coverage.capabilities_covered,
+            capabilities_unsupported: coverage.capabilities_unsupported,
+            derived_state: coverage.derived_state,
         }
     }
 
@@ -814,5 +920,30 @@ impl BranchPreview {
     #[must_use]
     pub fn is_clean(&self) -> bool {
         self.conflicts.is_empty()
+    }
+
+    /// The spaces the promotion would span.
+    #[must_use]
+    pub fn spaces_covered(&self) -> &[ProductSpace] {
+        &self.spaces_covered
+    }
+
+    /// The capabilities a promotion could carry (promotable capabilities).
+    #[must_use]
+    pub fn capabilities_covered(&self) -> &[ComparedCapability] {
+        &self.capabilities_covered
+    }
+
+    /// The capabilities promotion does not carry in V1 (compare-only); divergence
+    /// in these is reported by compare but never promoted.
+    #[must_use]
+    pub fn capabilities_unsupported(&self) -> &[ComparedCapability] {
+        &self.capabilities_unsupported
+    }
+
+    /// The derived-state disposition a promotion would trigger, per capability.
+    #[must_use]
+    pub fn derived_state(&self) -> &[DerivedStateReport] {
+        &self.derived_state
     }
 }

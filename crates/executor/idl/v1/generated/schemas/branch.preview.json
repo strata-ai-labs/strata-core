@@ -9,14 +9,42 @@
           "minimum": 0,
           "type": "integer"
         },
+        "capabilities_covered": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ComparedCapability"
+          },
+          "type": "array"
+        },
+        "capabilities_unsupported": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ComparedCapability"
+          },
+          "type": "array"
+        },
         "conflicts": {
           "items": {
             "$ref": "#/$defs/PreviewConflictItem"
           },
           "type": "array"
         },
+        "derived_state": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/DerivedStateReportItem"
+          },
+          "type": "array"
+        },
         "source": {
           "type": "string"
+        },
+        "spaces_covered": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "strategy": {
           "$ref": "#/$defs/PromotionStrategy"
@@ -113,6 +141,38 @@
           "type": "string"
         }
       ]
+    },
+    "DerivedStateDisposition": {
+      "description": "Whether a capability's derived-state rows remain correct after a promotion or\nneed rebuilding, exposed through the command boundary.",
+      "oneOf": [
+        {
+          "const": "current",
+          "description": "The derived rows remain correct and need no work.",
+          "type": "string"
+        },
+        {
+          "const": "rebuild_required",
+          "description": "The derived rows are stale and must be rebuilt before the derived path is\ntrusted again; the authoritative rows still serve correct results.",
+          "type": "string"
+        }
+      ]
+    },
+    "DerivedStateReportItem": {
+      "additionalProperties": false,
+      "description": "One capability's derived-state disposition after a promotion or preview.",
+      "properties": {
+        "capability": {
+          "$ref": "#/$defs/ComparedCapability"
+        },
+        "disposition": {
+          "$ref": "#/$defs/DerivedStateDisposition"
+        }
+      },
+      "required": [
+        "capability",
+        "disposition"
+      ],
+      "type": "object"
     },
     "PreviewConflictItem": {
       "additionalProperties": false,

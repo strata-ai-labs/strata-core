@@ -2,11 +2,77 @@
 
 mod common;
 
+use serde_json::json;
 use strata_engine::{
-    BranchPreview, ConflictKind, ConflictStrategyResult, PreviewConflict, PromotionStrategy,
+    BranchPreview, ComparedCapability, ConflictKind, ConflictStrategyResult,
+    DerivedStateDisposition, JsonDocumentId, JsonPath, JsonValue, PreviewConflict,
+    PromotionStrategy,
 };
 
 use common::{assert_branch_value, branch, key, open_cache_database, space, value};
+
+#[test]
+fn test_preview_reports_capability_coverage_spaces_and_derived_state() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // Source change: feature adds a JSON document.
+    database
+        .json(branch("feature"), space("default"))
+        .expect("json opens")
+        .set_or_create(
+            JsonDocumentId::new("doc").expect("id"),
+            &JsonPath::root(),
+            JsonValue::new(json!({"a": 1})).expect("value"),
+        )
+        .expect("json set");
+    // Target-only space: default registers a space feature does not have, so the
+    // reported spaces must be the union of both sides — not just the source's.
+    database
+        .spaces(branch("default"))
+        .expect("space service opens")
+        .create(space("target_only"))
+        .expect("space create");
+
+    let preview = database
+        .branches()
+        .expect("branch service opens")
+        .preview(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("preview succeeds");
+
+    // Rule 4: the preview reports which capabilities a promotion covers and which
+    // it does not.
+    assert!(preview
+        .capabilities_covered()
+        .contains(&ComparedCapability::KeyValue));
+    assert!(preview
+        .capabilities_unsupported()
+        .contains(&ComparedCapability::GraphNode));
+    // The reported spaces are the source ∪ target union, including the
+    // target-only space.
+    assert!(preview
+        .spaces_covered()
+        .iter()
+        .any(|space| space.as_str() == "target_only"));
+    // Rule 5: JSON is the source-changed capability, so a promotion would leave
+    // its secondary index rebuild-required — and it is the only report.
+    assert_eq!(preview.derived_state().len(), 1);
+    assert_eq!(
+        preview.derived_state()[0].capability(),
+        ComparedCapability::Json
+    );
+    assert_eq!(
+        preview.derived_state()[0].disposition(),
+        DerivedStateDisposition::RebuildRequired
+    );
+}
 
 fn conflict_for<'a>(preview: &'a BranchPreview, identity: &[u8]) -> Option<&'a PreviewConflict> {
     preview
