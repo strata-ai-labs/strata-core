@@ -124,7 +124,8 @@ Storage layers:
 | Model management | Optional | Supported outside engine core through API/config/intelligence/inference; engine may store config only. | Intelligence/inference architecture. |
 | Text generation and tokenization | Optional | Supported above engine through inference; engine should not own execution. | Intelligence/inference architecture. |
 | Branch lifecycle | Required | Supported by engine Branch plus storage L6/L7/L9 mechanics. | Branch operation contract and capability adapters. |
-| Compare, promote, copy, undo | Required | Supported by engine Branch over capability branch adapters and storage history. | Capability merge/diff/revert/copy contracts. |
+| Compare and promote | Required | Supported by engine Branch over capability branch adapters and storage history. | Capability compare/promote contracts. |
+| Copy (cherry-pick) and undo (revert) | Deferred to post-V1 | Designed in the branch-operation contract but not shipped in V1; absence guarded by `branch_merge_absence.rs`. | Capability copy/revert contracts, post-V1. |
 | Tags and notes | Remove before V1 | Deferred or removed. Engine-next does not assume them as core. | Remove or mark legacy before V1. |
 | Spaces | Required | Supported by engine API/Data Capability/Control Plane and capability row encoding. | Space naming/reserved-space contract. |
 | Atomic commit substrate | Required | Supported internally by engine Commit and storage L7. | Public batch/write semantics replacing public transaction sessions. |
@@ -190,7 +191,7 @@ Storage layers:
 | 27. Read data as of a point in time | Supported, contract needed | Storage timeline resolves timestamps to versions; engine applies temporal context. | Shared temporal context and capability temporal conformance. |
 | 28. Scrub and explain a branch timeline | Supported, contract needed | Storage persists commit timeline; engine Branch/API explains it. | Timeline resolver API and retention/error semantics. |
 | 29. Create a branch from historical state | Supported, contract needed | Engine Branch owns product operation; storage L6/L7 provides retained branch state. | Branch-from-version first, branch-from-time through timeline. |
-| 30. Compare, promote, copy, and restore branch changes | Supported, contract needed | Engine Branch coordinates capability branch adapters and internal Commit. | Strict/SourceWins strategy and per-capability conflict rules. |
+| 30. Compare and promote branch changes | Supported | Engine Branch coordinates capability branch adapters and internal Commit. | Strict/SourceWins strategy and per-capability conflict rules. Copy (cherry-pick) and restore (revert) are deferred to post-V1. |
 
 ### Operations And Interfaces
 

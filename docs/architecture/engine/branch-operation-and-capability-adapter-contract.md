@@ -130,9 +130,14 @@ V1 workflows:
 5. Compare branch state.
 6. Preview promotion conflicts.
 7. Promote source branch changes into a target branch.
-8. Copy selected records or selected changes between branches.
-9. Restore or undo a version range by writing compensating changes.
-10. Delete a branch safely.
+8. Delete a branch safely.
+
+Deferred to post-V1 (the designs below are retained for the future ops, but V1
+does not ship them; their absence is enforced by
+`crates/engine/tests/branch_merge_absence.rs`):
+
+- Copy selected records or selected changes between branches (cherry-pick).
+- Restore or undo a version range by writing compensating changes (revert).
 
 Branch and space context selection is a required product behavior, but it is not
 a mutating branch workflow. API, runtime, CLI, and IPC surfaces may remember an
@@ -500,6 +505,10 @@ Promotion outcome should report:
 
 ## Selected Copy
 
+> **Deferred to post-V1.** V1 does not ship selected copy (cherry-pick); this
+> design is retained for the future op, and the op's absence is guarded by
+> `branch_merge_absence.rs`.
+
 Selected copy applies an explicit subset of source state or source changes into
 a target branch.
 
@@ -524,6 +533,10 @@ Rules:
 Selected copy should not silently become whole-branch promotion.
 
 ## Restore And Undo
+
+> **Deferred to post-V1.** V1 does not ship restore/undo (revert); this design is
+> retained for the future op, and the op's absence is guarded by
+> `branch_merge_absence.rs`.
 
 Restore or undo writes compensating changes to the selected branch.
 
