@@ -534,6 +534,131 @@ fn test_promotion_registers_multiple_source_only_spaces_in_one_index() {
 }
 
 #[test]
+fn test_promotion_removes_a_space_deleted_on_source() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    // `shared` exists on default BEFORE the fork, so it is part of the base.
+    database
+        .spaces(branch("default"))
+        .expect("space service opens")
+        .create(space("shared"))
+        .expect("space create succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // The source deletes `shared`; the target independently adds `default_only`
+    // (a target-only space the source never had).
+    database
+        .spaces(branch("feature"))
+        .expect("space service opens")
+        .delete(&space("shared"), true)
+        .expect("space delete succeeds");
+    database
+        .spaces(branch("default"))
+        .expect("space service opens")
+        .create(space("default_only"))
+        .expect("space create succeeds");
+
+    // Precondition: the target still registers `shared`.
+    assert!(database
+        .spaces(branch("default"))
+        .expect("space service opens")
+        .exists(&space("shared"))
+        .expect("exists succeeds"));
+
+    let outcome = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("promote succeeds");
+    assert!(outcome.conflicts().is_empty());
+
+    // The space the source deleted (present in the base) must be removed from the
+    // target — its stale registration would otherwise linger.
+    assert!(
+        !database
+            .spaces(branch("default"))
+            .expect("space service opens")
+            .exists(&space("shared"))
+            .expect("exists succeeds"),
+        "promotion must remove a space the source deleted"
+    );
+    // A target-only space the source never had must survive (base-relative three-way,
+    // not a naive source-vs-target difference).
+    assert!(
+        database
+            .spaces(branch("default"))
+            .expect("space service opens")
+            .exists(&space("default_only"))
+            .expect("exists succeeds"),
+        "a target-only space must not be deleted"
+    );
+    // The default space is never removed.
+    assert!(database
+        .spaces(branch("default"))
+        .expect("space service opens")
+        .exists(&space("default"))
+        .expect("exists succeeds"));
+}
+
+#[test]
+fn test_promotion_keeps_a_deleted_space_the_target_still_uses() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    // `shared` exists on both branches at the fork (part of the base).
+    database
+        .spaces(branch("default"))
+        .expect("space service opens")
+        .create(space("shared"))
+        .expect("space create succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // The source deletes `shared`; the target writes a NEW (target-only) row into
+    // it after the fork.
+    database
+        .spaces(branch("feature"))
+        .expect("space service opens")
+        .delete(&space("shared"), true)
+        .expect("space delete succeeds");
+    database
+        .kv(branch("default"), space("shared"))
+        .expect("KV opens")
+        .put(key(b"k2"), value(b"v2"))
+        .expect("target-only row");
+
+    let outcome = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("promote succeeds");
+    assert!(outcome.conflicts().is_empty());
+
+    // Deregistering `shared` would orphan the target-only row outside the
+    // catalog, so a space the target still holds a live row in stays registered
+    // and the row stays readable.
+    assert!(
+        database
+            .spaces(branch("default"))
+            .expect("space service opens")
+            .exists(&space("shared"))
+            .expect("exists succeeds"),
+        "a space the target still holds rows in must stay registered"
+    );
+    assert_branch_value(&mut database, "default", "shared", b"k2", b"v2");
+}
+
+#[test]
 fn promote_of_unrelated_branches_is_rejected() {
     let mut database = open_cache_database().expect("cache open succeeds");
     database
