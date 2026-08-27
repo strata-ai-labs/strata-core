@@ -21,8 +21,9 @@ use crate::data::kv::ProductSpace;
 use crate::diagnostics::{EngineError, EngineResult};
 use crate::persistence::{
     decode_graph_edge_key, decode_graph_metadata_key, decode_graph_node_key,
-    encode_graph_edge_space_prefix, encode_graph_metadata_prefix, encode_graph_node_space_prefix,
-    encode_graph_ontology_space_prefix, PersistenceReadRow, RowClass,
+    decode_graph_ontology_key, encode_graph_edge_space_prefix, encode_graph_metadata_prefix,
+    encode_graph_node_space_prefix, encode_graph_ontology_space_prefix, PersistenceReadRow,
+    RowClass,
 };
 
 /// The space-relative identity of a graph row (its key with the space prefix
@@ -196,8 +197,10 @@ impl CapabilityBranchAdapter for GraphOntologyBranchAdapter {
         space: &ProductSpace,
         row: &PersistenceReadRow,
     ) -> EngineResult<ComparableEntity> {
-        // The ontology key has no standalone decoder; the prefix strip in
-        // `interpret` validates space membership.
+        // Validate the full length-prefixed ontology key structure — not just the
+        // space prefix — so a malformed suffix under the right prefix surfaces as
+        // structured corruption instead of an opaque identity.
+        decode_graph_ontology_key(space, row.key())?;
         interpret(
             row,
             &encode_graph_ontology_space_prefix(space),
@@ -221,7 +224,8 @@ mod tests {
     use crate::persistence::{
         encode_graph_edge_key, encode_graph_edge_space_prefix, encode_graph_metadata_key,
         encode_graph_metadata_prefix, encode_graph_node_key, encode_graph_node_space_prefix,
-        encode_graph_ontology_space_prefix, PersistenceReadRow, RowClass,
+        encode_graph_ontology_key, encode_graph_ontology_space_prefix, PersistenceReadRow,
+        RowClass,
     };
 
     fn space() -> ProductSpace {
@@ -361,5 +365,34 @@ mod tests {
             GraphOntologyBranchAdapter.space_prefix(&space()),
             encode_graph_node_space_prefix(&space())
         );
+    }
+
+    #[test]
+    fn ontology_adapter_rejects_a_malformed_key() {
+        // A row under the ontology prefix whose suffix is not a valid
+        // length-prefixed graph name is structured corruption, not an opaque
+        // identity — the adapter must reject it.
+        let mut key = encode_graph_ontology_space_prefix(&space());
+        key.push(0xff); // a length prefix promising bytes that do not follow
+        let row = PersistenceReadRow::for_test(key, Some(b"onto".to_vec()), false);
+        let error = GraphOntologyBranchAdapter
+            .interpret_row(&space(), &row)
+            .expect_err("a malformed ontology key must be rejected");
+        assert_eq!(error.class(), EngineErrorClass::Corruption);
+        assert_eq!(error.code(), "data_loss.engine.graph_key");
+    }
+
+    #[test]
+    fn ontology_adapter_rejects_trailing_bytes_after_the_graph_name() {
+        // A complete graph name followed by extra bytes is corruption, not a
+        // longer identity — the trailing-bytes check must reject it.
+        let mut key = encode_graph_ontology_key(&space(), &GraphName::new("deps").expect("graph"));
+        key.push(0xff);
+        let row = PersistenceReadRow::for_test(key, Some(b"onto".to_vec()), false);
+        let error = GraphOntologyBranchAdapter
+            .interpret_row(&space(), &row)
+            .expect_err("trailing bytes after the graph name must be rejected");
+        assert_eq!(error.class(), EngineErrorClass::Corruption);
+        assert_eq!(error.code(), "data_loss.engine.graph_key");
     }
 }
