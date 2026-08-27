@@ -569,12 +569,15 @@ fn test_repeated_promotion_incorporates_prior_merge() {
         .expect("branch service opens")
         .fork_current(&branch("default"), branch("feature"))
         .expect("fork succeeds");
-    {
+    let feature_frontier = {
         let mut kv = database
             .kv(branch("feature"), space("default"))
             .expect("KV opens");
-        kv.put(key(b"k"), value(b"v1")).expect("feature v1");
-    }
+        kv.put(key(b"k"), value(b"v1"))
+            .expect("feature v1")
+            .commit()
+            .version()
+    };
 
     // First promotion incorporates feature@v1 into default.
     let first = database
@@ -587,7 +590,7 @@ fn test_repeated_promotion_incorporates_prior_merge() {
         )
         .expect("first strict promote succeeds");
     assert!(first.conflicts().is_empty());
-    let first_version = first.target_version().expect("first promote committed");
+    assert!(first.target_version().is_some(), "first promote committed");
     assert_branch_value(&mut database, "default", "default", b"k", b"v1");
 
     // Feature advances past the merge.
@@ -614,9 +617,158 @@ fn test_repeated_promotion_incorporates_prior_merge() {
         second.conflicts().is_empty(),
         "repeated promotion must not conflict on already-merged changes"
     );
-    // The branch point advanced to the first merge's target commit.
-    assert_eq!(second.branch_point(), first_version);
+    // The branch point is the source's frontier at the prior merge (the true
+    // LCA), not the target's post-merge commit — the latter would include
+    // target-only rows and re-surface them as spurious source deletions.
+    assert_eq!(second.branch_point(), feature_frontier);
     assert_branch_value(&mut database, "default", "default", b"k", b"v2");
+}
+
+/// Regression for the repeated-promote data-loss bug: a second promote with no
+/// source change must NOT delete rows the target holds but the source never had.
+/// The merge base must be the source's frontier at the prior merge, not the
+/// target's post-merge commit (which includes those target-only rows and would
+/// read them back as spurious source deletions).
+#[test]
+fn test_repeated_promotion_preserves_target_only_rows() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    {
+        let mut kv = database
+            .kv(branch("default"), space("default"))
+            .expect("KV opens");
+        kv.put(key(b"a"), value(b"1")).expect("default a");
+    }
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // `b` is added on default only, AFTER the fork — the source never sees it.
+    {
+        let mut kv = database
+            .kv(branch("default"), space("default"))
+            .expect("KV opens");
+        kv.put(key(b"b"), value(b"2")).expect("default-only b");
+    }
+    // feature changes the shared row.
+    {
+        let mut kv = database
+            .kv(branch("feature"), space("default"))
+            .expect("KV opens");
+        kv.put(key(b"a"), value(b"10")).expect("feature a");
+    }
+
+    // First promotion applies a->10 and keeps the target-only b.
+    let first = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("first strict promote succeeds");
+    assert!(first.conflicts().is_empty());
+    assert!(first.deleted().is_empty());
+    assert_branch_value(&mut database, "default", "default", b"a", b"10");
+    assert_branch_value(&mut database, "default", "default", b"b", b"2");
+
+    // Second promotion with NO source change must be a true no-op: no conflict,
+    // no deletion, and the target-only row survives.
+    let second = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("second strict promote succeeds");
+    assert!(
+        second.conflicts().is_empty(),
+        "repeated promotion must not conflict"
+    );
+    assert!(
+        second.deleted().is_empty(),
+        "repeated promotion must not delete the target-only row"
+    );
+    assert!(
+        second.is_noop(),
+        "a repeated promote with no source change writes no commit"
+    );
+    // The target-only row survives; the shared row is unchanged.
+    assert_branch_value(&mut database, "default", "default", b"b", b"2");
+    assert_branch_value(&mut database, "default", "default", b"a", b"10");
+}
+
+/// The realistic repeated-promote intersection in a single second promote: the
+/// source advances with a NEW row, a target-only row must be preserved, and an
+/// already-merged shared row must stay unchanged. Diffing against the source
+/// frontier applies only the new row and touches nothing else.
+#[test]
+fn test_repeated_promotion_applies_new_source_row_and_preserves_target_only_row() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    {
+        let mut kv = database
+            .kv(branch("default"), space("default"))
+            .expect("KV opens");
+        kv.put(key(b"a"), value(b"1")).expect("default a");
+    }
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // `b` is target-only (added on default after the fork); `a` diverges on feature.
+    {
+        let mut kv = database
+            .kv(branch("default"), space("default"))
+            .expect("KV opens");
+        kv.put(key(b"b"), value(b"2")).expect("default-only b");
+    }
+    {
+        let mut kv = database
+            .kv(branch("feature"), space("default"))
+            .expect("KV opens");
+        kv.put(key(b"a"), value(b"10")).expect("feature a");
+    }
+
+    // First promotion incorporates a->10 and keeps b.
+    database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("first strict promote succeeds");
+
+    // The source advances with a brand-new row after the merge.
+    {
+        let mut kv = database
+            .kv(branch("feature"), space("default"))
+            .expect("KV opens");
+        kv.put(key(b"c"), value(b"30")).expect("feature adds c");
+    }
+
+    // Second promotion: only `c` is new relative to the source frontier; `a` is
+    // already merged (no-op) and `b` is target-only (preserved).
+    let second = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("second strict promote succeeds");
+    assert!(second.conflicts().is_empty());
+    assert_eq!(applied(&second), vec![b"c".to_vec()]);
+    assert!(second.deleted().is_empty());
+    assert_branch_value(&mut database, "default", "default", b"a", b"10");
+    assert_branch_value(&mut database, "default", "default", b"b", b"2");
+    assert_branch_value(&mut database, "default", "default", b"c", b"30");
 }
 
 #[test]

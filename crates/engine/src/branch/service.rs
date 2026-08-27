@@ -341,51 +341,9 @@ impl<'a> BranchService<'a> {
         let (target_version, target_timestamp) = if plan.mutations.is_empty() {
             (None, None)
         } else {
-            // Capture the target's timeline head before mutating, so reopen
-            // recovery can tell whether the data commit landed after a crash.
-            let (baseline, _) = self
-                .persistence
-                .branch_timeline_head(target_record.storage_branch_id())?;
-            let baseline = baseline.unwrap_or(CommitVersion::ZERO);
-            // Recoverable promotion intent (contract §Promotion rule 7): the
-            // target record carrying the source lineage and the baseline (as the
-            // placeholder merge version), written before any target mutation so a
-            // crash in the data-commit → edge-publish window is completed or
-            // rolled back on reopen. The edge publish clears it.
-            let intent = target_record
-                .clone()
-                .with_merge_parent(BranchMergeRecord::new(
-                    source_record.name().clone(),
-                    source_record.branch_id(),
-                    source_record.generation(),
-                    baseline,
-                    None,
-                ));
-            ControlPlane::begin_branch_operation(
-                self.persistence,
-                &intent,
-                BranchOperationKind::Promote,
-            )?;
-
-            let outcome = match self.persistence.commit(&CommitPlan::new(
-                target_record.storage_branch_id(),
-                plan.mutations,
-                Some(target_record.generation()),
-            )) {
-                Ok(outcome) => outcome,
-                Err(error) => return Err(self.clear_pending_after_storage_error(&intent, error)),
-            };
-            // Publish the authoritative promotion lineage with the real target
-            // commit version, atomically clearing the pending intent.
-            let merge = BranchMergeRecord::new(
-                source_record.name().clone(),
-                source_record.branch_id(),
-                source_record.generation(),
-                outcome.version(),
-                Some(outcome.timestamp()),
-            );
-            self.persist_catalog_record(target_record.clone().with_merge_parent(merge))?;
-            (Some(outcome.version()), Some(outcome.timestamp()))
+            let (version, timestamp) =
+                self.commit_promotion_with_lineage(&source_record, &target_record, plan.mutations)?;
+            (Some(version), Some(timestamp))
         };
 
         // The capabilities actually carried in — their derived state is what the
@@ -415,6 +373,73 @@ impl<'a> BranchService<'a> {
             plan.conflicts,
             coverage,
         ))
+    }
+
+    /// Commits a promotion's data mutations into `target` and publishes the
+    /// authoritative merge lineage, bracketed by a recoverable intent so a crash
+    /// in the data-commit → edge-publish window is reconciled on reopen. Returns
+    /// the committed target version and timestamp.
+    fn commit_promotion_with_lineage(
+        &mut self,
+        source_record: &BranchCatalogRecord,
+        target_record: &BranchCatalogRecord,
+        mutations: Vec<RowMutation>,
+    ) -> EngineResult<(CommitVersion, Timestamp)> {
+        // Capture the target's timeline head before mutating, so reopen recovery
+        // can tell whether the data commit landed after a crash.
+        let (baseline, _) = self
+            .persistence
+            .branch_timeline_head(target_record.storage_branch_id())?;
+        let baseline = baseline.unwrap_or(CommitVersion::ZERO);
+        // The source's timeline head is the frontier being merged and the true
+        // base for any later repeated promotion; record it so `resolve_base_point`
+        // diffs against source-at-merge, not the target's post-merge commit (which
+        // includes target-only rows and would re-surface them as source deletions).
+        let (source_head, _) = self
+            .persistence
+            .branch_timeline_head(source_record.storage_branch_id())?;
+        let source_head = source_head.unwrap_or(CommitVersion::ZERO);
+        // Recoverable promotion intent (contract §Promotion rule 7): the target
+        // record carrying the source lineage and the baseline (as the placeholder
+        // merge version), written before any target mutation so a crash in the
+        // data-commit → edge-publish window is completed or rolled back on reopen.
+        // The edge publish clears it.
+        let intent = target_record
+            .clone()
+            .with_merge_parent(BranchMergeRecord::new(
+                source_record.name().clone(),
+                source_record.branch_id(),
+                source_record.generation(),
+                baseline,
+                None,
+                Some(source_head),
+            ));
+        ControlPlane::begin_branch_operation(
+            self.persistence,
+            &intent,
+            BranchOperationKind::Promote,
+        )?;
+
+        let outcome = match self.persistence.commit(&CommitPlan::new(
+            target_record.storage_branch_id(),
+            mutations,
+            Some(target_record.generation()),
+        )) {
+            Ok(outcome) => outcome,
+            Err(error) => return Err(self.clear_pending_after_storage_error(&intent, error)),
+        };
+        // Publish the authoritative promotion lineage with the real target commit
+        // version, atomically clearing the pending intent.
+        let merge = BranchMergeRecord::new(
+            source_record.name().clone(),
+            source_record.branch_id(),
+            source_record.generation(),
+            outcome.version(),
+            Some(outcome.timestamp()),
+            Some(source_head),
+        );
+        self.persist_catalog_record(target_record.clone().with_merge_parent(merge))?;
+        Ok((outcome.version(), outcome.timestamp()))
     }
 
     /// Deletes an active product branch.

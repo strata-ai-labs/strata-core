@@ -117,6 +117,12 @@ pub(crate) struct BranchMergeRecord {
     source_generation: u64,
     merged_at: CommitVersion,
     merged_timestamp: Option<Timestamp>,
+    /// The source branch's timeline head at merge time — the true merge base
+    /// for a repeated promotion (the LCA of source-now and target-now). `None`
+    /// on records written before this field existed (tolerant decode); such a
+    /// record falls back to the fork base. Never the target's commit: that
+    /// includes target-only rows and would re-surface them as source deletions.
+    source_merged_version: Option<CommitVersion>,
 }
 
 impl BranchMergeRecord {
@@ -126,6 +132,7 @@ impl BranchMergeRecord {
         source_generation: u64,
         merged_at: CommitVersion,
         merged_timestamp: Option<Timestamp>,
+        source_merged_version: Option<CommitVersion>,
     ) -> Self {
         Self {
             source_name,
@@ -133,6 +140,7 @@ impl BranchMergeRecord {
             source_generation,
             merged_at,
             merged_timestamp,
+            source_merged_version,
         }
     }
 
@@ -154,6 +162,10 @@ impl BranchMergeRecord {
 
     pub(crate) const fn merged_timestamp(&self) -> Option<Timestamp> {
         self.merged_timestamp
+    }
+
+    pub(crate) const fn source_merged_version(&self) -> Option<CommitVersion> {
+        self.source_merged_version
     }
 }
 

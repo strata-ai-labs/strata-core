@@ -566,6 +566,7 @@ fn recover_pending_promotion(
                 intent.source_generation(),
                 latest,
                 latest_timestamp,
+                intent.source_merged_version(),
             ));
             clear_pending_branch_marker(persistence, pending.name(), Some(&completed))
         }
@@ -1174,6 +1175,7 @@ mod tests {
             1,
             baseline,
             None,
+            Some(baseline),
         ));
         ControlPlane::begin_branch_operation(persistence, &intent, BranchOperationKind::Promote)
             .expect("promote intent writes");
@@ -1209,6 +1211,8 @@ mod tests {
             .expect("recovery finalized the merge edge");
         assert_eq!(edge.source_name().as_str(), "feature");
         assert_eq!(edge.merged_at(), merged);
+        // The source frontier recorded in the intent survives finalization.
+        assert_eq!(edge.source_merged_version(), Some(baseline));
         assert!(pending_names(&mut persistence).is_empty());
     }
 
