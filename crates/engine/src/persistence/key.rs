@@ -434,6 +434,36 @@ pub(crate) fn decode_graph_metadata_key(
     })
 }
 
+pub(crate) fn decode_graph_ontology_key(
+    space: &ProductSpace,
+    encoded: &[u8],
+) -> EngineResult<GraphName> {
+    let bytes = decode_user_key(
+        space,
+        encoded,
+        GRAPH_ONTOLOGY_DISCRIMINATOR,
+        "data_loss.engine.graph_key",
+        "stored graph ontology row key is not valid for the selected product space",
+    )?;
+    let (graph, rest) = decode_length_prefixed_text(
+        bytes,
+        "data_loss.engine.graph_key",
+        "stored graph ontology row key is missing a graph name",
+    )?;
+    if !rest.is_empty() {
+        return Err(EngineError::corruption(
+            "data_loss.engine.graph_key",
+            "stored graph ontology row key has trailing bytes",
+        ));
+    }
+    GraphName::new(graph).map_err(|_| {
+        EngineError::corruption(
+            "data_loss.engine.graph_key",
+            "stored graph ontology row key contains an invalid graph name",
+        )
+    })
+}
+
 pub(crate) fn encode_graph_node_key(
     space: &ProductSpace,
     graph: &GraphName,
