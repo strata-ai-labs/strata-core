@@ -21,7 +21,7 @@ use crate::api::{
 };
 use crate::branch::adapter::{CapabilityBranchAdapter, DerivedDisposition, EntitySummary};
 use crate::branch::catalog::BranchCatalogRecord;
-use crate::control::space::registered_spaces;
+use crate::control::space::{read_space_index_at, registered_spaces};
 use crate::data::event::EventBranchAdapter;
 use crate::data::graph::{
     GraphEdgeBranchAdapter, GraphMetadataBranchAdapter, GraphNodeBranchAdapter,
@@ -193,6 +193,19 @@ fn resolve_base_point(
         "invalid_argument.engine.branch_point",
         "no branch point: the two branches are not in a direct fork lineage",
     ))
+}
+
+/// The spaces registered at the promotion base point — the third leg of the
+/// space three-way. It distinguishes a source-side deletion (present in the
+/// base, gone from the source) from a space the target merely added (absent
+/// from the base), so promotion never removes a genuinely target-only space.
+pub(crate) fn base_registered_spaces(
+    persistence: &mut StoragePersistence,
+    source: &BranchCatalogRecord,
+    target: &BranchCatalogRecord,
+) -> EngineResult<Vec<ProductSpace>> {
+    let base = resolve_base_point(source, target)?;
+    read_space_index_at(persistence, base.storage_branch_id, base.selector)
 }
 
 fn base_point_from(

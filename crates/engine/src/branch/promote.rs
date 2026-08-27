@@ -10,6 +10,8 @@
 //! M12D1 covers KV and JSON in cache/durable happy paths; the recoverable
 //! workflow intent and crash/reopen recovery land in M12D2.
 
+use std::collections::BTreeSet;
+
 use strata_core::CommitVersion;
 
 use crate::api::{
@@ -18,8 +20,11 @@ use crate::api::{
 };
 use crate::branch::adapter::EntitySummary;
 use crate::branch::catalog::BranchCatalogRecord;
-use crate::branch::preview::{adapter_for, changed, normalized, three_way, value_of};
-use crate::control::space::{registered_spaces, registration_mutations_for_many};
+use crate::branch::preview::{
+    adapter_for, base_registered_spaces, changed, normalized, three_way, value_of,
+};
+use crate::control::space::{registered_spaces, registration_and_deletion_mutations};
+use crate::data::kv::ProductSpace;
 use crate::data::vector::plan_collection_promotion;
 use crate::diagnostics::EngineResult;
 use crate::persistence::{RowMutation, StoragePersistence};
@@ -57,11 +62,27 @@ pub(crate) fn plan_promotion(
     let mut applied = Vec::new();
     let mut deleted = Vec::new();
     let mut conflicts = Vec::new();
+    // Spaces that still hold at least one live row on the target after this
+    // promotion. Such a space must keep its registration even if the source
+    // deleted it, so a source-side space deletion never orphans a target-only
+    // row (data readable but outside the registered catalog).
+    let mut retained_spaces: BTreeSet<ProductSpace> = BTreeSet::new();
 
     for entity in entities {
         let source_value = entity.source.as_ref();
         let target_value = entity.target.as_ref();
         let base_value = entity.base.as_ref();
+
+        // A row's post-promotion presence on the target is the source's resolved
+        // state where the source changed it, otherwise the target's own state.
+        let post_present = if changed(source_value, base_value) {
+            matches!(entity.source, Some(EntitySummary::Present(_)))
+        } else {
+            matches!(entity.target, Some(EntitySummary::Present(_)))
+        };
+        if post_present {
+            retained_spaces.insert(entity.space.clone());
+        }
 
         // Only source-side changes propagate; a target-only change is kept.
         if !changed(source_value, base_value) {
@@ -114,14 +135,32 @@ pub(crate) fn plan_promotion(
     // Carry source-only spaces so promoted rows land in a space the target's
     // catalog registers, rather than orphaned outside it — a visible data change
     // must carry the branch-control metadata that explains it (contract Binding
-    // Decision #8). The registration commits atomically with the data mutations,
-    // so a strict refusal (which never commits the plan) leaves the target
-    // untouched, spaces included.
+    // Decision #8). Symmetrically, remove spaces the source deleted (present in
+    // the base, gone from the source) so their stale registration does not linger
+    // on the target; a space the target merely added is absent from the base and
+    // is never touched (mirroring the data three-way, which keeps target-only
+    // rows). Both directions commit atomically with the data mutations, so a
+    // strict refusal (which never commits the plan) leaves the target untouched.
     let source_spaces = registered_spaces(persistence, source)?;
-    mutations.extend(registration_mutations_for_many(
+    let base_spaces = base_registered_spaces(persistence, source, target)?;
+    // A space present in the base but gone from the source was deleted there —
+    // remove it from the target, UNLESS the target still holds a live row in it
+    // (a target-only row the three-way kept): deregistering such a space would
+    // orphan that row outside the catalog, so the registration stays. (The
+    // mutation builder further narrows this to spaces the target actually
+    // registers.)
+    let deleted_spaces: Vec<ProductSpace> = base_spaces
+        .into_iter()
+        .filter(|space| {
+            !source_spaces.iter().any(|existing| existing == space)
+                && !retained_spaces.contains(space)
+        })
+        .collect();
+    mutations.extend(registration_and_deletion_mutations(
         persistence,
         target,
         &source_spaces,
+        &deleted_spaces,
     )?);
 
     // Carry vector collection configs so promoted vectors are usable on the
