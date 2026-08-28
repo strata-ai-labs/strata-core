@@ -33,6 +33,82 @@ fn capability(comparison: &BranchComparison, want: ComparedCapability) -> Option
 }
 
 #[test]
+fn test_promotion_keeps_a_deleted_space_with_target_only_graph_rows() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let gspace = space("graphs");
+    // The `graphs` space exists on both branches at the fork (part of the base).
+    database
+        .spaces(branch("default"))
+        .expect("space service opens")
+        .create(gspace.clone())
+        .expect("create space");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // The source deletes the space; the target adds target-only graph nodes and an
+    // edge — graph rows are not promotable, so the space-deletion retain guard must
+    // still see them.
+    database
+        .spaces(branch("feature"))
+        .expect("space service opens")
+        .delete(&gspace, true)
+        .expect("delete space");
+    {
+        let mut graph_service = database
+            .graph(branch("default"), gspace.clone())
+            .expect("graph service opens");
+        graph_service.create_graph(graph()).expect("create graph");
+        graph_service
+            .upsert_node(
+                &graph(),
+                GraphNodeId::new("a").expect("node id"),
+                GraphNodeData::new(None, None),
+            )
+            .expect("upsert node a");
+        graph_service
+            .upsert_node(
+                &graph(),
+                GraphNodeId::new("b").expect("node id"),
+                GraphNodeData::new(None, None),
+            )
+            .expect("upsert node b");
+        graph_service
+            .upsert_edge(
+                &graph(),
+                GraphNodeId::new("a").expect("node id"),
+                GraphEdgeType::new("contains").expect("edge type"),
+                GraphNodeId::new("b").expect("node id"),
+                GraphEdgeData::new(1.0, None).expect("edge data"),
+            )
+            .expect("upsert edge");
+    }
+
+    let outcome = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("strict promote succeeds");
+    assert!(outcome.conflicts().is_empty());
+
+    // Deregistering the space would orphan the target-only graph, so a space the
+    // target still holds graph rows in stays registered.
+    assert!(
+        database
+            .spaces(branch("default"))
+            .expect("space service opens")
+            .exists(&gspace)
+            .expect("exists succeeds"),
+        "a space with target-only graph rows must stay registered"
+    );
+}
+
+#[test]
 fn test_empty_graph_creation_is_visible_in_the_diff() {
     let mut database = open_cache_database().expect("cache open succeeds");
     database

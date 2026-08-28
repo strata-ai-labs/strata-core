@@ -29,6 +29,61 @@ fn event_diff(comparison: &BranchComparison) -> Option<&SpaceComparison> {
 }
 
 #[test]
+fn test_promotion_keeps_a_deleted_space_with_target_only_event_rows() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let evspace = space("events");
+    // The `events` space exists on both branches at the fork (part of the base).
+    database
+        .spaces(branch("default"))
+        .expect("space service opens")
+        .create(evspace.clone())
+        .expect("create space");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // The source deletes the space; the target appends a (target-only) event into
+    // it — event rows are not promotable, so the space-deletion retain guard must
+    // still see them.
+    database
+        .spaces(branch("feature"))
+        .expect("space service opens")
+        .delete(&evspace, true)
+        .expect("delete space");
+    database
+        .event(branch("default"), evspace.clone())
+        .expect("event service opens")
+        .append(
+            EventType::new("tool_call").expect("event type"),
+            EventPayload::new(json!({ "tool": "x" })).expect("payload"),
+        )
+        .expect("event append");
+
+    let outcome = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("strict promote succeeds");
+    assert!(outcome.conflicts().is_empty());
+
+    // Deregistering the space would orphan the target-only event, so a space the
+    // target still holds event rows in stays registered.
+    assert!(
+        database
+            .spaces(branch("default"))
+            .expect("space service opens")
+            .exists(&evspace)
+            .expect("exists succeeds"),
+        "a space with target-only event rows must stay registered"
+    );
+}
+
+#[test]
 fn events_are_compared_but_never_promoted() {
     let mut database = open_cache_database().expect("cache open succeeds");
     append_event(&mut database, "default", "seed");
