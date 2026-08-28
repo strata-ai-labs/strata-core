@@ -181,6 +181,293 @@ fn test_promotion_carries_source_created_collection_config() {
 }
 
 #[test]
+fn test_promotion_removes_a_collection_deleted_on_source() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    // `emb` exists on both branches at the fork (part of the base).
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create collection");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // The source deletes `emb`; the target independently creates a target-only
+    // collection `keep`.
+    let deleted = database
+        .vector(branch("feature"), space("default"))
+        .expect("vector service opens")
+        .delete_collection(&collection())
+        .expect("delete collection");
+    assert!(deleted);
+    let keep = VectorCollectionName::new("keep").expect("valid collection");
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            keep.clone(),
+            VectorConfig::new(3, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create keep collection");
+
+    // Precondition: the target still registers `emb`.
+    assert!(database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .collection_info(&collection())
+        .expect("info succeeds")
+        .is_some());
+
+    let outcome = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("strict promote succeeds");
+    assert!(outcome.conflicts().is_empty());
+
+    // `emb` (deleted on source, present in the base) must be removed from the target.
+    assert!(
+        database
+            .vector(branch("default"), space("default"))
+            .expect("vector service opens")
+            .collection_info(&collection())
+            .expect("info succeeds")
+            .is_none(),
+        "promotion must remove a collection the source deleted"
+    );
+    // A target-only collection (absent from the base) must survive.
+    assert!(
+        database
+            .vector(branch("default"), space("default"))
+            .expect("vector service opens")
+            .collection_info(&keep)
+            .expect("info succeeds")
+            .is_some(),
+        "a target-only collection must not be deleted"
+    );
+}
+
+#[test]
+fn test_promotion_keeps_a_deleted_collection_the_target_still_uses() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    // `emb` exists on both branches at the fork.
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create collection");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // The source deletes `emb`; the target writes a NEW (target-only) vector into it.
+    let deleted = database
+        .vector(branch("feature"), space("default"))
+        .expect("vector service opens")
+        .delete_collection(&collection())
+        .expect("delete collection");
+    assert!(deleted);
+    upsert(&mut database, "default", "t1", vec![0.0, 5.0]);
+
+    let outcome = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("strict promote succeeds");
+    assert!(outcome.conflicts().is_empty());
+
+    // Deregistering `emb` would orphan the target-only vector behind a missing
+    // config, so a collection the target still holds a live vector in stays.
+    assert!(
+        database
+            .vector(branch("default"), space("default"))
+            .expect("vector service opens")
+            .collection_info(&collection())
+            .expect("info succeeds")
+            .is_some(),
+        "a collection the target still holds vectors in must stay registered"
+    );
+    assert_eq!(
+        database
+            .vector(branch("default"), space("default"))
+            .expect("vector service opens")
+            .count(&collection())
+            .expect("count succeeds"),
+        1,
+        "the target-only vector remains readable"
+    );
+}
+
+#[test]
+fn test_promotion_keeps_a_collection_whose_key_the_source_created_and_deleted() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    // `emb` exists on both at the fork, empty (the base holds no vectors).
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create collection");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // The source adds a vector `k`, then deletes the whole collection (tombstoning
+    // `k` and the config). Relative to the base this is a net no-op for `k`.
+    upsert(&mut database, "feature", "k", vec![1.0, 1.0]);
+    database
+        .vector(branch("feature"), space("default"))
+        .expect("vector service opens")
+        .delete_collection(&collection())
+        .expect("delete collection");
+    // The target independently adds the SAME key `k` (vector keys are branch-
+    // independent).
+    upsert(&mut database, "default", "k", vec![2.0, 2.0]);
+
+    let outcome = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("strict promote succeeds");
+    assert!(outcome.conflicts().is_empty());
+
+    // `k` was never in the base, so the data three-way does not delete it; its
+    // collection must NOT be deregistered, or `k` would be orphaned behind a
+    // missing config.
+    assert!(
+        database
+            .vector(branch("default"), space("default"))
+            .expect("vector service opens")
+            .collection_info(&collection())
+            .expect("info succeeds")
+            .is_some(),
+        "a collection with a surviving target vector must stay registered"
+    );
+    assert_eq!(
+        database
+            .vector(branch("default"), space("default"))
+            .expect("vector service opens")
+            .count(&collection())
+            .expect("count succeeds"),
+        1,
+        "the surviving target vector remains readable"
+    );
+}
+
+// A collection the source deleted while the target independently reshaped it
+// (delete + recreate with a different config) is a modify/delete divergence.
+fn reshaped_deletion_database() -> Database {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create collection");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // Source deletes `emb`.
+    database
+        .vector(branch("feature"), space("default"))
+        .expect("vector service opens")
+        .delete_collection(&collection())
+        .expect("delete collection");
+    // Target deletes and recreates `emb` with a different (incompatible) config.
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .delete_collection(&collection())
+        .expect("delete collection");
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(3, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("recreate collection");
+    database
+}
+
+#[test]
+fn test_strict_refuses_when_source_deletes_a_collection_the_target_reshaped() {
+    let mut database = reshaped_deletion_database();
+    let error = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect_err("a modify/delete divergence refuses under Strict");
+    assert_eq!(error.class(), EngineErrorClass::Conflict);
+    assert_eq!(error.code(), "conflict.engine.promotion");
+    // The target is untouched — `emb` keeps the target's reshaped config.
+    let info = database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .collection_info(&collection())
+        .expect("info succeeds")
+        .expect("target collection retained on strict refusal");
+    assert_eq!(info.config().dimension(), 3);
+}
+
+#[test]
+fn test_source_wins_removes_a_collection_the_target_reshaped() {
+    let mut database = reshaped_deletion_database();
+    let outcome = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::SourceWins,
+        )
+        .expect("source-wins promote applies the deletion");
+    assert!(!outcome.conflicts().is_empty());
+    // Source wins: the collection the source deleted is removed from the target.
+    assert!(
+        database
+            .vector(branch("default"), space("default"))
+            .expect("vector service opens")
+            .collection_info(&collection())
+            .expect("info succeeds")
+            .is_none(),
+        "SourceWins applies the source-side collection deletion"
+    );
+}
+
+#[test]
 fn test_promotion_conflicts_on_incompatible_collection_config() {
     let mut database = open_cache_database().expect("cache open succeeds");
     database
