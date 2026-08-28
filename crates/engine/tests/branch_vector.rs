@@ -378,6 +378,71 @@ fn test_promotion_keeps_a_collection_whose_key_the_source_created_and_deleted() 
     );
 }
 
+#[test]
+fn test_promotion_removes_collection_configs_in_a_source_deleted_space() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let with_coll = space("with_coll");
+    // A space holding a collection exists on both branches at the fork (the base).
+    database
+        .spaces(branch("default"))
+        .expect("space service opens")
+        .create(with_coll.clone())
+        .expect("create space");
+    database
+        .vector(branch("default"), with_coll.clone())
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create collection");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // The source deletes the whole space (force: purges its collection config).
+    database
+        .spaces(branch("feature"))
+        .expect("space service opens")
+        .delete(&with_coll, true)
+        .expect("delete space");
+
+    let outcome = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("strict promote succeeds");
+    assert!(outcome.conflicts().is_empty());
+    // The space is deregistered on the target.
+    assert!(!database
+        .spaces(branch("default"))
+        .expect("space service opens")
+        .exists(&with_coll)
+        .expect("exists succeeds"));
+
+    // Re-creating the space must NOT resurface the stale collection config the
+    // source deleted — the deregistered space's collection metadata must be gone.
+    database
+        .spaces(branch("default"))
+        .expect("space service opens")
+        .create(with_coll.clone())
+        .expect("re-create space");
+    assert!(
+        database
+            .vector(branch("default"), with_coll.clone())
+            .expect("vector service opens")
+            .collection_info(&collection())
+            .expect("info succeeds")
+            .is_none(),
+        "a collection config in a source-deleted space must not linger and resurface"
+    );
+}
+
 // A collection the source deleted while the target independently reshaped it
 // (delete + recreate with a different config) is a modify/delete divergence.
 fn reshaped_deletion_database() -> Database {
