@@ -2,6 +2,16 @@
 
 Status: Draft product direction
 
+> **Scope note — copy and undo are deferred to post-V1.** The V1 branch-operation
+> surface is fork, compare, preview, and promote (merge). Copy (cherry-pick) and
+> undo (revert) are designed here as product direction but are **not shipped in
+> V1**, and their absence is enforced by a guard test
+> (`crates/engine/tests/branch_merge_absence.rs`). Wherever this document frames
+> copy or undo as V1 direction, required scope, or acceptance criteria, read them
+> as **post-V1** direction. The
+> [architecture support matrix](strata-v1-architecture-support-matrix.md) and the
+> branch-operation contract are authoritative on V1 scope.
+
 This document defines how Strata should describe branching for V1. The current
 implementation has commands named after Git operations: fork, diff, merge,
 merge-base, revert, and cherry-pick. Those names are useful implementation
@@ -281,6 +291,10 @@ V1 direction:
 
 ### Copy Selected Records Or Changes
 
+> **Deferred to post-V1** (see the scope note at the top). `BranchCherryPick` is
+> not part of the V1 surface; its absence is guarded by `branch_merge_absence.rs`.
+> The direction below is post-V1.
+
 User activity:
 
 1. Copy specific records from one branch to another.
@@ -317,6 +331,10 @@ V1 direction:
    reference.
 
 ### Undo A Bad Range
+
+> **Deferred to post-V1** (see the scope note at the top). `BranchRevert` is not
+> part of the V1 surface; its absence is guarded by `branch_merge_absence.rs`. The
+> direction below is post-V1.
 
 User activity:
 
@@ -480,10 +498,12 @@ V1 should require:
 6. Compare branches with summaries and filters.
 7. Preview promotion conflicts.
 8. Promote a branch into another branch with explicit conflict strategy.
-9. Copy selected records or selected changes between branches.
-10. Undo a version range by writing a compensating change.
-11. Delete branches safely.
-12. Document data-capability coverage and limitations.
+9. Delete branches safely.
+10. Document data-capability coverage and limitations.
+
+Copy (cherry-pick) and undo (revert) are **not** V1 requirements — they are
+deferred to post-V1 (see the scope note at the top of this document), and their
+absence is guarded by `branch_merge_absence.rs`.
 
 ### Optional For V1
 
@@ -494,8 +514,9 @@ V1 may include:
 3. Archive branch instead of deleting it.
 4. Paginated large-diff browsing beyond bounded V1 comparison output.
 5. Conflict-resolution assistance.
-6. Rich selective copy by entity reference, graph, vector collection, event
-   type, or JSON path.
+
+Rich selective copy (by entity reference, graph, vector collection, event type,
+or JSON path) is **post-V1**, deferred with the copy operation itself.
 
 ### Remove Before V1
 
@@ -519,8 +540,9 @@ provenance, StrataHub publishing, or collaboration workflows need them.
    cleanup and rebuild contracts.
 5. Public APIs should prefer activity names even if internal code keeps existing
    Git-derived names.
-6. Testing must cover branch lifecycle, comparison, promotion, selected copy,
-   undo, deletion races, derived-state cleanup, and same-name recreation.
+6. Testing must cover branch lifecycle, comparison, promotion, deletion races,
+   derived-state cleanup, and same-name recreation. (Copy and undo are post-V1;
+   V1 instead tests their absence via `branch_merge_absence.rs`.)
 
 ## Resolved And Owned Questions
 
@@ -549,9 +571,9 @@ The branching direction is working when all of these are true:
 2. A user can create an isolated workspace from existing data.
 3. A user can compare branch state by space and data capability.
 4. A user can promote completed work into another branch.
-5. A user can copy selected records or selected changes without promoting the
-   whole branch.
-6. A user can undo a bad range without rewriting history.
-7. Branch deletion cannot race ordinary writes or leak stale derived state.
-8. Data-capability coverage and limitations are explicit.
-9. Tags, notes, and branch bundles do not define the V1 branching model.
+5. Branch deletion cannot race ordinary writes or leak stale derived state.
+6. Data-capability coverage and limitations are explicit.
+7. Tags, notes, and branch bundles do not define the V1 branching model.
+
+Copying selected records/changes and undoing a range are **post-V1** acceptance
+criteria, deferred with the copy/undo operations (see the scope note at the top).
