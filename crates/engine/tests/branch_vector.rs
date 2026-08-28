@@ -1031,6 +1031,249 @@ fn test_source_wins_keeps_a_reshaped_collection_the_target_still_uses_and_report
 }
 
 #[test]
+fn test_empty_vector_collection_creation_is_visible_in_the_diff() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // feature creates an empty collection — a config row only, no vectors.
+    database
+        .vector(branch("feature"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create collection");
+
+    let comparison = database
+        .branches()
+        .expect("branch service opens")
+        .compare(
+            &branch("default"),
+            &branch("feature"),
+            BranchStateSelector::Current,
+        )
+        .expect("compare succeeds");
+
+    // The created collection surfaces as a VectorCollection addition — the diff is
+    // not empty just because the collection has no vectors yet.
+    let vc = comparison
+        .comparisons()
+        .iter()
+        .find(|s| s.capability() == ComparedCapability::VectorCollection)
+        .expect("a vector collection comparison is present");
+    assert_eq!(vc.added().len(), 1, "the created collection is added");
+    assert!(vc.modified().is_empty());
+    assert!(vc.removed().is_empty());
+}
+
+#[test]
+fn test_vector_collection_diff_is_scoped_to_its_space() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let sa = space("sa");
+    let sb = space("sb");
+    database
+        .spaces(branch("default"))
+        .expect("space service opens")
+        .create(sa.clone())
+        .expect("create sa");
+    database
+        .spaces(branch("default"))
+        .expect("space service opens")
+        .create(sb.clone())
+        .expect("create sb");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // feature adds a distinct collection to each space.
+    database
+        .vector(branch("feature"), sa.clone())
+        .expect("vector service opens")
+        .create_collection(
+            VectorCollectionName::new("ca").expect("collection"),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create ca");
+    database
+        .vector(branch("feature"), sb.clone())
+        .expect("vector service opens")
+        .create_collection(
+            VectorCollectionName::new("cb").expect("collection"),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create cb");
+
+    let comparison = database
+        .branches()
+        .expect("branch service opens")
+        .compare(
+            &branch("default"),
+            &branch("feature"),
+            BranchStateSelector::Current,
+        )
+        .expect("compare succeeds");
+
+    // Each space's collection diff contains ONLY its own collection — the diff is
+    // scoped to the space, not the whole branch.
+    let for_space = |name: &str| {
+        comparison
+            .comparisons()
+            .iter()
+            .find(|s| {
+                s.capability() == ComparedCapability::VectorCollection && s.space().as_str() == name
+            })
+            .unwrap_or_else(|| panic!("a vector collection diff for `{name}` is present"))
+    };
+    assert_eq!(
+        for_space("sa").added().len(),
+        1,
+        "sa has only its own collection"
+    );
+    assert_eq!(
+        for_space("sb").added().len(),
+        1,
+        "sb has only its own collection"
+    );
+}
+
+#[test]
+fn test_deleted_vector_collection_is_visible_in_the_diff_as_removed() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create collection");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    database
+        .vector(branch("feature"), space("default"))
+        .expect("vector service opens")
+        .delete_collection(&collection())
+        .expect("delete collection");
+
+    let comparison = database
+        .branches()
+        .expect("branch service opens")
+        .compare(
+            &branch("default"),
+            &branch("feature"),
+            BranchStateSelector::Current,
+        )
+        .expect("compare succeeds");
+    let vc = comparison
+        .comparisons()
+        .iter()
+        .find(|s| s.capability() == ComparedCapability::VectorCollection)
+        .expect("a vector collection comparison is present");
+    assert_eq!(vc.removed().len(), 1, "the deleted collection is removed");
+    assert!(vc.added().is_empty());
+    assert!(vc.modified().is_empty());
+}
+
+#[test]
+fn test_reshaped_vector_collection_is_visible_in_the_diff_as_modified() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create collection");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // feature reshapes the collection (delete + recreate with a different config).
+    database
+        .vector(branch("feature"), space("default"))
+        .expect("vector service opens")
+        .delete_collection(&collection())
+        .expect("delete collection");
+    database
+        .vector(branch("feature"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(4, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("recreate collection dim 4");
+
+    let comparison = database
+        .branches()
+        .expect("branch service opens")
+        .compare(
+            &branch("default"),
+            &branch("feature"),
+            BranchStateSelector::Current,
+        )
+        .expect("compare succeeds");
+    let vc = comparison
+        .comparisons()
+        .iter()
+        .find(|s| s.capability() == ComparedCapability::VectorCollection)
+        .expect("a vector collection comparison is present");
+    assert_eq!(
+        vc.modified().len(),
+        1,
+        "the reshaped collection is modified"
+    );
+    assert!(vc.added().is_empty());
+    assert!(vc.removed().is_empty());
+}
+
+#[test]
+fn test_identical_vector_collections_produce_no_diff() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    // Both branches inherit the same collection from the base — no diff.
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create collection");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+
+    let comparison = database
+        .branches()
+        .expect("branch service opens")
+        .compare(
+            &branch("default"),
+            &branch("feature"),
+            BranchStateSelector::Current,
+        )
+        .expect("compare succeeds");
+
+    assert!(
+        !comparison
+            .comparisons()
+            .iter()
+            .any(|s| s.capability() == ComparedCapability::VectorCollection),
+        "an unchanged collection must not appear in the diff"
+    );
+}
+
+#[test]
 fn test_promotion_conflicts_on_incompatible_collection_config() {
     let mut database = open_cache_database().expect("cache open succeeds");
     database

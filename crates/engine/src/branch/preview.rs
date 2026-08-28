@@ -29,17 +29,20 @@ use crate::data::graph::{
 };
 use crate::data::json::JsonBranchAdapter;
 use crate::data::kv::{KvBranchAdapter, ProductSpace};
-use crate::data::vector::{plan_collection_promotion, VectorBranchAdapter};
+use crate::data::vector::{
+    plan_collection_promotion, VectorBranchAdapter, VectorCollectionBranchAdapter,
+};
 use crate::diagnostics::{EngineError, EngineResult};
 use crate::persistence::{ReadSelector, StoragePersistence};
 
 /// The authored capabilities a branch workflow enumerates, in report order.
 /// Comparison covers all of them; promotion additionally filters to those whose
 /// adapter reports `supports_promotion` (see `three_way`).
-const AUTHORED_CAPABILITIES: [ComparedCapability; 8] = [
+const AUTHORED_CAPABILITIES: [ComparedCapability; 9] = [
     ComparedCapability::KeyValue,
     ComparedCapability::Json,
     ComparedCapability::Vector,
+    ComparedCapability::VectorCollection,
     ComparedCapability::Event,
     ComparedCapability::GraphMetadata,
     ComparedCapability::GraphNode,
@@ -54,6 +57,7 @@ pub(crate) fn adapter_for(capability: ComparedCapability) -> Box<dyn CapabilityB
         ComparedCapability::KeyValue => Box::new(KvBranchAdapter),
         ComparedCapability::Json => Box::new(JsonBranchAdapter),
         ComparedCapability::Vector => Box::new(VectorBranchAdapter),
+        ComparedCapability::VectorCollection => Box::new(VectorCollectionBranchAdapter),
         ComparedCapability::Event => Box::new(EventBranchAdapter),
         ComparedCapability::GraphMetadata => Box::new(GraphMetadataBranchAdapter),
         ComparedCapability::GraphNode => Box::new(GraphNodeBranchAdapter),

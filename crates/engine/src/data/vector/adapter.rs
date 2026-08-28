@@ -87,6 +87,69 @@ impl CapabilityBranchAdapter for VectorBranchAdapter {
     }
 }
 
+/// The vector **collection config** capability's branch adapter (comparison only).
+///
+/// Collection config rows (`RowClass::VectorCollection`) carry a collection's
+/// `(dimension, metric)`, which the vector data adapter above never scans. Without
+/// this, `compare` would show no diff for a collection created, deleted, or
+/// reshaped that holds no vectors (e.g. an empty collection). It is compare-only
+/// (`supports_promotion() == false`): promotion handles collection configs through
+/// `plan_collection_promotion`, not this adapter.
+pub(crate) struct VectorCollectionBranchAdapter;
+
+impl CapabilityBranchAdapter for VectorCollectionBranchAdapter {
+    fn row_class(&self) -> RowClass {
+        RowClass::VectorCollection
+    }
+
+    fn derived_disposition(&self) -> DerivedDisposition {
+        DerivedDisposition::Authored
+    }
+
+    fn supports_promotion(&self) -> bool {
+        false
+    }
+
+    fn space_prefix(&self, space: &ProductSpace) -> Vec<u8> {
+        encode_vector_collection_prefix(space)
+    }
+
+    fn interpret_row(
+        &self,
+        space: &ProductSpace,
+        row: &PersistenceReadRow,
+    ) -> EngineResult<ComparableEntity> {
+        // Validate the row is a well-formed collection key in this space.
+        decode_vector_collection_name(space, row.key())?;
+        let identity = row
+            .key()
+            .strip_prefix(encode_vector_collection_prefix(space).as_slice())
+            .ok_or_else(|| {
+                EngineError::corruption(
+                    "data_loss.engine.vector_collection_key",
+                    "stored vector collection row key is outside the requested space",
+                )
+            })?
+            .to_vec();
+        let summary = if row.is_tombstone() {
+            EntitySummary::Absent
+        } else {
+            let value = row.value().ok_or_else(|| {
+                EngineError::corruption(
+                    "data_loss.engine.vector_collection",
+                    "stored vector collection row is present but carries no value",
+                )
+            })?;
+            EntitySummary::Present(value.to_vec())
+        };
+        Ok(ComparableEntity::new(
+            identity,
+            summary,
+            row.commit_version(),
+        ))
+    }
+}
+
 /// Plans carrying `source`'s vector collection **configs** into `target` during a
 /// promotion, per space. Collection config rows (`RowClass::VectorCollection`)
 /// are not authored vector data, so the capability adapter above never carries

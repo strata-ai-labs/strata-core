@@ -24,7 +24,9 @@ pub use types::{
     VectorScalar, VectorUpsertEntry,
 };
 
-pub(crate) use adapter::{plan_collection_promotion, VectorBranchAdapter};
+pub(crate) use adapter::{
+    plan_collection_promotion, VectorBranchAdapter, VectorCollectionBranchAdapter,
+};
 pub(crate) use artifact::{
     default_flat_artifact_build_budget_bytes, default_flat_artifact_load_budget_bytes,
     default_hnsw_artifact_build_budget_bytes, default_hnsw_artifact_load_budget_bytes,

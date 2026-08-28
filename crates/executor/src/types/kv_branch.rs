@@ -575,6 +575,8 @@ pub enum ComparedCapability {
     Json,
     /// The vector capability.
     Vector,
+    /// The vector collection configuration capability (comparison only).
+    VectorCollection,
     /// The event capability (comparison only).
     Event,
     /// The graph metadata capability (comparison only).
