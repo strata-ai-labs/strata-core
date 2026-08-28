@@ -23,6 +23,7 @@ use crate::branch::adapter::{
 };
 use crate::branch::catalog::BranchCatalogRecord;
 use crate::branch::preview::base_point_for;
+use crate::control::space::read_space_index_at;
 use crate::data::kv::ProductSpace;
 use crate::data::vector::VectorCollectionName;
 use crate::diagnostics::{EngineError, EngineResult};
@@ -109,9 +110,19 @@ pub(crate) fn plan_collection_promotion(
     strategy_result: ConflictStrategyResult,
 ) -> EngineResult<(Vec<RowMutation>, Vec<PreviewConflict>)> {
     let (base_branch, base_selector) = base_point_for(source, target)?;
+    // Also consider spaces the source deleted entirely (present in the base but
+    // absent from the caller's source-space set): their collection configs must be
+    // tombstoned too, or they linger as stale metadata inside a deregistered space
+    // and resurface if the space is recreated.
+    let mut all_spaces: Vec<ProductSpace> = spaces.to_vec();
+    for space in read_space_index_at(persistence, base_branch, base_selector)? {
+        if !all_spaces.contains(&space) {
+            all_spaces.push(space);
+        }
+    }
     let mut mutations = Vec::new();
     let mut conflicts = Vec::new();
-    for space in spaces {
+    for space in &all_spaces {
         let prefix = encode_vector_collection_prefix(space);
         let target_configs = collection_config_rows(persistence, target, &prefix)?;
         let source_configs = collection_config_rows(persistence, source, &prefix)?;
