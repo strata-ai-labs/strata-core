@@ -29,7 +29,7 @@ use crate::data::graph::{
 };
 use crate::data::json::JsonBranchAdapter;
 use crate::data::kv::{KvBranchAdapter, ProductSpace};
-use crate::data::vector::VectorBranchAdapter;
+use crate::data::vector::{plan_collection_promotion, VectorBranchAdapter};
 use crate::diagnostics::{EngineError, EngineResult};
 use crate::persistence::{ReadSelector, StoragePersistence};
 
@@ -429,6 +429,16 @@ pub(crate) fn preview_branches(
             strategy_result,
         ));
     }
+
+    // Fold in the collection-config conflicts a promotion would hit (incompatible
+    // dimension/metric, or a source-side delete of a collection the target
+    // reshaped) — the generic three-way scans only vector data rows, not the
+    // config metadata, so without this a preview reports clean on a promotion the
+    // service would refuse. Read-only: the carry mutations are discarded.
+    let source_spaces = registered_spaces(persistence, source)?;
+    let (_, collection_conflicts) =
+        plan_collection_promotion(persistence, source, target, &source_spaces, strategy_result)?;
+    conflicts.extend(collection_conflicts);
 
     let coverage = branch_workflow_coverage(persistence, source, target, &promoted)?;
     Ok(BranchPreview::new(
