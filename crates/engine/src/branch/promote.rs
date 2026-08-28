@@ -168,7 +168,7 @@ pub(crate) fn plan_promotion(
     // Vector minimum). An incompatible dimension/metric surfaces as a structural
     // conflict that refuses the promotion under every strategy (see the service).
     let (collection_mutations, collection_conflicts) =
-        plan_collection_promotion(persistence, source, target, &source_spaces)?;
+        plan_collection_promotion(persistence, source, target, &source_spaces, strategy_result)?;
     mutations.extend(collection_mutations);
     conflicts.extend(collection_conflicts);
 

@@ -195,6 +195,17 @@ fn resolve_base_point(
     ))
 }
 
+/// The promotion base point as a `(storage_branch, selector)` pair — the read
+/// coordinates for any base-leg three-way (spaces, vector collections) that
+/// needs to see the branch state at the point the two branches diverged.
+pub(crate) fn base_point_for(
+    source: &BranchCatalogRecord,
+    target: &BranchCatalogRecord,
+) -> EngineResult<(BranchId, ReadSelector)> {
+    let base = resolve_base_point(source, target)?;
+    Ok((base.storage_branch_id, base.selector))
+}
+
 /// The spaces registered at the promotion base point — the third leg of the
 /// space three-way. It distinguishes a source-side deletion (present in the
 /// base, gone from the source) from a space the target merely added (absent

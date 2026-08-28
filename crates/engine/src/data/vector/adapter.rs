@@ -13,18 +13,23 @@
 //! past any index watermark, so a promote that writes authored vector rows keeps
 //! search correct without touching the manifest.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+use strata_core::BranchId;
 
 use crate::api::{ComparedCapability, ConflictKind, ConflictStrategyResult, PreviewConflict};
 use crate::branch::adapter::{
     CapabilityBranchAdapter, ComparableEntity, DerivedDisposition, EntitySummary,
 };
 use crate::branch::catalog::BranchCatalogRecord;
+use crate::branch::preview::base_point_for;
 use crate::data::kv::ProductSpace;
+use crate::data::vector::VectorCollectionName;
 use crate::diagnostics::{EngineError, EngineResult};
 use crate::persistence::{
-    decode_vector_key, encode_vector_collection_prefix, encode_vector_space_prefix,
-    PersistenceReadRow, ReadSelector, RowAddress, RowClass, RowMutation, StoragePersistence,
+    decode_vector_collection_name, decode_vector_key, encode_vector_collection_entry_prefix,
+    encode_vector_collection_prefix, encode_vector_space_prefix, PersistenceReadRow, ReadSelector,
+    RowAddress, RowClass, RowMutation, StoragePersistence,
 };
 
 /// The vector capability's branch adapter.
@@ -101,16 +106,19 @@ pub(crate) fn plan_collection_promotion(
     source: &BranchCatalogRecord,
     target: &BranchCatalogRecord,
     spaces: &[ProductSpace],
+    strategy_result: ConflictStrategyResult,
 ) -> EngineResult<(Vec<RowMutation>, Vec<PreviewConflict>)> {
+    let (base_branch, base_selector) = base_point_for(source, target)?;
     let mut mutations = Vec::new();
     let mut conflicts = Vec::new();
     for space in spaces {
         let prefix = encode_vector_collection_prefix(space);
         let target_configs = collection_config_rows(persistence, target, &prefix)?;
-        for (key, source_value) in collection_config_rows(persistence, source, &prefix)? {
-            match target_configs.get(&key) {
+        let source_configs = collection_config_rows(persistence, source, &prefix)?;
+        for (key, source_value) in &source_configs {
+            match target_configs.get(key) {
                 // Identical config: nothing to carry.
-                Some(target_value) if *target_value == source_value => {}
+                Some(target_value) if target_value == source_value => {}
                 // Divergent config = incompatible dimension/metric (the whole
                 // config is structural). No strategy can merge it: record a
                 // structural conflict and do NOT carry the config, so the service
@@ -133,13 +141,142 @@ pub(crate) fn plan_collection_promotion(
                 }
                 // Source-only collection: carry its config onto the target.
                 None => mutations.push(RowMutation::put(
-                    RowAddress::new(target.storage_branch_id(), RowClass::VectorCollection, key),
-                    source_value,
+                    RowAddress::new(
+                        target.storage_branch_id(),
+                        RowClass::VectorCollection,
+                        key.clone(),
+                    ),
+                    source_value.clone(),
                 )),
+            }
+        }
+
+        // Deletions: a collection config present in the base but gone from the
+        // source was deleted there. Remove its now-stale config from the target,
+        // unless the target still holds a live vector the promotion does not
+        // delete (deregistering would orphan it behind a missing config).
+        let base_configs =
+            collection_config_rows_at(persistence, base_branch, &prefix, base_selector)?;
+        for (key, base_value) in &base_configs {
+            if source_configs.contains_key(key) {
+                continue;
+            }
+            let Some(target_value) = target_configs.get(key) else {
+                continue;
+            };
+            let collection = decode_vector_collection_name(space, key)?;
+            // The retain guard takes precedence over the SourceWins deletion
+            // below: an in-use collection is never orphaned, even under SourceWins.
+            if target_retains_vectors(
+                persistence,
+                base_branch,
+                base_selector,
+                source,
+                target,
+                space,
+                &collection,
+            )? {
+                continue;
+            }
+            let address = RowAddress::new(
+                target.storage_branch_id(),
+                RowClass::VectorCollection,
+                key.clone(),
+            );
+            if target_value == base_value {
+                // Clean one-sided deletion (the target never changed the config):
+                // applies under both strategies, like a data-row deletion.
+                mutations.push(RowMutation::delete(address));
+            } else {
+                // The source deleted the collection while the target independently
+                // changed its config — a modify/delete divergence. Strict refuses;
+                // SourceWins applies the deletion.
+                let identity = key
+                    .strip_prefix(prefix.as_slice())
+                    .unwrap_or(key.as_slice())
+                    .to_vec();
+                conflicts.push(PreviewConflict::new(
+                    ComparedCapability::Vector,
+                    space.clone(),
+                    identity,
+                    None,
+                    Some(target_value.clone()),
+                    ConflictKind::ModifyDeleteDivergence,
+                    strategy_result,
+                ));
+                if strategy_result == ConflictStrategyResult::SourceWins {
+                    mutations.push(RowMutation::delete(address));
+                }
             }
         }
     }
     Ok((mutations, conflicts))
+}
+
+/// Whether the `target` still holds a live vector in `collection` that this
+/// promotion will NOT delete — used to avoid orphaning vectors behind a config
+/// the deletion pass would otherwise remove.
+///
+/// The promotion deletes exactly the vectors the data three-way removes: a
+/// base-inherited vector the source deleted (base-live, source-absent). A
+/// target-live key that is either absent from the base (target-only, or one the
+/// source created-and-deleted post-fork — a net no-op the three-way skips) or
+/// still live on the source therefore survives. Vector keys are branch-
+/// independent, so the three branches' keys compare directly.
+#[allow(clippy::too_many_arguments)]
+fn target_retains_vectors(
+    persistence: &mut StoragePersistence,
+    base_branch: BranchId,
+    base_selector: ReadSelector,
+    source: &BranchCatalogRecord,
+    target: &BranchCatalogRecord,
+    space: &ProductSpace,
+    collection: &VectorCollectionName,
+) -> EngineResult<bool> {
+    let entry_prefix = encode_vector_collection_entry_prefix(space, collection);
+    let target_live = live_vector_keys(
+        persistence,
+        target.storage_branch_id(),
+        &entry_prefix,
+        ReadSelector::Latest,
+    )?;
+    if target_live.is_empty() {
+        return Ok(false);
+    }
+    let base_live = live_vector_keys(persistence, base_branch, &entry_prefix, base_selector)?;
+    let source_live = live_vector_keys(
+        persistence,
+        source.storage_branch_id(),
+        &entry_prefix,
+        ReadSelector::Latest,
+    )?;
+    // A target-live vector survives unless it is base-inherited AND the source
+    // deleted it (the only case the data three-way propagates as a deletion).
+    Ok(target_live
+        .iter()
+        .any(|key| !base_live.contains(key) || source_live.contains(key)))
+}
+
+/// The set of live (non-tombstoned) vector row keys under `entry_prefix` on
+/// `storage_branch` at `selector`.
+fn live_vector_keys(
+    persistence: &mut StoragePersistence,
+    storage_branch: BranchId,
+    entry_prefix: &[u8],
+    selector: ReadSelector,
+) -> EngineResult<BTreeSet<Vec<u8>>> {
+    Ok(persistence
+        .scan_prefix(
+            storage_branch,
+            RowClass::Vector,
+            entry_prefix.to_vec(),
+            selector,
+            None,
+        )?
+        .into_iter()
+        .filter(|row| !row.is_tombstone())
+        .map(|row| row.key().to_vec())
+        .collect())
 }
 
 /// Every visible collection config row for `record` under `prefix`, keyed by the
@@ -149,11 +286,29 @@ fn collection_config_rows(
     record: &BranchCatalogRecord,
     prefix: &[u8],
 ) -> EngineResult<BTreeMap<Vec<u8>, Vec<u8>>> {
-    let rows = persistence.scan_prefix(
+    collection_config_rows_at(
+        persistence,
         record.storage_branch_id(),
+        prefix,
+        ReadSelector::Latest,
+    )
+}
+
+/// Reads the live vector-collection config rows of `storage_branch` under `prefix`
+/// at `selector` (e.g. a promotion base point). Tombstoned (deleted) collections
+/// are skipped; a base→source diff over the returned keys detects source-side
+/// deletions.
+fn collection_config_rows_at(
+    persistence: &mut StoragePersistence,
+    storage_branch: BranchId,
+    prefix: &[u8],
+    selector: ReadSelector,
+) -> EngineResult<BTreeMap<Vec<u8>, Vec<u8>>> {
+    let rows = persistence.scan_prefix(
+        storage_branch,
         RowClass::VectorCollection,
         prefix.to_vec(),
-        ReadSelector::Latest,
+        selector,
         None,
     )?;
     let mut configs = BTreeMap::new();
