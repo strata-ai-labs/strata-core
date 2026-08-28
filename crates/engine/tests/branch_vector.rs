@@ -3,9 +3,9 @@
 mod common;
 
 use strata_engine::{
-    BranchStateSelector, ComparedCapability, Database, DerivedStateDisposition, EngineErrorClass,
-    PromotionStrategy, VectorCollectionName, VectorConfig, VectorDistanceMetric, VectorEmbedding,
-    VectorKey,
+    BranchStateSelector, ComparedCapability, ConflictKind, Database, DerivedStateDisposition,
+    EngineErrorClass, PromotionStrategy, VectorCollectionName, VectorConfig, VectorDistanceMetric,
+    VectorEmbedding, VectorKey,
 };
 
 use common::{branch, open_cache_database, space};
@@ -464,6 +464,99 @@ fn test_source_wins_removes_a_collection_the_target_reshaped() {
             .expect("info succeeds")
             .is_none(),
         "SourceWins applies the source-side collection deletion"
+    );
+}
+
+#[test]
+fn test_preview_reports_an_incompatible_collection_conflict() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // Both branches independently create the same collection with incompatible dims.
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create default collection");
+    database
+        .vector(branch("feature"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(4, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create feature collection");
+
+    // Preview must surface the same conflict promote refuses on — not report clean.
+    let preview = database
+        .branches()
+        .expect("branch service opens")
+        .preview(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("preview succeeds");
+    assert!(
+        preview
+            .conflicts()
+            .iter()
+            .any(|conflict| conflict.kind() == ConflictKind::IncompatibleCollection),
+        "preview must report the incompatible-collection conflict that promote refuses on"
+    );
+
+    // Parity: promote does refuse on exactly this conflict.
+    let error = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect_err("incompatible collection config refuses");
+    assert_eq!(error.code(), "conflict.engine.promotion");
+}
+
+#[test]
+fn test_preview_of_a_compatible_source_collection_reports_no_conflict() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // A source-only collection is carried cleanly — not a conflict.
+    database
+        .vector(branch("feature"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create feature collection");
+
+    let preview = database
+        .branches()
+        .expect("branch service opens")
+        .preview(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("preview succeeds");
+    assert!(
+        !preview
+            .conflicts()
+            .iter()
+            .any(|conflict| conflict.kind() == ConflictKind::IncompatibleCollection),
+        "a compatible source-only collection must not preview as a conflict"
     );
 }
 
