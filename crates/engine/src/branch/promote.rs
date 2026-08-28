@@ -27,7 +27,10 @@ use crate::control::space::{registered_spaces, registration_and_deletion_mutatio
 use crate::data::kv::ProductSpace;
 use crate::data::vector::plan_collection_promotion;
 use crate::diagnostics::EngineResult;
-use crate::persistence::{RowMutation, StoragePersistence};
+use crate::persistence::{
+    encode_event_space_prefix, encode_graph_edge_space_prefix, encode_graph_metadata_prefix,
+    encode_graph_node_space_prefix, ReadSelector, RowClass, RowMutation, StoragePersistence,
+};
 
 /// The mutations and reporting a promotion of `source` into `target` would
 /// produce. `mutations` apply every winning source change onto the target in one
@@ -144,18 +147,22 @@ pub(crate) fn plan_promotion(
     let source_spaces = registered_spaces(persistence, source)?;
     let base_spaces = base_registered_spaces(persistence, source, target)?;
     // A space present in the base but gone from the source was deleted there —
-    // remove it from the target, UNLESS the target still holds a live row in it
-    // (a target-only row the three-way kept): deregistering such a space would
-    // orphan that row outside the catalog, so the registration stays. (The
-    // mutation builder further narrows this to spaces the target actually
-    // registers.)
-    let deleted_spaces: Vec<ProductSpace> = base_spaces
-        .into_iter()
-        .filter(|space| {
-            !source_spaces.iter().any(|existing| existing == space)
-                && !retained_spaces.contains(space)
-        })
-        .collect();
+    // remove it from the target, UNLESS the target still holds live state in it.
+    // That state is either a promotable row the three-way kept (`retained_spaces`)
+    // or an event/graph row the promotable three-way never scans
+    // (`space_has_unpromoted_target_rows`). Deregistering a space that still holds
+    // any of these would orphan it outside the catalog. (The mutation builder
+    // further narrows this to spaces the target actually registers.)
+    let mut deleted_spaces: Vec<ProductSpace> = Vec::new();
+    for space in base_spaces {
+        if source_spaces.iter().any(|existing| existing == &space)
+            || retained_spaces.contains(&space)
+            || space_has_unpromoted_target_rows(persistence, target, &space)?
+        {
+            continue;
+        }
+        deleted_spaces.push(space);
+    }
     mutations.extend(registration_and_deletion_mutations(
         persistence,
         target,
@@ -179,6 +186,41 @@ pub(crate) fn plan_promotion(
         deleted,
         conflicts,
     })
+}
+
+/// Whether the `target` holds any live row in `space` for a capability the
+/// promotion's data three-way does not scan — event or graph rows. Those
+/// capabilities are not promotable (`supports_promotion() == false`), so a
+/// promotion never carries or deletes their rows: any live event/graph row on the
+/// target is genuinely surviving state, invisible to `retained_spaces` (which is
+/// built only from promotable KV/JSON/Vector entities). Without this, a source-side
+/// space deletion would deregister the space and orphan that state outside the
+/// catalog.
+///
+/// Vector-collection metadata is deliberately NOT checked here: the promotion DOES
+/// delete collection configs (`plan_collection_promotion`), so a live config is not
+/// necessarily surviving; a source-deleted collection's config must not keep the
+/// space alive (that would regress the source-deleted-space cleanup). The
+/// target-only-collection-in-a-deregistered-space case is tracked separately.
+fn space_has_unpromoted_target_rows(
+    persistence: &mut StoragePersistence,
+    target: &BranchCatalogRecord,
+    space: &ProductSpace,
+) -> EngineResult<bool> {
+    let branch = target.storage_branch_id();
+    let classes = [
+        (RowClass::Event, encode_event_space_prefix(space)),
+        (RowClass::GraphMetadata, encode_graph_metadata_prefix(space)),
+        (RowClass::GraphNode, encode_graph_node_space_prefix(space)),
+        (RowClass::GraphEdge, encode_graph_edge_space_prefix(space)),
+    ];
+    for (class, prefix) in classes {
+        let rows = persistence.scan_prefix(branch, class, prefix, ReadSelector::Latest, None)?;
+        if rows.iter().any(|row| !row.is_tombstone()) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn record_applied_or_deleted(
