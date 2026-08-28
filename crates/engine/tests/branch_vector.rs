@@ -626,6 +626,411 @@ fn test_preview_of_a_compatible_source_collection_reports_no_conflict() {
 }
 
 #[test]
+fn test_target_only_collection_reshape_does_not_block_promotion() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    // `emb` (dim 2) exists on both branches at the fork (the base).
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create collection");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // The TARGET independently reshapes `emb` (delete + recreate dim 4); the source
+    // never touches `emb`. The source makes an unrelated change: a new collection.
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .delete_collection(&collection())
+        .expect("delete emb");
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(4, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("recreate emb dim 4");
+    let other = VectorCollectionName::new("other").expect("valid collection");
+    database
+        .vector(branch("feature"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            other.clone(),
+            VectorConfig::new(3, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("source unrelated collection");
+
+    // Since the source did not change `emb`, its target-only reshape is not a
+    // conflict and must not block the unrelated source change.
+    let outcome = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("strict promote must not false-conflict on a target-only reshape");
+    assert!(outcome.conflicts().is_empty());
+    // The unrelated source collection was carried.
+    assert!(database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .collection_info(&other)
+        .expect("info succeeds")
+        .is_some());
+    // The target's own reshape (dim 4) is preserved — the source did not change it.
+    assert_eq!(
+        database
+            .vector(branch("default"), space("default"))
+            .expect("vector service opens")
+            .collection_info(&collection())
+            .expect("info succeeds")
+            .expect("emb present")
+            .config()
+            .dimension(),
+        4
+    );
+}
+
+#[test]
+fn test_source_only_collection_reshape_applies_when_target_unchanged() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    // `emb` (dim 2) exists on both branches at the fork (the base).
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create collection");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // The SOURCE reshapes `emb` (delete + recreate dim 4); the target is unchanged
+    // (still dim 2, no vectors).
+    database
+        .vector(branch("feature"), space("default"))
+        .expect("vector service opens")
+        .delete_collection(&collection())
+        .expect("delete emb");
+    database
+        .vector(branch("feature"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(4, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("recreate emb dim 4");
+
+    // The source changed `emb` and the target did not, so the source's config
+    // applies cleanly — not a conflict.
+    let outcome = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("strict promote must apply a source-only reshape");
+    assert!(outcome.conflicts().is_empty());
+    assert_eq!(
+        database
+            .vector(branch("default"), space("default"))
+            .expect("vector service opens")
+            .collection_info(&collection())
+            .expect("info succeeds")
+            .expect("emb present")
+            .config()
+            .dimension(),
+        4,
+        "the source's reshaped config is applied to the unchanged target"
+    );
+}
+
+#[test]
+fn test_source_reshape_conflicts_when_target_has_its_own_vectors() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    // `emb` (dim 2) exists on both branches at the fork.
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create collection");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // The source reshapes `emb` to dim 4; the target keeps dim 2 and adds its own
+    // dim-2 vector. Applying the source's dim-4 config would strand that vector.
+    database
+        .vector(branch("feature"), space("default"))
+        .expect("vector service opens")
+        .delete_collection(&collection())
+        .expect("delete emb");
+    database
+        .vector(branch("feature"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(4, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("recreate emb dim 4");
+    upsert(&mut database, "default", "t1", vec![1.0, 2.0]);
+
+    let error = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect_err("reshaping onto surviving target vectors is a structural conflict");
+    assert_eq!(error.code(), "conflict.engine.promotion");
+    // The target is untouched: dim 2 and its vector remain.
+    assert_eq!(
+        database
+            .vector(branch("default"), space("default"))
+            .expect("vector service opens")
+            .collection_info(&collection())
+            .expect("info succeeds")
+            .expect("emb present")
+            .config()
+            .dimension(),
+        2
+    );
+    assert_eq!(
+        database
+            .vector(branch("default"), space("default"))
+            .expect("vector service opens")
+            .count(&collection())
+            .expect("count succeeds"),
+        1
+    );
+}
+
+#[test]
+fn test_target_reshape_with_source_unchanged_vector_does_not_conflict() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    // base: `emb` (dim 2) with a vector `v0`.
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create collection");
+    upsert(&mut database, "default", "v0", vec![0.0, 1.0]);
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // The TARGET reshapes `emb` to dim 4. The source is entirely unchanged (still
+    // holds the inherited dim-2 `v0`). Since the source carries nothing (v0 is
+    // unchanged vs base), there is no mismatched vector and no conflict.
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .delete_collection(&collection())
+        .expect("delete emb");
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(4, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("recreate emb dim 4");
+
+    let outcome = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect("an unchanged source must not conflict with a target-only reshape");
+    assert!(outcome.conflicts().is_empty());
+    // The target keeps its own dim-4 reshape; nothing was carried.
+    assert_eq!(
+        database
+            .vector(branch("default"), space("default"))
+            .expect("vector service opens")
+            .collection_info(&collection())
+            .expect("info succeeds")
+            .expect("emb present")
+            .config()
+            .dimension(),
+        4
+    );
+}
+
+#[test]
+fn test_target_reshape_conflicts_when_source_carries_old_shape_vectors() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    // `emb` (dim 2) exists on both branches at the fork.
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create collection");
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // The TARGET reshapes `emb` to dim 4. The source keeps `emb` at dim 2 (config
+    // unchanged) but adds a dim-2 vector — which the data three-way would carry
+    // into the target's now-dim-4 collection, mismatching its shape.
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .delete_collection(&collection())
+        .expect("delete emb");
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(4, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("recreate emb dim 4");
+    upsert(&mut database, "feature", "s1", vec![1.0, 2.0]);
+
+    let error = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::Strict,
+        )
+        .expect_err("carrying old-shape vectors into a reshaped collection is a conflict");
+    assert_eq!(error.code(), "conflict.engine.promotion");
+    // The target keeps dim 4 and no mismatched vector landed.
+    assert_eq!(
+        database
+            .vector(branch("default"), space("default"))
+            .expect("vector service opens")
+            .collection_info(&collection())
+            .expect("info succeeds")
+            .expect("emb present")
+            .config()
+            .dimension(),
+        4
+    );
+    assert_eq!(
+        database
+            .vector(branch("default"), space("default"))
+            .expect("vector service opens")
+            .count(&collection())
+            .expect("count succeeds"),
+        0
+    );
+}
+
+#[test]
+fn test_source_wins_keeps_a_reshaped_collection_the_target_still_uses_and_reports_conflict() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    // base: `emb` (dim 2) with a vector.
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(2, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("create collection");
+    upsert(&mut database, "default", "v0", vec![0.0, 1.0]);
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork succeeds");
+    // Source deletes `emb`; the target reshapes it to dim 4 and keeps a target-only
+    // vector. Under SourceWins this is a modify/delete divergence, but the retain
+    // guard keeps the in-use collection rather than orphaning its vector.
+    database
+        .vector(branch("feature"), space("default"))
+        .expect("vector service opens")
+        .delete_collection(&collection())
+        .expect("source deletes emb");
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .delete_collection(&collection())
+        .expect("target deletes emb");
+    database
+        .vector(branch("default"), space("default"))
+        .expect("vector service opens")
+        .create_collection(
+            collection(),
+            VectorConfig::new(4, VectorDistanceMetric::Cosine).expect("valid config"),
+        )
+        .expect("target reshapes emb dim 4");
+    upsert(&mut database, "default", "t1", vec![1.0, 2.0, 3.0, 4.0]);
+
+    let outcome = database
+        .branches()
+        .expect("branch service opens")
+        .promote(
+            &branch("feature"),
+            &branch("default"),
+            PromotionStrategy::SourceWins,
+        )
+        .expect("source-wins promote succeeds");
+    assert!(
+        outcome
+            .conflicts()
+            .iter()
+            .any(|conflict| conflict.kind() == ConflictKind::ModifyDeleteDivergence),
+        "the source-delete vs target-reshape divergence is reported"
+    );
+    // The in-use collection is kept (not orphaned) and its vector survives.
+    assert_eq!(
+        database
+            .vector(branch("default"), space("default"))
+            .expect("vector service opens")
+            .collection_info(&collection())
+            .expect("info succeeds")
+            .expect("emb present")
+            .config()
+            .dimension(),
+        4
+    );
+    assert_eq!(
+        database
+            .vector(branch("default"), space("default"))
+            .expect("vector service opens")
+            .count(&collection())
+            .expect("count succeeds"),
+        1
+    );
+}
+
+#[test]
 fn test_promotion_conflicts_on_incompatible_collection_config() {
     let mut database = open_cache_database().expect("cache open succeeds");
     database

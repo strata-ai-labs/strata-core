@@ -97,11 +97,19 @@ impl CapabilityBranchAdapter for VectorBranchAdapter {
 /// is encoded deterministically, so the stored bytes are a faithful identity:
 /// identical bytes are the same collection; any difference is an incompatible
 /// dimension or metric change (contract Vector minimum: conflict on
-/// metric/dimension). A source-only collection is carried; a collection present
-/// on both with a divergent config is reported as a `ValueDivergence` conflict.
-/// Like any conflicting entity, the source config is queued as a mutation and
-/// only lands when the caller commits — strict refuses on the conflict, source-
-/// wins overwrites.
+/// metric/dimension). Configs are diffed as a base -> source -> target three-way,
+/// exactly like data rows: a change only the source made is applied (carry a
+/// source-added config, tombstone one the source deleted); a change only the
+/// target made is kept; a change both sides made differently is a conflict —
+/// `IncompatibleCollection` (structural, refuses under every strategy) when both
+/// hold a divergent config, or `ModifyDeleteDivergence` (strategy-gated) for a
+/// modify-vs-delete. A source change that would strand a surviving target vector
+/// of the old shape is refused as structurally incompatible rather than mixing
+/// shapes.
+// One cohesive base->source->target three-way over every collection key, with an
+// add/modify/delete case per side plus the two cross-shape guards; splitting it
+// would scatter a single decision across helpers. (Mirrors the data-row three-way.)
+#[allow(clippy::too_many_lines)]
 pub(crate) fn plan_collection_promotion(
     persistence: &mut StoragePersistence,
     source: &BranchCatalogRecord,
@@ -124,18 +132,44 @@ pub(crate) fn plan_collection_promotion(
     let mut conflicts = Vec::new();
     for space in &all_spaces {
         let prefix = encode_vector_collection_prefix(space);
-        let target_configs = collection_config_rows(persistence, target, &prefix)?;
+        let base_configs =
+            collection_config_rows_at(persistence, base_branch, &prefix, base_selector)?;
         let source_configs = collection_config_rows(persistence, source, &prefix)?;
-        for (key, source_value) in &source_configs {
-            match target_configs.get(key) {
-                // Identical config: nothing to carry.
-                Some(target_value) if target_value == source_value => {}
-                // Divergent config = incompatible dimension/metric (the whole
-                // config is structural). No strategy can merge it: record a
-                // structural conflict and do NOT carry the config, so the service
-                // refuses under every strategy instead of overwriting the target's
-                // collection and mixing vector shapes.
-                Some(target_value) => {
+        let target_configs = collection_config_rows(persistence, target, &prefix)?;
+
+        // Base -> source -> target three-way over every collection key, exactly
+        // like the data-row three-way: only source-side changes propagate, a
+        // config change (delete + recreate with a different dimension/metric) that
+        // both sides made differently is a conflict, and a change the target never
+        // made is applied. A 2-way source-vs-target diff would false-conflict on a
+        // target-only reshape or a source-only reshape.
+        let mut keys: BTreeSet<&Vec<u8>> = BTreeSet::new();
+        keys.extend(base_configs.keys());
+        keys.extend(source_configs.keys());
+        keys.extend(target_configs.keys());
+
+        for key in keys {
+            let base_value = base_configs.get(key);
+            let source_value = source_configs.get(key);
+            let target_value = target_configs.get(key);
+
+            // Only source-side changes propagate; a target-only change is kept —
+            // EXCEPT that a config the source left unchanged can still clash with a
+            // target-side reshape: if the target reshaped the collection and the
+            // source carries old-shape vectors into it, those vectors would land
+            // under the target's new config. The data three-way carries vectors
+            // shape-blind, so refuse that here as structurally incompatible.
+            if source_value == base_value {
+                if target_value != base_value
+                    && source_carries_vectors(
+                        persistence,
+                        base_branch,
+                        base_selector,
+                        source,
+                        space,
+                        &decode_vector_collection_name(space, key)?,
+                    )?
+                {
                     let identity = key
                         .strip_prefix(prefix.as_slice())
                         .unwrap_or(key.as_slice())
@@ -144,79 +178,99 @@ pub(crate) fn plan_collection_promotion(
                         ComparedCapability::Vector,
                         space.clone(),
                         identity,
-                        Some(source_value.clone()),
-                        Some(target_value.clone()),
+                        source_value.cloned(),
+                        target_value.cloned(),
                         ConflictKind::IncompatibleCollection,
                         ConflictStrategyResult::Refused,
                     ));
                 }
-                // Source-only collection: carry its config onto the target.
-                None => mutations.push(RowMutation::put(
-                    RowAddress::new(
-                        target.storage_branch_id(),
-                        RowClass::VectorCollection,
-                        key.clone(),
-                    ),
-                    source_value.clone(),
-                )),
+                continue;
             }
-        }
+            // Source and target already agree on the change.
+            if source_value == target_value {
+                continue;
+            }
 
-        // Deletions: a collection config present in the base but gone from the
-        // source was deleted there. Remove its now-stale config from the target,
-        // unless the target still holds a live vector the promotion does not
-        // delete (deregistering would orphan it behind a missing config).
-        let base_configs =
-            collection_config_rows_at(persistence, base_branch, &prefix, base_selector)?;
-        for (key, base_value) in &base_configs {
-            if source_configs.contains_key(key) {
-                continue;
+            let identity = key
+                .strip_prefix(prefix.as_slice())
+                .unwrap_or(key.as_slice())
+                .to_vec();
+
+            // Both sides changed this collection to different states.
+            if target_value != base_value {
+                if source_value.is_some() && target_value.is_some() {
+                    // Two incompatible configs — structural, unmergeable; refuses
+                    // under every strategy and carries nothing.
+                    conflicts.push(PreviewConflict::new(
+                        ComparedCapability::Vector,
+                        space.clone(),
+                        identity.clone(),
+                        source_value.cloned(),
+                        target_value.cloned(),
+                        ConflictKind::IncompatibleCollection,
+                        ConflictStrategyResult::Refused,
+                    ));
+                    continue;
+                }
+                // Modify vs delete — strategy-gated like a data-row conflict: only
+                // SourceWins carries the source's change; Strict refuses.
+                conflicts.push(PreviewConflict::new(
+                    ComparedCapability::Vector,
+                    space.clone(),
+                    identity.clone(),
+                    source_value.cloned(),
+                    target_value.cloned(),
+                    ConflictKind::ModifyDeleteDivergence,
+                    strategy_result,
+                ));
+                if strategy_result != ConflictStrategyResult::SourceWins {
+                    continue;
+                }
             }
-            let Some(target_value) = target_configs.get(key) else {
-                continue;
-            };
-            let collection = decode_vector_collection_name(space, key)?;
-            // The retain guard takes precedence over the SourceWins deletion
-            // below: an in-use collection is never orphaned, even under SourceWins.
-            if target_retains_vectors(
-                persistence,
-                base_branch,
-                base_selector,
-                source,
-                target,
-                space,
-                &collection,
-            )? {
-                continue;
-            }
+
+            // Apply the source's resolved state onto the target. Changing or
+            // removing a collection that existed must not strand a surviving target
+            // vector of the old shape (orphaned behind a missing/mismatched config).
+            let retained = base_value.is_some()
+                && target_retains_vectors(
+                    persistence,
+                    base_branch,
+                    base_selector,
+                    source,
+                    target,
+                    space,
+                    &decode_vector_collection_name(space, key)?,
+                )?;
             let address = RowAddress::new(
                 target.storage_branch_id(),
                 RowClass::VectorCollection,
                 key.clone(),
             );
-            if target_value == base_value {
-                // Clean one-sided deletion (the target never changed the config):
-                // applies under both strategies, like a data-row deletion.
-                mutations.push(RowMutation::delete(address));
-            } else {
-                // The source deleted the collection while the target independently
-                // changed its config — a modify/delete divergence. Strict refuses;
-                // SourceWins applies the deletion.
-                let identity = key
-                    .strip_prefix(prefix.as_slice())
-                    .unwrap_or(key.as_slice())
-                    .to_vec();
-                conflicts.push(PreviewConflict::new(
-                    ComparedCapability::Vector,
-                    space.clone(),
-                    identity,
-                    None,
-                    Some(target_value.clone()),
-                    ConflictKind::ModifyDeleteDivergence,
-                    strategy_result,
-                ));
-                if strategy_result == ConflictStrategyResult::SourceWins {
+            match source_value {
+                None => {
+                    // Source deleted the collection: keep it if the target still
+                    // holds a surviving vector, otherwise tombstone the config.
+                    if retained {
+                        continue;
+                    }
                     mutations.push(RowMutation::delete(address));
+                }
+                Some(source_bytes) => {
+                    if retained {
+                        // A reshape that would strand the target's surviving vectors
+                        // is structurally incompatible — refuse rather than mix shapes.
+                        conflicts.push(PreviewConflict::new(
+                            ComparedCapability::Vector,
+                            space.clone(),
+                            identity,
+                            source_value.cloned(),
+                            target_value.cloned(),
+                            ConflictKind::IncompatibleCollection,
+                            ConflictStrategyResult::Refused,
+                        ));
+                        continue;
+                    }
+                    mutations.push(RowMutation::put(address, source_bytes.clone()));
                 }
             }
         }
@@ -288,6 +342,56 @@ fn live_vector_keys(
         .filter(|row| !row.is_tombstone())
         .map(|row| row.key().to_vec())
         .collect())
+}
+
+/// Whether the promotion would carry an old-shape source vector into
+/// `collection` — a source-side add or modify (a source-live vector whose value
+/// differs from the base). Such a vector, promoted into a collection the target
+/// reshaped to a different config, would mismatch the new shape.
+fn source_carries_vectors(
+    persistence: &mut StoragePersistence,
+    base_branch: BranchId,
+    base_selector: ReadSelector,
+    source: &BranchCatalogRecord,
+    space: &ProductSpace,
+    collection: &VectorCollectionName,
+) -> EngineResult<bool> {
+    let entry_prefix = encode_vector_collection_entry_prefix(space, collection);
+    let base_values: BTreeMap<Vec<u8>, Vec<u8>> = persistence
+        .scan_prefix(
+            base_branch,
+            RowClass::Vector,
+            entry_prefix.clone(),
+            base_selector,
+            None,
+        )?
+        .into_iter()
+        .filter(|row| !row.is_tombstone())
+        .filter_map(|row| {
+            row.value()
+                .map(|value| (row.key().to_vec(), value.to_vec()))
+        })
+        .collect();
+    for row in persistence.scan_prefix(
+        source.storage_branch_id(),
+        RowClass::Vector,
+        entry_prefix,
+        ReadSelector::Latest,
+        None,
+    )? {
+        if row.is_tombstone() {
+            continue;
+        }
+        let Some(value) = row.value() else {
+            continue;
+        };
+        // Added (absent from base) or modified (different value) => a source-side
+        // change the data three-way will carry as a put.
+        if base_values.get(row.key()).map(Vec::as_slice) != Some(value) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Every visible collection config row for `record` under `prefix`, keyed by the
