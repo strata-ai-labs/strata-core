@@ -1,7 +1,7 @@
 ---
 title: "Read database metrics"
 description: "Read lightweight database metrics."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: admin
 ---
 

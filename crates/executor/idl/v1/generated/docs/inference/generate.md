@@ -1,7 +1,7 @@
 ---
 title: "Generate text"
 description: "Generate text with an inference model."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: inference
 ---
 

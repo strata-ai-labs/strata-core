@@ -1,7 +1,7 @@
 ---
 title: "Check JSON document existence"
 description: "Check whether one JSON document exists."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: json
 ---
 

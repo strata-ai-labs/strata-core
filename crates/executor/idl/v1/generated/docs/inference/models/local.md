@@ -1,7 +1,7 @@
 ---
 title: "List local models"
 description: "List locally downloaded inference models."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: inference
 ---
 

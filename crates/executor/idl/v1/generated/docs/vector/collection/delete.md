@@ -1,7 +1,7 @@
 ---
 title: "Delete vector collection"
 description: "Delete a vector collection."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: vector
 ---
 

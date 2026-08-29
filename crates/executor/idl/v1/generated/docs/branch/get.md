@@ -1,7 +1,7 @@
 ---
 title: "Read one branch"
 description: "Read one branch summary by name."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: branch
 ---
 

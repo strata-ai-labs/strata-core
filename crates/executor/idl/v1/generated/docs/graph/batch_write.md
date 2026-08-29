@@ -1,7 +1,7 @@
 ---
 title: "Batch write graph"
 description: "Apply graph mutations atomically."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: graph
 ---
 

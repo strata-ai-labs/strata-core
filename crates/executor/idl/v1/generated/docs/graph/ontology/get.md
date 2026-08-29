@@ -1,7 +1,7 @@
 ---
 title: "Read graph ontology"
 description: "Read the graph ontology."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: graph
 ---
 
