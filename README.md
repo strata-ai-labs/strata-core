@@ -8,8 +8,8 @@ The embedded database for the agent era — five data models, git-like branching
 and built-in time travel. One binary, one directory, zero infrastructure.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-1.0.0-brightgreen.svg)](https://stratadb.org/changelog)
+[![Rust](https://img.shields.io/badge/rust-1.91%2B-orange.svg)](https://www.rust-lang.org)
+[![Version](https://img.shields.io/badge/version-1.1.0-brightgreen.svg)](https://stratadb.org/changelog)
 
 [Website](https://stratadb.org) · [Documentation](https://stratadb.org/docs) · [Playground](https://stratadb.org/playground) · [Agent skills](https://github.com/stratalab/strata-agent-skills)
 
@@ -33,7 +33,7 @@ Run an experiment on a fork. Let an agent loose on a branch. Read yesterday's st
 
 ## Highlights
 
-- 🌿 **Branch anything, instantly.** Forks are copy-on-write and constant-time regardless of database size. Branches isolate *all* data models at once.
+- 🌿 **Branch anything, instantly.** Forks are copy-on-write and constant-time regardless of database size, and isolate *all* data models at once. Compare two branches, then promote one into another with a single atomic merge.
 - ⏳ **Time travel is built in.** Every write gets a version and timestamp. Read any key, document, event range, vector search, or graph *as of* any past moment with `--as-of`.
 - 🧩 **Five data models, one engine.** KV, JSON documents, append-only events, vector search, and property graphs share one storage substrate, one branch model, one history.
 - 📦 **Embedded, like SQLite.** A single binary and a single data directory. Use it as a Rust library, a CLI, or an MCP server. It also runs in the browser via WebAssembly.
@@ -86,12 +86,17 @@ strata ./mydb graph bulk-insert social --file graph.json
 
 ## Branching and time travel
 
-Branches are the core abstraction, not a bolt-on. A fork captures every data model at a point in time; branches then evolve independently.
+Branches are the core abstraction, not a bolt-on. A fork captures every data model at a point in time; branches then evolve independently — and you can compare them and promote work back with a merge.
 
 ```bash
 # Agent A explores on its own branch; production is untouchable from there
 strata ./mydb branch fork default agent-a
 strata ./mydb --branch agent-a kv put plan '{"step":1}'
+
+# Compare every data model between two branches, then promote the work back
+# in one atomic commit (KV, JSON, and vectors merge; events and graphs compare)
+strata ./mydb branch diff default agent-a
+strata ./mydb branch merge agent-a default        # strict refuses conflicts; source-wins overwrites
 
 # Time travel: read state as of any past timestamp — on any branch
 strata ./mydb kv get user:ada --as-of 1783660565504764
@@ -145,18 +150,25 @@ Durable databases open the same way with `Database::open_local(path, DurableLoca
 
 ## Install
 
-Package releases (crates.io, PyPI, npm, Homebrew) are on the way. Today, build from source:
+**Install script** (macOS, Linux — checksum-verified):
+
+```bash
+curl -fsSL https://stratadb.org/install.sh | sh
+strata --cache ping                 # pong 1.1.0
+```
+
+**Homebrew:** `brew install stratalab/tap/strata`
+
+**Python:** `pip install stratadb`
+
+**From source** (Rust 1.91+):
 
 ```bash
 git clone https://github.com/stratalab/strata-core
 cd strata-core
 cargo install --path crates/cli     # installs the `strata` binary
-
 strata init
-strata --cache ping                 # pong 1.0.0
 ```
-
-Rust 1.91+ required.
 
 ## How it works
 
@@ -168,7 +180,7 @@ Deeper internals live in [`docs/architecture/`](docs/architecture/).
 
 ## Status
 
-Strata 1.0 is complete and hardening toward its public release: package channels, the Python and TypeScript SDKs, and the hosted docs are landing next. The on-disk format, error codes, and CLI surface documented here are the stable 1.0 contracts.
+Strata 1.1.0 is released. The install script, Homebrew tap, and hosted docs are live, and the Python SDK ships on PyPI; a Node/TypeScript SDK is next. The on-disk format, error codes, and CLI surface documented here are stable contracts.
 
 ## License
 
