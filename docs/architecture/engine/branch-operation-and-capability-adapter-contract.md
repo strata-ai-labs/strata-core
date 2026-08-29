@@ -906,14 +906,16 @@ For V1, the minimum acceptable implementation is:
 3. Compare branches by capability and space.
 4. Preview promotion derives branch point from lineage and reports conflicts.
 5. Promote supports strict and explicit source-wins strategies.
-6. Selected copy distinguishes current-record copy from selected-change apply.
-7. Restore/undo writes compensating commits and does not rewrite history.
-8. Delete protects default/system branches and prevents same-name stale-state
+6. Delete protects default/system branches and prevents same-name stale-state
    inheritance.
-9. KV, JSON, event, vector, and graph define capability branch adapters.
-10. Derived state disposition is explicit for branch workflows.
-11. Branch-local control-plane metadata is handled through control-plane
-    contracts, not ad hoc row scans.
+7. KV, JSON, event, vector, and graph define capability branch adapters.
+8. Derived state disposition is explicit for branch workflows.
+9. Branch-local control-plane metadata is handled through control-plane
+   contracts, not ad hoc row scans.
+
+Selected copy (cherry-pick) and restore/undo (revert) are **not** part of the V1
+minimum — they are deferred to post-V1 (see the "Selected Copy" and "Restore"
+sections), and their absence is guarded by `branch_merge_absence.rs`.
 12. Tags, notes, and legacy branch bundles do not define the V1 branch model.
 13. Branch workflow tests cover lineage, conflict strategy, temporal frontiers,
     capability coverage, derived-state cleanup, delete races, crash/recovery
