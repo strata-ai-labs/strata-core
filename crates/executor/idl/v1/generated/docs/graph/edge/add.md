@@ -1,7 +1,7 @@
 ---
 title: "Add graph edge"
 description: "Add or replace a graph edge."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: graph
 ---
 

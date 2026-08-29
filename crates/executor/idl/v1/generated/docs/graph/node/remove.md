@@ -1,7 +1,7 @@
 ---
 title: "Remove graph node"
 description: "Remove a graph node and its edges."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: graph
 ---
 

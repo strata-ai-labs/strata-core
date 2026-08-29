@@ -1,7 +1,7 @@
 ---
 title: "Batch get KV values"
 description: "Read multiple KV values by key."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: kv
 ---
 

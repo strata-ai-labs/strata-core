@@ -1,7 +1,7 @@
 ---
 title: "Read database info"
 description: "Read database identity and a catalog summary."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: admin
 ---
 

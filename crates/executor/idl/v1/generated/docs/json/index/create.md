@@ -1,7 +1,7 @@
 ---
 title: "Create JSON index"
 description: "Create a JSON secondary index on a field path."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: json
 ---
 

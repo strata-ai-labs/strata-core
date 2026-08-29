@@ -4,6 +4,50 @@ All notable changes to StrataDB are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] - 2026-08-29
+
+The first feature release on the V1 line (relative to the `1.0.0` V1 baseline).
+Headlined by branch operations and transparent multi-process access.
+
+### Added
+
+- **Branch operations — compare, preview, and promote (merge).** `branch.diff` /
+  compare reports per-capability, per-space differences (KV, JSON, vector,
+  vector-collection configs, event, graph); `branch.preview` reports the conflicts
+  a promotion would hit; `branch.merge` promotes a source branch's changes into a
+  target as a single atomic commit under `strict` (refuse on conflict with zero
+  target mutation) or `source-wins` strategies, recording promotion lineage on the
+  target. **Scope:** KV, JSON, and vector data (with their collection configs) are
+  promoted; events and graphs are compare-only in V1. Copy (cherry-pick) and undo
+  (revert) remain deferred to post-V1.
+- **Transparent multi-process access.** A database directory can be opened by
+  several processes at once through an owner-socket + client-broker transport, with
+  a `strata start` / `strata stop` broker lifecycle, an `--ipc` opt-in, and
+  `ipc_status` / `ipc_stop` admin commands. Includes read-only client sessions,
+  protocol version ticks, and per-request deadlines.
+- **Vector-collection comparison.** `branch.compare` surfaces collection create,
+  delete, and reshape — including empty collections that hold no vectors — as a
+  dedicated comparison capability.
+
+### Changed
+
+- Vector-collection promotion reconciles configs as a full base→source→target
+  three-way; an incompatible dimension/metric refuses under every strategy.
+- Promotion now carries source-side space and vector-collection **deletions**, not
+  just additions, while keeping spaces the target still holds live rows in
+  registered.
+
+### Fixed
+
+- A pre-release audit hardened branch operations end to end: the repeated-promotion
+  merge base is the source frontier (no longer deletes target-only rows), source
+  metadata deletions propagate, the collection-config three-way avoids both false
+  conflicts and silent vector-shape mismatches, and the space-deletion guard
+  preserves target-only event and graph state.
+- Durability, recovery, and concurrency hardening from an extensive
+  deterministic-simulation, loom model-checking, and differential-testing campaign
+  (against Redis Streams, Neo4j, and exact k-NN oracles).
+
 ## [0.11.1] - 2026-02-07
 
 ### Added

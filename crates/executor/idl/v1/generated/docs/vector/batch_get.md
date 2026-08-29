@@ -1,7 +1,7 @@
 ---
 title: "Batch get vectors"
 description: "Read multiple vectors by key."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: vector
 ---
 

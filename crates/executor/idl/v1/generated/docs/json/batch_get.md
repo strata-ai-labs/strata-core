@@ -1,7 +1,7 @@
 ---
 title: "Batch get JSON values"
 description: "Read multiple JSON values by document and path."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: json
 ---
 

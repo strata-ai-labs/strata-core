@@ -1,7 +1,7 @@
 ---
 title: "Batch delete JSON values"
 description: "Delete multiple JSON documents or paths in one itemwise batch."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: json
 ---
 

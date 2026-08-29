@@ -1,7 +1,7 @@
 ---
 title: "Batch put KV values"
 description: "Store multiple KV values in one itemwise batch."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: kv
 ---
 

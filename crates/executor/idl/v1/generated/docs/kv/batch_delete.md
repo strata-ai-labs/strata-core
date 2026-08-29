@@ -1,7 +1,7 @@
 ---
 title: "Batch delete KV values"
 description: "Delete multiple KV keys in one itemwise batch."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: kv
 ---
 

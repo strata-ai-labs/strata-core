@@ -1,7 +1,7 @@
 ---
 title: "Define graph object type"
 description: "Define a graph object type."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: graph
 ---
 

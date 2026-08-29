@@ -1,7 +1,7 @@
 ---
 title: "Apply graph delete policy"
 description: "Apply a delete policy to bound graph facts."
-source: strata-core@1.0.0
+source: strata-core@1.1.0
 section: graph
 ---
 
