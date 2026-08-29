@@ -86,6 +86,11 @@
           "type": "string"
         },
         {
+          "const": "vector_collection",
+          "description": "The vector collection configuration capability (comparison only).",
+          "type": "string"
+        },
+        {
           "const": "event",
           "description": "The event capability (comparison only).",
           "type": "string"
