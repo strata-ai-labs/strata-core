@@ -15,6 +15,10 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 console_error_panic_hook = { workspace = true }
 serde_json = { workspace = true }
+# The wasm-safe CLI parser + renderer: `default-features = false` drops the
+# native host (rustyline, hub, socket transport) and keeps only the clap grammar
+# and output formatting, so `executeCli` speaks the real `strata` command line.
+strata-cli = { path = "../cli", default-features = false }
 strata-executor = { path = "../executor", default-features = false }
 wasm-bindgen = { workspace = true }
 

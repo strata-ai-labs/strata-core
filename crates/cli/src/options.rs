@@ -103,7 +103,7 @@ impl IpcArg {
 
 /// Output format.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-pub(crate) enum Format {
+pub enum Format {
     /// Concise human output.
     Human,
     /// Compact JSON.

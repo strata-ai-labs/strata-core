@@ -8,12 +8,14 @@ pub(crate) struct Scope {
 }
 
 /// Mutable shell context shared by REPL and pipe execution.
+#[cfg(feature = "native")]
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CommandContext {
     branch: Option<String>,
     space: Option<String>,
 }
 
+#[cfg(feature = "native")]
 impl CommandContext {
     pub(crate) fn new(branch: Option<String>, space: Option<String>) -> Self {
         Self { branch, space }
