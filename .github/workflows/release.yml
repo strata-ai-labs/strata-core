@@ -68,6 +68,40 @@ jobs:
           path: target/${{ matrix.target }}/release/strata
 
   # ---------------------------------------------------------------------------
+  # 1b. Build the browser wasm bundle (cache-mode engine + the CLI parser),
+  #     consumed by stratadb.org's /playground via fetch-from-release.
+  # ---------------------------------------------------------------------------
+  build-wasm:
+    needs: format-gate
+    name: Build wasm playground bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorize private git dependencies
+        run: git config --global url."https://x-access-token:${{ secrets.STRATAHUB_READ_TOKEN }}@github.com/stratalab/stratahub".insteadOf "https://github.com/stratalab/stratahub"
+      - uses: dtolnay/rust-toolchain@1.94.1
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-bindgen-cli (matching Cargo.lock)
+        run: |
+          VERSION="$(grep -A1 'name = "wasm-bindgen"' Cargo.lock | grep version | head -1 | cut -d'"' -f2)"
+          cargo install wasm-bindgen-cli --version "$VERSION" --locked
+      - name: Build wasm bundle
+        run: |
+          cargo build --release --locked -p strata-wasm --target wasm32-unknown-unknown
+          wasm-bindgen --target web \
+            --out-dir crates/wasm/www/pkg \
+            target/wasm32-unknown-unknown/release/strata_wasm.wasm
+      - name: Package the wasm bundle
+        run: tar czf strata-wasm-web.tar.gz -C crates/wasm/www/pkg strata_wasm.js strata_wasm_bg.wasm
+      - name: Upload wasm bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-web
+          path: strata-wasm-web.tar.gz
+
+  # ---------------------------------------------------------------------------
   # 2. Package archives (flat layout: strata + README at the root, matching
   #    the v0.6.x install.sh contract)
   # ---------------------------------------------------------------------------
@@ -118,7 +152,7 @@ jobs:
   # ---------------------------------------------------------------------------
   release:
     name: Create Release
-    needs: package
+    needs: [package, build-wasm]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -130,6 +164,14 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # The browser wasm bundle (strata_wasm.js + strata_wasm_bg.wasm),
+      # consumed by stratadb.org's /playground via fetch-from-release.
+      - name: Download the wasm bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-web
+          path: artifacts
+
       # The IDL-generated command reference (docs pages + command-index.json +
       # schemas), consumed by stratadb.org's fetch-from-release pipeline. The
       # tarball roots at `generated/`. Committed docs are drift-guarded by
@@ -140,7 +182,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum strata-v* strata-idl-docs.tar.gz > checksums-sha256.txt
+          sha256sum strata-v* strata-idl-docs.tar.gz strata-wasm-web.tar.gz > checksums-sha256.txt
           cat checksums-sha256.txt
 
       - name: Create GitHub Release
@@ -151,7 +193,7 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             --title "Strata ${{ github.ref_name }}" \
             --generate-notes \
-            strata-v*.tar.gz strata-idl-docs.tar.gz checksums-sha256.txt
+            strata-v*.tar.gz strata-idl-docs.tar.gz strata-wasm-web.tar.gz checksums-sha256.txt
 
   # ---------------------------------------------------------------------------
   # 4. Update the Homebrew tap
