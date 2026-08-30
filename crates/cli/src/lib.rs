@@ -2533,6 +2533,70 @@ mod tests {
     }
 
     #[test]
+    fn command_from_line_maps_each_supported_family() {
+        let cmd = |line: &str| command_from_line(line, None, None).expect(line);
+        assert!(matches!(cmd("ping"), Command::Ping {}));
+        assert!(matches!(cmd("remote"), Command::RemoteGet {}));
+        assert!(matches!(cmd("info"), Command::Info { .. }));
+        assert!(matches!(cmd("health"), Command::Health { .. }));
+        assert!(matches!(cmd("metrics"), Command::Metrics { .. }));
+        assert!(matches!(cmd("describe"), Command::Describe { .. }));
+        assert!(matches!(cmd("config get"), Command::ConfigGet {}));
+        assert!(matches!(cmd("branch list"), Command::BranchList {}));
+        assert!(matches!(cmd("space list"), Command::SpaceList { .. }));
+        assert!(matches!(cmd("kv put a b"), Command::KvPut { .. }));
+        assert!(matches!(cmd("json list"), Command::JsonList { .. }));
+        assert!(matches!(
+            cmd("vector collection list"),
+            Command::VectorListCollections { .. }
+        ));
+        assert!(matches!(cmd("event count"), Command::EventCount { .. }));
+        assert!(matches!(cmd("graph list"), Command::GraphList { .. }));
+        assert!(matches!(
+            cmd("arrow export --primitive kv --format jsonl out.jsonl"),
+            Command::ArrowExport { .. }
+        ));
+        assert!(matches!(
+            cmd(r#"command run --command-json '{"type":"ping"}'"#),
+            Command::Ping {}
+        ));
+    }
+
+    #[test]
+    fn command_from_line_refuses_host_and_deferred_commands() {
+        // Host-only commands (filesystem/sockets/process) are refused, not run.
+        assert!(command_from_line("mcp serve", None, None).is_err());
+        assert!(command_from_line("init", None, None).is_err());
+        // Config reads are allowed; config mutations are host-only.
+        assert!(command_from_line("config get", None, None).is_ok());
+        assert!(command_from_line("config set hub.url http://example", None, None).is_err());
+        // Deferred (old-CLI) commands are refused.
+        assert!(command_from_line("search foo", None, None).is_err());
+        // A bad flag on a real command surfaces the clap parse error text.
+        assert!(command_from_line("kv get k --nope", None, None).is_err());
+    }
+
+    #[test]
+    fn command_from_line_applies_session_scope_and_per_command_override() {
+        // The session scope fills in when the command omits --branch.
+        let Command::KvGet { branch, .. } =
+            command_from_line("kv get k", Some("feature".to_owned()), None).expect("kv get")
+        else {
+            panic!("expected kv get");
+        };
+        assert_eq!(branch.as_deref(), Some("feature"));
+
+        // A per-command --branch overrides the supplied session scope.
+        let Command::KvGet { branch, .. } =
+            command_from_line("kv get k --branch other", Some("feature".to_owned()), None)
+                .expect("kv get override")
+        else {
+            panic!("expected kv get");
+        };
+        assert_eq!(branch.as_deref(), Some("other"));
+    }
+
+    #[test]
     fn interactive_sessions_default_to_host_piped_to_client() {
         // The default session mode when `--ipc` is unset: a TTY REPL hosts so
         // other processes can attach; a piped stream brokers as a client and
