@@ -14,7 +14,20 @@ description = "Handwritten command-line interface for Strata V1"
 # clients with no build-time cost, and an API key at runtime is the only
 # requirement. Local model execution (vendored llama.cpp, cmake, optional
 # CUDA) stays opt-in via `inference-local`.
-default = ["cloud"]
+default = ["native", "cloud"]
+# The native host surface: opening databases, the interactive REPL, MCP serving,
+# init/doctor, clone, and IPC lifecycle. Everything that touches the filesystem,
+# stdio, threads, or a terminal lives here. Off for wasm/embedded consumers that
+# reuse only the CLI parser + renderer (see `command_from_line`).
+native = [
+    "dep:rustyline",
+    "dep:strata-hub",
+    "dep:tracing-subscriber",
+    "strata-executor/localfs",
+    "strata-executor/arrow",
+    "strata-executor/hub",
+    "strata-executor/ipc",
+]
 cloud = ["inference-anthropic", "inference-google", "inference-openai"]
 # Provider features imply the base `inference` feature: the CLI's own command
 # surface is gated on `inference`, so a provider-only selection must still
@@ -28,14 +41,14 @@ inference-openai = ["inference", "strata-executor/inference-openai"]
 [dependencies]
 base64 = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
-rustyline = "14"
+rustyline = { version = "14", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 shlex = "1.3"
-strata-executor = { path = "../executor" }
-strata-hub = { path = "../hub" }
+strata-executor = { path = "../executor", default-features = false }
+strata-hub = { path = "../hub", optional = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
@@ -45,6 +58,8 @@ tempfile = { workspace = true }
 [[bin]]
 name = "strata"
 path = "src/main.rs"
+# The binary is the native host; the wasm-safe parser core builds without it.
+required-features = ["native"]
 
 [lints]
 workspace = true

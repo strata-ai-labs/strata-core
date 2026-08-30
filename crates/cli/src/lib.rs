@@ -2,31 +2,51 @@
 
 #![deny(unsafe_code)]
 #![allow(clippy::missing_const_for_fn)]
-
-use std::ffi::OsString;
-use std::io::IsTerminal;
-use std::path::PathBuf;
+// The parser-only build (no `native`, e.g. the wasm playground) reuses the
+// command grammar + renderer but not the host machinery, so some argument
+// helpers and flag types go unexercised there. That is expected, not a defect.
+#![cfg_attr(not(feature = "native"), allow(dead_code))]
 
 use clap::Parser;
-use serde_json::Value;
-use strata_executor::ipc::{Connection, SessionAccess};
-use strata_executor::{Command, Executor, ExecutorError, GraphPropertyDef, IpcMode};
+use strata_executor::{Command, ExecutorError, GraphPropertyDef};
 
+#[cfg(feature = "native")]
+use serde_json::Value;
+#[cfg(feature = "native")]
+use std::ffi::OsString;
+#[cfg(feature = "native")]
+use std::io::IsTerminal;
+#[cfg(feature = "native")]
+use std::path::PathBuf;
+#[cfg(feature = "native")]
+use strata_executor::ipc::{Connection, SessionAccess};
+#[cfg(feature = "native")]
+use strata_executor::{Executor, IpcMode};
+
+#[cfg(feature = "native")]
 mod agents;
 #[cfg(test)]
 mod catalog_guard;
 mod context;
+#[cfg(feature = "native")]
 mod doctor;
+#[cfg(feature = "native")]
 mod guidance;
+#[cfg(feature = "native")]
 mod init;
 mod input;
+#[cfg(feature = "native")]
 mod mcp;
+#[cfg(feature = "native")]
 mod open;
 mod options;
 mod render;
+#[cfg(feature = "native")]
 mod repl;
 
-use context::{CommandContext, Scope};
+#[cfg(feature = "native")]
+use context::CommandContext;
+use context::Scope;
 use input::{
     bytes_argument, cursor_argument, parse_filter_argument, parse_json_argument,
     parse_optional_filter_argument, parse_optional_json_argument, parse_relaxed_json_argument,
@@ -37,9 +57,17 @@ use options::{
     GraphOntologyCommand, JsonCommand, KvCommand, SpaceCommand, VectorCollectionCommand,
     VectorCommand,
 };
+#[cfg(feature = "native")]
 use render::{render_error, render_output, render_value};
 
+// The wasm-safe CLI surface, re-exported for embedded consumers (the browser
+// playground): render an Output or error to the CLI's own display string with
+// no host I/O. `command_from_line` (below) turns a CLI line into a Command.
+pub use options::Format;
+pub use render::{error_to_string, output_to_string, value_to_string};
+
 /// Runs the CLI and returns a process exit code.
+#[cfg(feature = "native")]
 pub fn run<I, T>(args: I) -> i32
 where
     I: IntoIterator<Item = T>,
@@ -85,6 +113,7 @@ where
 /// path / `STRATA_DB` / `--cache`; refusal otherwise, like any one-shot
 /// command); this applies the session scope and serves stdio until the
 /// client closes stdin.
+#[cfg(feature = "native")]
 fn serve_mcp(connection: Connection, context: &CommandContext) -> Result<i32, CliError> {
     let scope = context.scope_with_overrides(None, None);
     if let Some(branch) = scope.branch.as_deref() {
@@ -102,6 +131,7 @@ fn serve_mcp(connection: Connection, context: &CommandContext) -> Result<i32, Cl
     Ok(exit)
 }
 
+#[cfg(feature = "native")]
 #[allow(clippy::too_many_lines)]
 fn execute(cli: Cli) -> Result<i32, CliError> {
     let format = cli.output_format();
@@ -236,6 +266,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
 /// The default multi-process mode for a session open when `--ipc` is unset: an
 /// interactive REPL is a long-lived owner others attach to (Host); a piped
 /// stream is a one-shot-like client that brokers to an owner but does not host.
+#[cfg(feature = "native")]
 const fn default_session_ipc(interactive: bool) -> IpcMode {
     if interactive {
         IpcMode::Host
@@ -246,6 +277,7 @@ const fn default_session_ipc(interactive: bool) -> IpcMode {
 
 /// Clone creates a NEW database from a hub dataset; it never touches a session
 /// database, so it runs on its own ephemeral cache executor.
+#[cfg(feature = "native")]
 fn run_clone(args: options::CloneArgs, format: options::Format) -> Result<i32, CliError> {
     let mut executor = Executor::open_cache()?;
     let dest = args
@@ -267,6 +299,7 @@ fn run_clone(args: options::CloneArgs, format: options::Format) -> Result<i32, C
 /// stopped (`strata stop`, or `ipc stop`). A foreground "keep an owner alive"
 /// wrapper — never a server: it hosts Strata's multi-process substrate, the
 /// moral equivalent of `SQLite`'s file lock, and exits cleanly on stop.
+#[cfg(feature = "native")]
 fn run_ipc_start(
     cache: bool,
     db_flag: Option<PathBuf>,
@@ -324,6 +357,7 @@ fn run_ipc_start(
 /// owner then exits, while an interactive owner (a REPL, `mcp serve`) simply
 /// stops brokering and keeps running. Forgiving — a database with no owner
 /// reports `stopped: false` rather than failing, and never creates a database.
+#[cfg(feature = "native")]
 fn run_ipc_stop(
     cache: bool,
     db_flag: Option<PathBuf>,
@@ -371,6 +405,7 @@ fn run_ipc_stop(
 /// Blocks while a `strata start` owner is actively hosting, polling the live
 /// hosting state so an `ipc_stop` (in-process or brokered from `strata stop`)
 /// ends the wait promptly. A timing-only loop — carved out of the mutation gate.
+#[cfg(feature = "native")]
 fn block_until_unhosted(connection: &Connection) {
     const POLL: std::time::Duration = std::time::Duration::from_millis(200);
     while connection.hosting_active() {
@@ -381,6 +416,7 @@ fn block_until_unhosted(connection: &Connection) {
 /// The readiness report `strata start` prints once it is hosting: the socket,
 /// owner pid, and client count, drawn from the same `ipc_status` a client would
 /// see. Doubles as the signal a supervising script waits for before attaching.
+#[cfg(feature = "native")]
 fn started_report(connection: &Connection) -> Value {
     let data = connection
         .execute(Command::IpcStatus {})
@@ -394,6 +430,7 @@ fn started_report(connection: &Connection) -> Value {
 /// Resolves the durable database target for `start`/`stop` from the explicit
 /// flag/positional path, then `STRATA_DB`. These commands act on a specific
 /// database, so an unspecified target is a usage error — never an implicit cwd.
+#[cfg(feature = "native")]
 fn resolve_durable_target(
     db_flag: Option<PathBuf>,
     db_path: Option<PathBuf>,
@@ -411,6 +448,7 @@ fn resolve_durable_target(
     }
 }
 
+#[cfg(feature = "native")]
 pub(crate) fn execute_parsed_command(
     connection: &Connection,
     command: options::TopCommand,
@@ -550,11 +588,13 @@ fn deferred_command(name: &str) -> CliError {
     ))
 }
 
+#[cfg(feature = "native")]
 enum TopLevelAction {
     NeedsDatabase,
     NoDatabase(Value),
 }
 
+#[cfg(feature = "native")]
 fn top_level_without_database(command: &options::TopCommand) -> Result<TopLevelAction, CliError> {
     match command {
         options::TopCommand::Init => Ok(TopLevelAction::NoDatabase(init::run_init()?)),
@@ -597,29 +637,32 @@ fn config_command(command: ConfigCommand) -> Command {
 
 /// The canonical provider name behind a `<provider>.api_key` config key,
 /// validated against the known cloud providers, or `None`.
-#[cfg(feature = "inference")]
+#[cfg(all(feature = "native", feature = "inference"))]
 fn provider_api_key_target(key: &str) -> Option<&'static str> {
     let provider = key.strip_suffix(".api_key")?;
     strata_executor::inference_provider_key_info(provider).map(|info| info.provider)
 }
 
-#[cfg(not(feature = "inference"))]
+#[cfg(all(feature = "native", not(feature = "inference")))]
 fn provider_api_key_target(_key: &str) -> Option<&'static str> {
     None
 }
 
 /// Whether `key` is a user-config key handled without opening a database
 /// (`hub.url` or a `<provider>.api_key`).
+#[cfg(feature = "native")]
 fn is_user_config_key(key: &str) -> bool {
     key == "hub.url" || provider_api_key_target(key).is_some()
 }
 
 /// Mask a secret to a short non-secret prefix, e.g. `sk-ant-****`.
+#[cfg(feature = "native")]
 fn redact_key(value: &str) -> String {
     let prefix: String = value.chars().take(7).collect();
     format!("{prefix}****")
 }
 
+#[cfg(feature = "native")]
 fn unknown_config_key(key: &str) -> CliError {
     CliError::usage(format!(
         "unknown config key `{key}`; settable keys: hub.url, openai.api_key, \
@@ -630,6 +673,7 @@ fn unknown_config_key(key: &str) -> CliError {
 /// `strata config set <key> <value>` — writes the global user config.
 /// `hub.url` sets the hub; `<provider>.api_key` stores a cloud API key (0600,
 /// never echoed back in plaintext).
+#[cfg(feature = "native")]
 fn user_config_set(key: &str, value: &str) -> Result<serde_json::Value, CliError> {
     if key == "hub.url" {
         let path = strata_hub::write_global_hub_url(value)
@@ -653,6 +697,7 @@ fn user_config_set(key: &str, value: &str) -> Result<serde_json::Value, CliError
     Err(unknown_config_key(key))
 }
 
+#[cfg(feature = "native")]
 fn user_config_unset(key: &str) -> Result<serde_json::Value, CliError> {
     if key == "hub.url" {
         let path = strata_hub::unset_global_hub_url()
@@ -675,6 +720,7 @@ fn user_config_unset(key: &str) -> Result<serde_json::Value, CliError> {
     Err(unknown_config_key(key))
 }
 
+#[cfg(feature = "native")]
 fn user_config_get(key: &str) -> Result<serde_json::Value, CliError> {
     if key == "hub.url" {
         let value = strata_hub::read_global_hub_url()
@@ -702,7 +748,7 @@ fn user_config_get(key: &str) -> Result<serde_json::Value, CliError> {
 /// runtime reads these variables, so this bridges `strata config set
 /// <provider>.api_key` to the runtime without the inference layer needing to
 /// know about `~/.strata`.
-#[cfg(feature = "inference")]
+#[cfg(all(feature = "native", feature = "inference"))]
 fn load_provider_keys_into_env() {
     for info in strata_executor::INFERENCE_CLOUD_PROVIDER_KEYS {
         if std::env::var_os(info.env_var).is_some() {
@@ -714,6 +760,7 @@ fn load_provider_keys_into_env() {
     }
 }
 
+#[cfg(feature = "native")]
 fn user_config_path() -> Result<serde_json::Value, CliError> {
     let path = strata_hub::global_config_path()
         .ok_or_else(|| CliError::usage("the platform exposes no user config directory"))?;
@@ -722,6 +769,7 @@ fn user_config_path() -> Result<serde_json::Value, CliError> {
 
 /// `strata config show` — the resolved hub URL and which layer supplied
 /// it, the first thing to ask for when strata talks to the wrong hub.
+#[cfg(feature = "native")]
 fn user_config_show() -> serde_json::Value {
     match strata_hub::resolve_hub_url(&strata_hub::HubUrlInputs::from_process(None)) {
         Ok(resolved) => serde_json::json!({
@@ -2211,12 +2259,104 @@ fn bytes(value: String) -> strata_executor::Bytes {
     strata_executor::Bytes::new(value.into_bytes())
 }
 
-/// CLI error.
+/// Parses a single CLI line (e.g. `kv put greeting hello`) into an executor
+/// [`Command`], reusing the exact clap grammar and argument handling the
+/// `strata` binary uses. Wasm-safe and host-free: it opens no database and
+/// performs no I/O. `branch`/`space` supply the session scope for commands that
+/// omit their own `--branch`/`--space`.
+///
+/// The `Err` string is human-readable text to display in place of running a
+/// command: a clap parse error, `--help`/`--version` output, or a note that the
+/// command needs a host environment (`mcp`, `init`, `clone`, `start`/`stop`, …)
+/// and is unavailable in an embedded session.
+pub fn command_from_line(
+    line: &str,
+    branch: Option<String>,
+    space: Option<String>,
+) -> Result<Command, String> {
+    let tokens = shlex::split(line)
+        .ok_or_else(|| "could not parse the line (unbalanced quotes?)".to_owned())?;
+    if tokens.is_empty() {
+        return Err(String::new());
+    }
+    let argv = std::iter::once("strata".to_owned()).chain(tokens);
+    let cli = Cli::try_parse_from(argv).map_err(|error| error.render().to_string())?;
+    let Some(command) = cli.command else {
+        return Err("type a command, e.g. `kv put greeting hello`".to_owned());
+    };
+    // A per-command --branch/--space (global clap flags) overrides the session
+    // scope the caller supplies.
+    let scope = Scope {
+        branch: cli.branch.or(branch),
+        space: cli.space.or(space),
+    };
+    command_to_executor(command, &scope).map_err(|error| error.to_string())
+}
+
+/// Maps a parsed top-level command to an executor [`Command`] for the embedded
+/// surface — the data primitives plus read-only status commands. Host commands
+/// (filesystem, sockets, or model providers) are refused with a plain message.
+fn command_to_executor(command: options::TopCommand, scope: &Scope) -> Result<Command, CliError> {
+    use options::TopCommand as Top;
+    if let Some(name) = deferred_top_command(&command) {
+        return Err(deferred_command(name));
+    }
+    Ok(match command {
+        Top::Ping => Command::Ping {},
+        Top::Remote => Command::RemoteGet {},
+        Top::Info => Command::Info {
+            branch: scope.branch.clone(),
+        },
+        Top::Health => Command::Health {
+            branch: scope.branch.clone(),
+        },
+        Top::Metrics => Command::Metrics {
+            branch: scope.branch.clone(),
+        },
+        Top::Describe => Command::Describe {
+            branch: scope.branch.clone(),
+        },
+        Top::Config(args) => {
+            if matches!(
+                args.command,
+                ConfigCommand::Get | ConfigCommand::GetKey { .. }
+            ) {
+                config_command(args.command)
+            } else {
+                return Err(CliError::usage(
+                    "`config set`/`unset`/`show`/`path` manage on-disk user config and are not available in an embedded session",
+                ));
+            }
+        }
+        Top::Branch(args) => branch_command(args.command)?,
+        Top::Space(args) => space_command(args.command, scope),
+        Top::Kv(args) => kv_command(args.command, scope)?,
+        Top::Json(args) => json_command(args.command, scope)?,
+        Top::Vector(args) => vector_command(args.command, scope)?,
+        Top::Event(args) => event_command(args.command, scope)?,
+        Top::Graph(args) => graph_command(args.command, scope)?,
+        Top::Arrow(args) => arrow_command(args.command, scope),
+        Top::Command(args) => raw_command(args.command)?,
+        _ => {
+            return Err(CliError::usage(
+                "that command needs a host environment (filesystem, sockets, or model providers) and is not available in an embedded session",
+            ));
+        }
+    })
+}
+
+/// CLI error. Public because the wasm-safe surface (`output_to_string`,
+/// `value_to_string`) returns it; `#[non_exhaustive]` per the error contract.
 #[derive(Debug)]
-enum CliError {
+#[non_exhaustive]
+pub enum CliError {
+    /// Invalid usage: a bad argument, an unsupported command, or a refusal.
     Usage(String),
+    /// A filesystem or stdio error from a host operation.
     Io(std::io::Error),
+    /// A JSON parse or serialization error.
     Json(serde_json::Error),
+    /// An error returned by the executor while running a command.
     Executor(Box<ExecutorError>),
 }
 
@@ -2257,7 +2397,7 @@ impl From<ExecutorError> for CliError {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "native"))]
 mod tests {
     use super::*;
     use options::{
@@ -2390,6 +2530,70 @@ mod tests {
     #[test]
     fn deferred_top_level_command_returns_usage_error() {
         assert_eq!(run(["strata", "--cache", "search"]), 2);
+    }
+
+    #[test]
+    fn command_from_line_maps_each_supported_family() {
+        let cmd = |line: &str| command_from_line(line, None, None).expect(line);
+        assert!(matches!(cmd("ping"), Command::Ping {}));
+        assert!(matches!(cmd("remote"), Command::RemoteGet {}));
+        assert!(matches!(cmd("info"), Command::Info { .. }));
+        assert!(matches!(cmd("health"), Command::Health { .. }));
+        assert!(matches!(cmd("metrics"), Command::Metrics { .. }));
+        assert!(matches!(cmd("describe"), Command::Describe { .. }));
+        assert!(matches!(cmd("config get"), Command::ConfigGet {}));
+        assert!(matches!(cmd("branch list"), Command::BranchList {}));
+        assert!(matches!(cmd("space list"), Command::SpaceList { .. }));
+        assert!(matches!(cmd("kv put a b"), Command::KvPut { .. }));
+        assert!(matches!(cmd("json list"), Command::JsonList { .. }));
+        assert!(matches!(
+            cmd("vector collection list"),
+            Command::VectorListCollections { .. }
+        ));
+        assert!(matches!(cmd("event count"), Command::EventCount { .. }));
+        assert!(matches!(cmd("graph list"), Command::GraphList { .. }));
+        assert!(matches!(
+            cmd("arrow export --primitive kv --format jsonl out.jsonl"),
+            Command::ArrowExport { .. }
+        ));
+        assert!(matches!(
+            cmd(r#"command run --command-json '{"type":"ping"}'"#),
+            Command::Ping {}
+        ));
+    }
+
+    #[test]
+    fn command_from_line_refuses_host_and_deferred_commands() {
+        // Host-only commands (filesystem/sockets/process) are refused, not run.
+        assert!(command_from_line("mcp serve", None, None).is_err());
+        assert!(command_from_line("init", None, None).is_err());
+        // Config reads are allowed; config mutations are host-only.
+        assert!(command_from_line("config get", None, None).is_ok());
+        assert!(command_from_line("config set hub.url http://example", None, None).is_err());
+        // Deferred (old-CLI) commands are refused.
+        assert!(command_from_line("search foo", None, None).is_err());
+        // A bad flag on a real command surfaces the clap parse error text.
+        assert!(command_from_line("kv get k --nope", None, None).is_err());
+    }
+
+    #[test]
+    fn command_from_line_applies_session_scope_and_per_command_override() {
+        // The session scope fills in when the command omits --branch.
+        let Command::KvGet { branch, .. } =
+            command_from_line("kv get k", Some("feature".to_owned()), None).expect("kv get")
+        else {
+            panic!("expected kv get");
+        };
+        assert_eq!(branch.as_deref(), Some("feature"));
+
+        // A per-command --branch overrides the supplied session scope.
+        let Command::KvGet { branch, .. } =
+            command_from_line("kv get k --branch other", Some("feature".to_owned()), None)
+                .expect("kv get override")
+        else {
+            panic!("expected kv get");
+        };
+        assert_eq!(branch.as_deref(), Some("other"));
     }
 
     #[test]

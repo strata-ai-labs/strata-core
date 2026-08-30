@@ -4063,6 +4063,7 @@ version = "1.1.0"
 dependencies = [
  "console_error_panic_hook",
  "serde_json",
+ "strata-cli",
  "strata-executor 1.1.0",
  "wasm-bindgen",
  "wasm-bindgen-test",

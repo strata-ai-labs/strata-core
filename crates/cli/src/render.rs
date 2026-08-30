@@ -16,7 +16,10 @@ macro_rules! line {
     }};
 }
 
-pub(crate) fn render_output(output: &Output, format: Format) -> Result<(), CliError> {
+/// Renders an executor `Output` to its display string for `format`, without
+/// touching stdio. Wasm-safe: the native print path (`render_output`) wraps
+/// this, and embedded consumers (the browser playground) call it directly.
+pub fn output_to_string(output: &Output, format: Format) -> Result<String, CliError> {
     let mut value = serde_json::to_value(output)?;
     // Human and raw formats show KV keys/values as text when possible. The
     // decode happens here — with the typed `Output` in hand — so only fields
@@ -25,49 +28,74 @@ pub(crate) fn render_output(output: &Output, format: Format) -> Result<(), CliEr
     if matches!(format, Format::Human | Format::Raw) {
         humanize_kv_bytes(output, &mut value);
     }
-    render_value(&value, format)
+    value_to_string(&value, format)
 }
 
-pub(crate) fn render_value(value: &Value, format: Format) -> Result<(), CliError> {
-    match format {
-        Format::Json => println!("{}", serde_json::to_string(value)?),
-        Format::Pretty => println!("{}", serde_json::to_string_pretty(value)?),
+/// Renders a already-serialized envelope `Value` to its display string for
+/// `format`, without touching stdio. Wasm-safe.
+pub fn value_to_string(value: &Value, format: Format) -> Result<String, CliError> {
+    Ok(match format {
+        Format::Json => serde_json::to_string(value)?,
+        Format::Pretty => serde_json::to_string_pretty(value)?,
         Format::Human => {
             let mut out = String::new();
             render_human(value, &mut out)?;
-            print!("{out}");
+            out
         }
         Format::Raw => {
             let mut out = String::new();
             render_raw(value, &mut out);
-            print!("{out}");
+            out
         }
-    }
-    Ok(())
+    })
 }
 
-pub(crate) fn render_error(status: &impl Serialize, format: Format) {
+/// Renders an executor error status to its display string for `format`, without
+/// touching stdio. Wasm-safe.
+pub fn error_to_string(status: &impl Serialize, format: Format) -> String {
     #[derive(Serialize)]
     struct ErrorEnvelope<'a, T: Serialize + ?Sized> {
         error: &'a T,
     }
 
     let envelope = ErrorEnvelope { error: status };
+    let serialize_failed =
+        |error: serde_json::Error| format!("error: failed to render executor error: {error}");
     match format {
-        Format::Json => render_serialized_error(serde_json::to_string(&envelope)),
-        Format::Pretty => render_serialized_error(serde_json::to_string_pretty(&envelope)),
+        Format::Json => serde_json::to_string(&envelope).unwrap_or_else(serialize_failed),
+        Format::Pretty => serde_json::to_string_pretty(&envelope).unwrap_or_else(serialize_failed),
         Format::Human | Format::Raw => match serde_json::to_value(status) {
-            Ok(value) => eprintln!("{}", human_error_line(&value)),
-            Err(error) => eprintln!("error: failed to render executor error: {error}"),
+            Ok(value) => human_error_line(&value),
+            Err(error) => serialize_failed(error),
         },
     }
 }
 
-fn render_serialized_error(rendered: Result<String, serde_json::Error>) {
-    match rendered {
-        Ok(text) => eprintln!("{text}"),
-        Err(error) => eprintln!("error: failed to render executor error: {error}"),
+#[cfg(feature = "native")]
+pub(crate) fn render_output(output: &Output, format: Format) -> Result<(), CliError> {
+    print_rendered(&output_to_string(output, format)?, format);
+    Ok(())
+}
+
+#[cfg(feature = "native")]
+pub(crate) fn render_value(value: &Value, format: Format) -> Result<(), CliError> {
+    print_rendered(&value_to_string(value, format)?, format);
+    Ok(())
+}
+
+/// JSON/pretty envelopes get a trailing newline; human/raw strings already
+/// carry their own line breaks and print verbatim.
+#[cfg(feature = "native")]
+fn print_rendered(rendered: &str, format: Format) {
+    match format {
+        Format::Json | Format::Pretty => println!("{rendered}"),
+        Format::Human | Format::Raw => print!("{rendered}"),
     }
+}
+
+#[cfg(feature = "native")]
+pub(crate) fn render_error(status: &impl Serialize, format: Format) {
+    eprintln!("{}", error_to_string(status, format));
 }
 
 fn render_human(value: &Value, out: &mut String) -> Result<(), CliError> {
