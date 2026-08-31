@@ -116,9 +116,26 @@ own perturbation/non-vacuity fact, never just "passes".
    permanent contract and removes the allowance (precedent: #2820 → #2824,
    #2823 → #2825).
 
-## 4.12 hook
+## 4.12 — elle history checking
 
-`ExpectedState` (per-branch model with `candidate_watermarks`/`mutations_at`)
-and the per-run facts are the history substrate the elle-style history
-checker (TCP4.12) will consume: every trajectory already yields a totally
-ordered op log with acknowledged versions per branch.
+**4.12a (landed): single-session lineage/temporal histories** — `history.rs`.
+The whole-DB harness above checks point-in-time oracles against `ExpectedState`;
+it never records what a client *observed*. `history.rs` adds the elle model: a
+traceability-co-designed workload (every write *appends* a unique
+`branch:key:seq` token, so a fork child's value must literally begin with the
+source's value at the fork version — lineage transitivity becomes a byte prefix
+check) records an ordered `History`, then `check_history` reconstructs each
+read's expected value from the recorded writes/forks *alone* — a second,
+independent oracle — plus a version-monotonicity secondary oracle. It catches
+the #2521 dropped-inheritance shape (checker sabotage twin) and the #2522
+pre-fork at-version boundary; per-PR sweep rides the workspace lib tests, the
+`lineage_history_soak` `#[ignore]` test is the nightly tier
+(`STRATA_LINEAGE_SEEDS`). Fork-current only, no faults/pruning — history stays
+fully retained so at-version reads are exact.
+
+**4.12b (planned): concurrent isolation histories** — record per-session
+histories from the `stress_random` multi-session workload (add a process/op
+dimension), list-append registers, Adya-style anomaly inference (the #2682
+class), and faulted/pruned trajectories. `ExpectedState`
+(`candidate_watermarks`/`mutations_at`) and the whole-DB per-run facts remain
+the substrate a concurrent checker will consume.

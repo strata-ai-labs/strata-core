@@ -203,6 +203,18 @@ jobs:
         run: |
           STRATA_STORAGE_FAULT_CASES=2000 cargo test --locked -p strata-storage --features fault-injection --test simulation_whole_db -- whole_db_simulation_soak_deepens_across_many_seeds --ignored
           STRATA_SIM_EPOCHS=6 STRATA_SIM_STEPS_PER_EPOCH=48 STRATA_STORAGE_FAULT_CASES=400 cargo test --locked -p strata-storage --features fault-injection --test simulation_whole_db -- whole_db_simulation_soak_deepens_across_many_seeds --ignored
+      - name: Elle lineage-history soak (TCP4.12a)
+        timeout-minutes: 20
+        # The single-session lineage/temporal history lane: seeded fork-chain
+        # trajectories (incl. fork-of-a-fork) recorded as observed histories
+        # and checked OFFLINE against an independent reconstruction of the
+        # expected reads (elle's model) plus a version-monotonicity secondary
+        # oracle. Per-PR CI runs a small sweep via the workspace lib tests;
+        # this is the soak tier (~0.18 s/seed). A failure names its seed for a
+        # bit-exact `run_lineage_history(seed=..)` replay.
+        env:
+          STRATA_LINEAGE_SEEDS: "400"
+        run: cargo test --locked -p strata-storage --features fault-injection --lib lineage_history_soak -- --ignored --nocapture
       - name: Crash-recovery deep grids
         timeout-minutes: 60
         env:

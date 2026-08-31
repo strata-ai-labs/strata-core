@@ -17,6 +17,7 @@
 
 mod driver;
 mod faults;
+mod history;
 pub(crate) mod whole_db;
 
 use std::path::{Path, PathBuf};
@@ -25,6 +26,7 @@ use crate::testkit::TestkitError;
 use driver::run_one_sim;
 
 pub use faults::{run_fault_simulation_harness, SimulationFaultOutcome};
+pub use history::{run_lineage_history_harness, LineageHistoryOutcome};
 
 /// Counters describing a whole-DB simulation sweep (TCP4.11b).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
