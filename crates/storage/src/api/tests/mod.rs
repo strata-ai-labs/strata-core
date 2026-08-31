@@ -17,6 +17,8 @@ mod cache;
 #[cfg(all(unix, feature = "localfs", feature = "perf-trace"))]
 mod checkpoint;
 mod commit;
+#[cfg(feature = "localfs")]
+mod concurrent_history;
 mod diagnostics;
 #[cfg(all(feature = "localfs", feature = "perf-trace"))]
 mod disk_resident_reads;
