@@ -209,8 +209,9 @@ pub use service_fuzz::{
     not(target_arch = "wasm32")
 ))]
 pub use simulation::{
-    replay_whole_db_seed, run_fault_simulation_harness, run_simulation_harness,
-    run_whole_db_harness, SimulationFaultOutcome, SimulationOutcome, WholeDbOutcome,
+    replay_whole_db_seed, run_fault_simulation_harness, run_lineage_history_harness,
+    run_simulation_harness, run_whole_db_harness, LineageHistoryOutcome, SimulationFaultOutcome,
+    SimulationOutcome, WholeDbOutcome,
 };
 #[cfg(all(
     any(test, feature = "fault-injection"),
