@@ -236,3 +236,38 @@ path = "fuzz_targets/layout_id_roundtrip.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "format_key"
+path = "fuzz_targets/format_key.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "format_segment_metadata"
+path = "fuzz_targets/format_segment_metadata.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "format_snapshot_timeline_payload"
+path = "fuzz_targets/format_snapshot_timeline_payload.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "format_wal_segment_header"
+path = "fuzz_targets/format_wal_segment_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "format_watermark"
+path = "fuzz_targets/format_watermark.rs"
+test = false
+doc = false
+bench = false

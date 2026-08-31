@@ -5,9 +5,16 @@ This directory contains the storage cargo-fuzz package.
 The first targets exercise the current durable byte decoders through the hidden
 `testkit` surface. They are fail-closed parser fuzzers: arbitrary bytes may
 decode or reject, but they must not panic, allocate without decoder limits, or
-accept malformed checksums as valid. Service targets route generated operation
-scripts through hidden L4 testkit harnesses and assert model invariants after
-each step.
+accept malformed checksums as valid. **Since TCP4.6b they also carry a
+round-trip fidelity oracle**: when arbitrary bytes DO decode, the decoded value
+is re-encoded and decoded again inside the `format::fuzzing` seam, and any
+value change (or a decode failure of freshly-encoded bytes) panics — value
+loss is a finding, not just a crash (the #2688/#2689 class at the codec
+layer). Structural probes (`snapshot_envelope`, the table block/artifact
+family, the WAL record envelope) stay fail-closed-only with their own oracles,
+documented in the seam. Service targets route generated operation scripts
+through hidden L4 testkit harnesses and assert model invariants after each
+step.
 
 Useful local commands:
 
@@ -33,7 +40,18 @@ cargo +nightly fuzz run service_quarantine
 cargo +nightly fuzz run service_snapshot
 cargo +nightly fuzz run layout_object_name
 cargo +nightly fuzz run layout_id_roundtrip
+cargo +nightly fuzz run format_key
+cargo +nightly fuzz run format_segment_metadata
+cargo +nightly fuzz run format_snapshot_timeline_payload
+cargo +nightly fuzz run format_wal_segment_header
+cargo +nightly fuzz run format_watermark
 ```
+
+The last five (TCP4.6b) close the decoder-surface gap: every `FormatDecoder`
+variant now has a dedicated byte-fuzz target (previously `Key`,
+`SegmentMetadata`, `SnapshotTimelinePayload`, `WalSegmentHeader`, and
+`Watermark` were reachable only through the testkit grid). The nightly workflow
+enumerates targets with `cargo fuzz list`, so they join automatically.
 
 L2 object-layout classification is fuzzed by `layout_object_name` (arbitrary
 name text through every `classify_*` family — a malformed name read during a
