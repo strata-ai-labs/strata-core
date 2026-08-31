@@ -215,6 +215,19 @@ jobs:
         env:
           STRATA_LINEAGE_SEEDS: "400"
         run: cargo test --locked -p strata-storage --features fault-injection --lib lineage_history_soak -- --ignored --nocapture
+      - name: Elle concurrent-history soak (TCP4.12b)
+        timeout-minutes: 20
+        # The concurrent read-atomicity lane: many writers commit atomic linked
+        # batches while readers take single-snapshot multi-key reads, recorded
+        # and checked OFFLINE for fractured/torn reads (the #2682 class, verified
+        # sound by loom 4.3) and phantom values. Interleaving is the fuzzed
+        # dimension; the invariant is interleaving-independent. Per-PR CI runs a
+        # small workload via the workspace lib tests; this is the soak tier.
+        env:
+          STRATA_CONCURRENT_HISTORY_WRITERS: "6"
+          STRATA_CONCURRENT_HISTORY_READERS: "6"
+          STRATA_CONCURRENT_HISTORY_OPS: "2000"
+        run: cargo test --locked -p strata-storage --lib concurrent_history_soak -- --ignored --nocapture
       - name: Crash-recovery deep grids
         timeout-minutes: 60
         env:
