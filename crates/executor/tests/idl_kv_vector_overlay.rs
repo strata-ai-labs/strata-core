@@ -1,6 +1,13 @@
 //! KV/vector IDL overlay conformance tests.
+//!
+//! Requires `inference` as well as `idl-tooling`: the suite resolves the full
+//! command index and validates every command's request fixture against the
+//! runtime `Command` enum, and the `inference.*` fixtures only deserialize when
+//! the `inference` variants are compiled in. Without it, `resolve_default_index`
+//! fails on `requests/v1/inference/*.json` (see #2982). Matches the gating on
+//! the sibling full-catalog IDL tests (`idl_bin_dispatch`, `generated_conformance`).
 
-#![cfg(feature = "idl-tooling")]
+#![cfg(all(feature = "idl-tooling", feature = "inference"))]
 
 use std::collections::BTreeSet;
 use std::fs;
