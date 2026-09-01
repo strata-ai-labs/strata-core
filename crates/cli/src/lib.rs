@@ -259,8 +259,23 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             "strata {} — in-memory session (nothing persisted; run with a path to keep data)",
             env!("CARGO_PKG_VERSION")
         );
+        // Standing in a directory full of datasets and getting a scratch
+        // session is the #3000 trap — name what is actually here.
+        if let Ok(cwd) = std::env::current_dir() {
+            if let Some(notice) = contained_datasets_notice(&open::strata_databases_in(&cwd)) {
+                eprintln!("{notice}");
+            }
+        }
         eprintln!("type `help` for commands  |  agents: run `strata agents guide`");
         eprintln!("skills for coding agents: npx skills add stratalab/strata-agent-skills");
+    }
+    if let Some(path) = opened.implicit_cwd.as_deref() {
+        // The git model (#3000): a bare interactive open inside a dataset
+        // opened THAT dataset — say so before the first prompt.
+        eprintln!(
+            "opened the Strata database in the current directory ({})",
+            path.display()
+        );
     }
     let connection = opened.connection;
     if let Some(branch) = context.scope_with_overrides(None, None).branch.as_deref() {
@@ -583,6 +598,18 @@ pub(crate) fn execute_parsed_command(
 
     render_output(&output, format)?;
     Ok(())
+}
+
+/// The implicit-cache notice's dataset line (#3000): `None` when the
+/// directory holds no datasets — the caller must print nothing (the mutant
+/// that dropped the emptiness guard would have indexed an empty list).
+#[cfg(feature = "native")]
+fn contained_datasets_notice(found: &[String]) -> Option<String> {
+    let first = found.first()?;
+    Some(format!(
+        "Strata datasets in this directory: {} — open one with `strata ./{first}`",
+        found.join(", ")
+    ))
 }
 
 fn deferred_top_command(command: &options::TopCommand) -> Option<&'static str> {
@@ -2419,6 +2446,19 @@ impl From<ExecutorError> for CliError {
 #[cfg(all(test, feature = "native"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dataset_notice_is_silent_for_an_empty_directory() {
+        // Kills the emptiness-guard mutant (#3001 gate find): no datasets ⇒
+        // no notice; datasets ⇒ all named, first one in the command hint.
+        assert_eq!(contained_datasets_notice(&[]), None);
+        let found = vec!["alpha".to_owned(), "zeta".to_owned()];
+        let notice = contained_datasets_notice(&found).expect("datasets get a notice");
+        assert!(
+            notice.contains("alpha, zeta") && notice.contains("`strata ./alpha`"),
+            "{notice}"
+        );
+    }
     use options::{
         ArrowCommand, CliArrowExportPrimitive, CliArrowFormat, CommandCommand, KvCommand,
         TopCommand,
