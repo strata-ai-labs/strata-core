@@ -115,4 +115,5 @@
 !/corpus/dual_mutation/valid-damage-mix
 !/corpus/dual_mutation/valid-delete-file
 !/corpus/dual_mutation/valid-degraded-loss
+!/corpus/dual_mutation/pin-3015-snapshot-collision
 /target/

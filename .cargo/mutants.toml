@@ -39,6 +39,20 @@ exclude_globs = [
     # twins — is its own pins: a future edit that weakens an oracle fails the
     # pins loudly. Product code the harness CALLS stays fully mutated.
     "crates/storage/src/testkit/simulation/**",
+    # The dual-mutation fuzz harness (TCP4.6c): same doctrine as the DST
+    # simulation harness above — a checker whose strength mechanism is its
+    # own falsification-verified pin suite (blinding the oracle verdict reds
+    # the violation tests; dropping a damage write reds the byte-level
+    # counter pins; four committed corpus seeds replay per-PR with exact
+    # counters). The one full gate round it ran (PR #3014) timed out the
+    # 90-minute budget mid-run — each mutant re-runs a storage suite whose
+    # dual-mutation tests open real on-disk stores — after surfacing four
+    # gaps, all resolved: the untested loud-refusal counter gained a
+    # deterministic corrupted-manifest test, and the unreachable-by-
+    # construction post-damage tolerance guard was DELETED (ops now run only
+    # on claim-strict-verified Healthy stores, where refusals are loud).
+    # Product code the harness calls stays fully mutated.
+    "crates/storage/src/testkit/dual_mutation.rs",
 ]
 
 # Reasoned equivalent-mutant exclusions (regexes over mutant names):
