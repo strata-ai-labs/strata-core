@@ -65,19 +65,24 @@ pub(crate) fn run_repl(
 /// this database holds and what to try. Scripted formats stay chrome-free, and
 /// a failed describe never blocks the session.
 fn print_banner(connection: &Connection, format: Format) {
+    for line in banner_for(connection, format).unwrap_or_default() {
+        println!("{line}");
+    }
+}
+
+/// The banner lines for an interactive session, or `None` when the session is
+/// scripted (non-human format) or describe fails — the decision logic, kept
+/// out of the stdio glue so it is unit-testable.
+fn banner_for(connection: &Connection, format: Format) -> Option<Vec<String>> {
     if format != Format::Human {
-        return;
+        return None;
     }
     let Ok(Output::Described(describe)) = connection.execute(Command::Describe { branch: None })
     else {
-        return;
+        return None;
     };
-    let Ok(value) = serde_json::to_value(&describe) else {
-        return;
-    };
-    for line in banner_lines(&value) {
-        println!("{line}");
-    }
+    let value = serde_json::to_value(&describe).ok()?;
+    Some(banner_lines(&value))
 }
 
 /// The banner content, as pure data -> lines (unit-tested).
@@ -371,6 +376,52 @@ mod tests {
             "the empty-state suggestion must be a first write: {}",
             lines[2]
         );
+    }
+
+    #[test]
+    fn banner_is_for_human_sessions_only_and_reflects_the_store() {
+        // Kills the format-guard mutants in `banner_for`: Human gets real
+        // lines, scripted formats get nothing.
+        let connection =
+            Connection::cache(strata_executor::Executor::open_cache().expect("cache opens"));
+        let lines = banner_for(&connection, Format::Human).expect("human sessions get a banner");
+        assert!(lines[0].starts_with("StrataDB "), "{}", lines[0]);
+        assert_eq!(
+            banner_for(&connection, Format::Json),
+            None,
+            "scripted formats stay chrome-free"
+        );
+    }
+
+    #[test]
+    fn a_single_nonzero_inventory_is_not_an_empty_database() {
+        // Kills the `&&`→`||` mutants in the empty-state condition: each shape
+        // has exactly ONE non-zero inventory, and every one must take the
+        // stats branch, never the empty-database greeting.
+        for primitives in [
+            serde_json::json!({"kv_count": 5, "json_count": 0, "event_count": 0,
+                "vector_collections": [], "graphs": []}),
+            serde_json::json!({"kv_count": 0, "json_count": 5, "event_count": 0,
+                "vector_collections": [], "graphs": []}),
+            serde_json::json!({"kv_count": 0, "json_count": 0, "event_count": 5,
+                "vector_collections": [], "graphs": []}),
+            serde_json::json!({"kv_count": 0, "json_count": 0, "event_count": 0,
+                "vector_collections": [{"name": "e"}], "graphs": []}),
+            serde_json::json!({"kv_count": 0, "json_count": 0, "event_count": 0,
+                "vector_collections": [], "graphs": ["g"]}),
+        ] {
+            let describe = serde_json::json!({
+                "version": "1", "target": "cache", "branch": "default",
+                "branches": ["default"], "spaces": ["default"],
+                "primitives": primitives
+            });
+            let lines = banner_lines(&describe);
+            assert!(
+                lines[1].contains("branches ·"),
+                "one non-zero inventory must show stats, got: {}",
+                lines[1]
+            );
+        }
     }
 
     #[test]

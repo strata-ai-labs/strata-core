@@ -51,6 +51,13 @@ exclude_re = [
     # FixedDefault arm is behavior-preserving — an equivalent mutant no test can
     # kill without an unconstructable unknown variant.
     "delete match arm StorageBudgetSource::FixedDefault.* in MemoryBudgetSource::from_storage",
+    # #2998 REPL stdio glue: `print_banner` and `report_line_error` only relay
+    # to stdout/stderr; their decision logic lives in the tested `banner_for`,
+    # `banner_lines`, and `prefixed_error_line`. Stubbing the relays is
+    # undetectable without capturing process stdio on an interactive-only
+    # path, which in-process unit tests cannot do.
+    "replace print_banner with \\(\\)",
+    "replace report_line_error with \\(\\)",
     # W3.3 batching beat: a pure throughput heuristic — replacing the pause
     # with () is semantics-preserving by design (differently-batched fsyncs,
     # never fewer). No noise-free observer exists.
