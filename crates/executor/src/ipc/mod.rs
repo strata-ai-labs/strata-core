@@ -56,6 +56,7 @@ struct SocketBinding {
 /// path overflows `sun_path`, fall back to a per-user runtime-dir socket named
 /// by a hash of the data dir, and record a pointer file in the data dir.
 fn resolve_binding(data_dir: &Path) -> SocketBinding {
+    let data_dir = canonical_data_dir(data_dir);
     let direct = data_dir.join(SOCKET_NAME);
     if fits_sun_path(&direct) {
         return SocketBinding {
@@ -64,9 +65,19 @@ fn resolve_binding(data_dir: &Path) -> SocketBinding {
         };
     }
     SocketBinding {
-        socket: runtime_socket(data_dir),
+        socket: runtime_socket(&data_dir),
         pointer: Some(data_dir.join(POINTER_NAME)),
     }
+}
+
+/// Both sides of the broker must resolve the SAME socket for the same store
+/// regardless of how each process spells the path (absolute vs relative,
+/// dot-padded, trailing components): the direct-vs-runtime decision is made
+/// on the canonical directory, never the spelling. Falls back to the spelled
+/// path only when the directory cannot be canonicalized — the caller's own
+/// open surfaces that error.
+fn canonical_data_dir(data_dir: &Path) -> PathBuf {
+    std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_path_buf())
 }
 
 /// Resolve where a client should connect for `data_dir`, or `None` if no owner
@@ -74,6 +85,7 @@ fn resolve_binding(data_dir: &Path) -> SocketBinding {
 /// file left by a runtime-dir fallback. Connectability is the caller's concern
 /// (a stale path connects-then-fails cleanly).
 fn resolve_connect(data_dir: &Path) -> Option<PathBuf> {
+    let data_dir = canonical_data_dir(data_dir);
     let direct = data_dir.join(SOCKET_NAME);
     if direct.exists() {
         return Some(direct);
@@ -196,5 +208,79 @@ mod path_tests {
         )
         .expect("write pointer");
         assert_eq!(resolve_connect(tmp.path()), Some(real));
+    }
+}
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::{canonical_data_dir, fits_sun_path, resolve_binding, resolve_connect, SOCKET_NAME};
+    use std::path::PathBuf;
+
+    /// The same directory spelled past `sun_path` with `/.` padding.
+    fn dotted(dir: &std::path::Path, min_len: usize) -> PathBuf {
+        let mut padded = dir.to_path_buf().into_os_string();
+        while padded.len() < min_len {
+            padded.push("/.");
+        }
+        PathBuf::from(padded)
+    }
+
+    #[test]
+    fn binding_is_spelling_independent() {
+        let root = tempfile::tempdir().expect("tmp");
+        let dir = root.path().join("db");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let canonical = resolve_binding(&dir);
+        let via_spelling = resolve_binding(&dotted(&dir, 120));
+        assert_eq!(canonical.socket, via_spelling.socket);
+        assert_eq!(canonical.pointer, via_spelling.pointer);
+        assert!(
+            fits_sun_path(&canonical.socket),
+            "a short canonical dir binds direct"
+        );
+    }
+
+    #[test]
+    fn connect_never_returns_an_overlong_path() {
+        let root = tempfile::tempdir().expect("tmp");
+        let dir = root.path().join("db");
+        std::fs::create_dir_all(&dir).expect("dir");
+        // A socket at the canonical location must be discovered — connectably —
+        // through an over-long spelling of the same directory.
+        std::fs::write(dir.join(SOCKET_NAME), b"").expect("marker");
+        let resolved = resolve_connect(&dotted(&dir, 120)).expect("socket discovered");
+        assert_eq!(resolved, canonical_data_dir(&dir).join(SOCKET_NAME));
+        assert!(
+            fits_sun_path(&resolved),
+            "resolution must never hand back an unconnectable path"
+        );
+    }
+
+    #[test]
+    fn long_canonical_dirs_bind_in_the_runtime_dir_from_every_spelling() {
+        let root = tempfile::tempdir().expect("tmp");
+        let mut deep = root.path().to_path_buf();
+        while deep.as_os_str().len() < 120 {
+            deep.push("deep-segment");
+        }
+        std::fs::create_dir_all(&deep).expect("deep dir");
+        let binding = resolve_binding(&deep);
+        assert!(
+            binding.pointer.is_some(),
+            "an over-long canonical dir uses the runtime socket + pointer"
+        );
+        assert!(
+            fits_sun_path(&binding.socket),
+            "the runtime socket must fit sun_path"
+        );
+    }
+
+    #[test]
+    fn an_uncanonicalizable_dir_falls_back_to_the_spelling() {
+        // Direction control: a missing directory must not panic or reshape —
+        // the caller's own open reports the real error.
+        let missing = PathBuf::from("/nonexistent-strata-test-dir/db");
+        let binding = resolve_binding(&missing);
+        assert_eq!(binding.socket, missing.join(SOCKET_NAME));
     }
 }
