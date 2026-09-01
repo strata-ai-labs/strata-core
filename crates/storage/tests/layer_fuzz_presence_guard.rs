@@ -24,6 +24,9 @@ const LAYER_PREFIXES: &[(&str, &str)] = &[
     ("L6 branch-isolated LSM runtime", "branch_lsm_"),
     ("L7 commit runtime", "commit_runtime_"),
     ("L8 lifecycle / recovery / maintenance", "lifecycle_"),
+    // TCP4.6c: whole-store dual-mutation (dbsqlfuzz mold) — ops and on-disk
+    // damage co-mutated through the L9 API, spanning every durable layer.
+    ("L9 whole-store dual-mutation", "dual_mutation"),
 ];
 
 fn fuzz_targets_dir() -> PathBuf {
