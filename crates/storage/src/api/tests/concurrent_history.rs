@@ -296,6 +296,14 @@ fn run_concurrent_history(
         }
     });
 
+    // Structural non-vacuity (#3002): the concurrent scans are the fuzzed
+    // dimension, and on a loaded runner every one of them can legitimately
+    // land before the first commit — so record one final observation after
+    // every writer has joined, when the linked set is deterministically
+    // populated. The check stays a correctness oracle either way; this
+    // guarantees it is never vacuously green NOR flakily red.
+    all_observations.extend(run_reader(&runtime, readers, 1, &ticker));
+
     runtime.wait_background_idle_for_test();
     let status = runtime.maintenance_status().expect("maintenance status");
     assert!(
