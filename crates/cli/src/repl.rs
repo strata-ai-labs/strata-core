@@ -12,7 +12,7 @@ use strata_executor::{Command, Output};
 
 use crate::context::CommandContext;
 use crate::options::{Cli, Format};
-use crate::render::render_value;
+use crate::render::{render_error, render_value};
 use crate::{execute_parsed_command, CliError};
 
 pub(crate) fn run_repl(
@@ -25,16 +25,31 @@ pub(crate) fn run_repl(
     if let Some(path) = history.as_ref() {
         let _ = editor.load_history(path);
     }
+    print_banner(connection, format);
 
+    // Ctrl+C follows shell convention (#2998): the first press prints the
+    // escape hint, a second consecutive press exits; Ctrl+D always exits.
+    let mut interrupted = false;
     loop {
         match editor.readline(&context.prompt(&connection.default_branch())) {
             Ok(line) => {
+                interrupted = false;
                 let _ = editor.add_history_entry(line.as_str());
-                if handle_line(connection, context, &line, format)? == LineOutcome::Exit {
-                    break;
+                // A failed line reports and keeps the session (#2998): a typo
+                // must never terminate an interactive REPL.
+                match handle_line(connection, context, &line, format) {
+                    Ok(LineOutcome::Exit) => break,
+                    Ok(LineOutcome::Continue) => {}
+                    Err(error) => report_line_error(&error, format),
                 }
             }
-            Err(ReadlineError::Interrupted) => {}
+            Err(ReadlineError::Interrupted) => {
+                if interrupted {
+                    break;
+                }
+                interrupted = true;
+                eprintln!("(press Ctrl+C again to exit — or type `exit`; Ctrl+D also quits)");
+            }
             Err(ReadlineError::Eof) => break,
             Err(error) => return Err(CliError::usage(error.to_string())),
         }
@@ -44,6 +59,107 @@ pub(crate) fn run_repl(
         let _ = editor.save_history(path);
     }
     Ok(())
+}
+
+/// A short orientation when an interactive human session opens (#2998): what
+/// this database holds and what to try. Scripted formats stay chrome-free, and
+/// a failed describe never blocks the session.
+fn print_banner(connection: &Connection, format: Format) {
+    for line in banner_for(connection, format).unwrap_or_default() {
+        println!("{line}");
+    }
+}
+
+/// The banner lines for an interactive session, or `None` when the session is
+/// scripted (non-human format) or describe fails — the decision logic, kept
+/// out of the stdio glue so it is unit-testable.
+fn banner_for(connection: &Connection, format: Format) -> Option<Vec<String>> {
+    if format != Format::Human {
+        return None;
+    }
+    let Ok(Output::Described(describe)) = connection.execute(Command::Describe { branch: None })
+    else {
+        return None;
+    };
+    let value = serde_json::to_value(&describe).ok()?;
+    Some(banner_lines(&value))
+}
+
+/// The banner content, as pure data -> lines (unit-tested).
+fn banner_lines(describe: &serde_json::Value) -> Vec<String> {
+    use serde_json::Value;
+    let count = |value: &Value, field: &str| value.get(field).and_then(Value::as_u64).unwrap_or(0);
+    let list_len = |field: &str| {
+        describe
+            .get(field)
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len)
+    };
+
+    let version = describe
+        .get("version")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let target = describe
+        .get("target")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let branch = describe
+        .get("branch")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+
+    let empty = serde_json::json!({});
+    let primitives = describe.get("primitives").unwrap_or(&empty);
+    let kv = count(primitives, "kv_count");
+    let json = count(primitives, "json_count");
+    let events = count(primitives, "event_count");
+    let collections = primitives
+        .get("vector_collections")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let graphs = primitives
+        .get("graphs")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+
+    let mut lines = vec![format!("StrataDB {version} · {target} · branch {branch}")];
+    if kv == 0 && json == 0 && events == 0 && collections == 0 && graphs == 0 {
+        lines.push("empty database — write something to create it as you go".to_owned());
+        lines.push(
+            "Try: kv put greeting hello · json set doc '{\"a\": 1}' · help    exit (or Ctrl+D) to quit"
+                .to_owned(),
+        );
+    } else {
+        lines.push(format!(
+            "{} branches · {} spaces · {kv} kv · {json} json · {events} events · {collections} vector collections · {graphs} graphs",
+            list_len("branches"),
+            list_len("spaces"),
+        ));
+        lines.push(
+            "Try: describe · kv list · branch list · help    exit (or Ctrl+D) to quit".to_owned(),
+        );
+    }
+    lines
+}
+
+/// Report a failed line without killing the session. Executor errors keep the
+/// structured envelope; parse errors are printed once (clap's rendered message
+/// already leads with `error:`, so it is not re-prefixed — the `error: error:`
+/// doubling this replaces).
+fn report_line_error(error: &CliError, format: Format) {
+    match error {
+        CliError::Executor(executor_error) => render_error(executor_error.status(), format),
+        other => eprintln!("{}", prefixed_error_line(&other.to_string())),
+    }
+}
+
+fn prefixed_error_line(message: &str) -> String {
+    if message.trim_start().starts_with("error:") {
+        message.to_owned()
+    } else {
+        format!("error: {message}")
+    }
 }
 
 pub(crate) fn run_pipe(
@@ -224,6 +340,103 @@ enum ParsedLine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn banner_summarizes_a_populated_database() {
+        let describe = serde_json::json!({
+            "version": "1.1.0", "target": "durable_local", "branch": "default",
+            "branches": ["default", "risky"], "spaces": ["default"],
+            "primitives": {"kv_count": 264, "json_count": 783, "event_count": 0,
+                "vector_collections": [{"name": "embeddings"}], "graphs": []}
+        });
+        let lines = banner_lines(&describe);
+        assert_eq!(lines[0], "StrataDB 1.1.0 · durable_local · branch default");
+        assert_eq!(
+            lines[1],
+            "2 branches · 1 spaces · 264 kv · 783 json · 0 events · 1 vector collections · 0 graphs"
+        );
+        assert!(lines[2].starts_with("Try: describe"), "got {}", lines[2]);
+    }
+
+    #[test]
+    fn banner_guides_an_empty_database_toward_a_first_write() {
+        let describe = serde_json::json!({
+            "version": "1.1.0", "target": "cache", "branch": "default",
+            "branches": ["default"], "spaces": ["default"],
+            "primitives": {"kv_count": 0, "json_count": 0, "event_count": 0,
+                "vector_collections": [], "graphs": []}
+        });
+        let lines = banner_lines(&describe);
+        assert_eq!(
+            lines[1],
+            "empty database — write something to create it as you go"
+        );
+        assert!(
+            lines[2].contains("kv put greeting hello"),
+            "the empty-state suggestion must be a first write: {}",
+            lines[2]
+        );
+    }
+
+    #[test]
+    fn banner_is_for_human_sessions_only_and_reflects_the_store() {
+        // Kills the format-guard mutants in `banner_for`: Human gets real
+        // lines, scripted formats get nothing.
+        let connection =
+            Connection::cache(strata_executor::Executor::open_cache().expect("cache opens"));
+        let lines = banner_for(&connection, Format::Human).expect("human sessions get a banner");
+        assert!(lines[0].starts_with("StrataDB "), "{}", lines[0]);
+        assert_eq!(
+            banner_for(&connection, Format::Json),
+            None,
+            "scripted formats stay chrome-free"
+        );
+    }
+
+    #[test]
+    fn a_single_nonzero_inventory_is_not_an_empty_database() {
+        // Kills the `&&`→`||` mutants in the empty-state condition: each shape
+        // has exactly ONE non-zero inventory, and every one must take the
+        // stats branch, never the empty-database greeting.
+        for primitives in [
+            serde_json::json!({"kv_count": 5, "json_count": 0, "event_count": 0,
+                "vector_collections": [], "graphs": []}),
+            serde_json::json!({"kv_count": 0, "json_count": 5, "event_count": 0,
+                "vector_collections": [], "graphs": []}),
+            serde_json::json!({"kv_count": 0, "json_count": 0, "event_count": 5,
+                "vector_collections": [], "graphs": []}),
+            serde_json::json!({"kv_count": 0, "json_count": 0, "event_count": 0,
+                "vector_collections": [{"name": "e"}], "graphs": []}),
+            serde_json::json!({"kv_count": 0, "json_count": 0, "event_count": 0,
+                "vector_collections": [], "graphs": ["g"]}),
+        ] {
+            let describe = serde_json::json!({
+                "version": "1", "target": "cache", "branch": "default",
+                "branches": ["default"], "spaces": ["default"],
+                "primitives": primitives
+            });
+            let lines = banner_lines(&describe);
+            assert!(
+                lines[1].contains("branches ·"),
+                "one non-zero inventory must show stats, got: {}",
+                lines[1]
+            );
+        }
+    }
+
+    #[test]
+    fn clap_errors_are_not_double_prefixed() {
+        // clap's rendered message already leads with `error:` — printing it
+        // verbatim replaces the historical `error: error:` doubling.
+        assert_eq!(
+            prefixed_error_line("error: unrecognized subcommand 'putt'"),
+            "error: unrecognized subcommand 'putt'"
+        );
+        assert_eq!(
+            prefixed_error_line("space `x` does not exist"),
+            "error: space `x` does not exist"
+        );
+    }
 
     #[test]
     fn parses_use_branch_and_space() {

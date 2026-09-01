@@ -131,6 +131,7 @@ fn render_human(value: &Value, out: &mut String) -> Result<(), CliError> {
                     "no cached entry"
                 }
             ),
+            "described" => print_described(data, out),
             _ => render_human_data(data, out)?,
         }
         return Ok(());
@@ -557,9 +558,108 @@ fn print_items(items: &[Value], out: &mut String) {
 fn print_page_tail(data: &Value, out: &mut String) {
     if data.get("has_more").and_then(Value::as_bool) == Some(true) {
         if let Some(cursor) = data.get("cursor") {
-            line!(out, "-- more: {}", scalar_summary(cursor));
+            // Actionable, not just a token (#2998): tell the reader how to
+            // fetch the next page.
+            line!(
+                out,
+                "-- more: add --cursor {} to the same command",
+                scalar_summary(cursor)
+            );
         }
     }
+}
+
+/// `describe` is the discovery surface (#2996/#2998): humans get a scannable
+/// overview instead of the JSON envelope (`--json` keeps the envelope).
+fn print_described(data: &Value, out: &mut String) {
+    let version = data.get("version").and_then(Value::as_str).unwrap_or("?");
+    let target = data.get("target").and_then(Value::as_str).unwrap_or("?");
+    line!(out, "StrataDB {version} · {target}");
+    line!(
+        out,
+        "branch {} · branches: {} · spaces: {}",
+        data.get("branch").and_then(Value::as_str).unwrap_or("?"),
+        join_string_items(data.get("branches")),
+        join_string_items(data.get("spaces"))
+    );
+    if let Some(capabilities) = data.get("capabilities").and_then(Value::as_object) {
+        let enabled: Vec<&str> = capabilities
+            .iter()
+            .filter(|(_, on)| on.as_bool() == Some(true))
+            .map(|(name, _)| name.as_str())
+            .collect();
+        line!(out, "capabilities: {}", enabled.join(" "));
+    }
+    let Some(primitives) = data.get("primitives") else {
+        return;
+    };
+    line!(
+        out,
+        "kv {} · json {} · events {}",
+        count_field(primitives, "kv_count"),
+        count_field(primitives, "json_count"),
+        count_field(primitives, "event_count")
+    );
+    if let Some(collections) = primitives
+        .get("vector_collections")
+        .and_then(Value::as_array)
+        .filter(|collections| !collections.is_empty())
+    {
+        let rendered: Vec<String> = collections
+            .iter()
+            .map(|collection| {
+                format!(
+                    "{} (dim {}, {}, {} vectors)",
+                    collection
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?"),
+                    count_field(collection, "dimension"),
+                    collection
+                        .get("metric")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?"),
+                    count_field(collection, "count")
+                )
+            })
+            .collect();
+        line!(out, "vector collections: {}", rendered.join(", "));
+    }
+    if let Some(graphs) = primitives
+        .get("graphs")
+        .and_then(Value::as_array)
+        .filter(|graphs| !graphs.is_empty())
+    {
+        let rendered: Vec<String> = graphs
+            .iter()
+            .map(|graph| {
+                format!(
+                    "{} ({} nodes, {} edges)",
+                    graph.get("name").and_then(Value::as_str).unwrap_or("?"),
+                    count_field(graph, "node_count"),
+                    count_field(graph, "edge_count")
+                )
+            })
+            .collect();
+        line!(out, "graphs: {}", rendered.join(", "));
+    }
+}
+
+fn join_string_items(value: Option<&Value>) -> String {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default()
+}
+
+fn count_field(value: &Value, field: &str) -> u64 {
+    value.get(field).and_then(Value::as_u64).unwrap_or(0)
 }
 
 fn print_vector_matches(items: &[Value], out: &mut String) {
@@ -753,8 +853,65 @@ mod tests {
     /// `rendered_tag_inventory_matches_dispatch_arms` guard keeps it in sync
     /// with the actual `match` arms, so a new special-cased tag can't be added
     /// (or removed) without updating this list and its rendering test.
+    #[test]
+    fn described_renders_a_scannable_overview_not_json() {
+        let value = serde_json::json!({"type": "described", "data": {
+            "version": "1.1.0", "target": "durable_local", "branch": "default",
+            "branches": ["default", "risky"], "spaces": ["default", "staging"],
+            "capabilities": {"json": true, "kv": true, "arrow": false},
+            "primitives": {
+                "kv_count": 264, "json_count": 783, "event_count": 0,
+                "vector_collections": [
+                    {"name": "embeddings", "dimension": 4, "metric": "cosine", "count": 0}
+                ],
+                "graphs": [{"name": "net", "node_count": 2, "edge_count": 1}]
+            }
+        }});
+        let rendered =
+            super::value_to_string(&value, super::Format::Human).expect("describe renders");
+        assert_eq!(
+            rendered,
+            "StrataDB 1.1.0 · durable_local\n\
+             branch default · branches: default, risky · spaces: default, staging\n\
+             capabilities: json kv\n\
+             kv 264 · json 783 · events 0\n\
+             vector collections: embeddings (dim 4, cosine, 0 vectors)\n\
+             graphs: net (2 nodes, 1 edges)\n"
+        );
+    }
+
+    #[test]
+    fn described_omits_empty_collection_and_graph_lines() {
+        let value = serde_json::json!({"type": "described", "data": {
+            "version": "1.1.0", "target": "cache", "branch": "default",
+            "branches": ["default"], "spaces": ["default"],
+            "capabilities": {"kv": true},
+            "primitives": {"kv_count": 0, "json_count": 0, "event_count": 0,
+                "vector_collections": [], "graphs": []}
+        }});
+        let rendered =
+            super::value_to_string(&value, super::Format::Human).expect("describe renders");
+        assert!(
+            !rendered.contains("vector collections") && !rendered.contains("graphs:"),
+            "empty inventories stay silent: {rendered}"
+        );
+    }
+
+    #[test]
+    fn page_tail_tells_how_to_fetch_the_next_page() {
+        let value = serde_json::json!({"type": "keys_page", "data": {
+            "items": ["alpha"], "has_more": true, "cursor": "b64token"
+        }});
+        let rendered = super::value_to_string(&value, super::Format::Human).expect("page renders");
+        assert!(
+            rendered.contains("-- more: add --cursor b64token to the same command"),
+            "the continuation must be actionable: {rendered}"
+        );
+    }
+
     const RENDERED_TAGS: &[&str] = &[
         "bool",
+        "described",
         "event_count",
         "event_record",
         "graph_edge_result",
