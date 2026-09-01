@@ -70,7 +70,7 @@ fn recovery_empty_database_returns_healthy_package_without_replay() {
 #[test]
 fn bootstrap_empty_recovery_opens_durable_runtime_with_zero_visibility() {
     let backend: &'static RecoveryTestBackend =
-        crate::testkit::leak_static(RecoveryTestBackend::new());
+        crate::testkit::leak_static(RecoveryTestBackend::new_unseeded());
     let branch = branch_id(0x44);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
@@ -127,7 +127,7 @@ fn bootstrap_empty_recovery_opens_durable_runtime_with_zero_visibility() {
 #[test]
 fn bootstrap_runtime_can_enqueue_and_run_health_collection_maintenance() {
     let backend: &'static RecoveryTestBackend =
-        crate::testkit::leak_static(RecoveryTestBackend::new());
+        crate::testkit::leak_static(RecoveryTestBackend::new_unseeded());
     let branch = branch_id(0x5f);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
@@ -3755,6 +3755,27 @@ struct RecoveryTestBackend {
 
 impl RecoveryTestBackend {
     fn new() -> Self {
+        let backend = Self {
+            capabilities: BackendCapabilities::from_slice(DURABLE_LOCAL_MODE_REQUIREMENTS),
+            objects: Mutex::new(BTreeMap::new()),
+            fail_reads: Mutex::new(BTreeSet::new()),
+            lock_held: Arc::new(AtomicBool::new(false)),
+        };
+        // #3015: assemble no longer fabricates a database manifest over
+        // durable residue, so every staged store carries the same empty
+        // manifest the old fabrication used to produce. Tests that publish
+        // their own manifest simply overwrite this seed.
+        let manifest = DatabaseManifest::new(DATABASE_ID, "identity").expect("database manifest");
+        backend.write_raw(
+            ObjectLayout::database_manifest().expect("manifest object"),
+            encode_manifest(&manifest).expect("database manifest bytes"),
+        );
+        backend
+    }
+
+    /// A genuinely empty backend — for the fresh-store bootstrap tests that
+    /// assert the CREATED disposition and zero visibility.
+    fn new_unseeded() -> Self {
         Self {
             capabilities: BackendCapabilities::from_slice(DURABLE_LOCAL_MODE_REQUIREMENTS),
             objects: Mutex::new(BTreeMap::new()),

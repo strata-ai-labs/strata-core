@@ -386,13 +386,19 @@ fn assert_pinned_transient_misclassification(root: &Path, label: &str) {
     );
 }
 
+/// Promoted from `pin_2754_missing_current_manifest_reports_transient_unavailable`
+/// by the #3015 fix: a store with durable objects but no database manifest
+/// has LOST it (the manifest is the first durable publish of a new store),
+/// so the open now refuses as non-retryable recovery corruption instead of
+/// advising an endless retry. The missing-SNAPSHOT half of #2754 stays
+/// pinned below.
 #[test]
-fn pin_2754_missing_current_manifest_reports_transient_unavailable() {
+fn missing_current_manifest_refuses_open_as_permanent_corruption() {
     let mut stage = Stage::new();
     let copy = stage.copy();
     std::fs::remove_file(copy.join("manifest").join("current.object@"))
         .expect("delete current manifest");
-    assert_pinned_transient_misclassification(&copy, "missing current manifest");
+    assert_permanent_refusal(&copy, "missing current manifest");
 }
 
 #[test]

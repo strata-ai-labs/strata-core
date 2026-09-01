@@ -81,19 +81,30 @@ fn check_durable_standard_create(
             && shell.admit_health_query().is_ok(),
         "durable shell admitted wrong operation before recovery",
     )?;
-    // Assembly's directory listings are exactly two scans of the WAL prefix:
-    // the #2690 segment-loss inventory check (verify_wal_segment_inventory)
-    // and the resume scan that reconciles the writer's resume segment against
-    // the on-disk tail (#2555). Anything else listing objects during assembly
-    // is still a side-effect violation.
-    let wal_prefix = ObjectLayout::wal_prefix()
-        .map_err(testkit_error)?
-        .as_str()
-        .to_owned();
+    // Assembly's directory listings are exactly: the five post-manifest
+    // family scans of the #3015 missing-manifest residue check (which
+    // distinguishes a new store from a damaged one on the manifest-absent
+    // path), then two scans of the WAL prefix — the #2690 segment-loss
+    // inventory check (verify_wal_segment_inventory) and the resume scan
+    // that reconciles the writer's resume segment against the on-disk tail
+    // (#2555). Anything else listing objects during assembly is still a
+    // side-effect violation.
+    let expected: Vec<String> = [
+        ObjectLayout::wal_prefix().map_err(testkit_error)?,
+        ObjectLayout::meta_prefix().map_err(testkit_error)?,
+        ObjectLayout::table_prefix().map_err(testkit_error)?,
+        ObjectLayout::snapshot_prefix().map_err(testkit_error)?,
+        ObjectLayout::quarantine_prefix().map_err(testkit_error)?,
+        ObjectLayout::wal_prefix().map_err(testkit_error)?,
+        ObjectLayout::wal_prefix().map_err(testkit_error)?,
+    ]
+    .iter()
+    .map(|prefix| prefix.as_str().to_owned())
+    .collect();
     let listed = backend.listed_prefixes();
-    if listed != vec![wal_prefix.clone(), wal_prefix] {
+    if listed != expected {
         return Err(TestkitError::new(format!(
-            "durable assembly listed objects beyond the two WAL scans: {listed:?}"
+            "durable assembly listed objects beyond the residue check and two WAL scans: {listed:?}"
         )));
     }
     outcome.durable_assembly_standard_cases += 1;

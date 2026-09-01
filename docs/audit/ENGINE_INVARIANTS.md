@@ -700,12 +700,18 @@ snapshot watermark/id, `flushed_through_commit_id`), per-branch `TableManifest`s
 governs its own domain; cross-domain reads are limited to DECLARED coupling points, of which
 the load-bearing one is `flushed_through_commit_id`: recovery reads it to detect an orphaned
 delta and to run the checkpoint/manifest COMBINE (DUR-010). Undeclared cross-authority reads
-are the regression this entry guards against.
+are the regression this entry guards against. The `DatabaseManifest` is additionally the
+FIRST durable publish of a new store (only lock and temporary objects legally precede it),
+and its replace is atomic — so a store holding any WAL/meta/table/snapshot/quarantine object
+without a manifest has LOST its authority and MUST refuse to open rather than fabricate a
+fresh one (#3015: fabrication silently reset the snapshot-id floor and checkpoint lineage).
 
 **Audit**: Enumerate the authorities (`format/manifest.rs`, `layout/mod.rs` for the
 watermark). Verify recovery's cross-domain reads are exactly the declared set
 (`lifecycle/recovery.rs` — orphaned-delta detection and the COMBINE); flag any new
-durability-manifest field consulted for table-loading decisions or vice versa.
+durability-manifest field consulted for table-loading decisions or vice versa. For the
+creation-ordering law, verify `load_or_create_manifest` (`lifecycle/durable.rs`) refuses on
+`durable_residue_exists` and that no creation-path publish precedes `create_initial`.
 
 ### ARCH-008: Fork version creates an implicit retention floor for shared tables
 

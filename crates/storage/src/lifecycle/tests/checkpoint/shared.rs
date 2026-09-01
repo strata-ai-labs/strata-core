@@ -217,6 +217,20 @@ pub(in crate::lifecycle::tests) enum CheckpointBackendEvent {
     ObjectList,
 }
 
+/// #3015: assemble refuses durable residue without a database manifest, so
+/// tests that stage objects BEFORE opening seed the same empty manifest the
+/// old fabrication used to produce.
+pub(in crate::lifecycle::tests) fn seed_database_manifest(backend: &CheckpointTestBackend) {
+    let manifest =
+        crate::format::DatabaseManifest::new(DATABASE_ID, "identity").expect("database manifest");
+    backend
+        .write_object(
+            &ObjectLayout::database_manifest().expect("manifest object"),
+            &crate::format::encode_manifest(&manifest).expect("database manifest bytes"),
+        )
+        .expect("seed database manifest");
+}
+
 impl CheckpointTestBackend {
     pub(in crate::lifecycle::tests) fn new() -> Self {
         Self {

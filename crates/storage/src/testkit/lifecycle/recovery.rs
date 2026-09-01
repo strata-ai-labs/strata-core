@@ -1275,11 +1275,21 @@ pub(super) struct RecoveryScriptBackend {
 
 impl RecoveryScriptBackend {
     pub(super) fn new() -> Self {
-        Self {
+        let backend = Self {
             capabilities: BackendCapabilities::from_slice(DURABLE_LOCAL_MODE_REQUIREMENTS),
             objects: Mutex::new(BTreeMap::new()),
             lock_held: Arc::new(AtomicBool::new(false)),
-        }
+        };
+        // #3015: assemble refuses durable residue without a database
+        // manifest, so every staged store starts from the same empty root
+        // the old fabrication used to produce; scenarios that publish their
+        // own root simply overwrite this seed.
+        let root = DatabaseManifest::new(DATABASE_ID, "identity").expect("database manifest");
+        backend.objects.lock().expect("objects").insert(
+            ObjectLayout::database_manifest().expect("manifest object"),
+            encode_manifest(&root).expect("database manifest bytes"),
+        );
+        backend
     }
 
     pub(super) fn write_raw(&self, object: ObjectName, bytes: Vec<u8>) {
