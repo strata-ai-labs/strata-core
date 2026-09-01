@@ -295,7 +295,116 @@ pub(crate) fn decode_watermark(bytes: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::roundtrip;
+    use strata_core::{BranchId, CommitVersion, Timestamp};
+
+    use super::{
+        key, manifest, quarantine, roundtrip, segment_metadata, storage_row, table_manifest, wal,
+        watermark,
+    };
+    use crate::format::manifest::DatabaseManifest;
+    use crate::format::quarantine::QuarantineInventory;
+    use crate::format::segment_metadata::SegmentMetadata;
+    use crate::format::table_manifest::TableManifest;
+    use crate::format::wal::{WalCommitPayload, WalRecord, WalSegmentHeader};
+    use crate::format::watermark::SnapshotWatermark;
+    use crate::row::{InternalKey, PhysicalKey, StorageRow, StorageSpaceId};
+
+    fn sample_row() -> StorageRow {
+        let physical = PhysicalKey::new(
+            BranchId::from_bytes([0x44; BranchId::BYTE_LEN]),
+            "default",
+            StorageSpaceId::engine(0x20).expect("engine space"),
+            b"user-key".to_vec(),
+        )
+        .expect("physical key");
+        StorageRow::put(
+            physical,
+            CommitVersion::new(7),
+            Timestamp::from_micros(1_700_000_000_000_000),
+            Timestamp::EPOCH,
+            b"value".to_vec(),
+        )
+    }
+
+    /// Every upgraded arm must ACCEPT canonical bytes — which also drives its
+    /// round-trip on a real value. Kills the `body -> false` stubs the
+    /// mutation gate found on the arms without committed corpus seeds (the
+    /// five corpus-seeded formats are covered by the testkit grid).
+    #[test]
+    fn decoder_arms_accept_and_roundtrip_canonical_bytes() {
+        let branch = BranchId::from_bytes([0x44; BranchId::BYTE_LEN]);
+        let row = sample_row();
+
+        // key — both halves, each accepted through the seam. A bare physical
+        // encoding must NOT parse as an internal key: `decode_key`'s OR is
+        // one-sided on this input (kills the `|| -> &&` mutant).
+        let physical_bytes = key::encode_physical_key(row.physical_key());
+        let internal_bytes = key::encode_internal_key(&InternalKey::new(
+            row.physical_key().clone(),
+            row.commit_version(),
+        ));
+        assert!(
+            key::decode_internal_key(&physical_bytes).is_err(),
+            "a bare physical-key encoding must not parse as an internal key"
+        );
+        assert!(super::decode_key(&physical_bytes));
+        assert!(super::decode_key(&internal_bytes));
+
+        let database_manifest =
+            DatabaseManifest::new([0x11; 16], "codec-v1").expect("database manifest");
+        assert!(super::decode_manifest(
+            &manifest::encode_manifest(&database_manifest).expect("encode manifest")
+        ));
+
+        let inventory = QuarantineInventory::new([0x11; 16], branch, "codec-v1", Vec::new())
+            .expect("quarantine inventory");
+        assert!(super::decode_quarantine_inventory(
+            &quarantine::encode_quarantine_inventory(&inventory).expect("encode inventory")
+        ));
+
+        assert!(super::decode_segment_metadata(
+            &segment_metadata::encode_segment_metadata(&SegmentMetadata::empty(9))
+        ));
+
+        assert!(super::decode_storage_row(
+            &storage_row::encode_storage_row(&row).expect("encode row")
+        ));
+
+        let table = TableManifest::new(branch, None, 1, Vec::new(), Vec::new(), Vec::new())
+            .expect("table manifest");
+        assert!(super::decode_table_manifest(
+            &table_manifest::encode_table_manifest(&table).expect("encode table manifest")
+        ));
+
+        let payload = WalCommitPayload::new(vec![row.clone()]).expect("commit payload");
+        assert!(super::decode_wal_commit_payload(
+            &wal::encode_wal_commit_payload(&payload).expect("encode payload")
+        ));
+
+        let record = WalRecord::new(
+            row.commit_version(),
+            branch,
+            row.commit_timestamp(),
+            WalCommitPayload::new(vec![row]).expect("commit payload"),
+        )
+        .expect("wal record");
+        assert!(super::decode_wal_record(
+            &wal::encode_wal_record(&record).expect("encode record")
+        ));
+
+        assert!(super::decode_wal_segment_header(
+            &wal::encode_wal_segment_header(&WalSegmentHeader::new(5, [0x22; 16]))
+        ));
+
+        let mark = SnapshotWatermark::Present {
+            snapshot_id: 7,
+            watermark_commit_version: CommitVersion::new(9),
+            updated_at: Timestamp::from_micros(1_700_000_000_000_000),
+        };
+        assert!(super::decode_watermark(
+            &watermark::encode_snapshot_watermark(mark).expect("encode watermark")
+        ));
+    }
 
     /// A faithful fake codec: one `u16`, little-endian.
     fn decode_u16(bytes: &[u8]) -> Result<u16, &'static str> {
