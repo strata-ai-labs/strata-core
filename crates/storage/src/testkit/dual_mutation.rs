@@ -737,14 +737,17 @@ mod tests {
     }
 
     #[test]
-    fn pin_3015_manifest_loss_reopens_healthy_and_collides_on_checkpoint() {
+    fn pin_3015_manifest_loss_reopens_healthy_and_checkpoints_stop_publishing() {
         // Gate-7 pin of OPEN bug #3015, asserting the CURRENT broken
-        // behavior: after manifest/current is deleted, the store reopens
-        // HEALTHY (WAL replay restores the data, so classification passes),
-        // and the next checkpoint collides with the orphaned snapshot object
-        // (`AlreadyExists`), which the harness allows and counts. When the
-        // fix lands this test flips — promote it to the fixed contract and
-        // DELETE the drive_op allowance.
+        // behavior via DURABLE facts only (every surfaced signal is racy:
+        // the background lane can consume the enqueued checkpoint and fail
+        // it invisibly, and a drain can report Ok while the checkpoint work
+        // failed — itself part of the #3015 diagnosis). The facts: after
+        // manifest/current is deleted, (1) the store reopens HEALTHY, and
+        // (2) no checkpoint ever publishes a new snapshot object again —
+        // the reseeded id collides with the orphan the rebuilt manifest
+        // forgot. When the fix lands this test flips — promote it to the
+        // fixed contract and delete the drive_op AlreadyExists allowance.
         let dir = tempfile::tempdir().expect("tmp");
         let branch = default_branch();
         let mut model = ExpectedState::new(OracleDurability::Standard);
@@ -760,16 +763,24 @@ mod tests {
             "checkpoint continues"
         );
         runtime.close().expect("close");
-        // The scenario's precondition, asserted on DISK: the fault-injection
-        // CI lane once flipped this pin spuriously when the setup checkpoint
-        // lost its scheduling race and left no snapshot object to collide
-        // with (pre-retry drive_op semantics).
-        let snapshot_on_disk = list_files(dir.path())
-            .expect("list")
-            .iter()
-            .any(|file| file.to_string_lossy().contains("snapshots/"));
+        let snapshots = |root: &Path| -> Vec<String> {
+            let mut names: Vec<String> = list_files(root)
+                .expect("list")
+                .iter()
+                .filter(|file| file.to_string_lossy().contains("snapshots/"))
+                .map(|file| {
+                    file.file_name()
+                        .expect("name")
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            names.sort();
+            names
+        };
+        let before = snapshots(dir.path());
         assert!(
-            snapshot_on_disk && outcome.checkpoints == 1,
+            !before.is_empty() && outcome.checkpoints == 1,
             "precondition: the setup checkpoint must leave a snapshot object: {outcome:?}"
         );
         std::fs::remove_file(dir.path().join("manifest/current.object@")).expect("delete manifest");
@@ -780,18 +791,42 @@ mod tests {
             Reopened::Survivor(runtime) => runtime,
             Reopened::RefusedLoud | Reopened::DegradedPrefix => panic!(
                 "#3015 first half changed — manifest loss no longer reopens Healthy; \
-                     promote this pin and delete the drive_op allowance"
+                 promote this pin and delete the drive_op allowance"
             ),
         };
-        let continued = drive_op(&mut reopened, &mut model, branch, [7, 0, 0], &mut outcome)
-            .expect("the collision is allowed, not loud");
-        assert!(
-            !continued,
-            "#3015 second half changed — checkpoint after manifest loss succeeded; \
-             promote this pin and delete the drive_op allowance"
+        // Fresh content so a HEALTHY store's checkpoint would have something
+        // to capture, then several attempts — surfaced results deliberately
+        // ignored (racy, see above); the disk is the oracle.
+        let fresh = RecordedMutation::Put {
+            space: oracle_space(),
+            key: oracle_key(1),
+            value: StorageValue::new(b"fresh".to_vec()),
+        };
+        let batch = CommitBatch::new(
+            branch,
+            vec![to_commit_mutation(&fresh)],
+            CommitOptions::default(),
+        )
+        .expect("batch");
+        reopened.commit(&batch).expect("commit fresh content");
+        let request = MaintenanceRequest::new(
+            MaintenanceTask::Checkpoint,
+            MaintenanceScope::Branch(branch),
         );
-        assert_eq!(outcome.pin_3015_snapshot_collisions, 1, "{outcome:?}");
+        for _ in 0..3 {
+            // Racy by design (background lane may consume or fail the task);
+            // the on-disk assertion below is the actual oracle.
+            let _ = reopened
+                .enqueue_maintenance(&request)
+                .and_then(|_| reopened.drain_maintenance());
+        }
         reopened.close().expect("close survivor");
+        assert_eq!(
+            snapshots(dir.path()),
+            before,
+            "#3015 second half changed — a checkpoint after manifest loss published a new \
+             snapshot object; promote this pin and delete the drive_op allowance"
+        );
     }
 
     #[test]
