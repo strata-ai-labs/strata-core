@@ -245,8 +245,28 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             "strata {} — in-memory session (nothing persisted; run with a path to keep data)",
             env!("CARGO_PKG_VERSION")
         );
+        // Standing in a directory full of datasets and getting a scratch
+        // session is the #3000 trap — name what is actually here.
+        if let Ok(cwd) = std::env::current_dir() {
+            let found = open::strata_databases_in(&cwd);
+            if !found.is_empty() {
+                eprintln!(
+                    "Strata datasets in this directory: {} — open one with `strata ./{}`",
+                    found.join(", "),
+                    found[0]
+                );
+            }
+        }
         eprintln!("type `help` for commands  |  agents: run `strata agents guide`");
         eprintln!("skills for coding agents: npx skills add stratalab/strata-agent-skills");
+    }
+    if let Some(path) = opened.implicit_cwd.as_deref() {
+        // The git model (#3000): a bare interactive open inside a dataset
+        // opened THAT dataset — say so before the first prompt.
+        eprintln!(
+            "opened the Strata database in the current directory ({})",
+            path.display()
+        );
     }
     let connection = opened.connection;
     if let Some(branch) = context.scope_with_overrides(None, None).branch.as_deref() {
