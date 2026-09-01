@@ -439,6 +439,45 @@ mod tests {
     }
 
     #[test]
+    fn brokered_open_attaches_across_path_spellings() {
+        // The owner and a client may spell the same store differently (a
+        // short symlink vs the deep canonical path). Socket resolution must
+        // agree for both — even when one spelling overflows `sun_path` — so
+        // the client attaches instead of being stranded on the lock error.
+        let root = tempfile::tempdir().expect("tmp");
+        let dir = root.path().join("db");
+        std::fs::create_dir_all(&dir).expect("db dir");
+        // A second spelling of the SAME directory, dot-padded past `sun_path`
+        // (`/.` segments resolve to the identical location, so only the
+        // spelled length differs — the absolute-vs-relative hazard in
+        // miniature).
+        let mut padded = dir.clone().into_os_string();
+        while padded.len() < 120 {
+            padded.push("/.");
+        }
+        let padded = std::path::PathBuf::from(padded);
+
+        let owner = Connection::open_durable_local_brokered(
+            &dir,
+            DurableLocalOpenOptions::new(),
+            IpcMode::Host,
+            SessionAccess::ReadWrite,
+        )
+        .expect("owner open via the short spelling");
+        let client = Connection::open_durable_local_brokered(
+            &padded,
+            DurableLocalOpenOptions::new(),
+            IpcMode::Client,
+            SessionAccess::ReadWrite,
+        )
+        .expect("client open via the over-long spelling");
+        assert!(!client.is_local(), "the client attached over the broker");
+
+        client.close().expect("client close");
+        owner.close().expect("owner close");
+    }
+
+    #[test]
     fn ipc_stop_halts_hosting_and_is_idempotent() {
         let dir = tempfile::tempdir().expect("tmp");
         let owner = Connection::open_durable_local_brokered(
