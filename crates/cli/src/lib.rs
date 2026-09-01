@@ -2425,6 +2425,21 @@ mod tests {
     };
     use std::path::PathBuf;
 
+    /// Every deferred verb must keep producing its named refusal — kills
+    /// arm-deletion mutants in `deferred_top_command` (`uninstall` left this
+    /// list when #2995 implemented it).
+    #[test]
+    fn deferred_verbs_stay_mapped_to_their_refusals() {
+        for verb in [
+            "search", "recipe", "txn", "begin", "commit", "rollback", "flush", "compact", "up",
+            "down",
+        ] {
+            let cli = Cli::try_parse_from(["strata", verb]).expect("deferred verb parses");
+            let command = cli.command.expect("verb present");
+            assert_eq!(deferred_top_command(&command), Some(verb), "verb {verb}");
+        }
+    }
+
     #[test]
     fn parses_direct_database_path_before_subcommand() {
         let cli = Cli::parse_from(["strata", "./db", "kv", "put", "hello", "world"]);

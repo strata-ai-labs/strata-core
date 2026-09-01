@@ -141,6 +141,33 @@ fn uninstall_with_yes_removes_installation_and_cleans_path_block() {
 }
 
 #[test]
+fn uninstall_removes_an_external_install_dir() {
+    // Kills the filter-negation mutant on the STRATA_INSTALL_DIR handling: a
+    // dir OUTSIDE the Strata home must be part of the removal set.
+    let home = TempDir::new().expect("home");
+    let external = TempDir::new().expect("external root");
+    let bin_dir = external.path().join("strata-bin");
+    fs::create_dir_all(&bin_dir).expect("bin dir");
+    fs::write(bin_dir.join("strata"), b"binary").expect("binary");
+
+    let output = strata(home.path())
+        .env("STRATA_INSTALL_DIR", &bin_dir)
+        .args(["uninstall", "--yes", "--json"])
+        .output()
+        .expect("binary runs");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !bin_dir.exists(),
+        "a STRATA_INSTALL_DIR outside the Strata home is removed"
+    );
+}
+
+#[test]
 fn uninstall_inside_a_session_is_refused() {
     let home = TempDir::new().expect("home");
     let mut child = strata(home.path())
