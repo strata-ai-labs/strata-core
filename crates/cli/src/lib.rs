@@ -43,6 +43,8 @@ mod options;
 mod render;
 #[cfg(feature = "native")]
 mod repl;
+#[cfg(feature = "native")]
+mod uninstall;
 
 #[cfg(feature = "native")]
 use context::CommandContext;
@@ -155,6 +157,18 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             let (report, healthy) = doctor::run_doctor(cli.cache, cli.db, cli.db_path)?;
             render_value(&report, format)?;
             return Ok(i32::from(!healthy));
+        }
+        if let options::TopCommand::Uninstall(ref args) = command {
+            // A host command: it removes the installation, so a database
+            // target is a usage error, never something to open (#2995).
+            if cli.db.is_some() || cli.db_path.is_some() || cli.cache {
+                return Err(CliError::usage(
+                    "`uninstall` removes the Strata installation; it does not take a database target",
+                ));
+            }
+            let value = uninstall::run_uninstall(args.yes)?;
+            render_value(&value, format)?;
+            return Ok(0);
         }
         let command = match command {
             options::TopCommand::Agents(args) => return agents::run(&args.command, format),
@@ -481,6 +495,13 @@ pub(crate) fn execute_parsed_command(
             render_value(&value, format)?;
             return Ok(());
         }
+        options::TopCommand::Uninstall(_) => {
+            // Removing the installation out from under an open database
+            // session is never right; the one-shot path owns this command.
+            return Err(CliError::usage(
+                "`uninstall` is a host command; run it outside of a database session",
+            ));
+        }
         options::TopCommand::Doctor => {
             // Inside a session the database is already open and evidently
             // working, so report installation checks only; the process exit
@@ -554,8 +575,7 @@ pub(crate) fn execute_parsed_command(
         | options::TopCommand::Flush
         | options::TopCommand::Compact
         | options::TopCommand::Up(_)
-        | options::TopCommand::Down(_)
-        | options::TopCommand::Uninstall(_) => unreachable!("deferred top commands handled above"),
+        | options::TopCommand::Down(_) => unreachable!("deferred top commands handled above"),
         options::TopCommand::Start | options::TopCommand::Stop => {
             unreachable!("start/stop own their open and are handled before a session opens")
         }
@@ -577,7 +597,6 @@ fn deferred_top_command(command: &options::TopCommand) -> Option<&'static str> {
         options::TopCommand::Compact => Some("compact"),
         options::TopCommand::Up(_) => Some("up"),
         options::TopCommand::Down(_) => Some("down"),
-        options::TopCommand::Uninstall(_) => Some("uninstall"),
         _ => None,
     }
 }

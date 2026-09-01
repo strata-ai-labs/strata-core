@@ -214,9 +214,16 @@ pub(crate) enum TopCommand {
     /// Deferred daemon lifecycle command.
     #[command(hide = true)]
     Down(DeferredArgs),
-    /// Deferred daemon lifecycle command.
-    #[command(hide = true)]
-    Uninstall(DeferredArgs),
+    /// Remove the Strata installation from this machine.
+    Uninstall(UninstallArgs),
+}
+
+/// Arguments for `uninstall`.
+#[derive(Debug, Args)]
+pub(crate) struct UninstallArgs {
+    /// Skip the confirmation prompt.
+    #[arg(long)]
+    pub(crate) yes: bool,
 }
 
 /// Arguments accepted for known deferred commands.
