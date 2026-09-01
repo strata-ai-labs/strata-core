@@ -526,6 +526,12 @@ impl Database {
         cache_preheat: CachePreheat,
     ) -> EngineResult<DatabaseOpenOutcome> {
         let vector_artifacts = vector_artifact_store_for_target(&target);
+        // Captured before the open consumes the target: the dataset dir gets
+        // its advisory README after a successful durable open (#3004).
+        let dataset_dir = match &target {
+            PersistenceOpenTarget::DurableLocal(path, _) => Some(path.clone()),
+            PersistenceOpenTarget::Cache => None,
+        };
         let (mut persistence, persistence_summary) = StoragePersistence::open_with_budget(
             target,
             memory_budget_bytes,
@@ -543,6 +549,11 @@ impl Database {
             // manifest is already fsync-durable, and a process kill during
             // the first session bricks the store (#2618).
             persistence.force_creation_durability()?;
+        }
+        if let Some(dir) = dataset_dir.as_deref() {
+            // Creation writes it; later opens self-heal a missing one so
+            // pre-existing datasets gain the breadcrumb too (#3004).
+            super::dataset_readme::ensure_dataset_readme(dir);
         }
         let summary = DatabaseOpenSummary::new(open_target, persistence_summary);
         Ok(DatabaseOpenOutcome::new(

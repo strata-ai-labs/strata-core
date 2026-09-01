@@ -4,6 +4,7 @@ mod admin;
 mod branch;
 mod control;
 mod database;
+mod dataset_readme;
 mod event;
 mod graph;
 mod json;
