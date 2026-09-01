@@ -46,7 +46,6 @@ use crate::api::{
     RecoveryHealthSummary, StorageDurabilityPolicy, StorageOpenOptions, StorageRuntime,
     StorageValue,
 };
-use crate::backend::{BackendError, BackendErrorKind};
 use crate::testkit::TestkitError;
 
 /// Epoch cap per input — enough interleaving depth to operate on a
@@ -97,12 +96,6 @@ pub struct DualMutationOutcome {
     /// background lane took the task first ("no longer startable"). Benign:
     /// the maintenance work runs either way.
     pub maintenance_races: usize,
-    /// Maintenance failures matching the OPEN bug #3015 (manifest loss
-    /// reopens Healthy; the reseeded snapshot-id allocator collides with an
-    /// orphaned snapshot object — `AlreadyExists` on publish). Allowed and
-    /// case-ending while #3015 is open; DELETE this allowance when the fix
-    /// lands (the pin test flips first).
-    pub pin_3015_snapshot_collisions: usize,
     /// Post-reopen scans refused with a typed error — fail-closed, safe.
     /// A fail-safe arm: recovery validates structural objects at open, so no
     /// deterministic constructor reaches it today (both probe shapes —
@@ -336,35 +329,18 @@ fn reopen_and_verify(
     }
 }
 
-/// True when the error's `source()` chain bottoms out in a backend
-/// `AlreadyExists` — the #3015 snapshot-id collision signature. Structural
-/// (downcast + `kind()`), never display text.
-fn is_already_exists(err: &(dyn std::error::Error + 'static)) -> bool {
-    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
-    while let Some(inner) = current {
-        if let Some(backend) = inner.downcast_ref::<BackendError>() {
-            return backend.kind() == BackendErrorKind::AlreadyExists;
-        }
-        current = inner.source();
-    }
-    false
-}
-
 /// One committed mutation batch drawn from the cursor. Ops run only on
 /// stores that opened `Healthy` and passed claim-strict classification, so
 /// any op error here is LOUD — an "open said Healthy, operation refused"
 /// tolerance would mask findings (the #2828 allowance lesson); declared-loss
 /// stores never reach this (`DegradedPrefix` ends the case at the reopen).
-/// The single exception is the OPEN bug #3015's `AlreadyExists` signature,
-/// counted and case-ending until its fix deletes the allowance. Returns
-/// `false` when the case must end.
 fn drive_op(
     runtime: &mut StorageRuntime<'static>,
     model: &mut ExpectedState,
     branch: BranchId,
     op_bytes: [u8; 3],
     outcome: &mut DualMutationOutcome,
-) -> Result<bool, TestkitError> {
+) -> Result<(), TestkitError> {
     let [verb, key_select, value_select] = op_bytes;
     let mutations = match verb % 8 {
         0..=3 => vec![RecordedMutation::Put {
@@ -414,12 +390,6 @@ fn drive_op(
                         }
                         break;
                     }
-                    Err(err) if is_already_exists(&err) => {
-                        // The #3015 collision: manifest loss reopened Healthy
-                        // and the reseeded snapshot id hit an orphaned object.
-                        outcome.pin_3015_snapshot_collisions += 1;
-                        return Ok(false);
-                    }
                     Err(crate::api::StorageApiError::MaintenanceRejected { .. }) if raced < 3 => {
                         raced += 1;
                     }
@@ -434,7 +404,7 @@ fn drive_op(
                     }
                 }
             }
-            return Ok(true);
+            return Ok(());
         }
     };
     let batch = CommitBatch::new(
@@ -452,7 +422,7 @@ fn drive_op(
         4 => outcome.paired_puts += 1,
         _ => outcome.deletes += 1,
     }
-    Ok(true)
+    Ok(())
 }
 
 /// Runs one dual-mutation case: parse `data` as an epoch script over a real
@@ -480,19 +450,13 @@ pub fn check_dual_mutation_contract(
             else {
                 break;
             };
-            if !drive_op(
+            drive_op(
                 &mut runtime,
                 &mut model,
                 branch,
                 [verb, key_select, value_select],
                 &mut outcome,
-            )? {
-                // A known-issue allowance fired; quiesce and end the case.
-                runtime
-                    .close()
-                    .map_err(|err| TestkitError::new(format!("allowance close: {err:?}")))?;
-                return Ok(outcome);
-            }
+            )?;
         }
         // Quiesce: a clean close releases workers and the writer lock, so
         // the damage below lands on stable, fsynced files.
@@ -671,14 +635,12 @@ mod tests {
     }
 
     #[test]
-    fn the_3015_finding_input_replays_clean_under_the_allowance() {
-        // Grammar-level regression twin of the pin test: the exact fuzz input
-        // that found #3015 must complete clean while the allowance stands.
-        // (Which safe outcome it lands on is layout-dependent; the pin test
-        // owns the sharp assertions.)
+    fn the_3015_finding_input_replays_clean_under_the_fix() {
+        // Grammar-level regression twin: the exact fuzz input that found
+        // #3015 must complete clean now that manifest loss refuses the open
+        // (which safe outcome it lands on stays layout-dependent).
         let outcome = run(SEED_3015_COLLISION);
-        let safe_ends = outcome.pin_3015_snapshot_collisions
-            + outcome.reopens_classified
+        let safe_ends = outcome.reopens_classified
             + outcome.degraded_prefixes
             + outcome.loud_refusals
             + outcome.read_refusals;
@@ -737,96 +699,29 @@ mod tests {
     }
 
     #[test]
-    fn pin_3015_manifest_loss_reopens_healthy_and_checkpoints_stop_publishing() {
-        // Gate-7 pin of OPEN bug #3015, asserting the CURRENT broken
-        // behavior via DURABLE facts only (every surfaced signal is racy:
-        // the background lane can consume the enqueued checkpoint and fail
-        // it invisibly, and a drain can report Ok while the checkpoint work
-        // failed — itself part of the #3015 diagnosis). The facts: after
-        // manifest/current is deleted, (1) the store reopens HEALTHY, and
-        // (2) no checkpoint ever publishes a new snapshot object again —
-        // the reseeded id collides with the orphan the rebuilt manifest
-        // forgot. When the fix lands this test flips — promote it to the
-        // fixed contract and delete the drive_op AlreadyExists allowance.
+    fn manifest_loss_on_a_nonempty_store_refuses_the_open() {
+        // The PROMOTED #3015 contract (pin flipped by the fix): a store with
+        // durable objects but no database manifest has lost it — a fresh
+        // manifest would silently erase the snapshot-id floor, flush
+        // watermark, and checkpoint lineage — so the open refuses loudly as
+        // recovery corruption instead of reopening Healthy over the damage.
         let dir = tempfile::tempdir().expect("tmp");
         let branch = default_branch();
         let mut model = ExpectedState::new(OracleDurability::Standard);
         let mut outcome = DualMutationOutcome::default();
         let mut runtime = open_store(dir.path()).expect("open").into_runtime();
-        assert!(
-            drive_op(&mut runtime, &mut model, branch, [0, 0, 1], &mut outcome).expect("put"),
-            "put continues"
-        );
-        assert!(
-            drive_op(&mut runtime, &mut model, branch, [7, 0, 0], &mut outcome)
-                .expect("checkpoint"),
-            "checkpoint continues"
-        );
+        drive_op(&mut runtime, &mut model, branch, [0, 0, 1], &mut outcome).expect("put");
+        drive_op(&mut runtime, &mut model, branch, [7, 0, 0], &mut outcome).expect("checkpoint");
         runtime.close().expect("close");
-        let snapshots = |root: &Path| -> Vec<String> {
-            let mut names: Vec<String> = list_files(root)
-                .expect("list")
-                .iter()
-                .filter(|file| file.to_string_lossy().contains("snapshots/"))
-                .map(|file| {
-                    file.file_name()
-                        .expect("name")
-                        .to_string_lossy()
-                        .into_owned()
-                })
-                .collect();
-            names.sort();
-            names
-        };
-        let before = snapshots(dir.path());
-        assert!(
-            !before.is_empty() && outcome.checkpoints == 1,
-            "precondition: the setup checkpoint must leave a snapshot object: {outcome:?}"
-        );
         std::fs::remove_file(dir.path().join("manifest/current.object@")).expect("delete manifest");
 
-        let mut reopened = match reopen_and_verify(dir.path(), &mut model, branch, &mut outcome)
-            .expect("verify")
-        {
-            Reopened::Survivor(runtime) => runtime,
-            Reopened::RefusedLoud | Reopened::DegradedPrefix => panic!(
-                "#3015 first half changed — manifest loss no longer reopens Healthy; \
-                 promote this pin and delete the drive_op allowance"
-            ),
-        };
-        // Fresh content so a HEALTHY store's checkpoint would have something
-        // to capture, then several attempts — surfaced results deliberately
-        // ignored (racy, see above); the disk is the oracle.
-        let fresh = RecordedMutation::Put {
-            space: oracle_space(),
-            key: oracle_key(1),
-            value: StorageValue::new(b"fresh".to_vec()),
-        };
-        let batch = CommitBatch::new(
-            branch,
-            vec![to_commit_mutation(&fresh)],
-            CommitOptions::default(),
-        )
-        .expect("batch");
-        reopened.commit(&batch).expect("commit fresh content");
-        let request = MaintenanceRequest::new(
-            MaintenanceTask::Checkpoint,
-            MaintenanceScope::Branch(branch),
-        );
-        for _ in 0..3 {
-            // Racy by design (background lane may consume or fail the task);
-            // the on-disk assertion below is the actual oracle.
-            let _ = reopened
-                .enqueue_maintenance(&request)
-                .and_then(|_| reopened.drain_maintenance());
+        match reopen_and_verify(dir.path(), &mut model, branch, &mut outcome).expect("verify") {
+            Reopened::RefusedLoud => {}
+            Reopened::Survivor(_) | Reopened::DegradedPrefix => {
+                panic!("manifest loss must refuse the open, not reopen over the damage")
+            }
         }
-        reopened.close().expect("close survivor");
-        assert_eq!(
-            snapshots(dir.path()),
-            before,
-            "#3015 second half changed — a checkpoint after manifest loss published a new \
-             snapshot object; promote this pin and delete the drive_op allowance"
-        );
+        assert_eq!(outcome.loud_refusals, 1, "{outcome:?}");
     }
 
     #[test]

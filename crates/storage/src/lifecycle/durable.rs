@@ -21,11 +21,11 @@ use crate::commit::{
 };
 use crate::config::mode::DurabilityPolicy;
 use crate::format::DatabaseManifest;
-use crate::layout::{LayoutError, ObjectLayout};
+use crate::layout::{LayoutError, ObjectFamily, ObjectLayout};
 use crate::object::ObjectName;
 use crate::service::{
     verify_wal_segment_inventory, wal_segments_present, BranchCatalogManifestService,
-    CheckpointService, DatabaseManifestService, ManifestServiceError,
+    CheckpointService, DatabaseManifestService, ManifestRole, ManifestServiceError,
     PendingReleasesManifestService, QuarantineService, SnapshotService, TableManifestService,
     TableObjectReaderService, TableObjectService, WalSegmentMetadataSidecarService, WalService,
     WalServiceConfig, WalServiceError,
@@ -330,12 +330,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
         state.transition(LifecycleTransitionTrigger::OpenRequested)?;
 
         let capability_outcome = validate_backend_capabilities_for_open(request.plan(), &backend)?;
-        let durability_policy =
-            capability_outcome
-                .durability_policy()
-                .ok_or(LifecycleError::InvalidOpenPlan {
-                    reason: "durable local assembly requires durable policy",
-                })?;
+        let durability_policy = required_durability_policy(&capability_outcome)?;
 
         let writer_lock_object = ObjectLayout::writer_lock().map_err(layout_error)?;
         let writer_guard = backend
@@ -343,7 +338,8 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             .map_err(writer_lock_open_error)?;
 
         let manifest_service = DatabaseManifestService::new(backend.clone());
-        let (manifest, disposition) = load_or_create_manifest(&manifest_service, &request)?;
+        let (manifest, disposition) =
+            load_or_create_manifest(&manifest_service, &request, &backend)?;
         validate_manifest_identity(&manifest, &request)?;
 
         // #2765: a manifest that attests a published checkpoint proves durable
@@ -596,12 +592,77 @@ impl<S> fmt::Debug for LifecycleDurableLocalShell<'_, S> {
     }
 }
 
+/// The durable policy the capability validation resolved — its absence on a
+/// durable-local open plan is a caller error.
+fn required_durability_policy(
+    outcome: &LifecycleCapabilityOutcome,
+) -> LifecycleResult<DurabilityPolicy> {
+    outcome
+        .durability_policy()
+        .ok_or(LifecycleError::InvalidOpenPlan {
+            reason: "durable local assembly requires durable policy",
+        })
+}
+
+/// The object families that cannot precede the database manifest: the
+/// manifest is the FIRST durable publish of a new store and its replace is
+/// atomic, so any object in these families without a manifest means the
+/// manifest was LOST, not that the store is new. `Locks` (acquired before
+/// the manifest) and `Temporary` (publish scratch a first-create crash can
+/// leave behind) are legitimately pre-manifest and excluded.
+const POST_MANIFEST_FAMILIES: [ObjectFamily; 5] = [
+    ObjectFamily::Wal,
+    ObjectFamily::Meta,
+    ObjectFamily::Tables,
+    ObjectFamily::Snapshots,
+    ObjectFamily::Quarantine,
+];
+
+/// True when any post-manifest durable object exists under `backend` — the
+/// missing-manifest disambiguator between "new store" and "damaged store".
+fn durable_residue_exists(backend: &BackendHandle<'static>) -> LifecycleResult<bool> {
+    for family in POST_MANIFEST_FAMILIES {
+        let prefix = ObjectLayout::family_prefix(family).map_err(layout_error)?;
+        if !backend
+            .list_prefix(&prefix)
+            .map_err(backend_error)?
+            .is_empty()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn load_or_create_manifest(
     service: &DatabaseManifestService<'_>,
     request: &LifecycleDurableLocalOpenRequest,
+    backend: &BackendHandle<'static>,
 ) -> LifecycleResult<(DatabaseManifest, StorageOpenDisposition)> {
     if let Some(manifest) = service.load_current().map_err(manifest_error)? {
         return Ok((manifest, StorageOpenDisposition::OpenedExisting));
+    }
+
+    // #3015: a store with durable objects but no manifest has LOST it —
+    // creating a fresh manifest here silently erased the snapshot-id floor,
+    // flush watermark, and checkpoint lineage, then reported Healthy while
+    // checkpoints collided with orphaned snapshot objects forever. Refuse
+    // as recovery corruption; only a genuinely new store may create. One
+    // reload first absorbs a concurrent creator that completed between the
+    // load above and the residue listing (a completed creation publishes
+    // the manifest before any other durable object, so residue plus a
+    // still-absent manifest can only mean loss).
+    if durable_residue_exists(backend)? {
+        if let Some(manifest) = service.load_current().map_err(manifest_error)? {
+            return Ok((manifest, StorageOpenDisposition::OpenedExisting));
+        }
+        return Err(LifecycleError::recovery_corruption_with(
+            "database manifest is missing while durable objects exist",
+            ManifestServiceError::Missing {
+                role: ManifestRole::Database,
+                object: ObjectLayout::database_manifest().map_err(layout_error)?,
+            },
+        ));
     }
 
     match service.create_initial(request.database_id(), request.plan().codec_id().as_str()) {

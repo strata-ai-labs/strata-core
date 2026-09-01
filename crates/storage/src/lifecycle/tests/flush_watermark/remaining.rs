@@ -934,6 +934,7 @@ fn quarantine_inventory_mismatch_blocks_flush_proof_when_relevant() {
 fn missing_branch_lifecycle_fact_blocks_absence_coverage() {
     let backend: &'static CheckpointTestBackend =
         crate::testkit::leak_static(CheckpointTestBackend::new());
+    crate::lifecycle::tests::checkpoint::shared::seed_database_manifest(backend);
     let branch = branch_id(0xcd);
     let missing = branch_id(0xce);
     let manifest = durable_manifest(

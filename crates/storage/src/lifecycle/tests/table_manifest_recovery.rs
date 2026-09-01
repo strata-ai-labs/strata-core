@@ -1998,14 +1998,23 @@ struct ManifestRecoveryBackend {
 
 impl ManifestRecoveryBackend {
     fn new() -> Self {
-        Self {
+        let backend = Self {
             objects: Mutex::new(BTreeMap::new()),
             fail_reads: Mutex::new(BTreeSet::new()),
             range_reads: Mutex::new(Vec::new()),
             list_prefix_calls: AtomicUsize::new(0),
             table_list_prefix_calls: AtomicUsize::new(0),
             lock_held: Arc::new(AtomicBool::new(false)),
-        }
+        };
+        // #3015: assemble no longer fabricates a database manifest over
+        // durable residue, so every staged store carries the same empty
+        // manifest the old fabrication used to produce.
+        let manifest = DatabaseManifest::new(DATABASE_ID, "identity").expect("database manifest");
+        backend.write_raw(
+            ObjectLayout::database_manifest().expect("manifest object"),
+            encode_manifest(&manifest).expect("database manifest bytes"),
+        );
+        backend
     }
 
     fn write_raw(&self, object: ObjectName, bytes: Vec<u8>) {

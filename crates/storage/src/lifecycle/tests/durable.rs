@@ -107,7 +107,9 @@ fn durable_assembly_creates_manifest_opens_wal_and_remains_recovering() {
     assert!(operations
         .iter()
         .any(|operation| matches!(operation, Operation::ObjectMetadata(object) if object == &ObjectLayout::wal_segment(1).expect("segment object"))));
-    // Assembly lists the WAL prefix twice: the #2690 segment-inventory
+    // Assembly lists the five post-manifest families first — the #3015
+    // missing-manifest residue check that distinguishes a new store from a
+    // damaged one — then the WAL prefix twice: the #2690 segment-inventory
     // contiguity check, then the resume-segment reconciliation (#2555).
     let listed: Vec<_> = operations
         .iter()
@@ -119,6 +121,11 @@ fn durable_assembly_creates_manifest_opens_wal_and_remains_recovering() {
     assert_eq!(
         listed,
         vec![
+            ObjectLayout::wal_prefix().expect("wal prefix"),
+            ObjectLayout::meta_prefix().expect("meta prefix"),
+            ObjectLayout::table_prefix().expect("table prefix"),
+            ObjectLayout::snapshot_prefix().expect("snapshot prefix"),
+            ObjectLayout::quarantine_prefix().expect("quarantine prefix"),
             ObjectLayout::wal_prefix().expect("wal prefix"),
             ObjectLayout::wal_prefix().expect("wal prefix"),
         ]
@@ -414,17 +421,17 @@ fn durable_manifest_publish_uncertainty_preserves_source_chain() {
 
 #[test]
 fn durable_manifest_create_precondition_race_reloads_existing_manifest() {
-    let race_manifest = DatabaseManifest::new(DATABASE_ID, "identity")
-        .expect("database object")
-        .with_recovery_facts(9, Some(88), Some(5), Some(CommitVersion::new(87)))
-        .expect("recovery facts");
+    // #3015 renegotiation: the race can only be staged on an EMPTY store
+    // now. The old staging (raced manifest attesting segment 9, with the
+    // segment pre-seeded) is contract-impossible — a completed concurrent
+    // creation publishes its manifest before any other durable object, so
+    // WAL residue with a still-absent manifest is loss and refuses (see
+    // durable_assembly_refuses_a_missing_manifest_when_durable_objects_exist).
+    // The arm under test is unchanged: a create that loses the publish race
+    // reloads the winner's manifest instead of erroring.
+    let race_manifest = DatabaseManifest::new(DATABASE_ID, "identity").expect("database object");
     let backend: &'static DurableTestBackend =
         crate::testkit::leak_static(DurableTestBackend::with_create_race(race_manifest));
-    // #2765: the raced-in attested manifest requires its active segment on disk.
-    backend.write_raw(
-        ObjectLayout::wal_segment(9).expect("segment object"),
-        encode_wal_segment_header(&WalSegmentHeader::new(9, DATABASE_ID)),
-    );
 
     let shell = assemble_shell(StorageMode::DurableLocalStandard, branch_id(0x18), backend)
         .expect("durable shell");
@@ -433,23 +440,9 @@ fn durable_manifest_create_precondition_race_reloads_existing_manifest() {
         shell.assembly_facts().disposition(),
         StorageOpenDisposition::OpenedExisting
     );
-    assert_eq!(shell.assembly_facts().active_wal_segment(), 9);
-    assert_eq!(
-        shell.assembly_facts().manifest_flush_watermark(),
-        Some(CommitVersion::new(87))
-    );
+    assert_eq!(shell.assembly_facts().manifest_flush_watermark(), None);
 
     let operations = backend.operations();
-    // Object reads: the raced manifest reload, the recovery snapshot probe,
-    // the planted active WAL segment (#2765), and the #2690 durable commit
-    // watermark read at open.
-    assert_eq!(
-        operations
-            .iter()
-            .filter(|operation| matches!(operation, Operation::ReadObject(_)))
-            .count(),
-        4
-    );
     assert!(operations
         .iter()
         .any(|operation| matches!(operation, Operation::Publish(_, PublishMode::Create))));
@@ -4798,4 +4791,94 @@ fn background_checkpoint_publishes_empty_delta_over_durable_base() {
         row_count, 0,
         "durable-base rows are deltaed over, not re-captured",
     );
+}
+
+#[test]
+fn durable_assembly_refuses_a_missing_manifest_when_durable_objects_exist() {
+    // #3015 promoted contract: an existing store whose database manifest is
+    // gone is structurally damaged — silently creating a fresh manifest
+    // erased the snapshot-id floor, flush watermark, and checkpoint lineage
+    // (checkpoints then collided with orphaned snapshot objects forever,
+    // behind a Healthy claim). Creation cannot legally race this shape: the
+    // manifest is the first durable publish of a new store and its replace
+    // is atomic, so residue without a manifest always means loss.
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
+    backend.write_raw(
+        ObjectLayout::wal_segment(1).expect("segment object"),
+        encode_wal_segment_header(&WalSegmentHeader::new(1, DATABASE_ID)),
+    );
+
+    let error = assemble_shell(StorageMode::DurableLocalStandard, branch_id(0x2a), backend)
+        .expect_err("durable residue without a manifest must refuse the open");
+    assert!(
+        matches!(error, LifecycleError::RecoveryCorruption { .. }),
+        "{error:?}"
+    );
+    assert_eq!(error.code(), "corruption.lifecycle.recovery_corruption");
+}
+
+#[test]
+fn durable_assembly_refuses_a_missing_manifest_when_snapshots_exist() {
+    // The exact #3015 shape: an orphaned snapshot object with no manifest.
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
+    backend.write_raw(
+        ObjectLayout::snapshot(1).expect("snapshot object"),
+        vec![0xA5; 16],
+    );
+
+    let error = assemble_shell(StorageMode::DurableLocalStandard, branch_id(0x2b), backend)
+        .expect_err("snapshot residue without a manifest must refuse the open");
+    assert!(
+        matches!(error, LifecycleError::RecoveryCorruption { .. }),
+        "{error:?}"
+    );
+    assert_eq!(error.code(), "corruption.lifecycle.recovery_corruption");
+}
+
+#[test]
+fn durable_assembly_still_creates_over_pre_manifest_residue() {
+    // Direction control: a crash during FIRST creation can leave scratch
+    // (temporary/) and lock objects before the manifest publishes — that
+    // store is legitimately new and must still create, not refuse.
+    let backend: &'static DurableTestBackend =
+        crate::testkit::leak_static(DurableTestBackend::new());
+    backend.write_raw(
+        ObjectLayout::temporary_object("create", "manifest-attempt").expect("temporary object"),
+        vec![0xA5; 8],
+    );
+
+    let shell = assemble_shell(StorageMode::DurableLocalStandard, branch_id(0x2c), backend)
+        .expect("pre-manifest scratch must not block creation");
+    assert_eq!(
+        shell.assembly_facts().disposition(),
+        StorageOpenDisposition::Created
+    );
+}
+
+#[test]
+fn durable_assembly_refuses_a_missing_manifest_for_every_post_manifest_family() {
+    // One residue object per remaining post-manifest family (WAL and
+    // snapshots have dedicated tests above) — a dropped family in the
+    // residue check would silently re-legalize fabricating a manifest over
+    // that family's survivors.
+    let residue_objects = [
+        ObjectLayout::wal_watermark().expect("meta watermark"),
+        ObjectLayout::branch_table_manifest("0101010101010101").expect("table manifest"),
+        ObjectLayout::quarantine_manifest("0101010101010101").expect("quarantine manifest"),
+    ];
+    for (index, object) in residue_objects.into_iter().enumerate() {
+        let backend: &'static DurableTestBackend =
+            crate::testkit::leak_static(DurableTestBackend::new());
+        backend.write_raw(object.clone(), vec![0xA5; 8]);
+        let branch = branch_id(0x30 + u8::try_from(index).expect("small index"));
+        let Err(error) = assemble_shell(StorageMode::DurableLocalStandard, branch, backend) else {
+            panic!("{object:?} residue without a manifest must refuse the open");
+        };
+        assert!(
+            matches!(error, LifecycleError::RecoveryCorruption { .. }),
+            "{object:?}: {error:?}"
+        );
+    }
 }

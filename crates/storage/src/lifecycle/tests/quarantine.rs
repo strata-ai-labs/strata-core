@@ -811,12 +811,16 @@ fn durable_purge_runs_through_runtime_maintenance_surface() {
     let branch = branch_id();
     let backend: &'static CheckpointTestBackend =
         crate::testkit::leak_static(CheckpointTestBackend::new());
+    super::checkpoint::shared::seed_database_manifest(backend);
     let source =
         ObjectLayout::table_object(&branch.to_string(), 0, "runtime-purge").expect("source object");
     backend
         .write_object(&source, b"runtime-table")
         .expect("source write");
     let mut runtime = open_durable_runtime(branch, backend);
+    // Recovery over the staged (existing) store may schedule its own
+    // maintenance; the assertion below is relative to that baseline.
+    let baseline_pending = runtime.maintenance_status().pending_tasks();
     let request = LifecycleQuarantineRequest::from_source_object(
         branch,
         [0x7d; 16],
@@ -845,7 +849,10 @@ fn durable_purge_runs_through_runtime_maintenance_surface() {
     assert_eq!(outcome.task_kind(), MaintenanceTaskKind::Purge);
     assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
     assert_eq!(outcome.bytes_reclaimed(), b"runtime-table".len() as u64);
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    assert_eq!(
+        runtime.maintenance_status().pending_tasks(),
+        baseline_pending
+    );
 }
 
 #[test]
@@ -884,12 +891,16 @@ fn durable_repair_runs_through_runtime_maintenance_surface() {
     let branch = branch_id();
     let backend: &'static CheckpointTestBackend =
         crate::testkit::leak_static(CheckpointTestBackend::new());
+    super::checkpoint::shared::seed_database_manifest(backend);
     let orphan =
         ObjectLayout::quarantine_object(&branch.to_string(), "runtime-orphan").expect("object");
     backend
         .write_object(&orphan, b"orphan")
         .expect("orphan write");
     let mut runtime = open_durable_runtime(branch, backend);
+    // Recovery over the staged (existing) store may schedule its own
+    // maintenance; the assertion below is relative to that baseline.
+    let baseline_pending = runtime.maintenance_status().pending_tasks();
 
     runtime
         .enqueue_maintenance(MaintenanceTaskRequest::repair_quarantine(branch))
@@ -902,7 +913,10 @@ fn durable_repair_runs_through_runtime_maintenance_surface() {
     assert_eq!(outcome.task_kind(), MaintenanceTaskKind::Repair);
     assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
     assert!(outcome.recovery_health().is_some());
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    assert_eq!(
+        runtime.maintenance_status().pending_tasks(),
+        baseline_pending
+    );
 }
 
 #[test]
