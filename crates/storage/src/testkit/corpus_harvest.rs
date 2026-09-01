@@ -91,6 +91,19 @@ pub(crate) const FORMAT_TARGETS: &[(&str, FormatDecoder)] = &[
     ("format_watermark", FormatDecoder::Watermark),
 ];
 
+fn commit_rows(
+    runtime: &StorageRuntime<'static>,
+    branch: BranchId,
+    mutations: Vec<CommitMutation>,
+) -> Result<(), TestkitError> {
+    let batch = CommitBatch::new(branch, mutations, CommitOptions::default())
+        .map_err(|err| TestkitError::new(format!("harvest batch: {err:?}")))?;
+    runtime
+        .commit(&batch)
+        .map(|_| ())
+        .map_err(|err| TestkitError::new(format!("harvest commit: {err:?}")))
+}
+
 /// Drives the real store whose artifacts become seeds: varied-size puts, a
 /// delete, flush, and checkpoint, closed cleanly so every object is durable
 /// and quiescent.
@@ -101,36 +114,53 @@ fn build_harvest_store(root: &Path) -> Result<(), TestkitError> {
     let mut runtime = outcome.into_runtime();
     let branch = default_branch();
 
-    let commit = |mutations: Vec<CommitMutation>| -> Result<(), TestkitError> {
-        let batch = CommitBatch::new(branch, mutations, CommitOptions::default())
-            .map_err(|err| TestkitError::new(format!("harvest batch: {err:?}")))?;
-        runtime
-            .commit(&batch)
-            .map(|_| ())
-            .map_err(|err| TestkitError::new(format!("harvest commit: {err:?}")))
-    };
     for index in 0..6u8 {
         // Value sizes span one byte to a few KiB so table blocks carry real
         // variety for the block-family targets.
         let value = vec![0xC0 | index; 1 + usize::from(index) * 800];
-        commit(vec![CommitMutation::Put {
-            storage_space: oracle_space(),
-            key: oracle_key(index),
-            value: StorageValue::new(value),
-            ttl: None,
-        }])?;
+        commit_rows(
+            &runtime,
+            branch,
+            vec![CommitMutation::Put {
+                storage_space: oracle_space(),
+                key: oracle_key(index),
+                value: StorageValue::new(value),
+                ttl: None,
+            }],
+        )?;
     }
-    commit(vec![CommitMutation::Delete {
-        storage_space: oracle_space(),
-        key: oracle_key(2),
-    }])?;
+    commit_rows(
+        &runtime,
+        branch,
+        vec![CommitMutation::Delete {
+            storage_space: oracle_space(),
+            key: oracle_key(2),
+        }],
+    )?;
 
-    for task in [MaintenanceTask::Flush, MaintenanceTask::Checkpoint] {
-        let request = MaintenanceRequest::new(task, MaintenanceScope::Branch(branch));
-        runtime
-            .enqueue_maintenance(&request)
-            .and_then(|_| runtime.drain_maintenance())
-            .map_err(|err| TestkitError::new(format!("harvest maintenance: {err:?}")))?;
+    // Two flush rounds produce two real table objects, so per-family accept
+    // counters genuinely count (and the artifact corpus carries variety).
+    for round in 0..2u8 {
+        for index in 0..2u8 {
+            let key = 8 + round * 2 + index;
+            commit_rows(
+                &runtime,
+                branch,
+                vec![CommitMutation::Put {
+                    storage_space: oracle_space(),
+                    key: oracle_key(key % 32),
+                    value: StorageValue::new(vec![0xE0 | key; 64 + usize::from(key) * 40]),
+                    ttl: None,
+                }],
+            )?;
+        }
+        for task in [MaintenanceTask::Flush, MaintenanceTask::Checkpoint] {
+            let request = MaintenanceRequest::new(task, MaintenanceScope::Branch(branch));
+            runtime
+                .enqueue_maintenance(&request)
+                .and_then(|_| runtime.drain_maintenance())
+                .map_err(|err| TestkitError::new(format!("harvest maintenance: {err:?}")))?;
+        }
     }
     runtime
         .close()
@@ -343,6 +373,19 @@ pub fn harvest_format_corpus(root: &Path) -> Result<Vec<HarvestSeed>, TestkitErr
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_non_decoding_built_seed_is_refused() {
+        let bogus = HarvestSeed {
+            target: "format_manifest",
+            name: "built-bogus".to_owned(),
+            bytes: vec![0xFF; 8],
+        };
+        assert!(
+            verify_built_seeds(std::slice::from_ref(&bogus)).is_err(),
+            "a built seed that does not decode must red the harvester"
+        );
+    }
+
     /// The committed-seed drift gate: every format seed the fuzz crate's
     /// gitignore allowlists must decode `Accepted` through its target's arm
     /// (which also runs the 4.6b round-trip oracle). A red here means a
@@ -387,7 +430,7 @@ mod tests {
             }
         }
         assert!(
-            verified >= 29,
+            verified >= 31,
             "the format seed grid shrank to {verified} — committed seeds went missing"
         );
     }
@@ -421,6 +464,40 @@ mod tests {
                     .collect::<Vec<_>>()
             );
         }
+
+        // Every harvested format seed must itself decode Accepted (an
+        // inverted probe emits rejecting bytes), seed names must be unique
+        // per target (a dead accept counter collides them), and the second
+        // flush round must yield a second real table artifact.
+        let mut names = std::collections::BTreeSet::new();
+        for seed in &seeds {
+            assert!(
+                names.insert((seed.target, seed.name.clone())),
+                "duplicate seed name: {}/{}",
+                seed.target,
+                seed.name
+            );
+            if let Some((_, decoder)) = FORMAT_TARGETS
+                .iter()
+                .find(|(target, _)| *target == seed.target)
+            {
+                assert_eq!(
+                    decode_format_bytes(*decoder, &seed.bytes),
+                    FormatDecodeOutcome::Accepted,
+                    "harvested seed does not decode: {}/{}",
+                    seed.target,
+                    seed.name
+                );
+            }
+        }
+        assert!(
+            seeds
+                .iter()
+                .filter(|seed| seed.target == "format_table_artifact")
+                .count()
+                >= 2,
+            "the two flush rounds must yield two table artifacts"
+        );
 
         if std::env::var("STRATA_CORPUS_HARVEST").is_ok() {
             let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus");

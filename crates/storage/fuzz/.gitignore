@@ -129,11 +129,13 @@
 !/corpus/format_snapshot_envelope/
 /corpus/format_snapshot_envelope/*
 !/corpus/format_snapshot_envelope/harvest-snapshots-0
+!/corpus/format_snapshot_envelope/harvest-snapshots-1
 !/corpus/format_storage_row/
 /corpus/format_storage_row/*
 !/corpus/format_storage_row/built-put-row
 !/corpus/format_storage_row/built-tombstone-row
 !/corpus/format_table_artifact/harvest-tables-0
+!/corpus/format_table_artifact/harvest-tables-1
 !/corpus/format_table_manifest/harvest-tables-0
 !/corpus/format_wal_commit_payload/built-put-and-tombstone
 !/corpus/format_wal_record/
