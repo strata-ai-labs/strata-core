@@ -169,11 +169,14 @@ fn no_database_refusal(cwd: Option<&Path>) -> CliError {
         } else {
             let found = strata_databases_in(cwd);
             if !found.is_empty() {
-                message.push_str(&format!(
+                use std::fmt::Write as _;
+                // Writing to a String is infallible.
+                let _ = write!(
+                    message,
                     "\n  note: Strata datasets here: {} — try `strata ./{} <command>`",
                     found.join(", "),
                     found[0]
-                ));
+                );
             }
         }
     }
