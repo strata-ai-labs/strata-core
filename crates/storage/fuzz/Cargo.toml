@@ -9,7 +9,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-strata-storage = { path = "..", default-features = false, features = ["testkit"] }
+strata-storage = { path = "..", default-features = false, features = ["testkit", "localfs"] }
+# Scratch directories for the dual-mutation target's real on-disk store.
+tempfile = "3"
 
 [[bin]]
 name = "format_manifest"
@@ -268,6 +270,13 @@ bench = false
 [[bin]]
 name = "format_watermark"
 path = "fuzz_targets/format_watermark.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dual_mutation"
+path = "fuzz_targets/dual_mutation.rs"
 test = false
 doc = false
 bench = false

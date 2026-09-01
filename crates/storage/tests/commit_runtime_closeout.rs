@@ -228,11 +228,14 @@ fn commit_runtime_closeout_cache_and_durable_visibility_safety_is_exercised() {
 fn commit_runtime_closeout_fuzz_inventory_is_registered_seeded_and_distinct() {
     let root = common::crate_root();
     let manifest = read_file(&root.join("fuzz/Cargo.toml"));
+    // `localfs` joined in TCP4.6c for the dual-mutation target's real on-disk
+    // store; the boundary invariant is unchanged — targets consume storage
+    // only through `testkit`, never product modules directly.
     assert!(
         manifest.contains(
-            "strata-storage = { path = \"..\", default-features = false, features = [\"testkit\"] }"
+            "strata-storage = { path = \"..\", default-features = false, features = [\"testkit\", \"localfs\"] }"
         ),
-        "commit runtime fuzz crate must depend on storage with only the testkit feature"
+        "commit runtime fuzz crate must depend on storage through the testkit boundary (testkit + localfs only)"
     );
 
     for (target, contract) in COMMIT_RUNTIME_FUZZ_TARGETS {
