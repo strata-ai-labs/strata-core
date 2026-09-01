@@ -156,10 +156,24 @@ fn build_harvest_store(root: &Path) -> Result<(), TestkitError> {
         }
         for task in [MaintenanceTask::Flush, MaintenanceTask::Checkpoint] {
             let request = MaintenanceRequest::new(task, MaintenanceScope::Branch(branch));
-            runtime
-                .enqueue_maintenance(&request)
-                .and_then(|_| runtime.drain_maintenance())
-                .map_err(|err| TestkitError::new(format!("harvest maintenance: {err:?}")))?;
+            // The manual drain can lose the enqueued task to the runtime's
+            // background lane (`MaintenanceRejected` "no longer startable" —
+            // the dual-mutation harness's scheduling race). Retry, then
+            // tolerate: the graceful close below joins the background lane,
+            // so the work lands before harvesting either way.
+            for attempt in 0..4u8 {
+                match runtime
+                    .enqueue_maintenance(&request)
+                    .and_then(|_| runtime.drain_maintenance())
+                {
+                    Err(crate::api::StorageApiError::MaintenanceRejected { .. }) if attempt < 3 => {
+                    }
+                    Ok(_) | Err(crate::api::StorageApiError::MaintenanceRejected { .. }) => break,
+                    Err(err) => {
+                        return Err(TestkitError::new(format!("harvest maintenance: {err:?}")));
+                    }
+                }
+            }
         }
     }
     runtime
