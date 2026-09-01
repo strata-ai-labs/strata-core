@@ -395,35 +395,43 @@ fn drive_op(
                 MaintenanceTask::Checkpoint
             };
             let request = MaintenanceRequest::new(task, MaintenanceScope::Branch(branch));
-            let driven = runtime
-                .enqueue_maintenance(&request)
-                .and_then(|_| runtime.drain_maintenance());
-            match driven {
-                Ok(_) => {
-                    if verb % 8 == 6 {
-                        outcome.flushes += 1;
-                    } else {
-                        outcome.checkpoints += 1;
+            // The manual drain can race the runtime's own background lane
+            // for the enqueued task (`MaintenanceRejected` "no longer
+            // startable"). Rejection is not failure — re-enqueue so the
+            // verb's work observably lands and the exact-counter pins stay
+            // deterministic; an exhausted retry is counted, never loud.
+            let mut raced = 0usize;
+            loop {
+                let driven = runtime
+                    .enqueue_maintenance(&request)
+                    .and_then(|_| runtime.drain_maintenance());
+                match driven {
+                    Ok(_) => {
+                        if verb % 8 == 6 {
+                            outcome.flushes += 1;
+                        } else {
+                            outcome.checkpoints += 1;
+                        }
+                        break;
                     }
-                }
-                Err(err) if is_already_exists(&err) => {
-                    // The #3015 collision: manifest loss reopened Healthy and
-                    // the reseeded snapshot id hit an orphaned object.
-                    outcome.pin_3015_snapshot_collisions += 1;
-                    return Ok(false);
-                }
-                Err(crate::api::StorageApiError::MaintenanceRejected { .. }) => {
-                    // Benign scheduling race on the real threaded runtime: the
-                    // background maintenance lane picked the enqueued task up
-                    // before this manual drain reached it ("no longer
-                    // startable"). The work runs either way — count and
-                    // continue; rejection is not failure.
-                    outcome.maintenance_races += 1;
-                }
-                Err(err) => {
-                    return Err(TestkitError::new(format!(
-                        "maintenance on a healthy store: {err:?}"
-                    )));
+                    Err(err) if is_already_exists(&err) => {
+                        // The #3015 collision: manifest loss reopened Healthy
+                        // and the reseeded snapshot id hit an orphaned object.
+                        outcome.pin_3015_snapshot_collisions += 1;
+                        return Ok(false);
+                    }
+                    Err(crate::api::StorageApiError::MaintenanceRejected { .. }) if raced < 3 => {
+                        raced += 1;
+                    }
+                    Err(crate::api::StorageApiError::MaintenanceRejected { .. }) => {
+                        outcome.maintenance_races += 1;
+                        break;
+                    }
+                    Err(err) => {
+                        return Err(TestkitError::new(format!(
+                            "maintenance on a healthy store: {err:?}"
+                        )));
+                    }
                 }
             }
             return Ok(true);
@@ -752,6 +760,18 @@ mod tests {
             "checkpoint continues"
         );
         runtime.close().expect("close");
+        // The scenario's precondition, asserted on DISK: the fault-injection
+        // CI lane once flipped this pin spuriously when the setup checkpoint
+        // lost its scheduling race and left no snapshot object to collide
+        // with (pre-retry drive_op semantics).
+        let snapshot_on_disk = list_files(dir.path())
+            .expect("list")
+            .iter()
+            .any(|file| file.to_string_lossy().contains("snapshots/"));
+        assert!(
+            snapshot_on_disk && outcome.checkpoints == 1,
+            "precondition: the setup checkpoint must leave a snapshot object: {outcome:?}"
+        );
         std::fs::remove_file(dir.path().join("manifest/current.object@")).expect("delete manifest");
 
         let mut reopened = match reopen_and_verify(dir.path(), &mut model, branch, &mut outcome)
