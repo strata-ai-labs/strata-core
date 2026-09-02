@@ -26,18 +26,48 @@ use std::collections::BTreeMap;
 use serde_json::{json, Value};
 use strata_engine::{CacheOpenOptions, Database};
 use strata_executor::{
-    Bytes, Command, DurabilityMode, DurableLocalOpenOptions, EventRangeDirection, Executor,
-    GraphDirection, VectorDistanceMetric,
+    BatchEventEntry, BatchJsonEntry, BatchKvEntry, Bytes, Command, DurabilityMode,
+    DurableLocalOpenOptions, EventRangeDirection, Executor, GraphDirection, VectorDistanceMetric,
 };
 
-const LOW_MEMORY_BUDGET_BYTES: u64 = 64 << 20;
-const SEEDS: [u64; 2] = [0x00C0_FFEE, 0x5EED];
+/// The default "low" budget. Cache mode holds the whole live set in RAM and
+/// refuses commits past the budget (`resource_exhausted.engine.persistence_budget`),
+/// and the deep-tier scripts are append-heavy (events and graph edges stay
+/// live forever) — so the deep soak must raise this in proportion to script
+/// volume via `STRATA_CONFIG_LOW_BUDGET_MIB`, while keeping it far below the
+/// default budget so pressure-driven maintenance still fires on every run.
+const LOW_MEMORY_BUDGET_MIB_DEFAULT: usize = 64;
 
-fn ops_per_seed() -> usize {
-    std::env::var("STRATA_CONFIG_OPS")
+fn low_memory_budget_bytes() -> u64 {
+    (env_usize(
+        "STRATA_CONFIG_LOW_BUDGET_MIB",
+        LOW_MEMORY_BUDGET_MIB_DEFAULT,
+    ) as u64)
+        << 20
+}
+/// One cross-config probe read per this many script ops.
+const PROBE_EVERY: usize = 50;
+const BASE_SEEDS: [u64; 2] = [0x00C0_FFEE, 0x5EED];
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
         .ok()
         .and_then(|raw| raw.parse().ok())
-        .unwrap_or(120)
+        .unwrap_or(default)
+}
+
+/// The seed list: the two pinned base seeds, extended deterministically
+/// (`SplitMix` over the index) when `STRATA_CONFIG_SEEDS` asks for more —
+/// seed DIVERSITY (different op interleavings) finds config-conditional
+/// behavior faster than longer scripts alone.
+fn seeds(count: usize) -> Vec<u64> {
+    let mut list: Vec<u64> = BASE_SEEDS.into_iter().collect();
+    let mut derive = SplitMix64(0x5EED_FEED);
+    while list.len() < count {
+        list.push(derive.next());
+    }
+    list.truncate(count.max(1));
+    list
 }
 
 /// The classic `SplitMix64` — deterministic, dependency-free.
@@ -78,7 +108,7 @@ impl ConfigCase {
             Self::Cache { low_memory } => {
                 let mut options = CacheOpenOptions::new();
                 if low_memory {
-                    options = options.with_memory_budget(LOW_MEMORY_BUDGET_BYTES);
+                    options = options.with_memory_budget(low_memory_budget_bytes());
                 }
                 let outcome = Database::open_cache(options).expect("cache opens");
                 Executor::from_database(outcome.into_database())
@@ -89,7 +119,7 @@ impl ConfigCase {
                     options = options.with_durability(DurabilityMode::Always);
                 }
                 if low_memory {
-                    options = options.with_memory_budget(LOW_MEMORY_BUDGET_BYTES);
+                    options = options.with_memory_budget(low_memory_budget_bytes());
                 }
                 Executor::open_durable_local_with_options(dir.join("db"), options)
                     .expect("durable opens")
@@ -119,56 +149,165 @@ const MATRIX: [ConfigCase; 6] = [
     },
 ];
 
-/// One generated mutation, as a typed command. The generator is a pure
-/// function of the rng, so every config replays the identical script.
-fn generated_op(rng: &mut SplitMix64) -> Command {
+/// One generated command plus the number of row mutations it applies. The
+/// generator is a pure function of the rng, so every config replays the
+/// identical script. Batch arms carry up to hundreds of mutations per
+/// commit — the lever that takes deep runs into eight-figure mutation
+/// counts without an fsync per mutation (and the batch surfaces are
+/// coverage in their own right).
+fn generated_op(rng: &mut SplitMix64) -> (Command, u64) {
     let key_space = 12;
-    match rng.below(10) {
-        0..=2 => Command::KvPut {
-            branch: None,
-            space: None,
-            key: Bytes::from(format!("k{}", rng.below(key_space)).as_str()),
-            value: Bytes::from(format!("value-{}", rng.below(1000)).as_str()),
-        },
-        3 => Command::KvDelete {
-            branch: None,
-            space: None,
-            key: Bytes::from(format!("k{}", rng.below(key_space)).as_str()),
-        },
-        4..=5 => Command::JsonSet {
-            branch: None,
-            space: None,
-            key: format!("d{}", rng.below(6)),
-            path: "$".to_owned(),
-            value: json!({"a": rng.below(100), "nested": {"b": [rng.below(9), rng.below(9)]}}),
-        },
-        6 => Command::EventAppend {
-            branch: None,
-            space: None,
-            event_type: format!("t{}", rng.below(3)),
-            payload: json!({"seq_hint": rng.below(10_000)}),
-        },
-        7..=8 => Command::VectorUpsert {
-            branch: None,
-            space: None,
-            collection: "vecs".to_owned(),
-            key: format!("v{}", rng.below(8)),
-            vector: (0..8)
-                .map(|_| f64::from(u32::try_from(rng.below(200)).expect("small")) / 10.0)
-                .collect(),
-            metadata: Some(json!({"tag": format!("g{}", rng.below(4))})),
-        },
-        _ => Command::GraphAddEdge {
-            branch: None,
-            space: None,
-            graph: "net".to_owned(),
-            src: format!("n{}", rng.below(6)),
-            edge_type: "e".to_owned(),
-            dst: format!("n{}", rng.below(6)),
-            weight: Some(1.0 + f64::from(u32::try_from(rng.below(40)).expect("small")) / 10.0),
-            properties: None,
-        },
+    match rng.below(16) {
+        0..=2 => {
+            // One put in eight carries a large (8..40 KiB) value so deep
+            // runs cross flush/block boundaries; the fill byte keeps it
+            // deterministic.
+            let value = if rng.below(8) == 0 {
+                let len = 8_192 + usize::try_from(rng.below(32_768)).expect("small");
+                let fill = u8::try_from(rng.below(256)).expect("byte");
+                vec![fill; len]
+            } else {
+                format!("value-{}", rng.below(1000)).into_bytes()
+            };
+            (
+                Command::KvPut {
+                    branch: None,
+                    space: None,
+                    key: Bytes::from(format!("k{}", rng.below(key_space)).as_str()),
+                    value: Bytes::from(value),
+                },
+                1,
+            )
+        }
+        3 => (
+            Command::KvDelete {
+                branch: None,
+                space: None,
+                key: Bytes::from(format!("k{}", rng.below(key_space)).as_str()),
+            },
+            1,
+        ),
+        4..=5 => (
+            Command::JsonSet {
+                branch: None,
+                space: None,
+                key: format!("d{}", rng.below(6)),
+                path: "$".to_owned(),
+                value: json!({"a": rng.below(100), "nested": {"b": [rng.below(9), rng.below(9)]}}),
+            },
+            1,
+        ),
+        6 => (
+            Command::EventAppend {
+                branch: None,
+                space: None,
+                event_type: format!("t{}", rng.below(3)),
+                payload: json!({"seq_hint": rng.below(10_000)}),
+            },
+            1,
+        ),
+        7..=8 => (
+            Command::VectorUpsert {
+                branch: None,
+                space: None,
+                collection: "vecs".to_owned(),
+                key: format!("v{}", rng.below(8)),
+                vector: (0..8)
+                    .map(|_| f64::from(u32::try_from(rng.below(200)).expect("small")) / 10.0)
+                    .collect(),
+                metadata: Some(json!({"tag": format!("g{}", rng.below(4))})),
+            },
+            1,
+        ),
+        9 => (
+            Command::GraphAddEdge {
+                branch: None,
+                space: None,
+                graph: "net".to_owned(),
+                src: format!("n{}", rng.below(6)),
+                edge_type: "e".to_owned(),
+                dst: format!("n{}", rng.below(6)),
+                weight: Some(1.0 + f64::from(u32::try_from(rng.below(40)).expect("small")) / 10.0),
+                properties: None,
+            },
+            1,
+        ),
+        // Batch arms: up to hundreds of mutations per commit over a WIDE
+        // key space so batches create and rewrite rows the point ops never
+        // touch — and carry the mutation volume that takes the nightly into
+        // nine figures.
+        10..=12 => generated_kv_batch(rng),
+        13..=14 => generated_json_batch(rng),
+        _ => generated_event_batch(rng),
     }
+}
+
+/// KV batch arm: up to 500 rows per commit. Batches refuse duplicate keys,
+/// so draws dedupe (last wins) via an ordered map — still a pure function
+/// of the rng.
+fn generated_kv_batch(rng: &mut SplitMix64) -> (Command, u64) {
+    let mut drawn = std::collections::BTreeMap::new();
+    for _ in 0..2 + rng.below(499) {
+        drawn.insert(rng.below(16_384), rng.below(100_000));
+    }
+    let entries: Vec<BatchKvEntry> = drawn
+        .into_iter()
+        .map(|(key, value)| {
+            BatchKvEntry::new(
+                Bytes::from(format!("bk{key}").as_str()),
+                Bytes::from(format!("bv-{value}").as_str()),
+            )
+        })
+        .collect();
+    let count = entries.len() as u64;
+    (
+        Command::KvBatchPut {
+            branch: None,
+            space: None,
+            entries,
+        },
+        count,
+    )
+}
+
+fn generated_json_batch(rng: &mut SplitMix64) -> (Command, u64) {
+    let mut drawn = std::collections::BTreeMap::new();
+    for _ in 0..2 + rng.below(249) {
+        drawn.insert(rng.below(4096), rng.below(100_000));
+    }
+    let entries: Vec<BatchJsonEntry> = drawn
+        .into_iter()
+        .map(|(key, value)| BatchJsonEntry::new(format!("bd{key}"), "$", json!({"i": value})))
+        .collect();
+    let count = entries.len() as u64;
+    (
+        Command::JsonBatchSet {
+            branch: None,
+            space: None,
+            entries,
+        },
+        count,
+    )
+}
+
+fn generated_event_batch(rng: &mut SplitMix64) -> (Command, u64) {
+    let entries: Vec<BatchEventEntry> = (0..2 + rng.below(249))
+        .map(|_| {
+            BatchEventEntry::new(
+                format!("t{}", rng.below(3)),
+                json!({"b": rng.below(100_000)}),
+            )
+        })
+        .collect();
+    let count = entries.len() as u64;
+    (
+        Command::EventBatchAppend {
+            branch: None,
+            space: None,
+            entries,
+        },
+        count,
+    )
 }
 
 /// Fixtures every script assumes: the vector collection and graph nodes.
@@ -238,6 +377,29 @@ fn read_sweep() -> Vec<(String, Command)> {
             as_of: None,
         },
     ));
+    for key in ["bk17", "bk255", "bk1023", "bk4095"] {
+        sweep.push((
+            format!("kv_get {key}"),
+            Command::KvGet {
+                branch: None,
+                space: None,
+                key: Bytes::from(key),
+                as_of: None,
+            },
+        ));
+    }
+    for doc in ["bd7", "bd511", "bd1023"] {
+        sweep.push((
+            format!("json_get {doc}"),
+            Command::JsonGet {
+                branch: None,
+                space: None,
+                key: (*doc).to_owned(),
+                path: "$".to_owned(),
+                as_of: None,
+            },
+        ));
+    }
     sweep.push((
         "event_count".to_owned(),
         Command::EventCount {
@@ -387,8 +549,10 @@ fn run_config(case: ConfigCase, seed: u64, ops: usize) -> BTreeMap<String, Value
     seed_fixtures(&mut executor);
 
     let mut rng = SplitMix64(seed);
+    let mut outputs = BTreeMap::new();
+    let mut mutations = 0u64;
     for index in 0..ops {
-        let op = generated_op(&mut rng);
+        let (op, count) = generated_op(&mut rng);
         executor.execute(op.clone()).unwrap_or_else(|err| {
             panic!(
                 "{}: generated op {index} refused (script must succeed on \
@@ -396,9 +560,26 @@ fn run_config(case: ConfigCase, seed: u64, ops: usize) -> BTreeMap<String, Value
                 case.label()
             )
         });
+        mutations += count;
+        // Mid-script probes: intermediate states are compared across
+        // configs too, so a divergence localizes to the op window that
+        // introduced it instead of hiding until the final sweep.
+        if index % PROBE_EVERY == PROBE_EVERY - 1 {
+            let key = format!("bk{}", rng.below(16_384));
+            let output = executor
+                .execute(Command::KvGet {
+                    branch: None,
+                    space: None,
+                    key: Bytes::from(key.as_str()),
+                    as_of: None,
+                })
+                .unwrap_or_else(|err| panic!("{}: probe read refused: {err:?}", case.label()));
+            let mut value = serde_json::to_value(&output).expect("probe serializes");
+            normalize(&mut value);
+            outputs.insert(format!("probe@{index} {key}"), value);
+        }
     }
-
-    let mut outputs = BTreeMap::new();
+    outputs.insert("applied_mutations".to_owned(), Value::from(mutations));
     for (label, command) in read_sweep() {
         let output = executor
             .execute(command)
@@ -410,15 +591,19 @@ fn run_config(case: ConfigCase, seed: u64, ops: usize) -> BTreeMap<String, Value
     outputs
 }
 
-#[test]
-fn semantics_are_config_invariant_across_the_matrix() {
-    let ops = ops_per_seed();
-    for seed in SEEDS {
+fn run_matrix(seed_count: usize, ops: usize) -> u64 {
+    let mut total_mutations = 0u64;
+    for seed in seeds(seed_count) {
         let reference = run_config(MATRIX[0], seed, ops);
         assert!(
             reference.values().any(|value| *value != Value::Null),
             "seed {seed:#x}: the read sweep must observe real data"
         );
+        total_mutations += MATRIX.len() as u64
+            * reference
+                .get("applied_mutations")
+                .and_then(Value::as_u64)
+                .expect("mutation count recorded");
         for case in &MATRIX[1..] {
             let observed = run_config(*case, seed, ops);
             assert_eq!(
@@ -438,4 +623,42 @@ fn semantics_are_config_invariant_across_the_matrix() {
             }
         }
     }
+    total_mutations
+}
+
+#[test]
+fn semantics_are_config_invariant_across_the_matrix() {
+    run_matrix(
+        env_usize("STRATA_CONFIG_SEEDS", 2),
+        env_usize("STRATA_CONFIG_OPS", 120),
+    );
+}
+
+/// The nightly soak tier: many seeds × long scripts (the env knobs), so the
+/// cross-product crosses flush and block boundaries and rare op mixes the
+/// per-PR shape cannot reach (deep BUDGET-pressure equivalence is the
+/// storage STH-6 lane's job). A failure names its seed.
+///
+/// The defaults are the nightly shape: 48 seeds × 5000 ops × 6 configs at
+/// ~70 mutations/op ≈ 1.0e8 applied mutations, ~60 min in release at 28K
+/// mutations/sec (measured 2026-09-02). Requires
+/// `STRATA_CONFIG_LOW_BUDGET_MIB=256` — deep append-heavy scripts grow the
+/// live set past the 64MiB default and cache mode refuses commits past its
+/// budget by contract. The manual monster tier is the same run at
+/// `STRATA_CONFIG_SEEDS=480` / `STRATA_CONFIG_MUTATION_FLOOR=1000000000`
+/// for ~1.0e9 mutations in ~10 h.
+#[test]
+#[ignore = "soak tier — run via the nightly config-invariance step"]
+fn config_invariance_soak() {
+    let mutations = run_matrix(
+        env_usize("STRATA_CONFIG_SEEDS", 48),
+        env_usize("STRATA_CONFIG_OPS", 5000),
+    );
+    eprintln!("config-invariance soak applied {mutations} mutations across the matrix");
+    let floor = env_usize("STRATA_CONFIG_MUTATION_FLOOR", 100_000_000) as u64;
+    assert!(
+        mutations >= floor,
+        "soak applied {mutations} mutations — below the {floor} floor; raise \
+         seeds/ops or lower STRATA_CONFIG_MUTATION_FLOOR deliberately"
+    );
 }
