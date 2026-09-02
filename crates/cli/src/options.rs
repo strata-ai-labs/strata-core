@@ -218,6 +218,8 @@ pub(crate) enum TopCommand {
     Down(DeferredArgs),
     /// Remove the Strata installation from this machine.
     Uninstall(UninstallArgs),
+    /// Update the Strata binary to the latest release.
+    Update(UpdateArgs),
 }
 
 /// Arguments for `uninstall`.
@@ -226,6 +228,17 @@ pub(crate) struct UninstallArgs {
     /// Skip the confirmation prompt.
     #[arg(long)]
     pub(crate) yes: bool,
+}
+
+/// Arguments for `update`.
+#[derive(Debug, Args)]
+pub(crate) struct UpdateArgs {
+    /// Report whether an update is available without installing it.
+    #[arg(long)]
+    pub(crate) check: bool,
+    /// Install a specific version (for pinning or rollback) instead of the latest.
+    #[arg(long, value_name = "X.Y.Z")]
+    pub(crate) version: Option<String>,
 }
 
 /// Arguments accepted for known deferred commands.
@@ -2145,6 +2158,7 @@ mod tests {
         "txn",
         "uninstall",
         "up",
+        "update",
         "vector collection create",
         "vector collection delete",
         "vector collection list",
