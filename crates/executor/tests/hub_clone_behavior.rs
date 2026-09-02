@@ -10,7 +10,7 @@ use std::sync::Arc;
 use strata_engine::{
     BranchName as EngineBranchName, Database, DurableLocalOpenOptions, KvKey, KvValue, ProductSpace,
 };
-use strata_executor::{Command, Executor, HubCloneProgressStage, Output};
+use strata_executor::{Command, Executor, ExecutorErrorClass, HubCloneProgressStage, Output};
 use strata_hub::stratahub_protocol::{ErrorCode, Hash, ProblemDetails};
 use strata_hub::{EngineExportOptions, StrataCoreEngine};
 
@@ -208,6 +208,40 @@ fn serve_not_found_hub(request_budget: usize) -> String {
     base
 }
 
+fn serve_problem_hub(
+    status_code: u16,
+    code: ErrorCode,
+    detail: &'static str,
+    request_budget: usize,
+) -> String {
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("server binds");
+    let port = server.server_addr().to_ip().expect("ip addr").port();
+    let base = format!("http://127.0.0.1:{port}");
+    std::thread::spawn(move || {
+        for _ in 0..request_budget {
+            let Ok(Some(request)) = server.recv_timeout(std::time::Duration::from_secs(60)) else {
+                return;
+            };
+            let problem = ProblemDetails::from_code(code.clone()).with_detail(detail);
+            let header =
+                tiny_http::Header::from_bytes(&b"Content-Type"[..], b"application/problem+json")
+                    .expect("header");
+            let _ = request.respond(
+                tiny_http::Response::from_string(
+                    serde_json::to_string(&problem).expect("problem serializes"),
+                )
+                .with_status_code(status_code)
+                .with_header(header),
+            );
+        }
+    });
+    base
+}
+
+fn expected_hub_problem_message(code: &ErrorCode, detail: &str) -> String {
+    format!("hub returned {}: {detail}", code.as_str())
+}
+
 fn hub_dataset_summary_json() -> serde_json::Value {
     serde_json::json!({
         "name": "titanic",
@@ -363,10 +397,88 @@ fn hub_browse_validates_local_arguments_before_network() {
 }
 
 #[test]
+fn hub_browse_validates_size_range_independently_of_limit() {
+    let base = serve_browse_hub();
+    let mut executor = Executor::open_cache().expect("cache executor");
+
+    let error = executor
+        .execute(Command::HubListDatasets {
+            hub_url: Some(base.clone()),
+            tasks: Vec::new(),
+            tags: Vec::new(),
+            primitives: Vec::new(),
+            license: None,
+            size_min_bytes: Some(10),
+            size_max_bytes: Some(1),
+            sort: None,
+            limit: Some(20),
+            offset: None,
+        })
+        .expect_err("inverted size range refuses");
+    assert_eq!(
+        error.status().code(),
+        "invalid_argument.executor.hub_filter"
+    );
+    assert!(
+        error.message().contains("size_min_bytes"),
+        "unexpected message: {}",
+        error.message()
+    );
+
+    for (size_min_bytes, size_max_bytes) in [(10, 10), (1, 10)] {
+        let output = executor
+            .execute(Command::HubListDatasets {
+                hub_url: Some(base.clone()),
+                tasks: Vec::new(),
+                tags: Vec::new(),
+                primitives: Vec::new(),
+                license: None,
+                size_min_bytes: Some(size_min_bytes),
+                size_max_bytes: Some(size_max_bytes),
+                sort: None,
+                limit: Some(20),
+                offset: None,
+            })
+            .expect("inclusive and ascending size ranges reach the hub");
+        assert!(matches!(output, Output::HubDatasets(page) if page.items[0].name == "titanic"));
+    }
+}
+
+#[test]
+fn hub_browse_bad_request_errors_are_typed_with_problem_message() {
+    let hub_code = ErrorCode::InputInvalidParam;
+    let expected_message = expected_hub_problem_message(&hub_code, "limit must be at most 200");
+    let base = serve_problem_hub(400, hub_code, "limit must be at most 200", 1);
+    let mut executor = Executor::open_cache().expect("cache executor");
+
+    let error = executor
+        .execute(Command::HubListDatasets {
+            hub_url: Some(base),
+            tasks: Vec::new(),
+            tags: Vec::new(),
+            primitives: Vec::new(),
+            license: None,
+            size_min_bytes: None,
+            size_max_bytes: None,
+            sort: None,
+            limit: Some(20),
+            offset: None,
+        })
+        .expect_err("hub bad request refuses");
+    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+    assert_eq!(
+        error.status().code(),
+        "invalid_argument.executor.hub_filter"
+    );
+    assert_eq!(error.message(), expected_message);
+}
+
+#[test]
 fn hub_browse_not_found_errors_are_typed() {
     let base = serve_not_found_hub(2);
     let mut executor = Executor::open_cache().expect("cache executor");
 
+    let dataset_code = ErrorCode::ResourceDatasetNotFound;
     let error = executor
         .execute(Command::HubGetDataset {
             name: "missing".to_owned(),
@@ -374,7 +486,12 @@ fn hub_browse_not_found_errors_are_typed() {
         })
         .expect_err("missing dataset refuses");
     assert_eq!(error.status().code(), "not_found.executor.hub_dataset");
+    assert_eq!(
+        error.message(),
+        expected_hub_problem_message(&dataset_code, "resource is absent")
+    );
 
+    let resource_code = ErrorCode::ResourceRefNotFound;
     let error = executor
         .execute(Command::HubListYanked {
             since: None,
@@ -382,6 +499,10 @@ fn hub_browse_not_found_errors_are_typed() {
         })
         .expect_err("missing hub resource refuses");
     assert_eq!(error.status().code(), "not_found.executor.hub_resource");
+    assert_eq!(
+        error.message(),
+        expected_hub_problem_message(&resource_code, "resource is absent")
+    );
 }
 
 #[test]
