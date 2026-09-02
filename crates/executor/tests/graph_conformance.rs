@@ -29,8 +29,8 @@
 //!   (ordered neighbor pairs), a deliberately different function —
 //!   `lcc_directed_reference_uses_a_different_definition` asserts the
 //!   divergence so the difference stays visible rather than assumed.
-//! - CDLP: OPEN bug #3024 — Strata's sweep is asynchronous where the spec
-//!   is synchronous; the labels are pinned gate-7 style until the fix.
+//! - CDLP: synchronous propagation per the spec (#3024, fixed) — both
+//!   variants assert the LDBC reference outputs directly.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -347,36 +347,11 @@ fn pagerank_matches_the_ldbc_reference() {
 }
 
 #[test]
-fn cdlp_is_pinned_to_async_labels_until_3024_lands() {
-    // Gate-7 pin of OPEN bug #3024: Strata's CDLP is ASYNCHRONOUS (in-place
-    // label updates within a sweep) where the LDBC Graphalytics definition
-    // is synchronous. An independent simulation confirms sync reproduces
-    // the vendored references EXACTLY on both variants, and async
-    // reproduces the labels pinned below. When the sync fix lands this
-    // test flips — promote it to assert the LDBC reference outputs
-    // (`cdlp_{dir,undir}-output`) directly and delete these pins.
-    let pinned_dir: &[(u64, u64)] = &[
-        (1, 2),
-        (2, 2),
-        (3, 2),
-        (4, 5),
-        (5, 5),
-        (6, 5),
-        (7, 5),
-        (8, 5),
-    ];
-    let pinned_undir: &[(u64, u64)] = &[
-        (1, 2),
-        (2, 2),
-        (3, 2),
-        (4, 5),
-        (5, 5),
-        (6, 5),
-        (7, 5),
-        (8, 5),
-    ];
+fn cdlp_matches_the_ldbc_reference() {
+    // Promoted from the #3024 gate-7 pin by the synchronous-propagation
+    // fix: CDLP now matches the LDBC reference outputs on both variants.
     let mut executor = Executor::open_cache().expect("cache executor opens");
-    for (variant, pinned) in [("dir", pinned_dir), ("undir", pinned_undir)] {
+    for variant in ["dir", "undir"] {
         let graph = format!("cdlp-{variant}");
         let (vertices, edges) = parse_adjacency(&format!("cdlp_{variant}-input"));
         load_graph(&mut executor, &graph, &vertices, &edges, None);
@@ -400,25 +375,14 @@ fn cdlp_is_pinned_to_async_labels_until_3024_lands() {
             panic!("unexpected cdlp output");
         };
         let reference = parse_output(&format!("cdlp_{variant}-output"));
-        for (vertex, pinned_label) in pinned {
-            let observed = result.labels().get(&vertex.to_string());
+        for (vertex, expected) in &reference {
             assert_eq!(
-                observed,
-                Some(&pinned_label.to_string()),
-                "cdlp {variant}: vertex {vertex} left the pinned async labels — if it now \
-                 matches `cdlp_{variant}-output`, #3024's sync fix landed: promote this pin \
-                 to assert the LDBC reference and delete the async tables"
+                result.labels().get(&vertex.to_string()),
+                Some(expected),
+                "cdlp {variant}: vertex {vertex} label diverges from the LDBC reference"
             );
         }
-        // The pin must stay a genuine divergence: if the async labels ever
-        // EQUAL the reference, the pin is vacuous and must be promoted.
-        let matches_reference = reference
-            .iter()
-            .all(|(vertex, label)| result.labels().get(&vertex.to_string()) == Some(label));
-        assert!(
-            !matches_reference,
-            "cdlp {variant}: output now matches the LDBC reference — promote this pin (#3024)"
-        );
+        assert_eq!(result.labels().len(), reference.len());
     }
 }
 

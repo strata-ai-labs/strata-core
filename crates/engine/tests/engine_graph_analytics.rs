@@ -493,14 +493,22 @@ fn cdlp_converges_a_star_to_a_single_community_instead_of_oscillating() {
         .expect("index builds");
     let at = |id: &str| index.node_index(&node_id(id)).expect("node indexed");
 
-    // A star is a single community. Synchronous label propagation oscillates
-    // with period 2 and separates the hub from its leaves; asynchronous
-    // propagation converges to one label for every node.
+    // #3024: propagation is SYNCHRONOUS (the LDBC definition), and sync
+    // label propagation oscillates with period 2 on a star — the iteration
+    // bound defines the deterministic answer, identically on every
+    // conformant platform. At the default (even) bound the leaves share one
+    // label and the hub holds its own. The old asynchronous sweep converged
+    // the star to a single label, but its results depended on the internal
+    // sweep order — untenable as a user-facing contract.
     let cdlp = index.cdlp(&GraphCdlpOptions::default());
-    let hub = cdlp.label(at("h"));
-    assert_eq!(cdlp.label(at("a")), hub, "leaf a joins the hub's community");
-    assert_eq!(cdlp.label(at("b")), hub, "leaf b joins the hub's community");
-    assert_eq!(cdlp.label(at("c")), hub, "leaf c joins the hub's community");
+    assert_eq!(cdlp.label(at("a")), Some(at("a")), "even-bound leaf state");
+    assert_eq!(cdlp.label(at("b")), Some(at("a")), "leaves share one label");
+    assert_eq!(cdlp.label(at("c")), Some(at("a")), "leaves share one label");
+    assert_eq!(
+        cdlp.label(at("h")),
+        Some(at("h")),
+        "the hub alternates against the leaves and holds its own label at the bound"
+    );
 }
 
 #[test]
@@ -547,9 +555,18 @@ fn cdlp_follows_the_majority_label_and_settles_over_multiple_sweeps() {
     let at = |id: &str| index.node_index(&node_id(id)).expect("node indexed");
     let cdlp = index.cdlp(&GraphCdlpOptions::default());
 
-    // The bridge follows the *majority* of its neighbors (three `y` votes) into
-    // the higher-labeled community, not the single lower `b` vote — a run that
-    // only tracked the minimum neighbor label would merge everything instead.
+    // #3024 (synchronous propagation): the triangle held together by a
+    // strict internal majority stays one community — a run that only
+    // tracked the minimum neighbor label would merge everything — while the
+    // bridge-and-pendant appendage oscillates with period 2, so the (even)
+    // default iteration bound defines its deterministic state: the bridge
+    // sits with the y-majority side and the two triangles stay distinct.
+    assert_eq!(
+        cdlp.label(at("b0")),
+        cdlp.label(at("b1")),
+        "the majority-held triangle stays one community"
+    );
+    assert_eq!(cdlp.label(at("b1")), cdlp.label(at("b2")));
     assert_ne!(
         cdlp.label(at("b0")),
         cdlp.label(at("y0")),
@@ -558,19 +575,12 @@ fn cdlp_follows_the_majority_label_and_settles_over_multiple_sweeps() {
     assert_eq!(
         cdlp.label(at("zz")),
         cdlp.label(at("y0")),
-        "the bridge joins the majority community"
+        "the bridge sits with its majority side at the bound"
     );
     assert_ne!(
         cdlp.label(at("zz")),
         cdlp.label(at("b0")),
         "the bridge does not join the single-vote minority"
-    );
-    // The pendant only learns the bridge's final label on the second sweep, so
-    // stopping after one sweep would leave it in its own community.
-    assert_eq!(
-        cdlp.label(at("aa")),
-        cdlp.label(at("zz")),
-        "the pendant converges to the bridge's community"
     );
 }
 
