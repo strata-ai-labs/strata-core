@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+#[cfg(feature = "hub")]
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 

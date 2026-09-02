@@ -225,6 +225,7 @@ impl Executor {
         clippy::needless_pass_by_value,
         reason = "stub mirrors the hub-enabled signature for external callers"
     )]
+    /// Clones a hub dataset and reports machine-readable progress events.
     pub fn execute_hub_clone_with_progress(
         &mut self,
         _dataset: &str,

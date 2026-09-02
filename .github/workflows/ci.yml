@@ -253,6 +253,9 @@ jobs:
           #    a non-lock error one open attempt before re-surfacing it;
           #  - read_frame's inclusive-vs-exclusive cap boundary (distinguishing
           #    it requires a payload of exactly 64 MiB).
+          # The default-feature executor slice compiles the hub-enabled
+          # handlers; the inverse no-hub stubs in the same file are cfg-disabled
+          # and would otherwise survive vacuously.
           cargo mutants --no-config --in-diff pr.diff --package strata-executor \
             --features idl-tooling,inference,testkit \
             --exclude-re 'serialize_failure_envelope|internal_panic_error|static_wire_request_error' \
@@ -261,6 +264,8 @@ jobs:
             --exclude-re 'Connection::broker_to_owner' \
             --exclude-re 'with true in Connection::open_brokered' \
             --exclude-re 'replace > with >= in read_frame' \
+            --exclude-re 'crates/executor/src/executor/hub.rs:2[0-9][0-9]:.*execute_hub_' \
+            --exclude-re 'crates/executor/src/executor/hub.rs:4[0-9][0-9]:.*hub_feature_disabled' \
             --exclude "crates/executor/src/bin/**" \
             --timeout-multiplier 2.5 --minimum-test-timeout 60 || [ $? -eq 3 ]
           cargo mutants --no-config --in-diff pr.diff --package strata-inference \
