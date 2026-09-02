@@ -104,6 +104,26 @@ fn commit_rows(
         .map_err(|err| TestkitError::new(format!("harvest commit: {err:?}")))
 }
 
+// Literal (key, fill, size) tables — value sizes span one byte to a few
+// KiB so table blocks carry real variety for the block-family targets.
+// Literals rather than arithmetic: the shape is arbitrary entropy, and
+// computed variants would be unkillable mutation-gate surface.
+const FIRST_ROUND_PUTS: &[(u8, u8, usize)] = &[
+    (0, 0xC0, 1),
+    (1, 0xC1, 801),
+    (2, 0xC2, 1601),
+    (3, 0xC3, 2401),
+    (4, 0xC4, 3201),
+    (5, 0xC5, 4001),
+];
+
+// Two flush rounds produce two real table objects, so per-family accept
+// counters genuinely count (and the artifact corpus carries variety).
+const FLUSH_ROUND_PUTS: &[&[(u8, u8, usize)]] = &[
+    &[(8, 0xE8, 384), (9, 0xE9, 424)],
+    &[(10, 0xEA, 464), (11, 0xEB, 504)],
+];
+
 /// Drives the real store whose artifacts become seeds: varied-size puts, a
 /// delete, flush, and checkpoint, closed cleanly so every object is durable
 /// and quiescent.
@@ -114,17 +134,14 @@ fn build_harvest_store(root: &Path) -> Result<(), TestkitError> {
     let mut runtime = outcome.into_runtime();
     let branch = default_branch();
 
-    for index in 0..6u8 {
-        // Value sizes span one byte to a few KiB so table blocks carry real
-        // variety for the block-family targets.
-        let value = vec![0xC0 | index; 1 + usize::from(index) * 800];
+    for &(key, fill, size) in FIRST_ROUND_PUTS {
         commit_rows(
             &runtime,
             branch,
             vec![CommitMutation::Put {
                 storage_space: oracle_space(),
-                key: oracle_key(index),
-                value: StorageValue::new(value),
+                key: oracle_key(key),
+                value: StorageValue::new(vec![fill; size]),
                 ttl: None,
             }],
         )?;
@@ -139,17 +156,16 @@ fn build_harvest_store(root: &Path) -> Result<(), TestkitError> {
     )?;
 
     // Two flush rounds produce two real table objects, so per-family accept
-    // counters genuinely count (and the artifact corpus carries variety).
-    for round in 0..2u8 {
-        for index in 0..2u8 {
-            let key = 8 + round * 2 + index;
+    // counters genuinely count.
+    for round_puts in FLUSH_ROUND_PUTS {
+        for &(key, fill, size) in *round_puts {
             commit_rows(
                 &runtime,
                 branch,
                 vec![CommitMutation::Put {
                     storage_space: oracle_space(),
-                    key: oracle_key(key % 32),
-                    value: StorageValue::new(vec![0xE0 | key; 64 + usize::from(key) * 40]),
+                    key: oracle_key(key),
+                    value: StorageValue::new(vec![fill; size]),
                     ttl: None,
                 }],
             )?;
@@ -161,14 +177,15 @@ fn build_harvest_store(root: &Path) -> Result<(), TestkitError> {
             // the dual-mutation harness's scheduling race). Retry, then
             // tolerate: the graceful close below joins the background lane,
             // so the work lands before harvesting either way.
-            for attempt in 0..4u8 {
+            for _ in 0..4u8 {
                 match runtime
                     .enqueue_maintenance(&request)
                     .and_then(|_| runtime.drain_maintenance())
                 {
-                    Err(crate::api::StorageApiError::MaintenanceRejected { .. }) if attempt < 3 => {
-                    }
-                    Ok(_) | Err(crate::api::StorageApiError::MaintenanceRejected { .. }) => break,
+                    Ok(_) => break,
+                    // Retry; a rejection on the final try falls out of the
+                    // loop tolerated (the close joins the background lane).
+                    Err(crate::api::StorageApiError::MaintenanceRejected { .. }) => {}
                     Err(err) => {
                         return Err(TestkitError::new(format!("harvest maintenance: {err:?}")));
                     }
