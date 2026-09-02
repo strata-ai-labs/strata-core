@@ -1,7 +1,7 @@
 ---
 title: "Append event"
 description: "Append one event to the branch event log."
-source: strata-core@1.1.0
+source: strata-core@1.1.1
 section: event
 ---
 

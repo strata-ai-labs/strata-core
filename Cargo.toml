@@ -25,7 +25,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.1.0"
+version = "1.1.1"
 edition = "2021"
 # Floor set by the stratahub crates (rust-version 1.91), which ride in the
 # default graph via strata-hub.

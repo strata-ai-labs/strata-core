@@ -4,6 +4,52 @@ All notable changes to StrataDB are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.1] - 2026-09-02
+
+A maintenance and hardening release on the V1 line. Modest additive polish —
+StrataHub browsing, an in-browser CLI playground, and CLI ergonomics — on top of
+correctness fixes and a large test-coverage expansion. No breaking changes; the
+on-disk format, error codes, and CLI surface remain stable contracts.
+
+### Added
+
+- **StrataHub browse commands and clone progress.** Browse and list published
+  StrataHub artifacts from the CLI, and see live progress while cloning.
+- **Real CLI in the browser playground.** The hosted playground now runs the
+  actual `strata` CLI compiled to WebAssembly (cache mode) rather than a
+  simulation, and the wasm bundle ships as a release asset.
+- **`strata uninstall`.** Restored on the V1 line — cleanly removes the binary
+  and user-level Strata files.
+- **Friendlier REPL.** A startup banner, errors you can recover from instead of
+  a crash, Ctrl+C handling, human-readable `describe`, and actionable paging.
+- **Dataset-aware bare `strata`.** Running `strata` with no path now recognizes
+  when it is standing inside (or above) a dataset directory and responds
+  accordingly, and every dataset directory self-describes with an advisory
+  `README.md`.
+
+### Fixed
+
+- **Manifest loss no longer fabricates a fresh store.** Opening a non-empty
+  database whose table manifest is missing now refuses the open with a
+  structured error instead of silently starting from an empty manifest (which
+  could mask data). (#3015)
+- **Graph CDLP matches the LDBC definition.** Community-detection label
+  propagation now propagates synchronously, so results conform to the LDBC
+  Graphalytics reference instead of an iteration-order-dependent variant. (#3024)
+- **Spelling-independent IPC broker.** Multi-process socket resolution is
+  canonicalized so a broker and client agree on the socket regardless of path
+  spelling. (#3006)
+
+### Changed
+
+- **Substantial test-coverage expansion (internal).** Vendored conformance
+  suites (JSONTestSuite parsing, IEEE-754/ryu number formatting, SIFT exact-kNN
+  ground truth, LDBC Graphalytics kernels), a format golden-vector matrix with an
+  adversarial decode contract, a config × capability cross-product differential,
+  fuzzing (value-fidelity, codec round-trip, dual op+byte mutation, corpus
+  harvest), and elle-style concurrent-history checking. No user-facing behavior
+  change; reliability only.
+
 ## [1.1.0] - 2026-08-29
 
 The first feature release on the V1 line (relative to the `1.0.0` V1 baseline).

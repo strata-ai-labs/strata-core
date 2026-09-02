@@ -1,7 +1,7 @@
 ---
 title: "Read hub info"
 description: "Read the selected StrataHub's V1 capability advertisement."
-source: strata-core@1.1.0
+source: strata-core@1.1.1
 section: hub
 ---
 

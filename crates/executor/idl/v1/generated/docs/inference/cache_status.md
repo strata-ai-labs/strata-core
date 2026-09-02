@@ -1,7 +1,7 @@
 ---
 title: "Report model cache"
 description: "Report loaded model cache state."
-source: strata-core@1.1.0
+source: strata-core@1.1.1
 section: inference
 ---
 
