@@ -103,9 +103,9 @@ impl Executor {
         let transport = hub_transport(hub_url)?;
         transport
             .info()
-            .map(Into::into)
-            .map(Output::HubInfo)
             .map_err(|error| hub_client_error(&error, "invalid_argument.executor.hub_filter", None))
+            .and_then(TryInto::try_into)
+            .map(Output::HubInfo)
     }
 
     /// Lists datasets from the resolved hub.
@@ -137,9 +137,9 @@ impl Executor {
         let page = ListPageReq { limit, offset };
         transport
             .list_datasets(&filter, page)
-            .map(Into::into)
-            .map(Output::HubDatasets)
             .map_err(|error| hub_client_error(&error, "invalid_argument.executor.hub_filter", None))
+            .and_then(TryInto::try_into)
+            .map(Output::HubDatasets)
     }
 
     /// Reads one full dataset card from the resolved hub.
@@ -153,8 +153,6 @@ impl Executor {
         let transport = hub_transport(hub_url)?;
         transport
             .get_dataset(&dataset)
-            .map(Into::into)
-            .map(Output::HubDataset)
             .map_err(|error| {
                 hub_client_error(
                     &error,
@@ -162,6 +160,8 @@ impl Executor {
                     Some("not_found.executor.hub_dataset"),
                 )
             })
+            .and_then(TryInto::try_into)
+            .map(Output::HubDataset)
     }
 
     /// Lists live refs for one hub dataset.
@@ -175,8 +175,6 @@ impl Executor {
         let transport = hub_transport(hub_url)?;
         transport
             .list_refs(&dataset)
-            .map(Into::into)
-            .map(Output::HubRefs)
             .map_err(|error| {
                 hub_client_error(
                     &error,
@@ -184,6 +182,8 @@ impl Executor {
                     Some("not_found.executor.hub_dataset"),
                 )
             })
+            .and_then(TryInto::try_into)
+            .map(Output::HubRefs)
     }
 
     /// Lists yanked refs from the resolved hub.
@@ -197,93 +197,9 @@ impl Executor {
         let transport = hub_transport(hub_url)?;
         transport
             .yanked(since)
-            .map(Into::into)
-            .map(Output::HubYanked)
             .map_err(|error| hub_client_error(&error, "invalid_argument.executor.hub_since", None))
-    }
-}
-
-#[cfg(not(feature = "hub"))]
-impl Executor {
-    #[allow(
-        clippy::unused_self,
-        clippy::needless_pass_by_value,
-        reason = "stub mirrors the hub-enabled signature at the dispatch site"
-    )]
-    pub(super) fn execute_hub_clone(
-        &mut self,
-        _dataset: &str,
-        _branch: Option<&str>,
-        _dest: &str,
-        _hub_url: Option<String>,
-    ) -> ExecutorResult<Output> {
-        Err(hub_feature_disabled())
-    }
-
-    #[allow(
-        clippy::unused_self,
-        clippy::needless_pass_by_value,
-        reason = "stub mirrors the hub-enabled signature for external callers"
-    )]
-    /// Clones a hub dataset and reports machine-readable progress events.
-    pub fn execute_hub_clone_with_progress(
-        &mut self,
-        _dataset: &str,
-        _branch: Option<&str>,
-        _dest: &str,
-        _hub_url: Option<String>,
-        _progress: &mut dyn FnMut(Output),
-    ) -> ExecutorResult<Output> {
-        Err(hub_feature_disabled())
-    }
-
-    #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
-    pub(super) fn execute_hub_info(&mut self, _hub_url: Option<String>) -> ExecutorResult<Output> {
-        Err(hub_feature_disabled())
-    }
-
-    #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
-    pub(super) fn execute_hub_list_datasets(
-        &mut self,
-        _hub_url: Option<String>,
-        _tasks: Vec<String>,
-        _tags: Vec<String>,
-        _primitives: Vec<String>,
-        _license: Option<String>,
-        _size_min_bytes: Option<u64>,
-        _size_max_bytes: Option<u64>,
-        _sort: Option<crate::types::HubDatasetSort>,
-        _limit: Option<u32>,
-        _offset: Option<u32>,
-    ) -> ExecutorResult<Output> {
-        Err(hub_feature_disabled())
-    }
-
-    #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
-    pub(super) fn execute_hub_get_dataset(
-        &mut self,
-        _name: &str,
-        _hub_url: Option<String>,
-    ) -> ExecutorResult<Output> {
-        Err(hub_feature_disabled())
-    }
-
-    #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
-    pub(super) fn execute_hub_list_refs(
-        &mut self,
-        _dataset: &str,
-        _hub_url: Option<String>,
-    ) -> ExecutorResult<Output> {
-        Err(hub_feature_disabled())
-    }
-
-    #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
-    pub(super) fn execute_hub_list_yanked(
-        &mut self,
-        _since: Option<&str>,
-        _hub_url: Option<String>,
-    ) -> ExecutorResult<Output> {
-        Err(hub_feature_disabled())
+            .and_then(TryInto::try_into)
+            .map(Output::HubYanked)
     }
 }
 
@@ -439,12 +355,4 @@ fn hub_client_error(
 fn hub_problem_message(problem: &ProblemDetails) -> String {
     let detail = problem.detail.as_deref().unwrap_or(problem.title.as_str());
     format!("hub returned {}: {detail}", problem.error_code.as_str())
-}
-
-#[cfg(not(feature = "hub"))]
-fn hub_feature_disabled() -> ExecutorError {
-    ExecutorError::invalid_input(
-        "invalid_argument.executor.hub_feature_disabled",
-        "hub commands require the executor hub feature",
-    )
 }

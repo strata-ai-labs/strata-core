@@ -286,56 +286,91 @@ pub struct HubCloneProgress {
 }
 
 #[cfg(feature = "hub")]
-impl From<strata_hub::stratahub_protocol::wire::InfoResponse> for HubInfo {
-    fn from(value: strata_hub::stratahub_protocol::wire::InfoResponse) -> Self {
+impl TryFrom<strata_hub::stratahub_protocol::wire::InfoResponse> for HubInfo {
+    type Error = crate::ExecutorError;
+
+    fn try_from(
+        value: strata_hub::stratahub_protocol::wire::InfoResponse,
+    ) -> Result<Self, Self::Error> {
         wire_convert(value)
     }
 }
 
 #[cfg(feature = "hub")]
 impl
-    From<
+    TryFrom<
         strata_hub::stratahub_protocol::wire::PaginationEnvelope<
             strata_hub::stratahub_protocol::wire::DatasetSummary,
         >,
     > for HubDatasetPage
 {
-    fn from(
+    type Error = crate::ExecutorError;
+
+    fn try_from(
         value: strata_hub::stratahub_protocol::wire::PaginationEnvelope<
             strata_hub::stratahub_protocol::wire::DatasetSummary,
         >,
-    ) -> Self {
+    ) -> Result<Self, Self::Error> {
         wire_convert(value)
     }
 }
 
 #[cfg(feature = "hub")]
-impl From<strata_hub::stratahub_protocol::wire::DatasetCard> for HubDatasetCard {
-    fn from(value: strata_hub::stratahub_protocol::wire::DatasetCard) -> Self {
+impl TryFrom<strata_hub::stratahub_protocol::wire::DatasetCard> for HubDatasetCard {
+    type Error = crate::ExecutorError;
+
+    fn try_from(
+        value: strata_hub::stratahub_protocol::wire::DatasetCard,
+    ) -> Result<Self, Self::Error> {
         wire_convert(value)
     }
 }
 
 #[cfg(feature = "hub")]
-impl From<strata_hub::stratahub_protocol::wire::RefList> for HubRefList {
-    fn from(value: strata_hub::stratahub_protocol::wire::RefList) -> Self {
+impl TryFrom<strata_hub::stratahub_protocol::wire::RefList> for HubRefList {
+    type Error = crate::ExecutorError;
+
+    fn try_from(value: strata_hub::stratahub_protocol::wire::RefList) -> Result<Self, Self::Error> {
         wire_convert(value)
     }
 }
 
 #[cfg(feature = "hub")]
-impl From<strata_hub::stratahub_protocol::wire::YankedList> for HubYankedList {
-    fn from(value: strata_hub::stratahub_protocol::wire::YankedList) -> Self {
+impl TryFrom<strata_hub::stratahub_protocol::wire::YankedList> for HubYankedList {
+    type Error = crate::ExecutorError;
+
+    fn try_from(
+        value: strata_hub::stratahub_protocol::wire::YankedList,
+    ) -> Result<Self, Self::Error> {
         wire_convert(value)
     }
 }
 
+/// Converts a `stratahub_protocol` wire value into this build's executor
+/// DTO. Fallible BY DESIGN: a hub running a newer protocol revision can
+/// serve shapes (a new enum variant, a reworked field) that this build's
+/// DTOs cannot represent — that must surface as a typed, non-retryable
+/// refusal telling the user to upgrade, never as an executor panic.
 #[cfg(feature = "hub")]
-fn wire_convert<T, U>(value: T) -> U
+fn wire_convert<T, U>(value: T) -> Result<U, crate::ExecutorError>
 where
     T: Serialize,
     U: DeserializeOwned,
 {
-    let json = serde_json::to_value(value).expect("stratahub wire value serializes");
-    serde_json::from_value(json).expect("stratahub wire value matches executor DTO")
+    serde_json::to_value(value)
+        .map_err(|error| wire_convert_error(&error))
+        .and_then(|json| serde_json::from_value(json).map_err(|error| wire_convert_error(&error)))
+}
+
+#[cfg(feature = "hub")]
+fn wire_convert_error(error: &serde_json::Error) -> crate::ExecutorError {
+    crate::ExecutorError::new(
+        crate::ExecutorErrorClass::Unavailable,
+        "unavailable.executor.hub_transport",
+        false,
+        format!(
+            "the hub response does not match this build's schema (a newer \
+             hub protocol revision?) — upgrade strata: {error}"
+        ),
+    )
 }
