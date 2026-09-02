@@ -1,0 +1,29 @@
+{
+  "type": "hub_datasets",
+  "data": {
+    "total": 1,
+    "offset": 0,
+    "limit": 20,
+    "items": [
+      {
+        "name": "titanic",
+        "description": "Classic passenger-survival dataset.",
+        "size_bytes": 1024,
+        "downloads": 7,
+        "primitives": [
+          "kv"
+        ],
+        "tasks": [
+          "classification"
+        ],
+        "tags": [
+          "tabular"
+        ],
+        "license": "CC0",
+        "default_branch": "main",
+        "last_updated": "2026-09-02T00:00:00Z",
+        "badge": "official"
+      }
+    ]
+  }
+}

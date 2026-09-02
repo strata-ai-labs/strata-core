@@ -1,0 +1,99 @@
+{
+  "$defs": {
+    "HubRefEntry": {
+      "description": "One live hub ref.",
+      "properties": {
+        "branch": {
+          "description": "Branch name.",
+          "type": "string"
+        },
+        "last_updated": {
+          "description": "Last update timestamp as RFC 3339 UTC.",
+          "type": "string"
+        },
+        "manifest_hash": {
+          "description": "Manifest hash the branch points at.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "branch",
+        "manifest_hash",
+        "last_updated"
+      ],
+      "type": "object"
+    },
+    "HubRefList": {
+      "description": "Ref listing returned by `hub.list_refs`.",
+      "properties": {
+        "dataset": {
+          "description": "Dataset slug.",
+          "type": "string"
+        },
+        "default_branch": {
+          "description": "Default branch name.",
+          "type": "string"
+        },
+        "refs": {
+          "description": "Live refs.",
+          "items": {
+            "$ref": "#/$defs/HubRefEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "dataset",
+        "default_branch",
+        "refs"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/hub.list_refs.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "hub.list_refs",
+  "request": {
+    "additionalProperties": false,
+    "description": "Lists refs for one hub dataset (`GET /v1/datasets/{name}/refs`).",
+    "properties": {
+      "dataset": {
+        "description": "Dataset slug.",
+        "type": "string"
+      },
+      "hub_url": {
+        "description": "Explicit hub URL; when absent the 5-layer resolver runs.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "hub_list_refs",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "dataset"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Hub dataset refs.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/HubRefList"
+      },
+      "type": {
+        "const": "hub_refs",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

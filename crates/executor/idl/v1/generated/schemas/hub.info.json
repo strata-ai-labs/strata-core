@@ -1,0 +1,107 @@
+{
+  "$defs": {
+    "HubInfo": {
+      "description": "Hub capability advertisement returned by `hub.info`.",
+      "properties": {
+        "hash_algorithm": {
+          "description": "Content-address hash algorithm tag.",
+          "type": "string"
+        },
+        "max_dataset_size_bytes": {
+          "description": "Maximum dataset size accepted by the hub.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_manifest_size_bytes": {
+          "description": "Maximum manifest size accepted by the hub.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_object_size_bytes": {
+          "description": "Maximum object size accepted by the hub.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "protocol_version": {
+          "description": "Protocol version advertised by the hub.",
+          "type": "string"
+        },
+        "server_implementation": {
+          "description": "Server implementation name.",
+          "type": "string"
+        },
+        "server_version": {
+          "description": "Server implementation version.",
+          "type": "string"
+        },
+        "supported_object_content_types": {
+          "description": "Object content types accepted by the hub.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "telemetry_endpoint_enabled": {
+          "description": "True when the hub accepts telemetry posts.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "server_implementation",
+        "server_version",
+        "hash_algorithm",
+        "max_object_size_bytes",
+        "max_manifest_size_bytes",
+        "max_dataset_size_bytes",
+        "supported_object_content_types",
+        "telemetry_endpoint_enabled"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/hub.info.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "hub.info",
+  "request": {
+    "additionalProperties": false,
+    "description": "Reads the hub's V1 capability advertisement (`GET /v1/info`).",
+    "properties": {
+      "hub_url": {
+        "description": "Explicit hub URL; when absent the 5-layer resolver runs\n(flag, `STRATA_HUB_URL`, project config, global config).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "hub_info",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Hub capability advertisement.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/HubInfo"
+      },
+      "type": {
+        "const": "hub_info",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

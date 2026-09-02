@@ -1,0 +1,16 @@
+{
+  "type": "hub_yanked",
+  "data": {
+    "generated_at": "2026-09-02T00:00:00Z",
+    "total": 1,
+    "items": [
+      {
+        "dataset": "bad-dataset",
+        "branch": "main",
+        "manifest_hash": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "yanked_at": "2026-09-02T00:00:00Z",
+        "reason": "policy_violation"
+      }
+    ]
+  }
+}

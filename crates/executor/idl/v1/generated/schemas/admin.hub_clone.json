@@ -1,4 +1,109 @@
 {
+  "$defs": {
+    "HubCloneProgress": {
+      "description": "Machine-readable clone progress emitted by `strata clone --progress jsonl`.",
+      "properties": {
+        "branch": {
+          "description": "Branch being fetched when known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bytes": {
+          "description": "Bytes fetched for the current object.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "dataset": {
+          "description": "Dataset being cloned.",
+          "type": "string"
+        },
+        "index": {
+          "description": "One-based object index for object fetch events.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "manifest_hash": {
+          "description": "Resolved manifest hash when known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "object_count": {
+          "description": "Object count when known.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stage": {
+          "$ref": "#/$defs/HubCloneProgressStage",
+          "description": "Progress stage."
+        },
+        "total_bytes": {
+          "description": "Total object bytes when known.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "stage",
+        "dataset"
+      ],
+      "type": "object"
+    },
+    "HubCloneProgressStage": {
+      "description": "Clone progress stage.",
+      "oneOf": [
+        {
+          "const": "resolved",
+          "description": "The ref resolved to a manifest hash.",
+          "type": "string"
+        },
+        {
+          "const": "manifest_fetched",
+          "description": "The manifest was fetched and counted.",
+          "type": "string"
+        },
+        {
+          "const": "object_fetched",
+          "description": "One object was fetched.",
+          "type": "string"
+        },
+        {
+          "const": "importing",
+          "description": "Local import/reconstitution started.",
+          "type": "string"
+        },
+        {
+          "const": "done",
+          "description": "Clone completed.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "A future hub progress stage unknown to this executor build.",
+          "type": "string"
+        }
+      ]
+    }
+  },
   "$id": "https://stratadb.org/idl/v1/schemas/admin.hub_clone.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "command": "admin.hub_clone",
@@ -94,5 +199,79 @@
       "data"
     ],
     "type": "object"
-  }
+  },
+  "responses": [
+    {
+      "description": "A completed hub clone.",
+      "properties": {
+        "data": {
+          "properties": {
+            "branch": {
+              "description": "Branch fetched.",
+              "type": "string"
+            },
+            "dataset": {
+              "description": "Dataset cloned.",
+              "type": "string"
+            },
+            "dest": {
+              "description": "Destination directory holding the new database.",
+              "type": "string"
+            },
+            "manifest_hash": {
+              "description": "The bundle's manifest hash.",
+              "type": "string"
+            },
+            "object_count": {
+              "description": "Objects fetched.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "total_bytes": {
+              "description": "Total bytes fetched.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "dataset",
+            "branch",
+            "dest",
+            "manifest_hash",
+            "object_count",
+            "total_bytes"
+          ],
+          "type": "object"
+        },
+        "type": {
+          "const": "hub_clone_result",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "data"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A hub clone progress event.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/HubCloneProgress"
+        },
+        "type": {
+          "const": "hub_clone_progress",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "data"
+      ],
+      "type": "object"
+    }
+  ]
 }

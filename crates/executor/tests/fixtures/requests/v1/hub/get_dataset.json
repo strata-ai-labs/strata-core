@@ -1,0 +1,5 @@
+{
+  "type": "hub_get_dataset",
+  "name": "titanic",
+  "hub_url": "https://hub.stratahub.io"
+}

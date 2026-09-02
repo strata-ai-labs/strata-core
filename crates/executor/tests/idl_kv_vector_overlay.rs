@@ -84,6 +84,14 @@ const REQUIRED_GRAPH: &[&str] = &[
     "graph.apply_delete_policy",
 ];
 
+const REQUIRED_HUB: &[&str] = &[
+    "hub.info",
+    "hub.list_datasets",
+    "hub.get_dataset",
+    "hub.list_refs",
+    "hub.list_yanked",
+];
+
 const REQUIRED_EVENT: &[&str] = &[
     "event.append",
     "event.batch_append",
@@ -122,6 +130,7 @@ fn required_command_count() -> usize {
         + REQUIRED_BRANCH.len()
         + REQUIRED_EVENT.len()
         + REQUIRED_GRAPH.len()
+        + REQUIRED_HUB.len()
         + REQUIRED_INFERENCE.len()
         + REQUIRED_JSON.len()
         + REQUIRED_KV.len()
@@ -199,6 +208,7 @@ fn kv_and_vector_overlay_has_required_command_coverage() {
         .chain(REQUIRED_BRANCH.iter())
         .chain(REQUIRED_EVENT.iter())
         .chain(REQUIRED_GRAPH.iter())
+        .chain(REQUIRED_HUB.iter())
         .chain(REQUIRED_INFERENCE.iter())
         .chain(REQUIRED_JSON.iter())
         .chain(REQUIRED_KV.iter())

@@ -1,0 +1,113 @@
+{
+  "$defs": {
+    "HubYankedEntry": {
+      "description": "One yanked hub ref.",
+      "properties": {
+        "branch": {
+          "description": "Branch name.",
+          "type": "string"
+        },
+        "dataset": {
+          "description": "Dataset slug.",
+          "type": "string"
+        },
+        "manifest_hash": {
+          "description": "Yanked manifest hash.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Yank reason.",
+          "type": "string"
+        },
+        "yanked_at": {
+          "description": "Yank timestamp as RFC 3339 UTC.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dataset",
+        "branch",
+        "manifest_hash",
+        "yanked_at",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "HubYankedList": {
+      "description": "Hub yank deny-list returned by `hub.list_yanked`.",
+      "properties": {
+        "generated_at": {
+          "description": "Snapshot generation time as RFC 3339 UTC.",
+          "type": "string"
+        },
+        "items": {
+          "description": "Yanked refs.",
+          "items": {
+            "$ref": "#/$defs/HubYankedEntry"
+          },
+          "type": "array"
+        },
+        "total": {
+          "description": "Number of yanked entries in this snapshot.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "generated_at",
+        "total",
+        "items"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/hub.list_yanked.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "hub.list_yanked",
+  "request": {
+    "additionalProperties": false,
+    "description": "Lists yanked hub refs (`GET /v1/yanked`).",
+    "properties": {
+      "hub_url": {
+        "description": "Explicit hub URL; when absent the 5-layer resolver runs.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "since": {
+        "description": "RFC 3339 lower-bound timestamp.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "hub_list_yanked",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Hub yank deny-list.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/HubYankedList"
+      },
+      "type": {
+        "const": "hub_yanked",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

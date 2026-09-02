@@ -140,6 +140,8 @@ mod facade;
 mod graph;
 mod graph_convert;
 mod hub;
+#[cfg(not(feature = "hub"))]
+mod hub_disabled;
 mod input_common;
 mod json;
 mod kv;

@@ -1,0 +1,260 @@
+{
+  "$defs": {
+    "HubDatasetPage": {
+      "description": "Paginated dataset-list output returned by `hub.list_datasets`.",
+      "properties": {
+        "items": {
+          "description": "Dataset summaries in this page.",
+          "items": {
+            "$ref": "#/$defs/HubDatasetSummary"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "description": "Page-size limit applied by the hub.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Zero-based offset of this page.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total": {
+          "description": "Total number of datasets matching the query.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "total",
+        "offset",
+        "limit",
+        "items"
+      ],
+      "type": "object"
+    },
+    "HubDatasetSort": {
+      "description": "Dataset-list sort key accepted by StrataHub V1.",
+      "oneOf": [
+        {
+          "const": "downloads",
+          "description": "Most-downloaded datasets first.",
+          "type": "string"
+        },
+        {
+          "const": "recent",
+          "description": "Most-recently-updated datasets first.",
+          "type": "string"
+        },
+        {
+          "const": "name",
+          "description": "Dataset-name lexicographic order.",
+          "type": "string"
+        },
+        {
+          "const": "size",
+          "description": "Largest datasets first.",
+          "type": "string"
+        }
+      ]
+    },
+    "HubDatasetSummary": {
+      "description": "One dataset summary returned by `hub.list_datasets`.",
+      "properties": {
+        "badge": {
+          "description": "Optional curation badge.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "default_branch": {
+          "description": "Default branch name.",
+          "type": "string"
+        },
+        "description": {
+          "description": "Short dataset description.",
+          "type": "string"
+        },
+        "downloads": {
+          "description": "Cumulative clone/download count reported by the hub.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "last_updated": {
+          "description": "Last update timestamp as RFC 3339 UTC.",
+          "type": "string"
+        },
+        "license": {
+          "description": "License identifier.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Dataset slug.",
+          "type": "string"
+        },
+        "primitives": {
+          "description": "Primitive families present in the dataset.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "size_bytes": {
+          "description": "Total size of the default branch bundle in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tags": {
+          "description": "Free-form tags attached to the dataset.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tasks": {
+          "description": "Task labels attached to the dataset.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "size_bytes",
+        "downloads",
+        "primitives",
+        "tasks",
+        "tags",
+        "license",
+        "default_branch",
+        "last_updated"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/hub.list_datasets.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "hub.list_datasets",
+  "request": {
+    "additionalProperties": false,
+    "description": "Lists hub datasets (`GET /v1/datasets`).",
+    "properties": {
+      "hub_url": {
+        "description": "Explicit hub URL; when absent the 5-layer resolver runs.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "license": {
+        "description": "License filter.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "limit": {
+        "description": "Page size.",
+        "format": "uint32",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "offset": {
+        "description": "Zero-based page offset.",
+        "format": "uint32",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "primitives": {
+        "description": "Primitive filters.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "size_max_bytes": {
+        "description": "Maximum dataset size in bytes.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "size_min_bytes": {
+        "description": "Minimum dataset size in bytes.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "sort": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/HubDatasetSort"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Sort key."
+      },
+      "tags": {
+        "description": "Tag filters.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "tasks": {
+        "description": "Task filters.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "type": {
+        "const": "hub_list_datasets",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Hub dataset listing page.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/HubDatasetPage"
+      },
+      "type": {
+        "const": "hub_datasets",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

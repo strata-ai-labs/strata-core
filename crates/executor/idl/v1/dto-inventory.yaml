@@ -91,6 +91,12 @@ response_models:
   - Maybe<RemoteOriginInfo>
   - Maybe<String>
   - StatusResponse<HubClone>
+  - StatusResponse<HubCloneProgress>
+  - StatusResponse<HubInfo>
+  - StatusResponse<HubDatasetPage>
+  - StatusResponse<HubDatasetCard>
+  - StatusResponse<HubRefList>
+  - StatusResponse<HubYankedList>
   - StatusResponse<ArrowImport>
   - StatusResponse<ArrowExport>
   - Page<ModelInfo, String>

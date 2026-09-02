@@ -1,0 +1,9 @@
+{
+  "type": "hub_clone_progress",
+  "data": {
+    "stage": "resolved",
+    "dataset": "titanic",
+    "branch": "main",
+    "manifest_hash": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  }
+}

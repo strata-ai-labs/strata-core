@@ -1,0 +1,304 @@
+{
+  "$defs": {
+    "HubBranchHighlight": {
+      "description": "One branch highlight on a hub dataset card.",
+      "properties": {
+        "is_default": {
+          "description": "True when this is the default branch.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Branch name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "is_default"
+      ],
+      "type": "object"
+    },
+    "HubDatasetCard": {
+      "description": "Full dataset card returned by `hub.get_dataset`.",
+      "properties": {
+        "badge": {
+          "description": "Optional curation badge.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "capability_registry_version": {
+          "description": "Capability registry version required by the bundle.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "citation": {
+          "description": "Citation text, when published by the dataset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "clone_command": {
+          "description": "Server-rendered clone command.",
+          "type": "string"
+        },
+        "created": {
+          "description": "Dataset creation timestamp as RFC 3339 UTC.",
+          "type": "string"
+        },
+        "default_branch": {
+          "description": "Default branch name.",
+          "type": "string"
+        },
+        "description": {
+          "description": "Short dataset description.",
+          "type": "string"
+        },
+        "downloads": {
+          "description": "Cumulative clone/download count reported by the hub.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "engine_version_required": {
+          "description": "Engine semver range required by the bundle.",
+          "type": "string"
+        },
+        "format_version": {
+          "description": "Bundle format version.",
+          "type": "string"
+        },
+        "frontmatter_extras": {
+          "additionalProperties": true,
+          "description": "Unknown README frontmatter keys preserved by the hub.",
+          "type": "object"
+        },
+        "last_updated": {
+          "description": "Last update timestamp as RFC 3339 UTC.",
+          "type": "string"
+        },
+        "license": {
+          "description": "License identifier.",
+          "type": "string"
+        },
+        "manifest_hash": {
+          "description": "Manifest hash for the default branch.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Dataset slug.",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Dataset owner.",
+          "type": "string"
+        },
+        "primitives": {
+          "description": "Primitive families present in the dataset.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "provenance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HubProvenance"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Dataset provenance metadata."
+        },
+        "quick_start_snippets": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Language identifier to quick-start snippet.",
+          "type": "object"
+        },
+        "readme": {
+          "description": "Dataset README in `CommonMark`.",
+          "type": "string"
+        },
+        "sample_preview": {
+          "description": "Primitive-aware sample preview block."
+        },
+        "schema": {
+          "description": "Structural schema block."
+        },
+        "size_bytes": {
+          "description": "Total size of the default branch bundle in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "strata_features": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HubStrataFeatures"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Strata-specific feature highlights."
+        },
+        "summary_excerpt": {
+          "description": "Longer summary excerpt.",
+          "type": "string"
+        },
+        "tags": {
+          "description": "Free-form tags attached to the dataset.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tasks": {
+          "description": "Task labels attached to the dataset.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "size_bytes",
+        "downloads",
+        "primitives",
+        "tasks",
+        "tags",
+        "license",
+        "default_branch",
+        "last_updated",
+        "owner",
+        "summary_excerpt",
+        "created",
+        "manifest_hash",
+        "engine_version_required",
+        "format_version",
+        "capability_registry_version",
+        "clone_command",
+        "readme"
+      ],
+      "type": "object"
+    },
+    "HubProvenance": {
+      "description": "Dataset provenance metadata on a hub dataset card.",
+      "properties": {
+        "curator": {
+          "description": "Curator name.",
+          "type": "string"
+        },
+        "license_text_url": {
+          "description": "Optional license text URL.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "Source dataset or publisher.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "curator"
+      ],
+      "type": "object"
+    },
+    "HubStrataFeatures": {
+      "description": "Strata-specific feature highlights on a hub dataset card.",
+      "properties": {
+        "branches": {
+          "description": "Branch highlights.",
+          "items": {
+            "$ref": "#/$defs/HubBranchHighlight"
+          },
+          "type": "array"
+        },
+        "example_notebook": {
+          "description": "Optional notebook URL or path.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "multi_primitive_demos": {
+          "description": "Multi-primitive workflow examples.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "time_travel_highlights": {
+          "description": "Time-travel feature examples.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "branches",
+        "time_travel_highlights",
+        "multi_primitive_demos"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/hub.get_dataset.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "hub.get_dataset",
+  "request": {
+    "additionalProperties": false,
+    "description": "Reads one hub dataset card (`GET /v1/datasets/{name}`).",
+    "properties": {
+      "hub_url": {
+        "description": "Explicit hub URL; when absent the 5-layer resolver runs.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "name": {
+        "description": "Dataset slug.",
+        "type": "string"
+      },
+      "type": {
+        "const": "hub_get_dataset",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "name"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Full hub dataset card.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/HubDatasetCard"
+      },
+      "type": {
+        "const": "hub_dataset",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

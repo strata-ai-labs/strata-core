@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use strata_executor::JsonIndexType;
+use strata_executor::{HubDatasetSort, JsonIndexType};
 
 /// Strata V1 command-line interface.
 // A clap argument struct: each bool is an independent CLI switch, which is
@@ -163,6 +163,8 @@ pub(crate) enum TopCommand {
     Remote,
     /// Clone a dataset from a hub into a new local database.
     Clone(CloneArgs),
+    /// Browse StrataHub datasets and refs.
+    Hub(HubArgs),
     /// Branch lifecycle commands.
     Branch(BranchArgs),
     /// Product space commands.
@@ -371,6 +373,122 @@ pub(crate) struct CloneArgs {
     /// Hub URL for this invocation (overrides env and config files).
     #[arg(long)]
     pub(crate) hub: Option<String>,
+    /// Emit machine-readable progress events.
+    #[arg(long, value_enum, value_name = "MODE")]
+    pub(crate) progress: Option<CloneProgressFormat>,
+}
+
+/// Clone progress output format.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum CloneProgressFormat {
+    /// Newline-delimited compact JSON output.
+    #[value(alias = "ndjson")]
+    Jsonl,
+}
+
+/// Hub command wrapper.
+#[derive(Debug, Args)]
+pub(crate) struct HubArgs {
+    /// Hub command.
+    #[command(subcommand)]
+    pub(crate) command: HubCommand,
+}
+
+/// Hub browse commands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum HubCommand {
+    /// Read the hub capability advertisement.
+    Info {
+        /// Hub URL for this invocation (overrides env and config files).
+        #[arg(long)]
+        hub: Option<String>,
+    },
+    /// List hub datasets.
+    ListDatasets(HubListDatasetsArgs),
+    /// Read one dataset card.
+    GetDataset {
+        /// Dataset slug.
+        name: String,
+        /// Hub URL for this invocation (overrides env and config files).
+        #[arg(long)]
+        hub: Option<String>,
+    },
+    /// List live refs for one dataset.
+    ListRefs {
+        /// Dataset slug.
+        dataset: String,
+        /// Hub URL for this invocation (overrides env and config files).
+        #[arg(long)]
+        hub: Option<String>,
+    },
+    /// List yanked refs.
+    ListYanked {
+        /// RFC 3339 lower-bound timestamp.
+        #[arg(long)]
+        since: Option<String>,
+        /// Hub URL for this invocation (overrides env and config files).
+        #[arg(long)]
+        hub: Option<String>,
+    },
+}
+
+/// Arguments for `hub list-datasets`.
+#[derive(Debug, Args)]
+pub(crate) struct HubListDatasetsArgs {
+    /// Hub URL for this invocation (overrides env and config files).
+    #[arg(long)]
+    pub(crate) hub: Option<String>,
+    /// Task filter. Repeat to OR within the task dimension.
+    #[arg(long = "task")]
+    pub(crate) tasks: Vec<String>,
+    /// Tag filter. Repeat to OR within the tag dimension.
+    #[arg(long = "tag")]
+    pub(crate) tags: Vec<String>,
+    /// Primitive filter. Repeat to OR within the primitive dimension.
+    #[arg(long = "primitive")]
+    pub(crate) primitives: Vec<String>,
+    /// License identifier filter.
+    #[arg(long)]
+    pub(crate) license: Option<String>,
+    /// Minimum dataset size in bytes.
+    #[arg(long)]
+    pub(crate) size_min_bytes: Option<u64>,
+    /// Maximum dataset size in bytes.
+    #[arg(long)]
+    pub(crate) size_max_bytes: Option<u64>,
+    /// Sort key.
+    #[arg(long, value_enum)]
+    pub(crate) sort: Option<HubDatasetSortArg>,
+    /// Page size. StrataHub V1 accepts 1..=200.
+    #[arg(long)]
+    pub(crate) limit: Option<u32>,
+    /// Zero-based page offset.
+    #[arg(long)]
+    pub(crate) offset: Option<u32>,
+}
+
+/// Dataset-list sort key.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum HubDatasetSortArg {
+    /// Most-downloaded datasets first.
+    Downloads,
+    /// Most-recently-updated datasets first.
+    Recent,
+    /// Dataset-name lexicographic order.
+    Name,
+    /// Largest datasets first.
+    Size,
+}
+
+impl From<HubDatasetSortArg> for HubDatasetSort {
+    fn from(value: HubDatasetSortArg) -> Self {
+        match value {
+            HubDatasetSortArg::Downloads => Self::Downloads,
+            HubDatasetSortArg::Recent => Self::Recent,
+            HubDatasetSortArg::Name => Self::Name,
+            HubDatasetSortArg::Size => Self::Size,
+        }
+    }
 }
 
 /// Branch command wrapper.
@@ -1970,6 +2088,11 @@ mod tests {
         "graph sssp",
         "graph wcc",
         "health",
+        "hub get-dataset",
+        "hub info",
+        "hub list-datasets",
+        "hub list-refs",
+        "hub list-yanked",
         "inference cache-status",
         "inference capability",
         "inference detokenize",

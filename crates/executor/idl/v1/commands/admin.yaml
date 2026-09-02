@@ -144,6 +144,9 @@ commands:
     title: Clone hub dataset
     input: Command::HubClone
     output: Output::HubCloneResult
+    outputs:
+      - Output::HubCloneResult
+      - Output::HubCloneProgress
     result: HubClone
     access: write
     cli_path: ["clone"]
@@ -160,4 +163,6 @@ commands:
     fixtures:
       request: requests/v1/admin/hub_clone.json
       response: responses/v1/admin/hub_clone.json
+      responses:
+        - responses/v1/hub/clone_progress_resolved.json
       replay_skip: hub clone resolves and downloads a dataset over the network into a new database directory; it never runs against the scratch cache executor

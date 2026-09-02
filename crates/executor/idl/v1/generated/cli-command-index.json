@@ -4,11 +4,11 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "cdf9b2829c5de570488c59e8d69eaedd865c1377799d8a49cc958c7db455ab6e",
+    "checksum_sha256": "b1eaf99685d5d85d4fd750b9b06a2e2ff39fc304df5ee591a16103a8d39d1d7b",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
-  "command_count": 130,
+  "command_count": 135,
   "families": [
     {
       "id": "admin",
@@ -102,6 +102,17 @@
         "graph.sample",
         "graph.analytics.sssp",
         "graph.analytics.wcc"
+      ]
+    },
+    {
+      "id": "hub",
+      "command_count": 5,
+      "commands": [
+        "hub.get_dataset",
+        "hub.info",
+        "hub.list_datasets",
+        "hub.list_refs",
+        "hub.list_yanked"
       ]
     },
     {
@@ -1000,7 +1011,8 @@
       "input": "Command::HubClone",
       "wire": "hub_clone",
       "outputs": [
-        "Output::HubCloneResult"
+        "Output::HubCloneResult",
+        "Output::HubCloneProgress"
       ],
       "response_model": "StatusResponse<HubClone>",
       "errors": [
@@ -1036,6 +1048,9 @@
       "fixtures": {
         "request": "requests/v1/admin/hub_clone.json",
         "response": "responses/v1/admin/hub_clone.json",
+        "responses": [
+          "responses/v1/hub/clone_progress_resolved.json"
+        ],
         "replay_skip": "hub clone resolves and downloads a dataset over the network into a new database directory; it never runs against the scratch cache executor"
       },
       "wire_status": "stable"
@@ -3922,6 +3937,321 @@
       "fixtures": {
         "request": "requests/v1/admin/health.json",
         "response": "responses/v1/admin/health.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "hub.get_dataset",
+      "path": [
+        "hub",
+        "get-dataset"
+      ],
+      "path_display": "hub get-dataset",
+      "surface": "verb",
+      "family": "hub",
+      "op": "get_dataset",
+      "kind": "read.summary",
+      "title": "Read hub dataset",
+      "summary": "Read one StrataHub dataset card.",
+      "description": "Reads `GET /v1/datasets/<name>` from the effective hub URL and returns the dataset card in an executor-owned JSON envelope.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/hub/get_dataset",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::HubGetDataset",
+      "wire": "hub_get_dataset",
+      "outputs": [
+        "Output::HubDataset"
+      ],
+      "response_model": "StatusResponse<HubDatasetCard>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.executor.hub_feature_disabled",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
+        },
+        {
+          "code": "invalid_argument.executor.hub_url",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_url"
+        },
+        {
+          "code": "unavailable.executor.hub_transport",
+          "docs": "https://stratadb.org/e/unavailable.executor.hub_transport"
+        },
+        {
+          "code": "invalid_argument.executor.hub_dataset",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_dataset"
+        },
+        {
+          "code": "not_found.executor.hub_dataset",
+          "docs": "https://stratadb.org/e/not_found.executor.hub_dataset"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/hub/get_dataset.json",
+        "response": "responses/v1/hub/dataset.json",
+        "replay_skip": "hub browse reads a configured StrataHub over the network; it never runs against the scratch cache executor"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "hub.info",
+      "path": [
+        "hub",
+        "info"
+      ],
+      "path_display": "hub info",
+      "surface": "verb",
+      "family": "hub",
+      "op": "info",
+      "kind": "read.summary",
+      "title": "Read hub info",
+      "summary": "Read the selected StrataHub's V1 capability advertisement.",
+      "description": "Reads `GET /v1/info` from the effective hub URL resolved by the shared Strata resolver.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/hub/info",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::HubInfo",
+      "wire": "hub_info",
+      "outputs": [
+        "Output::HubInfo"
+      ],
+      "response_model": "StatusResponse<HubInfo>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.executor.hub_feature_disabled",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
+        },
+        {
+          "code": "invalid_argument.executor.hub_url",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_url"
+        },
+        {
+          "code": "unavailable.executor.hub_transport",
+          "docs": "https://stratadb.org/e/unavailable.executor.hub_transport"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/hub/info.json",
+        "response": "responses/v1/hub/info.json",
+        "replay_skip": "hub browse reads a configured StrataHub over the network; it never runs against the scratch cache executor"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "hub.list_datasets",
+      "path": [
+        "hub",
+        "list-datasets"
+      ],
+      "path_display": "hub list-datasets",
+      "surface": "verb",
+      "family": "hub",
+      "op": "list_datasets",
+      "kind": "read.summary",
+      "title": "List hub datasets",
+      "summary": "List datasets from the selected StrataHub.",
+      "description": "Reads `GET /v1/datasets` from the effective hub URL. Repeatable task, tag, and primitive filters preserve the StrataHub V1 query shape.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/hub/list_datasets",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::HubListDatasets",
+      "wire": "hub_list_datasets",
+      "outputs": [
+        "Output::HubDatasets"
+      ],
+      "response_model": "StatusResponse<HubDatasetPage>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.executor.hub_feature_disabled",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
+        },
+        {
+          "code": "invalid_argument.executor.hub_url",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_url"
+        },
+        {
+          "code": "unavailable.executor.hub_transport",
+          "docs": "https://stratadb.org/e/unavailable.executor.hub_transport"
+        },
+        {
+          "code": "invalid_argument.executor.hub_filter",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_filter"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/hub/list_datasets.json",
+        "response": "responses/v1/hub/datasets.json",
+        "replay_skip": "hub browse reads a configured StrataHub over the network; it never runs against the scratch cache executor",
+        "error_cases": [
+          {
+            "request": "requests/v1/hub/list_datasets_bad_limit.json",
+            "expected_error": "responses/v1/errors/hub/list_datasets_bad_limit.json"
+          }
+        ]
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "hub.list_refs",
+      "path": [
+        "hub",
+        "list-refs"
+      ],
+      "path_display": "hub list-refs",
+      "surface": "verb",
+      "family": "hub",
+      "op": "list_refs",
+      "kind": "read.summary",
+      "title": "List hub dataset refs",
+      "summary": "List live refs for a StrataHub dataset.",
+      "description": "Reads `GET /v1/datasets/<name>/refs` from the effective hub URL. Yanked refs are filtered by the hub.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/hub/list_refs",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::HubListRefs",
+      "wire": "hub_list_refs",
+      "outputs": [
+        "Output::HubRefs"
+      ],
+      "response_model": "StatusResponse<HubRefList>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.executor.hub_feature_disabled",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
+        },
+        {
+          "code": "invalid_argument.executor.hub_url",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_url"
+        },
+        {
+          "code": "unavailable.executor.hub_transport",
+          "docs": "https://stratadb.org/e/unavailable.executor.hub_transport"
+        },
+        {
+          "code": "invalid_argument.executor.hub_dataset",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_dataset"
+        },
+        {
+          "code": "not_found.executor.hub_dataset",
+          "docs": "https://stratadb.org/e/not_found.executor.hub_dataset"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/hub/list_refs.json",
+        "response": "responses/v1/hub/refs.json",
+        "replay_skip": "hub browse reads a configured StrataHub over the network; it never runs against the scratch cache executor"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "hub.list_yanked",
+      "path": [
+        "hub",
+        "list-yanked"
+      ],
+      "path_display": "hub list-yanked",
+      "surface": "verb",
+      "family": "hub",
+      "op": "list_yanked",
+      "kind": "read.summary",
+      "title": "List yanked hub refs",
+      "summary": "List yanked refs from the selected StrataHub.",
+      "description": "Reads `GET /v1/yanked` from the effective hub URL. `since`, when supplied, must be an RFC 3339 timestamp.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/hub/list_yanked",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::HubListYanked",
+      "wire": "hub_list_yanked",
+      "outputs": [
+        "Output::HubYanked"
+      ],
+      "response_model": "StatusResponse<HubYankedList>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.executor.hub_feature_disabled",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
+        },
+        {
+          "code": "invalid_argument.executor.hub_url",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_url"
+        },
+        {
+          "code": "unavailable.executor.hub_transport",
+          "docs": "https://stratadb.org/e/unavailable.executor.hub_transport"
+        },
+        {
+          "code": "invalid_argument.executor.hub_since",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_since"
+        },
+        {
+          "code": "not_found.executor.hub_resource",
+          "docs": "https://stratadb.org/e/not_found.executor.hub_resource"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/hub/list_yanked.json",
+        "response": "responses/v1/hub/yanked.json",
+        "replay_skip": "hub browse reads a configured StrataHub over the network; it never runs against the scratch cache executor",
+        "error_cases": [
+          {
+            "request": "requests/v1/hub/list_yanked_bad_since.json",
+            "expected_error": "responses/v1/errors/hub/list_yanked_bad_since.json"
+          }
+        ]
       },
       "wire_status": "stable"
     },
@@ -8234,12 +8564,12 @@
       "admin.describe": 15,
       "admin.health": 57,
       "admin.hub_clone": 12,
-      "admin.info": 69,
-      "admin.ipc_status": 70,
-      "admin.ipc_stop": 71,
-      "admin.metrics": 101,
-      "admin.ping": 102,
-      "admin.remote": 103,
+      "admin.info": 74,
+      "admin.ipc_status": 75,
+      "admin.ipc_stop": 76,
+      "admin.metrics": 106,
+      "admin.ping": 107,
+      "admin.remote": 108,
       "arrow.export": 0,
       "arrow.import": 1,
       "branch.create": 2,
@@ -8293,72 +8623,77 @@
       "graph.ontology.get": 49,
       "graph.ontology.summary": 50,
       "graph.sample": 54,
-      "inference.cache_status": 58,
-      "inference.capability": 59,
-      "inference.detokenize": 60,
-      "inference.embed": 61,
-      "inference.generate": 62,
-      "inference.models.list": 63,
-      "inference.models.local": 64,
-      "inference.models.pull": 65,
-      "inference.rank": 66,
-      "inference.tokenize": 67,
-      "inference.unload": 68,
-      "json.batch_delete": 72,
-      "json.batch_exists": 73,
-      "json.batch_get": 74,
-      "json.batch_set": 75,
-      "json.count": 76,
-      "json.delete": 77,
-      "json.exists": 78,
-      "json.get": 79,
-      "json.history": 80,
-      "json.index.create": 81,
-      "json.index.drop": 82,
-      "json.index.list": 83,
-      "json.list": 84,
-      "json.sample": 85,
-      "json.scan": 86,
-      "json.set": 87,
-      "kv.batch_delete": 88,
-      "kv.batch_exists": 89,
-      "kv.batch_get": 90,
-      "kv.batch_put": 91,
-      "kv.count": 92,
-      "kv.delete": 93,
-      "kv.exists": 94,
-      "kv.get": 95,
-      "kv.history": 96,
-      "kv.list": 97,
-      "kv.put": 98,
-      "kv.sample": 99,
-      "kv.scan": 100,
-      "space.create": 104,
-      "space.delete": 105,
-      "space.exists": 106,
-      "space.list": 107,
-      "vector.batch_delete": 108,
-      "vector.batch_exists": 109,
-      "vector.batch_get": 110,
-      "vector.batch_upsert": 111,
-      "vector.collection.create": 112,
-      "vector.collection.delete": 113,
-      "vector.collection.list": 114,
-      "vector.collection.stats": 115,
-      "vector.count": 116,
-      "vector.delete": 117,
-      "vector.delete_all": 118,
-      "vector.delete_by_filter": 119,
-      "vector.exists": 120,
-      "vector.get": 121,
-      "vector.history": 122,
-      "vector.index.query": 123,
-      "vector.keys": 124,
-      "vector.metadata.update": 128,
-      "vector.query": 125,
-      "vector.sample": 126,
-      "vector.scan": 127,
-      "vector.upsert": 129
+      "hub.get_dataset": 58,
+      "hub.info": 59,
+      "hub.list_datasets": 60,
+      "hub.list_refs": 61,
+      "hub.list_yanked": 62,
+      "inference.cache_status": 63,
+      "inference.capability": 64,
+      "inference.detokenize": 65,
+      "inference.embed": 66,
+      "inference.generate": 67,
+      "inference.models.list": 68,
+      "inference.models.local": 69,
+      "inference.models.pull": 70,
+      "inference.rank": 71,
+      "inference.tokenize": 72,
+      "inference.unload": 73,
+      "json.batch_delete": 77,
+      "json.batch_exists": 78,
+      "json.batch_get": 79,
+      "json.batch_set": 80,
+      "json.count": 81,
+      "json.delete": 82,
+      "json.exists": 83,
+      "json.get": 84,
+      "json.history": 85,
+      "json.index.create": 86,
+      "json.index.drop": 87,
+      "json.index.list": 88,
+      "json.list": 89,
+      "json.sample": 90,
+      "json.scan": 91,
+      "json.set": 92,
+      "kv.batch_delete": 93,
+      "kv.batch_exists": 94,
+      "kv.batch_get": 95,
+      "kv.batch_put": 96,
+      "kv.count": 97,
+      "kv.delete": 98,
+      "kv.exists": 99,
+      "kv.get": 100,
+      "kv.history": 101,
+      "kv.list": 102,
+      "kv.put": 103,
+      "kv.sample": 104,
+      "kv.scan": 105,
+      "space.create": 109,
+      "space.delete": 110,
+      "space.exists": 111,
+      "space.list": 112,
+      "vector.batch_delete": 113,
+      "vector.batch_exists": 114,
+      "vector.batch_get": 115,
+      "vector.batch_upsert": 116,
+      "vector.collection.create": 117,
+      "vector.collection.delete": 118,
+      "vector.collection.list": 119,
+      "vector.collection.stats": 120,
+      "vector.count": 121,
+      "vector.delete": 122,
+      "vector.delete_all": 123,
+      "vector.delete_by_filter": 124,
+      "vector.exists": 125,
+      "vector.get": 126,
+      "vector.history": 127,
+      "vector.index.query": 128,
+      "vector.keys": 129,
+      "vector.metadata.update": 133,
+      "vector.query": 130,
+      "vector.sample": 131,
+      "vector.scan": 132,
+      "vector.upsert": 134
     },
     "by_path": {
       "arrow export": "arrow.export",
@@ -8419,6 +8754,11 @@
       "graph sssp": "graph.analytics.sssp",
       "graph wcc": "graph.analytics.wcc",
       "health": "admin.health",
+      "hub get-dataset": "hub.get_dataset",
+      "hub info": "hub.info",
+      "hub list-datasets": "hub.list_datasets",
+      "hub list-refs": "hub.list_refs",
+      "hub list-yanked": "hub.list_yanked",
       "inference cache-status": "inference.cache_status",
       "inference capability": "inference.capability",
       "inference detokenize": "inference.detokenize",

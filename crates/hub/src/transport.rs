@@ -7,8 +7,14 @@
 //! range-resumable `download_object` (retries + `Range:` resume per
 //! its retry policy — the §3.6 resumability invariant).
 
-use stratahub_client::{download_object, Client, ClientConfig, RetryPolicy};
+use stratahub_client::{
+    download_object, Client, ClientConfig, DatasetFilter, ListPageReq, RetryPolicy,
+};
+use stratahub_protocol::wire::{
+    DatasetCard, DatasetSummary, InfoResponse, PaginationEnvelope, RefList, YankedList,
+};
 use stratahub_protocol::{BranchName, DatasetName, Hash, Manifest};
+use time::OffsetDateTime;
 use url::Url;
 
 use crate::clone::{CloneError, HubTransport};
@@ -46,6 +52,45 @@ impl ClientTransport {
             retry: RetryPolicy::default(),
             base_url,
         })
+    }
+
+    /// Reads the hub capability advertisement.
+    pub fn info(&self) -> Result<InfoResponse, stratahub_client::ClientError> {
+        self.runtime.block_on(self.client.info())
+    }
+
+    /// Lists datasets with V1 filter and pagination parameters.
+    pub fn list_datasets(
+        &self,
+        filter: &DatasetFilter,
+        page: ListPageReq,
+    ) -> Result<PaginationEnvelope<DatasetSummary>, stratahub_client::ClientError> {
+        self.runtime
+            .block_on(self.client.list_datasets(filter, page))
+    }
+
+    /// Reads one full dataset card.
+    pub fn get_dataset(
+        &self,
+        dataset: &DatasetName,
+    ) -> Result<DatasetCard, stratahub_client::ClientError> {
+        self.runtime.block_on(self.client.get_dataset(dataset))
+    }
+
+    /// Lists the dataset's live refs.
+    pub fn list_refs(
+        &self,
+        dataset: &DatasetName,
+    ) -> Result<RefList, stratahub_client::ClientError> {
+        self.runtime.block_on(self.client.list_refs(dataset))
+    }
+
+    /// Lists the hub yank deny-list, optionally after an RFC 3339 timestamp.
+    pub fn yanked(
+        &self,
+        since: Option<OffsetDateTime>,
+    ) -> Result<YankedList, stratahub_client::ClientError> {
+        self.runtime.block_on(self.client.yanked(since))
     }
 }
 

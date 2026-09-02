@@ -19,7 +19,7 @@ ipc = []
 # StrataHub clone support. Off for targets that cannot carry the native
 # HTTP/tokio client stack (the wasm build consumes the executor with
 # default-features = false).
-hub = ["dep:strata-hub"]
+hub = ["dep:strata-hub", "dep:time"]
 # TCP4.2a differential-testing lane: pulls the in-process RocksDB oracle.
 # Heavy C++ build — nightly CI only; excluded from the feature powerset.
 differential = ["dep:rocksdb", "dep:bson"]
@@ -61,6 +61,7 @@ strata-engine = { path = "../engine", default-features = false }
 strata-hub = { path = "../hub", optional = true }
 strata-inference = { path = "../inference", optional = true }
 thiserror = { workspace = true }
+time = { version = "0.3", optional = true }
 tracing = { workspace = true }
 jsonschema = { version = "0.47", default-features = false, optional = true }
 
