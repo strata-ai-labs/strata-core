@@ -588,6 +588,10 @@ fn run_config(case: ConfigCase, seed: u64, ops: usize) -> BTreeMap<String, Value
         normalize(&mut value);
         outputs.insert(label, value);
     }
+    // Quiesce background maintenance before the tempdir is removed: a bare
+    // `drop` only joins workers for 250ms and then DETACHES stragglers, which
+    // then read table objects out of the just-deleted tempdir.
+    executor.close().expect("executor closes cleanly");
     outputs
 }
 
@@ -650,6 +654,16 @@ fn semantics_are_config_invariant_across_the_matrix() {
 #[test]
 #[ignore = "soak tier — run via the nightly config-invariance step"]
 fn config_invariance_soak() {
+    // Secondary oracle (debug-assert tier): a background maintenance thread
+    // that panics — a real object-lifetime regression, or the teardown race
+    // where a not-yet-quiesced worker reads a removed table object — is
+    // otherwise SWALLOWED, because a panic on a detached worker thread does
+    // not fail the test process. Count those panics via the panic hook and
+    // assert none fired, so the soak goes red on a background fault instead
+    // of reporting a false `ok`. `run_config` closes every executor before
+    // its tempdir is dropped, so a clean run counts zero.
+    let bg_panics = install_background_panic_counter();
+
     let mutations = run_matrix(
         env_usize("STRATA_CONFIG_SEEDS", 48),
         env_usize("STRATA_CONFIG_OPS", 5000),
@@ -660,5 +674,68 @@ fn config_invariance_soak() {
         mutations >= floor,
         "soak applied {mutations} mutations — below the {floor} floor; raise \
          seeds/ops or lower STRATA_CONFIG_MUTATION_FLOOR deliberately"
+    );
+
+    let panics = bg_panics.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        panics, 0,
+        "{panics} background maintenance thread(s) panicked during the soak — \
+         a swallowed background fault (see stderr for the panic site)"
+    );
+}
+
+/// Install a panic hook that counts panics originating on storage background
+/// maintenance threads (`strata-storage-maint-bg-*`), chaining to the prior
+/// hook so the panic still prints. Returns the shared counter. The soak runs
+/// `--ignored` in isolation, so the process-global hook affects no other test.
+fn install_background_panic_counter() -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let counter = Arc::new(AtomicUsize::new(0));
+    let hook_counter = Arc::clone(&counter);
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if std::thread::current()
+            .name()
+            .is_some_and(|name| name.contains("maint-bg"))
+        {
+            hook_counter.fetch_add(1, Ordering::SeqCst);
+        }
+        previous(info);
+    }));
+    counter
+}
+
+/// Deterministic proof the soak's secondary oracle is not vacuous: a panic on
+/// a `maint-bg`-named thread is counted, and a panic on any other thread is
+/// not. Guards against a future refactor (thread-name change, hook removal)
+/// silently turning the soak's background-fault detection into a no-op — the
+/// teardown race that motivated the oracle is timing-dependent and does not
+/// reproduce on every run, so a live-fault test would be flaky.
+#[test]
+fn background_panic_counter_counts_only_maintenance_threads() {
+    use std::sync::atomic::Ordering;
+
+    let counter = install_background_panic_counter();
+
+    // A panic on a maintenance-named thread is counted.
+    let maint = std::thread::Builder::new()
+        .name("strata-storage-maint-bg-9".to_owned())
+        .spawn(|| panic!("simulated background maintenance fault"))
+        .expect("spawn maint thread");
+    assert!(maint.join().is_err(), "the maint thread must have panicked");
+
+    // A panic on an unrelated thread is not counted (direction control).
+    let other = std::thread::Builder::new()
+        .name("unrelated-worker".to_owned())
+        .spawn(|| panic!("unrelated panic"))
+        .expect("spawn other thread");
+    assert!(other.join().is_err(), "the other thread must have panicked");
+
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "the counter must catch the maint-bg panic and ignore the unrelated one"
     );
 }
