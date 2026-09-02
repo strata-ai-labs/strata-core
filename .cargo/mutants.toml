@@ -115,4 +115,26 @@ exclude_re = [
     "replace serve -> Result<i32, CliError>",
     "run_repl",
     "run_clone",
+    # strata update (#3038): the self-update GLUE is untestable in CI by
+    # construction (same category as run_repl/run_clone above). It shells out
+    # to curl/tar, does a release-network round-trip, and REPLACES the running
+    # binary — a `cargo test` cannot let it overwrite the test runner, and no CI
+    # lane has a fixtured release to point it at. The DECISION logic it
+    # dispatches to IS unit-tested: decide, is_up_to_date, target_triple,
+    # asset_name, expected_sha, sha256_file, hex, rejects_db_target,
+    # check_exit_code. These names are unique in run A (verified), so the bare
+    # matches do not over-exclude. Integration coverage (a file:// release
+    # fixture) is the RFC's follow-up.
+    #  - run_update: orchestrates download + checksum-verify + self-replace.
+    #  - resolve_latest_version: a GitHub releases-API round-trip.
+    #  - download / extract: curl / tar subprocesses.
+    #  - replace_binary: renames a new binary over the running executable.
+    "run_update",
+    "resolve_latest_version",
+    "replace_binary",
+    # `download`/`extract` are generic names; \b-anchor so they match only the
+    # bare glue functions, never a future `extract_foo`/`download_bar`.
+    "\\bdownload\\b",
+    "\\bextract\\b",
+    "replace <impl Drop for TempDir>::drop with \\(\\)",
 ]

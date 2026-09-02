@@ -44,7 +44,7 @@ pub(crate) fn run_update(
         Some(v) => v.trim_start_matches('v').to_owned(),
         None => resolve_latest_version()?,
     };
-    let up_to_date = !is_newer(&wanted, CURRENT);
+    let up_to_date = is_up_to_date(&wanted, CURRENT);
 
     match decide(check_only, up_to_date, explicit) {
         Action::Report => {
@@ -146,6 +146,23 @@ fn decide(check_only: bool, up_to_date: bool, explicit: bool) -> Action {
     } else {
         Action::Install
     }
+}
+
+/// Whether the installed `current` is already at least `wanted`.
+fn is_up_to_date(wanted: &str, current: &str) -> bool {
+    !is_newer(wanted, current)
+}
+
+/// A host command (update/uninstall) rejects a database target; the three flags
+/// are the CLI's `--db`, `--db-path`, and `--cache`.
+pub(crate) fn rejects_db_target(has_db: bool, has_db_path: bool, cache: bool) -> bool {
+    has_db || has_db_path || cache
+}
+
+/// The process exit code for `--check`: nonzero exactly when an update is
+/// available, so `if ! strata update --check` gates on it.
+pub(crate) fn check_exit_code(check_only: bool, update_available: bool) -> i32 {
+    i32::from(check_only && update_available)
 }
 
 /// Parse an `X.Y.Z` version, ignoring any pre-release/build suffix.
@@ -294,7 +311,60 @@ impl Drop for TempDir {
 
 #[cfg(test)]
 mod tests {
-    use super::{asset_name, decide, expected_sha, is_newer, parse_version, Action};
+    use super::{
+        asset_name, check_exit_code, decide, expected_sha, hex, is_newer, is_up_to_date,
+        parse_version, rejects_db_target, sha256_file, target_triple, Action,
+    };
+    use std::io::Write as _;
+
+    #[test]
+    fn is_up_to_date_is_the_inverse_of_newer() {
+        assert!(is_up_to_date("1.1.1", "1.1.1"));
+        assert!(is_up_to_date("1.0.0", "1.1.1")); // asking for older → already current
+        assert!(!is_up_to_date("2.0.0", "1.1.1")); // newer available → not current
+    }
+
+    #[test]
+    fn rejects_db_target_on_any_target_flag() {
+        assert!(rejects_db_target(true, false, false));
+        assert!(rejects_db_target(false, true, false));
+        assert!(rejects_db_target(false, false, true));
+        assert!(!rejects_db_target(false, false, false));
+    }
+
+    #[test]
+    fn check_exit_code_is_nonzero_only_for_an_available_update_under_check() {
+        assert_eq!(check_exit_code(true, true), 1);
+        assert_eq!(check_exit_code(true, false), 0);
+        assert_eq!(check_exit_code(false, true), 0); // a real update always exits 0
+    }
+
+    #[test]
+    fn target_triple_maps_the_supported_hosts() {
+        let got = target_triple();
+        match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("linux", "x86_64") => assert_eq!(got.unwrap(), "x86_64-unknown-linux-gnu"),
+            ("linux", "aarch64") => assert_eq!(got.unwrap(), "aarch64-unknown-linux-gnu"),
+            ("macos", "aarch64") => assert_eq!(got.unwrap(), "aarch64-apple-darwin"),
+            _ => assert!(got.is_err()),
+        }
+    }
+
+    #[test]
+    fn hex_encodes_lowercase_two_digits_per_byte() {
+        assert_eq!(hex(&[0xab, 0xcd, 0x01]), "abcd01");
+        assert_eq!(hex(&[]), "");
+    }
+
+    #[test]
+    fn sha256_file_matches_the_known_digest() {
+        let mut f = tempfile::NamedTempFile::new().expect("temp file");
+        f.write_all(b"abc").expect("write");
+        assert_eq!(
+            sha256_file(f.path()).expect("hash"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 
     #[test]
     fn decide_covers_the_flag_truth_table() {

@@ -174,7 +174,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
         }
         if let options::TopCommand::Update(ref args) = command {
             // A host command: it replaces the binary, not a database target.
-            if cli.db.is_some() || cli.db_path.is_some() || cli.cache {
+            if update::rejects_db_target(cli.db.is_some(), cli.db_path.is_some(), cli.cache) {
                 return Err(CliError::usage(
                     "`update` updates the Strata binary; it does not take a database target",
                 ));
@@ -188,7 +188,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             render_value(&value, format)?;
             // `--check` signals via exit code so scripts can gate on it
             // (`if ! strata update --check; then …`); a real update exits 0.
-            return Ok(i32::from(args.check && update_available));
+            return Ok(update::check_exit_code(args.check, update_available));
         }
         let command = match command {
             options::TopCommand::Agents(args) => return agents::run(&args.command, format),
