@@ -116,7 +116,8 @@ pub(crate) fn run_uninstall(skip_confirm: bool) -> Result<Value, CliError> {
 }
 
 /// A Homebrew-managed binary belongs to the tap: `brew uninstall` owns it.
-fn is_homebrew_install(exe: &Path) -> bool {
+/// Shared with `update` (which defers to `brew upgrade` the same way).
+pub(crate) fn is_homebrew_install(exe: &Path) -> bool {
     let text = exe.to_string_lossy();
     text.contains("/Cellar/") || text.starts_with("/opt/homebrew/") || text.contains("/linuxbrew/")
 }

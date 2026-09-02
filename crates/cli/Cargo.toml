@@ -44,6 +44,7 @@ clap = { version = "4.5", features = ["derive"] }
 rustyline = { version = "14", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 shlex = "1.3"
 strata-executor = { path = "../executor", default-features = false }
 strata-hub = { path = "../hub", optional = true }

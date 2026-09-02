@@ -45,6 +45,7 @@ mod render;
 mod repl;
 #[cfg(feature = "native")]
 mod uninstall;
+mod update;
 
 #[cfg(feature = "native")]
 use context::CommandContext;
@@ -169,6 +170,24 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             let value = uninstall::run_uninstall(args.yes)?;
             render_value(&value, format)?;
             return Ok(0);
+        }
+        if let options::TopCommand::Update(ref args) = command {
+            // A host command: it replaces the binary, not a database target.
+            if cli.db.is_some() || cli.db_path.is_some() || cli.cache {
+                return Err(CliError::usage(
+                    "`update` updates the Strata binary; it does not take a database target",
+                ));
+            }
+            let value = update::run_update(args.check, args.version.clone())?;
+            let update_available = value
+                .get("data")
+                .and_then(|data| data.get("update_available"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            render_value(&value, format)?;
+            // `--check` signals via exit code so scripts can gate on it
+            // (`if ! strata update --check; then …`); a real update exits 0.
+            return Ok(i32::from(args.check && update_available));
         }
         let command = match command {
             options::TopCommand::Agents(args) => return agents::run(&args.command, format),
@@ -575,11 +594,11 @@ pub(crate) fn execute_parsed_command(
             render_value(&value, format)?;
             return Ok(());
         }
-        options::TopCommand::Uninstall(_) => {
-            // Removing the installation out from under an open database
-            // session is never right; the one-shot path owns this command.
+        options::TopCommand::Uninstall(_) | options::TopCommand::Update(_) => {
+            // Host commands (change the installation, not a database); the
+            // one-shot path owns them, so this in-session arm is defensive.
             return Err(CliError::usage(
-                "`uninstall` is a host command; run it outside of a database session",
+                "this is a host command; run it outside of a database session",
             ));
         }
         options::TopCommand::Doctor => {
