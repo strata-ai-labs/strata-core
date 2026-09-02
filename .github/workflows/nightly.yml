@@ -228,27 +228,21 @@ jobs:
           STRATA_CONCURRENT_HISTORY_READERS: "6"
           STRATA_CONCURRENT_HISTORY_OPS: "2000"
         run: cargo test --locked -p strata-storage --lib concurrent_history_soak -- --ignored --nocapture
-      - name: Config-invariance cross-product soak (TCP4.5c)
-        timeout-minutes: 150
-        # The config × capability × operation cross-product at depth: many
-        # seeds × long five-capability scripts against the full 6-config
-        # matrix (cache/durable × Standard/Always × default/low budget),
-        # with mid-script probes and every read-back compared for equality
-        # across configs. The batch-heavy op mix lands ~70 mutations per op,
-        # so this shape applies ~1.0e8 mutations per night (measured 28K
-        # mutations/sec in release locally) and the floor assert trips if a
-        # mix change silently deflates that volume. The low budget rides at
-        # 256MiB here because deep append-heavy scripts grow the LIVE set
-        # past 64MiB — cache mode refuses commits past its budget by
-        # contract — while 256MiB still forces pressure-driven maintenance.
-        # Deep BUDGET-pressure equivalence stays the storage STH-6 lane's
-        # job. A failure names its seed.
+      - name: Config-invariance cross-product soak, debug-assert tier (TCP4.5c)
+        timeout-minutes: 30
+        # The config × capability × operation cross-product against the full
+        # 6-config matrix (cache/durable × Standard/Always × default/64MiB
+        # budget), with mid-script probes and every read-back compared for
+        # equality across configs. This tier stays on the debug-assert build
+        # (charter gate 8(b)) so internal-invariant trips fire as findings;
+        # the NINE-FIGURE deep tier of the same soak runs in the
+        # release-mode-tests job below. The floor trips if a mix change
+        # silently deflates mutation volume. A failure names its seed.
         env:
-          STRATA_CONFIG_SEEDS: "48"
-          STRATA_CONFIG_OPS: "5000"
-          STRATA_CONFIG_LOW_BUDGET_MIB: "256"
-          STRATA_CONFIG_MUTATION_FLOOR: "100000000"
-        run: cargo test --locked --release -p strata-executor --test config_invariance config_invariance_soak -- --ignored --nocapture
+          STRATA_CONFIG_SEEDS: "8"
+          STRATA_CONFIG_OPS: "1500"
+          STRATA_CONFIG_MUTATION_FLOOR: "4000000"
+        run: cargo test --locked -p strata-executor --test config_invariance config_invariance_soak -- --ignored --nocapture
       - name: Crash-recovery deep grids
         timeout-minutes: 60
         env:
@@ -334,7 +328,7 @@ jobs:
     # optimizations on. Catches release-only miscompiles/UB symptoms
     # and any correctness that hides behind debug_assert!.
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
       - name: Authorize private git dependencies
@@ -343,6 +337,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Workspace tests (release)
         run: cargo test --locked --release --workspace
+      - name: Config-invariance deep soak, nine-figure tier (TCP4.5c)
+        # The deep tier of the config-invariance cross-product: 48 seeds ×
+        # 5000-op scripts × 6 configs at ~70 mutations/op ≈ 1.0e8 applied
+        # mutations (measured 28K mutations/sec in release; ~60 min local).
+        # Release-mode is what makes nine figures affordable, and this job
+        # is the charter's sanctioned no-assert leg — the debug-assert tier
+        # of the same soak runs in the main nightly job above. The low
+        # budget rides at 256MiB because deep append-heavy scripts grow the
+        # LIVE set past 64MiB — cache mode refuses commits past its budget
+        # by contract — while 256MiB still forces pressure-driven
+        # maintenance. The floor trips if a mix change silently deflates
+        # the volume. A failure names its seed.
+        env:
+          STRATA_CONFIG_SEEDS: "48"
+          STRATA_CONFIG_OPS: "5000"
+          STRATA_CONFIG_LOW_BUDGET_MIB: "256"
+          STRATA_CONFIG_MUTATION_FLOOR: "100000000"
+        run: cargo test --locked --release -p strata-executor --test config_invariance config_invariance_soak -- --ignored --nocapture
       - name: Release binary size ratchet (TCP5.2)
         # The test step above already built the release dep graph, so this
         # build is nearly free; the ceiling lives in scripts/perf_floors.py.
