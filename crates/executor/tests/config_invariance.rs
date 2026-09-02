@@ -41,7 +41,7 @@ fn env_usize(name: &str, default: usize) -> usize {
 }
 
 /// The seed list: the two pinned base seeds, extended deterministically
-/// (SplitMix over the index) when `STRATA_CONFIG_SEEDS` asks for more —
+/// (`SplitMix` over the index) when `STRATA_CONFIG_SEEDS` asks for more —
 /// seed DIVERSITY (different op interleavings) finds config-conditional
 /// behavior faster than longer scripts alone.
 fn seeds(count: usize) -> Vec<u64> {
