@@ -197,6 +197,12 @@ impl GraphAdjacencyIndex {
     pub fn cdlp(&self, options: &GraphCdlpOptions) -> GraphCdlpResult {
         let node_count = self.node_count();
         let mut labels: Vec<usize> = (0..node_count).collect();
+        // #3024: propagation is SYNCHRONOUS (the LDBC Graphalytics
+        // definition) — every node's update in iteration i reads the labels
+        // of iteration i-1, so results are independent of sweep order. The
+        // previous in-place sweep was asynchronous and diverged from the
+        // standard reference outputs.
+        let mut next = labels.clone();
 
         for _ in 0..options.max_iterations() {
             let mut changed = false;
@@ -226,14 +232,14 @@ impl GraphAdjacencyIndex {
                             .min()
                     })
                 };
-                if let Some(best_label) = best_label {
-                    if best_label != labels[node] {
-                        labels[node] = best_label;
-                        changed = true;
-                    }
+                let label = best_label.unwrap_or(labels[node]);
+                if label != labels[node] {
+                    changed = true;
                 }
+                next[node] = label;
             }
 
+            std::mem::swap(&mut labels, &mut next);
             if !changed {
                 break;
             }
@@ -470,6 +476,20 @@ mod tests {
         assert_eq!(cdlp.label(at(&index, "A")), cdlp.label(at(&index, "C")));
         assert_eq!(cdlp.label(at(&index, "D")), cdlp.label(at(&index, "E")));
         assert_eq!(cdlp.label(at(&index, "D")), cdlp.label(at(&index, "F")));
+    }
+
+    #[test]
+    fn cdlp_updates_synchronously_within_an_iteration() {
+        // #3024 promoted contract: every node's update in iteration i reads
+        // the labels of iteration i-1 (the LDBC Graphalytics definition),
+        // never labels already rewritten in the same sweep. On a two-node
+        // cycle with ONE iteration, each node must adopt the other's
+        // INITIAL label; the old asynchronous sweep let the second node see
+        // the first node's fresh label and collapse both communities.
+        let index = make_index(&[("A", "B"), ("B", "A")], &[]);
+        let cdlp = index.cdlp(&GraphCdlpOptions::new(1, GraphDirection::Outgoing));
+        assert_eq!(cdlp.label(at(&index, "A")), Some(at(&index, "B")));
+        assert_eq!(cdlp.label(at(&index, "B")), Some(at(&index, "A")));
     }
 
     #[test]
