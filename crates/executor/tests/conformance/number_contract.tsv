@@ -1,0 +1,62 @@
+# TCP4.4b — Strata's JSON number contract at the wire, authored from
+# IEEE-754/serde semantics FIRST (not blessed from behavior): input text,
+# expected verdict, and for accepts the EXACT serialized read-back text.
+# A mismatch is a finding — either the expectation is wrong (fix with
+# justification) or the pipeline is (file a bug). Tab-separated:
+# input<TAB>accept<TAB>expected_output   |   input<TAB>reject
+#
+# --- integers: exact preservation across the full i64/u64 domain ---
+0	accept	0
+# `-0` promotes to FLOAT -0.0: an integer cannot carry the sign, and the
+# parser preserves it rather than collapsing to 0 (information-preserving).
+-0	accept	-0.0
+1	accept	1
+-1	accept	-1
+42	accept	42
+9007199254740992	accept	9007199254740992
+9007199254740993	accept	9007199254740993
+-9007199254740993	accept	-9007199254740993
+9223372036854775807	accept	9223372036854775807
+-9223372036854775808	accept	-9223372036854775808
+9223372036854775808	accept	9223372036854775808
+18446744073709551615	accept	18446744073709551615
+# --- integers beyond i64/u64: the wire guard refuses (lossy f64 coercion) ---
+18446744073709551616	reject
+-9223372036854775809	reject
+1000000000000000000000000	reject
+# --- floats: value + sign preservation, shortest-repr printing ---
+0.0	accept	0.0
+-0.0	accept	-0.0
+1.0	accept	1.0
+0.1	accept	0.1
+2.5	accept	2.5
+3.141592653589793	accept	3.141592653589793
+0.30000000000000004	accept	0.30000000000000004
+2.220446049250313e-16	accept	2.220446049250313e-16
+# --- exponent forms normalize to value, not input text (positive
+# exponents print with an explicit plus: ryu's shortest form) ---
+1e2	accept	100.0
+1E+2	accept	100.0
+1e-0	accept	1.0
+123e65	accept	1.23e+67
+# small exponents inside ryu's decimal window print as plain decimals
+1.5e-5	accept	0.000015
+100000000000000000000.0	accept	1e+20
+# --- precision collapse within f64 is silent and pinned ---
+1.000000000000000000001	accept	1.0
+# --- extremes: max double exact, overflow-to-infinity refused ---
+1.7976931348623157e308	accept	1.7976931348623157e+308
+-1.7976931348623157e308	accept	-1.7976931348623157e+308
+1.5e300	accept	1.5e+300
+1.8e308	reject
+1e309	reject
+-1e309	reject
+# --- denormals survive; sub-denormal rounds; deep underflow hits zero ---
+5e-324	accept	5e-324
+4.9e-324	accept	5e-324
+1e-400	accept	0.0
+-1e-400	accept	-0.0
+# --- the same semantics hold nested ---
+[9007199254740993,-0.0,1e-400]	accept	[9007199254740993,-0.0,0.0]
+{"k":5e-324,"n":9223372036854775808}	accept	{"k":5e-324,"n":9223372036854775808}
+[18446744073709551616]	reject
