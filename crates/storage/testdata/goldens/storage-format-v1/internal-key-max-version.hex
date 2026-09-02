@@ -1,0 +1,7 @@
+# format: internal_key
+# same identity as internal-key-ordinary at commit_version u64::MAX
+# descending suffix: bitwise_not_be(u64::MAX) = 00*8
+# hex:
+00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f
+64 65 66 61 75 6c 74 00 20 61 6c 70 68 61 00 00
+00 00 00 00 00 00 00 00

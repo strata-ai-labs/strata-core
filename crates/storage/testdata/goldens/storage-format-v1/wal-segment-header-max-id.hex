@@ -1,0 +1,6 @@
+# format: wal_segment_header
+# segment_id: u64::MAX, database_id: ff*16
+# hex:
+53 54 52 41 01 00 00 00 ff ff ff ff ff ff ff ff
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+9e 54 23 19
