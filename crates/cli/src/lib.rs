@@ -45,6 +45,7 @@ mod render;
 mod repl;
 #[cfg(feature = "native")]
 mod uninstall;
+#[cfg(feature = "native")]
 mod update;
 
 #[cfg(feature = "native")]
