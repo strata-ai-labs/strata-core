@@ -30,6 +30,8 @@ mod compound_faults;
 ))]
 mod config_differential;
 #[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+mod corpus_harvest;
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
 mod dual_mutation;
 #[cfg(all(
     any(test, feature = "fault-injection"),
@@ -129,6 +131,8 @@ pub use config_differential::{
     run_config_differential, run_low_memory_pressure_equivalence, storage_config_matrix,
     ConfigDifferentialOutcome, StorageConfigCase,
 };
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+pub use corpus_harvest::{harvest_format_corpus, HarvestSeed};
 #[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
 pub use dual_mutation::{check_dual_mutation_contract, DualMutationOutcome};
 #[cfg(all(

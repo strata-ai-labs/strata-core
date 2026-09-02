@@ -106,6 +106,8 @@ pub(crate) use wal::{
     encode_wal_segment_header, WalRecord, WalSegmentHeader,
 };
 pub(crate) use wal_watermark::{decode_wal_watermark, encode_wal_watermark};
+#[cfg(any(test, feature = "testkit"))]
+pub(crate) use watermark::{encode_snapshot_watermark, SnapshotWatermark};
 // BS4.2b: the reader consumes the persisted filter frame, so the decode side is a non-test export.
 pub(crate) use table::{decode_filter_frame, TableFilterFrame};
 // BS4.2: `encode_filter_frame` stays test-only until BS4.3 wires the writer.
