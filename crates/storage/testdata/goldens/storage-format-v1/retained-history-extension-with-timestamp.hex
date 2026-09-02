@@ -1,0 +1,6 @@
+# format: retained_history_extension_payload
+# version_floor: 42
+# timestamp_floor: 1700000000123456 micros
+# hex:
+2a 00 00 00 00 00 00 00 01 40 22 20 18 24 0a 06
+00 00 00 00 00 00 00 00

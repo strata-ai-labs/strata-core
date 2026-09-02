@@ -1,0 +1,5 @@
+# format: table_row_split_extension_payload
+# splits: (3 puts, 1 tombstone), (0 puts, 2 tombstones)
+# hex:
+03 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 02 00 00 00 00 00 00 00

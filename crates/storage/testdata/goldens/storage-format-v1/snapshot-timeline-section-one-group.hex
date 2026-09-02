@@ -1,0 +1,8 @@
+# format: snapshot_section carrying a timeline payload
+# group: ordinary branch, versions 1@100us and 2@200us
+# hex:
+02 38 00 00 00 00 00 00 00 01 00 00 00 00 01 02
+03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 02 00 00
+00 01 00 00 00 00 00 00 00 64 00 00 00 00 00 00
+00 02 00 00 00 00 00 00 00 c8 00 00 00 00 00 00
+00

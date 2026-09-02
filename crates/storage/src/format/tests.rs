@@ -937,3 +937,221 @@ fn parse_hex(text: &str) -> Vec<u8> {
         .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).expect("valid hex byte"))
         .collect()
 }
+
+// --- TCP4.5a: golden-matrix completion — every record type, canonical and
+// --- boundary vectors. Byte drift in ANY of these is an M3 freeze violation.
+const PHYSICAL_KEY_ORDINARY: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/physical-key-ordinary.hex");
+const RETAINED_HISTORY_WITH_TIMESTAMP: &str = include_str!(
+    "../../testdata/goldens/storage-format-v1/retained-history-extension-with-timestamp.hex"
+);
+const RETAINED_HISTORY_VERSION_ONLY: &str = include_str!(
+    "../../testdata/goldens/storage-format-v1/retained-history-extension-version-only.hex"
+);
+const SNAPSHOT_ROW_SECTION_PUT_AND_TOMBSTONE: &str = include_str!(
+    "../../testdata/goldens/storage-format-v1/snapshot-row-section-put-and-tombstone.hex"
+);
+const SNAPSHOT_TIMELINE_SECTION_ONE_GROUP: &str = include_str!(
+    "../../testdata/goldens/storage-format-v1/snapshot-timeline-section-one-group.hex"
+);
+const TABLE_ROW_SPLIT_PAYLOAD_TWO_SPLITS: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/table-row-split-payload-two-splits.hex");
+const INTERNAL_KEY_MAX_VERSION: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/internal-key-max-version.hex");
+const STORAGE_ROW_EMPTY_VALUE: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/storage-row-empty-value.hex");
+const STORAGE_ROW_EXPIRING: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/storage-row-expiring.hex");
+const WAL_SEGMENT_HEADER_MAX_ID: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/wal-segment-header-max-id.hex");
+const MANIFEST_RECOVERY_FACTS: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/manifest-recovery-facts.hex");
+const SNAPSHOT_WATERMARK_MAX: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/snapshot-watermark-max.hex");
+
+#[test]
+fn physical_key_ordinary_matches_golden_vector() {
+    let key = ordinary_key();
+    let golden = parse_hex(PHYSICAL_KEY_ORDINARY);
+    assert_eq!(super::encode_physical_key(&key), golden);
+    assert_eq!(super::key::decode_physical_key(&golden), Ok(key));
+}
+
+#[test]
+fn retained_history_extension_with_timestamp_matches_golden_vector() {
+    let payload = super::RetainedHistoryExtensionPayload::new(
+        CommitVersion::new(42),
+        Some(Timestamp::from_micros(1_700_000_000_123_456)),
+    );
+    let golden = parse_hex(RETAINED_HISTORY_WITH_TIMESTAMP);
+    assert_eq!(
+        super::encode_retained_history_extension_payload(payload),
+        golden
+    );
+    assert_eq!(
+        super::decode_retained_history_extension_payload(&golden),
+        Ok(payload)
+    );
+}
+
+#[test]
+fn retained_history_extension_version_only_matches_golden_vector() {
+    let payload = super::RetainedHistoryExtensionPayload::new(CommitVersion::new(7), None);
+    let golden = parse_hex(RETAINED_HISTORY_VERSION_ONLY);
+    assert_eq!(
+        super::encode_retained_history_extension_payload(payload),
+        golden
+    );
+    assert_eq!(
+        super::decode_retained_history_extension_payload(&golden),
+        Ok(payload)
+    );
+}
+
+#[test]
+fn snapshot_row_section_matches_golden_vector() {
+    let rows = vec![
+        StorageRow::put(
+            ordinary_key(),
+            CommitVersion::new(42),
+            Timestamp::from_micros(1_700_000_000_123_456),
+            Timestamp::EPOCH,
+            b"value".to_vec(),
+        ),
+        StorageRow::tombstone(
+            zero_user_byte_key(),
+            CommitVersion::new(43),
+            Timestamp::from_micros(1_700_000_000_123_457),
+        ),
+    ];
+    let section = super::encode_snapshot_row_section(&rows).expect("row section");
+    let golden = parse_hex(SNAPSHOT_ROW_SECTION_PUT_AND_TOMBSTONE);
+    assert_eq!(
+        super::snapshot::encode_snapshot_section(&section).expect("encode section"),
+        golden
+    );
+    let (decoded, consumed) = decode_snapshot_section(&golden).expect("decode section");
+    assert_eq!(consumed, golden.len());
+    assert_eq!(
+        super::decode_snapshot_row_payload(decoded.payload()),
+        Ok(rows)
+    );
+}
+
+#[test]
+fn snapshot_timeline_section_matches_golden_vector() {
+    let groups = vec![super::SnapshotTimelineBranchGroup {
+        branch_id: ordinary_branch_id(),
+        entries: vec![
+            (CommitVersion::new(1), Timestamp::from_micros(100)),
+            (CommitVersion::new(2), Timestamp::from_micros(200)),
+        ],
+    }];
+    let section = super::encode_snapshot_timeline_section(&groups).expect("timeline section");
+    let golden = parse_hex(SNAPSHOT_TIMELINE_SECTION_ONE_GROUP);
+    assert_eq!(
+        super::snapshot::encode_snapshot_section(&section).expect("encode section"),
+        golden
+    );
+    let (decoded, consumed) = decode_snapshot_section(&golden).expect("decode section");
+    assert_eq!(consumed, golden.len());
+    assert_eq!(
+        super::decode_snapshot_timeline_payload(decoded.payload()),
+        Ok(groups)
+    );
+}
+
+#[test]
+fn table_row_split_payload_matches_golden_vector() {
+    let splits = vec![
+        super::table_row_split_extension::TableRowSplit::new(3, 1),
+        super::table_row_split_extension::TableRowSplit::new(0, 2),
+    ];
+    let golden = parse_hex(TABLE_ROW_SPLIT_PAYLOAD_TWO_SPLITS);
+    assert_eq!(
+        super::table_row_split_extension::encode_table_row_split_extension_payload(&splits)
+            .expect("encode splits"),
+        golden
+    );
+    assert_eq!(
+        super::table_row_split_extension::decode_table_row_split_extension_payload(&golden),
+        Ok(splits)
+    );
+}
+
+#[test]
+fn internal_key_max_version_matches_golden_vector() {
+    let key = InternalKey::new(ordinary_key(), CommitVersion::new(u64::MAX));
+    let golden = parse_hex(INTERNAL_KEY_MAX_VERSION);
+    assert_eq!(encode_internal_key(&key), golden);
+    assert_eq!(decode_internal_key(&golden), Ok(key));
+}
+
+#[test]
+fn storage_row_empty_value_matches_golden_vector() {
+    let row = StorageRow::put(
+        ordinary_key(),
+        CommitVersion::new(1),
+        Timestamp::from_micros(1),
+        Timestamp::EPOCH,
+        Vec::new(),
+    );
+    let golden = parse_hex(STORAGE_ROW_EMPTY_VALUE);
+    assert_eq!(encode_storage_row(&row).expect("encode row"), golden);
+    assert_eq!(decode_storage_row(&golden), Ok(row));
+}
+
+#[test]
+fn storage_row_expiring_matches_golden_vector() {
+    let row = StorageRow::put(
+        ordinary_key(),
+        CommitVersion::new(9),
+        Timestamp::from_micros(1_700_000_000_000_000),
+        Timestamp::from_micros(1_700_000_360_000_000),
+        b"expiring".to_vec(),
+    );
+    let golden = parse_hex(STORAGE_ROW_EXPIRING);
+    assert_eq!(encode_storage_row(&row).expect("encode row"), golden);
+    assert_eq!(decode_storage_row(&golden), Ok(row));
+}
+
+#[test]
+fn wal_segment_header_max_id_matches_golden_vector() {
+    let header = super::WalSegmentHeader::new(u64::MAX, [0xFF; 16]);
+    let golden = parse_hex(WAL_SEGMENT_HEADER_MAX_ID);
+    assert_eq!(super::encode_wal_segment_header(&header), golden);
+    assert_eq!(
+        super::decode_wal_segment_header(&golden, Some(u64::MAX)),
+        Ok((header, golden.len()))
+    );
+}
+
+#[test]
+fn manifest_recovery_facts_matches_golden_vector() {
+    let manifest = DatabaseManifest::new([0x11; 16], "codec-v1")
+        .expect("manifest")
+        .with_recovery_facts(9, Some(88), Some(5), Some(CommitVersion::new(87)))
+        .expect("recovery facts");
+    let golden = parse_hex(MANIFEST_RECOVERY_FACTS);
+    assert_eq!(encode_manifest(&manifest).expect("encode manifest"), golden);
+    assert_eq!(decode_manifest(&golden), Ok(manifest));
+}
+
+#[test]
+fn snapshot_watermark_max_matches_golden_vector() {
+    let watermark = super::SnapshotWatermark::present(
+        u64::MAX,
+        CommitVersion::new(u64::MAX),
+        Timestamp::from_micros(u64::MAX),
+    )
+    .expect("watermark");
+    let golden = parse_hex(SNAPSHOT_WATERMARK_MAX);
+    assert_eq!(
+        super::encode_snapshot_watermark(watermark).expect("encode watermark"),
+        golden
+    );
+    assert_eq!(
+        super::watermark::decode_snapshot_watermark(&golden),
+        Ok(watermark)
+    );
+}

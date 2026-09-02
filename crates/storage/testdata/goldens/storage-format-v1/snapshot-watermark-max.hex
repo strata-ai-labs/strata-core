@@ -1,0 +1,5 @@
+# format: snapshot_watermark
+# every field at its maximum (snapshot_id, version, and timestamp micros all u64::MAX)
+# hex:
+01 ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+ff ff ff ff ff ff ff ff ff
