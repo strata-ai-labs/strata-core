@@ -31,13 +31,27 @@ use strata_executor::{
 };
 
 const LOW_MEMORY_BUDGET_BYTES: u64 = 64 << 20;
-const SEEDS: [u64; 2] = [0x00C0_FFEE, 0x5EED];
+const BASE_SEEDS: [u64; 2] = [0x00C0_FFEE, 0x5EED];
 
-fn ops_per_seed() -> usize {
-    std::env::var("STRATA_CONFIG_OPS")
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
         .ok()
         .and_then(|raw| raw.parse().ok())
-        .unwrap_or(120)
+        .unwrap_or(default)
+}
+
+/// The seed list: the two pinned base seeds, extended deterministically
+/// (SplitMix over the index) when `STRATA_CONFIG_SEEDS` asks for more —
+/// seed DIVERSITY (different op interleavings) finds config-conditional
+/// behavior faster than longer scripts alone.
+fn seeds(count: usize) -> Vec<u64> {
+    let mut list: Vec<u64> = BASE_SEEDS.into_iter().collect();
+    let mut derive = SplitMix64(0x5EED_FEED);
+    while list.len() < count {
+        list.push(derive.next());
+    }
+    list.truncate(count.max(1));
+    list
 }
 
 /// The classic `SplitMix64` — deterministic, dependency-free.
@@ -124,12 +138,24 @@ const MATRIX: [ConfigCase; 6] = [
 fn generated_op(rng: &mut SplitMix64) -> Command {
     let key_space = 12;
     match rng.below(10) {
-        0..=2 => Command::KvPut {
-            branch: None,
-            space: None,
-            key: Bytes::from(format!("k{}", rng.below(key_space)).as_str()),
-            value: Bytes::from(format!("value-{}", rng.below(1000)).as_str()),
-        },
+        0..=2 => {
+            // One put in eight carries a large (8..40 KiB) value so deep
+            // runs cross flush/block boundaries and genuinely pressure the
+            // low-memory configs; the fill byte keeps it deterministic.
+            let value = if rng.below(8) == 0 {
+                let len = 8_192 + usize::try_from(rng.below(32_768)).expect("small");
+                let fill = u8::try_from(rng.below(256)).expect("byte");
+                vec![fill; len]
+            } else {
+                format!("value-{}", rng.below(1000)).into_bytes()
+            };
+            Command::KvPut {
+                branch: None,
+                space: None,
+                key: Bytes::from(format!("k{}", rng.below(key_space)).as_str()),
+                value: Bytes::from(value),
+            }
+        }
         3 => Command::KvDelete {
             branch: None,
             space: None,
@@ -410,10 +436,8 @@ fn run_config(case: ConfigCase, seed: u64, ops: usize) -> BTreeMap<String, Value
     outputs
 }
 
-#[test]
-fn semantics_are_config_invariant_across_the_matrix() {
-    let ops = ops_per_seed();
-    for seed in SEEDS {
+fn run_matrix(seed_count: usize, ops: usize) {
+    for seed in seeds(seed_count) {
         let reference = run_config(MATRIX[0], seed, ops);
         assert!(
             reference.values().any(|value| *value != Value::Null),
@@ -438,4 +462,25 @@ fn semantics_are_config_invariant_across_the_matrix() {
             }
         }
     }
+}
+
+#[test]
+fn semantics_are_config_invariant_across_the_matrix() {
+    run_matrix(
+        env_usize("STRATA_CONFIG_SEEDS", 2),
+        env_usize("STRATA_CONFIG_OPS", 120),
+    );
+}
+
+/// The nightly soak tier: many seeds × long scripts (the env knobs), so the
+/// cross-product crosses flush and block boundaries and rare op mixes the
+/// per-PR shape cannot reach (deep BUDGET-pressure equivalence is the
+/// storage STH-6 lane's job). A failure names its seed.
+#[test]
+#[ignore = "soak tier — run via the nightly config-invariance step"]
+fn config_invariance_soak() {
+    run_matrix(
+        env_usize("STRATA_CONFIG_SEEDS", 8),
+        env_usize("STRATA_CONFIG_OPS", 1500),
+    );
 }

@@ -228,6 +228,19 @@ jobs:
           STRATA_CONCURRENT_HISTORY_READERS: "6"
           STRATA_CONCURRENT_HISTORY_OPS: "2000"
         run: cargo test --locked -p strata-storage --lib concurrent_history_soak -- --ignored --nocapture
+      - name: Config-invariance cross-product soak (TCP4.5c)
+        timeout-minutes: 30
+        # The config × capability × operation cross-product at depth: many
+        # seeds × long five-capability scripts against the full 6-config
+        # matrix (cache/durable × Standard/Always × default/64MiB budget),
+        # with every read-back compared for equality across configs. Depth
+        # crosses flush and block boundaries the per-PR shape (2 seeds ×
+        # 120 ops) cannot reach; deep BUDGET-pressure equivalence stays the
+        # storage STH-6 lane's job. A failure names its seed.
+        env:
+          STRATA_CONFIG_SEEDS: "8"
+          STRATA_CONFIG_OPS: "1500"
+        run: cargo test --locked -p strata-executor --test config_invariance config_invariance_soak -- --ignored --nocapture
       - name: Crash-recovery deep grids
         timeout-minutes: 60
         env:
