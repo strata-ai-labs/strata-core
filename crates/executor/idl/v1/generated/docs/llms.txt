@@ -81,6 +81,14 @@
 - [Read graph ontology summary](https://stratadb.org/docs/graph/ontology/summary.md): Read the ontology with usage counts.
 - [Sample graph nodes](https://stratadb.org/docs/graph/sample.md): Sample graph nodes.
 
+## hub
+
+- [Read hub dataset](https://stratadb.org/docs/hub/get_dataset.md): Read one StrataHub dataset card.
+- [Read hub info](https://stratadb.org/docs/hub/info.md): Read the selected StrataHub's V1 capability advertisement.
+- [List hub datasets](https://stratadb.org/docs/hub/list_datasets.md): List datasets from the selected StrataHub.
+- [List hub dataset refs](https://stratadb.org/docs/hub/list_refs.md): List live refs for a StrataHub dataset.
+- [List yanked hub refs](https://stratadb.org/docs/hub/list_yanked.md): List yanked refs from the selected StrataHub.
+
 ## inference
 
 - [Report model cache](https://stratadb.org/docs/inference/cache_status.md): Report loaded model cache state.

@@ -18,6 +18,12 @@ families:
       - invalid_argument.engine.product_space
       - invalid_argument.engine.graph_name
       - not_found.engine.graph
+  - id: hub
+    docs: /docs/hub/{op_path}
+    errors:
+      - invalid_argument.executor.hub_feature_disabled
+      - invalid_argument.executor.hub_url
+      - unavailable.executor.hub_transport
   - id: inference
     docs: /docs/inference/{op_path}
     errors: []

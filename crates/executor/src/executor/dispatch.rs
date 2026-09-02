@@ -36,6 +36,39 @@ impl Executor {
                 dest,
                 hub_url,
             } => self.execute_hub_clone(&dataset, branch.as_deref(), &dest, hub_url),
+            Command::HubInfo { hub_url } => self.execute_hub_info(hub_url),
+            Command::HubListDatasets {
+                hub_url,
+                tasks,
+                tags,
+                primitives,
+                license,
+                size_min_bytes,
+                size_max_bytes,
+                sort,
+                limit,
+                offset,
+            } => self.execute_hub_list_datasets(
+                hub_url,
+                tasks,
+                tags,
+                primitives,
+                license,
+                size_min_bytes,
+                size_max_bytes,
+                sort,
+                limit,
+                offset,
+            ),
+            Command::HubGetDataset { name, hub_url } => {
+                self.execute_hub_get_dataset(&name, hub_url)
+            }
+            Command::HubListRefs { dataset, hub_url } => {
+                self.execute_hub_list_refs(&dataset, hub_url)
+            }
+            Command::HubListYanked { since, hub_url } => {
+                self.execute_hub_list_yanked(since.as_deref(), hub_url)
+            }
             Command::ConfigureGetKey { key } => self.execute_configure_get_key(&key),
             Command::SpaceList { branch } => self.execute_space_list(branch.as_deref()),
             Command::SpaceCreate { branch, space } => {

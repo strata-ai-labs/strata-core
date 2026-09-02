@@ -1,0 +1,19 @@
+{
+  "type": "hub_list_datasets",
+  "hub_url": "https://hub.stratahub.io",
+  "tasks": [
+    "classification"
+  ],
+  "tags": [
+    "tabular"
+  ],
+  "primitives": [
+    "kv"
+  ],
+  "license": "CC0",
+  "size_min_bytes": 1,
+  "size_max_bytes": 1048576,
+  "sort": "downloads",
+  "limit": 20,
+  "offset": 0
+}

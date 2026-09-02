@@ -8,7 +8,8 @@ use crate::types::{
     BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry, BatchVectorEntry, Bytes,
     EventRangeDirection, GraphAnalyticsBudget, GraphBatchOperation, GraphBindingTarget,
     GraphBulkEdge, GraphBulkNode, GraphDeletePolicy, GraphDirection, GraphEntityBinding,
-    GraphPropertyDef, JsonIndexType, PromotionStrategy, VectorDistanceMetric, VectorMetadataFilter,
+    GraphPropertyDef, HubDatasetSort, JsonIndexType, PromotionStrategy, VectorDistanceMetric,
+    VectorMetadataFilter,
 };
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -78,6 +79,71 @@ pub enum Command {
         dest: String,
         /// Explicit hub URL; when absent the 5-layer resolver runs
         /// (flag, `STRATA_HUB_URL`, project config, global config).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hub_url: Option<String>,
+    },
+    /// Reads the hub's V1 capability advertisement (`GET /v1/info`).
+    HubInfo {
+        /// Explicit hub URL; when absent the 5-layer resolver runs
+        /// (flag, `STRATA_HUB_URL`, project config, global config).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hub_url: Option<String>,
+    },
+    /// Lists hub datasets (`GET /v1/datasets`).
+    HubListDatasets {
+        /// Explicit hub URL; when absent the 5-layer resolver runs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hub_url: Option<String>,
+        /// Task filters.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tasks: Vec<String>,
+        /// Tag filters.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tags: Vec<String>,
+        /// Primitive filters.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        primitives: Vec<String>,
+        /// License filter.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        license: Option<String>,
+        /// Minimum dataset size in bytes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size_min_bytes: Option<u64>,
+        /// Maximum dataset size in bytes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size_max_bytes: Option<u64>,
+        /// Sort key.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sort: Option<HubDatasetSort>,
+        /// Page size.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+        /// Zero-based page offset.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u32>,
+    },
+    /// Reads one hub dataset card (`GET /v1/datasets/{name}`).
+    HubGetDataset {
+        /// Dataset slug.
+        name: String,
+        /// Explicit hub URL; when absent the 5-layer resolver runs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hub_url: Option<String>,
+    },
+    /// Lists refs for one hub dataset (`GET /v1/datasets/{name}/refs`).
+    HubListRefs {
+        /// Dataset slug.
+        dataset: String,
+        /// Explicit hub URL; when absent the 5-layer resolver runs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hub_url: Option<String>,
+    },
+    /// Lists yanked hub refs (`GET /v1/yanked`).
+    HubListYanked {
+        /// RFC 3339 lower-bound timestamp.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<String>,
+        /// Explicit hub URL; when absent the 5-layer resolver runs.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hub_url: Option<String>,
     },
@@ -1790,6 +1856,11 @@ impl Command {
             Self::IpcStop {} => "ipc_stop",
             Self::RemoteGet {} => "remote_get",
             Self::HubClone { .. } => "hub_clone",
+            Self::HubInfo { .. } => "hub_info",
+            Self::HubListDatasets { .. } => "hub_list_datasets",
+            Self::HubGetDataset { .. } => "hub_get_dataset",
+            Self::HubListRefs { .. } => "hub_list_refs",
+            Self::HubListYanked { .. } => "hub_list_yanked",
             Self::ConfigureGetKey { .. } => "configure_get_key",
             Self::SpaceList { .. } => "space_list",
             Self::SpaceCreate { .. } => "space_create",

@@ -1,0 +1,5 @@
+{
+  "type": "hub_list_refs",
+  "dataset": "titanic",
+  "hub_url": "https://hub.stratahub.io"
+}

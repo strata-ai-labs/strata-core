@@ -55,9 +55,9 @@ use input::{
     parse_vector_argument,
 };
 use options::{
-    ArrowCommand, BranchCommand, Cli, CommandCommand, ConfigCommand, EventCommand, GraphCommand,
-    GraphOntologyCommand, JsonCommand, KvCommand, SpaceCommand, VectorCollectionCommand,
-    VectorCommand,
+    ArrowCommand, BranchCommand, Cli, CloneProgressFormat, CommandCommand, ConfigCommand,
+    EventCommand, GraphCommand, GraphOntologyCommand, HubCommand, JsonCommand, KvCommand,
+    SpaceCommand, VectorCollectionCommand, VectorCommand,
 };
 #[cfg(feature = "native")]
 use render::{render_error, render_output, render_value};
@@ -214,6 +214,9 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
         if let options::TopCommand::Clone(args) = command {
             return run_clone(args, format);
         }
+        if let options::TopCommand::Hub(args) = command {
+            return run_hub(args, format);
+        }
 
         let opened = open::open_connection(
             cli.cache,
@@ -309,15 +312,77 @@ const fn default_session_ipc(interactive: bool) -> IpcMode {
 #[cfg(feature = "native")]
 fn run_clone(args: options::CloneArgs, format: options::Format) -> Result<i32, CliError> {
     let mut executor = Executor::open_cache()?;
+    let dataset = args.dataset;
     let dest = args
         .dest
-        .unwrap_or_else(|| PathBuf::from(format!("{}.strata", args.dataset)));
-    let output = executor.execute(Command::HubClone {
-        dataset: args.dataset,
-        branch: args.branch,
-        dest: dest.display().to_string(),
-        hub_url: args.hub,
-    })?;
+        .unwrap_or_else(|| PathBuf::from(format!("{dataset}.strata")));
+    let dest = dest.display().to_string();
+    let output = match args.progress {
+        Some(CloneProgressFormat::Jsonl) => {
+            if format != options::Format::Json {
+                return Err(CliError::usage("`--progress jsonl` requires `--json`"));
+            }
+            let mut progress_error = None;
+            let mut on_progress = |event| {
+                if progress_error.is_none() {
+                    progress_error = render::render_output(&event, options::Format::Json).err();
+                }
+            };
+            let output = executor.execute_hub_clone_with_progress(
+                &dataset,
+                args.branch.as_deref(),
+                &dest,
+                args.hub,
+                &mut on_progress,
+            )?;
+            if let Some(error) = progress_error {
+                return Err(error);
+            }
+            output
+        }
+        None => executor.execute(Command::HubClone {
+            dataset,
+            branch: args.branch,
+            dest,
+            hub_url: args.hub,
+        })?,
+    };
+    render::render_output(&output, format)?;
+    executor.close()?;
+    Ok(0)
+}
+
+/// Hub browse commands never touch a session database; they use the executor
+/// command boundary so every frontend shares the same resolver and envelopes.
+#[cfg(feature = "native")]
+fn run_hub(args: options::HubArgs, format: options::Format) -> Result<i32, CliError> {
+    let mut executor = Executor::open_cache()?;
+    let output = match args.command {
+        HubCommand::Info { hub } => executor.execute(Command::HubInfo { hub_url: hub })?,
+        HubCommand::ListDatasets(args) => executor.execute(Command::HubListDatasets {
+            hub_url: args.hub,
+            tasks: args.tasks,
+            tags: args.tags,
+            primitives: args.primitives,
+            license: args.license,
+            size_min_bytes: args.size_min_bytes,
+            size_max_bytes: args.size_max_bytes,
+            sort: args.sort.map(Into::into),
+            limit: args.limit,
+            offset: args.offset,
+        })?,
+        HubCommand::GetDataset { name, hub } => {
+            executor.execute(Command::HubGetDataset { name, hub_url: hub })?
+        }
+        HubCommand::ListRefs { dataset, hub } => executor.execute(Command::HubListRefs {
+            dataset,
+            hub_url: hub,
+        })?,
+        HubCommand::ListYanked { since, hub } => executor.execute(Command::HubListYanked {
+            since,
+            hub_url: hub,
+        })?,
+    };
     render::render_output(&output, format)?;
     executor.close()?;
     Ok(0)
@@ -502,8 +567,8 @@ pub(crate) fn execute_parsed_command(
     let output = match command {
         options::TopCommand::Ping => connection.execute(Command::Ping {})?,
         options::TopCommand::Remote => connection.execute(Command::RemoteGet {})?,
-        options::TopCommand::Clone(_) => {
-            unreachable!("clone is dispatched before a session database opens")
+        options::TopCommand::Clone(_) | options::TopCommand::Hub(_) => {
+            unreachable!("host-only hub commands are dispatched before a session database opens")
         }
         options::TopCommand::Init => {
             let value = init::run_init()?;
@@ -2383,6 +2448,11 @@ fn command_to_executor(command: options::TopCommand, scope: &Scope) -> Result<Co
         Top::Graph(args) => graph_command(args.command, scope)?,
         Top::Arrow(args) => arrow_command(args.command, scope),
         Top::Command(args) => raw_command(args.command)?,
+        Top::Hub(_) => {
+            return Err(CliError::usage(
+                "`hub` needs a host environment and is not available in an embedded session",
+            ));
+        }
         _ => {
             return Err(CliError::usage(
                 "that command needs a host environment (filesystem, sockets, or model providers) and is not available in an embedded session",
@@ -2519,6 +2589,83 @@ mod tests {
     }
 
     #[test]
+    fn parses_clone_progress_jsonl() {
+        let cli = Cli::parse_from([
+            "strata",
+            "--json",
+            "clone",
+            "titanic",
+            "--branch",
+            "main",
+            "--progress",
+            "jsonl",
+        ]);
+        assert_eq!(cli.output_format(), options::Format::Json);
+        assert!(matches!(
+            cli.command,
+            Some(TopCommand::Clone(options::CloneArgs {
+                dataset,
+                branch: Some(branch),
+                progress: Some(CloneProgressFormat::Jsonl),
+                ..
+            })) if dataset == "titanic" && branch == "main"
+        ));
+    }
+
+    #[test]
+    fn parses_hub_list_datasets_filters() {
+        let cli = Cli::parse_from([
+            "strata",
+            "--json",
+            "hub",
+            "list-datasets",
+            "--hub",
+            "https://hub.example.test",
+            "--task",
+            "classification",
+            "--tag",
+            "tabular",
+            "--primitive",
+            "kv",
+            "--sort",
+            "downloads",
+            "--limit",
+            "20",
+            "--offset",
+            "40",
+        ]);
+        assert_eq!(cli.output_format(), options::Format::Json);
+        assert!(matches!(
+            cli.command,
+            Some(TopCommand::Hub(options::HubArgs {
+                command: HubCommand::ListDatasets(options::HubListDatasetsArgs {
+                    hub: Some(hub),
+                    tasks,
+                    tags,
+                    primitives,
+                    sort: Some(options::HubDatasetSortArg::Downloads),
+                    limit: Some(20),
+                    offset: Some(40),
+                    ..
+                }),
+            })) if hub == "https://hub.example.test"
+                && tasks == vec!["classification"]
+                && tags == vec!["tabular"]
+                && primitives == vec!["kv"]
+        ));
+    }
+
+    #[test]
+    fn top_level_hub_command_executes_through_the_host_runner() {
+        let cli = Cli::parse_from(["strata", "hub", "info", "--hub", "not-a-url"]);
+        let error = execute(cli).expect_err("bad hub URL surfaces through run_hub");
+        let CliError::Executor(error) = error else {
+            panic!("expected executor error, got {error:?}");
+        };
+        assert_eq!(error.status().code(), "invalid_argument.executor.hub_url");
+    }
+
+    #[test]
     fn parses_arrow_file_format_without_colliding_with_output_format() {
         let cli = Cli::parse_from([
             "strata",
@@ -2641,6 +2788,11 @@ mod tests {
         // Host-only commands (filesystem/sockets/process) are refused, not run.
         assert!(command_from_line("mcp serve", None, None).is_err());
         assert!(command_from_line("init", None, None).is_err());
+        let error = command_from_line("hub info", None, None).expect_err("hub is host-only");
+        assert!(
+            error.contains("`hub` needs a host environment"),
+            "unexpected hub refusal: {error}"
+        );
         // Config reads are allowed; config mutations are host-only.
         assert!(command_from_line("config get", None, None).is_ok());
         assert!(command_from_line("config set hub.url http://example", None, None).is_err());

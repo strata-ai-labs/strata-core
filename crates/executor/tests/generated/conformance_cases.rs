@@ -107,6 +107,11 @@ fn admin_hub_clone_response_wire_roundtrip_is_idempotent() {
 }
 
 #[test]
+fn admin_hub_clone_response_alt1_wire_roundtrip_is_idempotent() {
+    support::response_roundtrip_idempotent("responses/v1/hub/clone_progress_resolved.json");
+}
+
+#[test]
 fn admin_hub_clone_request_rejects_unknown_keys_at_closed_objects() {
     support::unknown_keys_rejected("requests/v1/admin/hub_clone.json", &[""]);
 }
@@ -1412,6 +1417,101 @@ fn graph_sample_request_rejects_unknown_keys_at_closed_objects() {
 #[test]
 fn graph_sample_replay_observes_a_declared_output() {
     support::replay_observes_declared(&["requests/v1/graph/create.json", "requests/v1/graph/node_add.json", "requests/v1/setup/graph_add_bob.json", "requests/v1/setup/graph_add_carol.json"], "requests/v1/graph/sample.json", &["graph_sample_result"], false);
+}
+
+// ---- hub.get_dataset ----
+
+#[test]
+fn hub_get_dataset_request_wire_roundtrip_is_idempotent() {
+    support::request_roundtrip_idempotent("requests/v1/hub/get_dataset.json");
+}
+
+#[test]
+fn hub_get_dataset_response_wire_roundtrip_is_idempotent() {
+    support::response_roundtrip_idempotent("responses/v1/hub/dataset.json");
+}
+
+#[test]
+fn hub_get_dataset_request_rejects_unknown_keys_at_closed_objects() {
+    support::unknown_keys_rejected("requests/v1/hub/get_dataset.json", &[""]);
+}
+
+// ---- hub.info ----
+
+#[test]
+fn hub_info_request_wire_roundtrip_is_idempotent() {
+    support::request_roundtrip_idempotent("requests/v1/hub/info.json");
+}
+
+#[test]
+fn hub_info_response_wire_roundtrip_is_idempotent() {
+    support::response_roundtrip_idempotent("responses/v1/hub/info.json");
+}
+
+#[test]
+fn hub_info_request_rejects_unknown_keys_at_closed_objects() {
+    support::unknown_keys_rejected("requests/v1/hub/info.json", &[""]);
+}
+
+// ---- hub.list_datasets ----
+
+#[test]
+fn hub_list_datasets_request_wire_roundtrip_is_idempotent() {
+    support::request_roundtrip_idempotent("requests/v1/hub/list_datasets.json");
+}
+
+#[test]
+fn hub_list_datasets_response_wire_roundtrip_is_idempotent() {
+    support::response_roundtrip_idempotent("responses/v1/hub/datasets.json");
+}
+
+#[test]
+fn hub_list_datasets_request_rejects_unknown_keys_at_closed_objects() {
+    support::unknown_keys_rejected("requests/v1/hub/list_datasets.json", &[""]);
+}
+
+#[test]
+fn hub_list_datasets_error_case_0_envelope_matches() {
+    support::error_case_envelope_matches(&[], "requests/v1/hub/list_datasets_bad_limit.json", "responses/v1/errors/hub/list_datasets_bad_limit.json", false);
+}
+
+// ---- hub.list_refs ----
+
+#[test]
+fn hub_list_refs_request_wire_roundtrip_is_idempotent() {
+    support::request_roundtrip_idempotent("requests/v1/hub/list_refs.json");
+}
+
+#[test]
+fn hub_list_refs_response_wire_roundtrip_is_idempotent() {
+    support::response_roundtrip_idempotent("responses/v1/hub/refs.json");
+}
+
+#[test]
+fn hub_list_refs_request_rejects_unknown_keys_at_closed_objects() {
+    support::unknown_keys_rejected("requests/v1/hub/list_refs.json", &[""]);
+}
+
+// ---- hub.list_yanked ----
+
+#[test]
+fn hub_list_yanked_request_wire_roundtrip_is_idempotent() {
+    support::request_roundtrip_idempotent("requests/v1/hub/list_yanked.json");
+}
+
+#[test]
+fn hub_list_yanked_response_wire_roundtrip_is_idempotent() {
+    support::response_roundtrip_idempotent("responses/v1/hub/yanked.json");
+}
+
+#[test]
+fn hub_list_yanked_request_rejects_unknown_keys_at_closed_objects() {
+    support::unknown_keys_rejected("requests/v1/hub/list_yanked.json", &[""]);
+}
+
+#[test]
+fn hub_list_yanked_error_case_0_envelope_matches() {
+    support::error_case_envelope_matches(&[], "requests/v1/hub/list_yanked_bad_since.json", "responses/v1/errors/hub/list_yanked_bad_since.json", false);
 }
 
 // ---- inference.cache_status ----

@@ -1,0 +1,83 @@
+commands:
+  - id: hub.info
+    kind: read.summary
+    title: Read hub info
+    input: Command::HubInfo
+    output: Output::HubInfo
+    result: HubInfo
+    response_model: StatusResponse<HubInfo>
+    cli_path: ["hub", "info"]
+    prose: commands/hub.info.md
+    fixtures:
+      request: requests/v1/hub/info.json
+      response: responses/v1/hub/info.json
+      replay_skip: hub browse reads a configured StrataHub over the network; it never runs against the scratch cache executor
+  - id: hub.list_datasets
+    kind: read.summary
+    title: List hub datasets
+    input: Command::HubListDatasets
+    output: Output::HubDatasets
+    result: HubDatasetPage
+    response_model: StatusResponse<HubDatasetPage>
+    cli_path: ["hub", "list-datasets"]
+    prose: commands/hub.list_datasets.md
+    errors+:
+      - invalid_argument.executor.hub_filter
+    fixtures:
+      request: requests/v1/hub/list_datasets.json
+      response: responses/v1/hub/datasets.json
+      replay_skip: hub browse reads a configured StrataHub over the network; it never runs against the scratch cache executor
+      error_cases:
+        - request: requests/v1/hub/list_datasets_bad_limit.json
+          expected_error: responses/v1/errors/hub/list_datasets_bad_limit.json
+  - id: hub.get_dataset
+    kind: read.summary
+    title: Read hub dataset
+    input: Command::HubGetDataset
+    output: Output::HubDataset
+    result: HubDatasetCard
+    response_model: StatusResponse<HubDatasetCard>
+    cli_path: ["hub", "get-dataset"]
+    prose: commands/hub.get_dataset.md
+    errors+:
+      - invalid_argument.executor.hub_dataset
+      - not_found.executor.hub_dataset
+    fixtures:
+      request: requests/v1/hub/get_dataset.json
+      response: responses/v1/hub/dataset.json
+      replay_skip: hub browse reads a configured StrataHub over the network; it never runs against the scratch cache executor
+  - id: hub.list_refs
+    kind: read.summary
+    title: List hub dataset refs
+    input: Command::HubListRefs
+    output: Output::HubRefs
+    result: HubRefList
+    response_model: StatusResponse<HubRefList>
+    cli_path: ["hub", "list-refs"]
+    prose: commands/hub.list_refs.md
+    errors+:
+      - invalid_argument.executor.hub_dataset
+      - not_found.executor.hub_dataset
+    fixtures:
+      request: requests/v1/hub/list_refs.json
+      response: responses/v1/hub/refs.json
+      replay_skip: hub browse reads a configured StrataHub over the network; it never runs against the scratch cache executor
+  - id: hub.list_yanked
+    kind: read.summary
+    title: List yanked hub refs
+    input: Command::HubListYanked
+    output: Output::HubYanked
+    result: HubYankedList
+    response_model: StatusResponse<HubYankedList>
+    cli_path: ["hub", "list-yanked"]
+    prose: commands/hub.list_yanked.md
+    errors+:
+      - invalid_argument.executor.hub_since
+      - not_found.executor.hub_resource
+    fixtures:
+      request: requests/v1/hub/list_yanked.json
+      response: responses/v1/hub/yanked.json
+      replay_skip: hub browse reads a configured StrataHub over the network; it never runs against the scratch cache executor
+      error_cases:
+        - request: requests/v1/hub/list_yanked_bad_since.json
+          expected_error: responses/v1/errors/hub/list_yanked_bad_since.json

@@ -1,0 +1,73 @@
+{
+  "type": "hub_dataset",
+  "data": {
+    "name": "titanic",
+    "description": "Classic passenger-survival dataset.",
+    "size_bytes": 1024,
+    "downloads": 7,
+    "primitives": [
+      "kv"
+    ],
+    "tasks": [
+      "classification"
+    ],
+    "tags": [
+      "tabular"
+    ],
+    "license": "CC0",
+    "default_branch": "main",
+    "last_updated": "2026-09-02T00:00:00Z",
+    "badge": "official",
+    "owner": "stratahub",
+    "summary_excerpt": "Classic passenger-survival dataset.",
+    "created": "2026-09-01T00:00:00Z",
+    "manifest_hash": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "engine_version_required": ">=1.1.0",
+    "format_version": "v1",
+    "capability_registry_version": 1,
+    "clone_command": "strata clone titanic",
+    "readme": "# Titanic\n",
+    "quick_start_snippets": {
+      "python": "print('titanic')"
+    },
+    "frontmatter_extras": {
+      "source": "fixture"
+    },
+    "sample_preview": {
+      "kv": [
+        {
+          "key": "passenger:1",
+          "value_summary": "survived=true"
+        }
+      ]
+    },
+    "schema": {
+      "kv": {
+        "namespaces": [
+          {
+            "prefix": "passenger:",
+            "value_type": "json",
+            "entry_count": 1
+          }
+        ]
+      }
+    },
+    "strata_features": {
+      "branches": [
+        {
+          "name": "main",
+          "is_default": true
+        }
+      ],
+      "time_travel_highlights": [],
+      "multi_primitive_demos": [],
+      "example_notebook": "examples/titanic.ipynb"
+    },
+    "citation": "Fixture citation.",
+    "provenance": {
+      "source": "fixture",
+      "curator": "stratahub",
+      "license_text_url": "https://example.test/license"
+    }
+  }
+}

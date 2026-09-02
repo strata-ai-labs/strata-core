@@ -3962,6 +3962,7 @@ dependencies = [
  "strata-inference",
  "tempfile",
  "thiserror 1.0.69",
+ "time",
  "tiny_http",
  "tracing",
  "url",

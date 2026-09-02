@@ -107,6 +107,10 @@ errors:
   - invalid_argument.executor.hub_branch
   - invalid_argument.executor.hub_feature_disabled
   - invalid_argument.executor.hub_url
+  - invalid_argument.executor.hub_filter
+  - invalid_argument.executor.hub_since
+  - not_found.executor.hub_dataset
+  - not_found.executor.hub_resource
   - failed_precondition.executor.hub_clone
   - unavailable.executor.hub_transport
   - inference.unsupported_operation

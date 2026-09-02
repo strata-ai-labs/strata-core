@@ -31,6 +31,7 @@ mod resolve;
 mod schema_preview;
 mod transport;
 
+pub use stratahub_client::{ClientError, DatasetFilter, ListPageReq, SortKey};
 pub use stratahub_protocol;
 
 pub use clone::{

@@ -23,3 +23,8 @@ skipped:
   - event.list
   - event.range
   - event.range_time
+  - hub.get_dataset
+  - hub.info
+  - hub.list_datasets
+  - hub.list_refs
+  - hub.list_yanked

@@ -8,7 +8,8 @@ use crate::types::{
     EventChainVerification, EventVersionedData, GraphBatchItemResult, GraphBfsData,
     GraphBindingHit, GraphCdlpData, GraphEdgeDataOutput, GraphInfoData, GraphLccData,
     GraphNeighborHit, GraphNodeDataOutput, GraphOntologyData, GraphOntologySummaryData,
-    GraphPagerankData, GraphSsspData, GraphWccData, HistoryResult, JsonBatchGetItemResult,
+    GraphPagerankData, GraphSsspData, GraphWccData, HistoryResult, HubCloneProgress,
+    HubDatasetCard, HubDatasetPage, HubInfo, HubRefList, HubYankedList, JsonBatchGetItemResult,
     JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition, JsonSampleItem, Maybe,
     MaybeJsonValue, MaybeJsonVersionedValue, MutationEffect, PageInfo, PromotionOutcomeItem,
     SampleItem, ScanItem, VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo,
@@ -17,6 +18,9 @@ use crate::types::{
 use serde::{Deserialize, Serialize};
 
 /// Successful executor output.
+// `Output` is the serialized wire enum; boxing the largest payload would change
+// the generated JSON Schema, so the enum carries concrete DTOs directly.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
@@ -47,6 +51,18 @@ pub enum Output {
         /// Total bytes fetched.
         total_bytes: u64,
     },
+    /// A hub clone progress event.
+    HubCloneProgress(HubCloneProgress),
+    /// Hub capability advertisement.
+    HubInfo(HubInfo),
+    /// Hub dataset listing page.
+    HubDatasets(HubDatasetPage),
+    /// Full hub dataset card.
+    HubDataset(HubDatasetCard),
+    /// Hub dataset refs.
+    HubRefs(HubRefList),
+    /// Hub yank deny-list.
+    HubYanked(HubYankedList),
     /// Remote origin of a cloned database (`None` when never recorded).
     RemoteOriginResult {
         /// The recorded origin, when present.

@@ -526,6 +526,12 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="invalid_argument.executor.hub_feature_disabled"></a>
 - `invalid_argument.executor.hub_feature_disabled`
 
+<a id="invalid_argument.executor.hub_filter"></a>
+- `invalid_argument.executor.hub_filter`
+
+<a id="invalid_argument.executor.hub_since"></a>
+- `invalid_argument.executor.hub_since`
+
 <a id="invalid_argument.executor.hub_url"></a>
 - `invalid_argument.executor.hub_url`
 
@@ -618,6 +624,12 @@ the public registry when adding, renaming, or removing a public error code.
 
 <a id="invalid_argument.executor.vector_limit"></a>
 - `invalid_argument.executor.vector_limit`
+
+<a id="not_found.executor.hub_dataset"></a>
+- `not_found.executor.hub_dataset`
+
+<a id="not_found.executor.hub_resource"></a>
+- `not_found.executor.hub_resource`
 
 <a id="unavailable.executor.arrow_io"></a>
 - `unavailable.executor.arrow_io`

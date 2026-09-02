@@ -1,0 +1,16 @@
+{
+  "type": "hub_info",
+  "data": {
+    "protocol_version": "v1",
+    "server_implementation": "stratahub",
+    "server_version": "0.1.0",
+    "hash_algorithm": "blake3",
+    "max_object_size_bytes": 536870912,
+    "max_manifest_size_bytes": 1048576,
+    "max_dataset_size_bytes": 5368709120,
+    "supported_object_content_types": [
+      "application/octet-stream"
+    ],
+    "telemetry_endpoint_enabled": false
+  }
+}

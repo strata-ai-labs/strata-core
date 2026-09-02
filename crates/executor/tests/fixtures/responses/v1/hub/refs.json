@@ -1,0 +1,14 @@
+{
+  "type": "hub_refs",
+  "data": {
+    "dataset": "titanic",
+    "default_branch": "main",
+    "refs": [
+      {
+        "branch": "main",
+        "manifest_hash": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "last_updated": "2026-09-02T00:00:00Z"
+      }
+    ]
+  }
+}

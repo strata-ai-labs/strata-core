@@ -8,6 +8,8 @@ mod arrow;
 mod event;
 #[path = "command_cases/graph.rs"]
 mod graph;
+#[path = "command_cases/hub.rs"]
+mod hub;
 #[path = "command_cases/json.rs"]
 mod json;
 #[path = "command_cases/kv.rs"]
@@ -19,12 +21,14 @@ use self::admin_branch::*;
 use self::arrow::*;
 use self::event::*;
 use self::graph::*;
+use self::hub::*;
 use self::json::*;
 use self::kv::*;
 use self::vector::*;
 
 pub(super) fn all_commands() -> Vec<Command> {
     let mut commands = admin_space_commands();
+    commands.extend(hub_commands());
     commands.extend(branch_commands());
     commands.extend(kv_commands());
     commands.extend(json_commands());

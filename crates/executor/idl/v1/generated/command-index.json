@@ -233,7 +233,8 @@
       "input": "Command::HubClone",
       "output": "Output::HubCloneResult",
       "outputs": [
-        "Output::HubCloneResult"
+        "Output::HubCloneResult",
+        "Output::HubCloneProgress"
       ],
       "wire_status": "stable",
       "response_model": "StatusResponse<HubClone>",
@@ -273,6 +274,9 @@
       "fixtures": {
         "request": "requests/v1/admin/hub_clone.json",
         "response": "responses/v1/admin/hub_clone.json",
+        "responses": [
+          "responses/v1/hub/clone_progress_resolved.json"
+        ],
         "replay_skip": "hub clone resolves and downloads a dataset over the network into a new database directory; it never runs against the scratch cache executor"
       },
       "source": {
@@ -4540,6 +4544,366 @@
       "source": {
         "command": "crates/executor/idl/v1/commands/graph.yaml",
         "prose": "commands/graph.sample.md"
+      }
+    },
+    {
+      "id": "hub.get_dataset",
+      "family": "hub",
+      "op": "get_dataset",
+      "kind": "read.summary",
+      "title": "Read hub dataset",
+      "summary": "Read one StrataHub dataset card.",
+      "description": "Reads `GET /v1/datasets/<name>` from the effective hub URL and returns the dataset card in an executor-owned JSON envelope.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/hub/get_dataset",
+      "cli": {
+        "path": [
+          "hub",
+          "get-dataset"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_hub_get_dataset",
+        "description": "Use this when a frontend needs the full dataset card before cloning or rendering detail UI."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::HubGetDataset",
+      "output": "Output::HubDataset",
+      "outputs": [
+        "Output::HubDataset"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<HubDatasetCard>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.executor.hub_feature_disabled",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
+        },
+        {
+          "code": "invalid_argument.executor.hub_url",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_url"
+        },
+        {
+          "code": "unavailable.executor.hub_transport",
+          "docs": "https://stratadb.org/e/unavailable.executor.hub_transport"
+        },
+        {
+          "code": "invalid_argument.executor.hub_dataset",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_dataset"
+        },
+        {
+          "code": "not_found.executor.hub_dataset",
+          "docs": "https://stratadb.org/e/not_found.executor.hub_dataset"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/hub/get_dataset.json",
+        "response": "responses/v1/hub/dataset.json",
+        "replay_skip": "hub browse reads a configured StrataHub over the network; it never runs against the scratch cache executor"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/hub.yaml",
+        "prose": "commands/hub.get_dataset.md"
+      }
+    },
+    {
+      "id": "hub.info",
+      "family": "hub",
+      "op": "info",
+      "kind": "read.summary",
+      "title": "Read hub info",
+      "summary": "Read the selected StrataHub's V1 capability advertisement.",
+      "description": "Reads `GET /v1/info` from the effective hub URL resolved by the shared Strata resolver.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/hub/info",
+      "cli": {
+        "path": [
+          "hub",
+          "info"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_hub_info",
+        "description": "Use this when a frontend needs to inspect a hub's protocol version, limits, hash algorithm, or telemetry capability."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::HubInfo",
+      "output": "Output::HubInfo",
+      "outputs": [
+        "Output::HubInfo"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<HubInfo>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.executor.hub_feature_disabled",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
+        },
+        {
+          "code": "invalid_argument.executor.hub_url",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_url"
+        },
+        {
+          "code": "unavailable.executor.hub_transport",
+          "docs": "https://stratadb.org/e/unavailable.executor.hub_transport"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/hub/info.json",
+        "response": "responses/v1/hub/info.json",
+        "replay_skip": "hub browse reads a configured StrataHub over the network; it never runs against the scratch cache executor"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/hub.yaml",
+        "prose": "commands/hub.info.md"
+      }
+    },
+    {
+      "id": "hub.list_datasets",
+      "family": "hub",
+      "op": "list_datasets",
+      "kind": "read.summary",
+      "title": "List hub datasets",
+      "summary": "List datasets from the selected StrataHub.",
+      "description": "Reads `GET /v1/datasets` from the effective hub URL. Repeatable task, tag, and primitive filters preserve the StrataHub V1 query shape.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/hub/list_datasets",
+      "cli": {
+        "path": [
+          "hub",
+          "list-datasets"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_hub_list_datasets",
+        "description": "Use this when a frontend needs to browse hub datasets with StrataHub V1 filters, sorting, and offset pagination."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::HubListDatasets",
+      "output": "Output::HubDatasets",
+      "outputs": [
+        "Output::HubDatasets"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<HubDatasetPage>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.executor.hub_feature_disabled",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
+        },
+        {
+          "code": "invalid_argument.executor.hub_url",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_url"
+        },
+        {
+          "code": "unavailable.executor.hub_transport",
+          "docs": "https://stratadb.org/e/unavailable.executor.hub_transport"
+        },
+        {
+          "code": "invalid_argument.executor.hub_filter",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_filter"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/hub/list_datasets.json",
+        "response": "responses/v1/hub/datasets.json",
+        "replay_skip": "hub browse reads a configured StrataHub over the network; it never runs against the scratch cache executor",
+        "error_cases": [
+          {
+            "request": "requests/v1/hub/list_datasets_bad_limit.json",
+            "expected_error": "responses/v1/errors/hub/list_datasets_bad_limit.json"
+          }
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/hub.yaml",
+        "prose": "commands/hub.list_datasets.md"
+      }
+    },
+    {
+      "id": "hub.list_refs",
+      "family": "hub",
+      "op": "list_refs",
+      "kind": "read.summary",
+      "title": "List hub dataset refs",
+      "summary": "List live refs for a StrataHub dataset.",
+      "description": "Reads `GET /v1/datasets/<name>/refs` from the effective hub URL. Yanked refs are filtered by the hub.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/hub/list_refs",
+      "cli": {
+        "path": [
+          "hub",
+          "list-refs"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_hub_list_refs",
+        "description": "Use this when a frontend needs to show cloneable branches for a dataset."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::HubListRefs",
+      "output": "Output::HubRefs",
+      "outputs": [
+        "Output::HubRefs"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<HubRefList>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.executor.hub_feature_disabled",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
+        },
+        {
+          "code": "invalid_argument.executor.hub_url",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_url"
+        },
+        {
+          "code": "unavailable.executor.hub_transport",
+          "docs": "https://stratadb.org/e/unavailable.executor.hub_transport"
+        },
+        {
+          "code": "invalid_argument.executor.hub_dataset",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_dataset"
+        },
+        {
+          "code": "not_found.executor.hub_dataset",
+          "docs": "https://stratadb.org/e/not_found.executor.hub_dataset"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/hub/list_refs.json",
+        "response": "responses/v1/hub/refs.json",
+        "replay_skip": "hub browse reads a configured StrataHub over the network; it never runs against the scratch cache executor"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/hub.yaml",
+        "prose": "commands/hub.list_refs.md"
+      }
+    },
+    {
+      "id": "hub.list_yanked",
+      "family": "hub",
+      "op": "list_yanked",
+      "kind": "read.summary",
+      "title": "List yanked hub refs",
+      "summary": "List yanked refs from the selected StrataHub.",
+      "description": "Reads `GET /v1/yanked` from the effective hub URL. `since`, when supplied, must be an RFC 3339 timestamp.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/hub/list_yanked",
+      "cli": {
+        "path": [
+          "hub",
+          "list-yanked"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_hub_list_yanked",
+        "description": "Use this when a frontend needs the hub deny-list or an incremental yanked-ref refresh."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::HubListYanked",
+      "output": "Output::HubYanked",
+      "outputs": [
+        "Output::HubYanked"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<HubYankedList>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.executor.hub_feature_disabled",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
+        },
+        {
+          "code": "invalid_argument.executor.hub_url",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_url"
+        },
+        {
+          "code": "unavailable.executor.hub_transport",
+          "docs": "https://stratadb.org/e/unavailable.executor.hub_transport"
+        },
+        {
+          "code": "invalid_argument.executor.hub_since",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_since"
+        },
+        {
+          "code": "not_found.executor.hub_resource",
+          "docs": "https://stratadb.org/e/not_found.executor.hub_resource"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/hub/list_yanked.json",
+        "response": "responses/v1/hub/yanked.json",
+        "replay_skip": "hub browse reads a configured StrataHub over the network; it never runs against the scratch cache executor",
+        "error_cases": [
+          {
+            "request": "requests/v1/hub/list_yanked_bad_since.json",
+            "expected_error": "responses/v1/errors/hub/list_yanked_bad_since.json"
+          }
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/hub.yaml",
+        "prose": "commands/hub.list_yanked.md"
       }
     },
     {

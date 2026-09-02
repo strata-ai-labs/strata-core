@@ -10,6 +10,11 @@ uncovered: []                  # empty — every hermetic-possible command is co
 
 non_hermetic:
   - admin.hub_clone            # network + hub — Strata.clone, tests/test_hub_clone.py
+  - hub.info                   # network + configured StrataHub
+  - hub.list_datasets          # network + configured StrataHub
+  - hub.get_dataset            # network + configured StrataHub
+  - hub.list_refs              # network + configured StrataHub
+  - hub.list_yanked            # network + configured StrataHub
   - inference.generate         # local model or cloud key — tests/test_inference_local.py
   - inference.embed            # local model or cloud key — tests/test_inference_local.py
   - inference.rank             # reranker model or cloud key

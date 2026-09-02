@@ -112,6 +112,8 @@ unreplayed:
   - invalid_argument.executor.hub_branch
   - invalid_argument.executor.hub_dataset
   - invalid_argument.executor.hub_feature_disabled
+  - invalid_argument.executor.hub_filter
+  - invalid_argument.executor.hub_since
   - invalid_argument.executor.hub_url
   - invalid_argument.executor.json_batch_duplicate_key
   - invalid_argument.executor.limit
@@ -121,6 +123,8 @@ unreplayed:
   - not_found.engine.branch
   - not_found.engine.graph
   - not_found.engine.graph_node
+  - not_found.executor.hub_dataset
+  - not_found.executor.hub_resource
   - resource_exhausted.engine.graph_analytics_budget
   - unavailable.executor.arrow_io
   - unavailable.executor.hub_transport
