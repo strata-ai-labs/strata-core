@@ -11,7 +11,7 @@ use tracing::info;
 
 use super::ffi::{
     llama_api_lock, LlamaContext, LlamaCppApi, LlamaModel, LlamaToken, LlamaVocab,
-    LLAMA_POOLING_TYPE_MEAN, LLAMA_POOLING_TYPE_RANK,
+    LLAMA_FLASH_ATTN_TYPE_DISABLED, LLAMA_POOLING_TYPE_MEAN, LLAMA_POOLING_TYPE_RANK,
 };
 use crate::wire::ModelConfig;
 use crate::InferenceError;
@@ -41,7 +41,8 @@ unsafe impl Send for LlamaCppContext {}
 impl LlamaCppContext {
     /// Load a model configured for embedding (pooling enabled).
     pub(crate) fn load_for_embedding(path: &Path) -> Result<Self, InferenceError> {
-        Self::load_pooled(path, LLAMA_POOLING_TYPE_MEAN, 512, "embedding")
+        // b10766 caps n_seq_max at 256 (llama_max_parallel_sequences); was 512.
+        Self::load_pooled(path, LLAMA_POOLING_TYPE_MEAN, 256, "embedding")
     }
 
     /// Load a model configured for cross-encoder ranking.
@@ -67,7 +68,10 @@ impl LlamaCppContext {
 
         let c_path = path_to_cstring(path)?;
 
-        let mparams = api.model_default_params();
+        let mut mparams = api.model_default_params();
+        // b10766 changed the n_gpu_layers default from 0 to -1 (all layers);
+        // keep embeddings on CPU as before (small model, avoid VRAM pressure).
+        mparams.n_gpu_layers = 0;
 
         info!(path = %path.display(), mode = mode, "Loading model via llama.cpp");
         let model = api
@@ -95,6 +99,9 @@ impl LlamaCppContext {
         cparams.pooling_type = pooling_type;
         cparams.n_ctx = 0; // from model
         cparams.n_seq_max = n_seq_max;
+        // b10766 defaults flash_attn_type to AUTO (enables FA), which encoder
+        // embedding models do not support — keep it disabled as before.
+        cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
         let n_seq_max = cparams.n_seq_max as usize;
 
         let ctx = api.init_from_model(model, cparams).map_err(|e| {
@@ -110,7 +117,7 @@ impl LlamaCppContext {
         };
 
         // Encoder-only models (BERT, NomicBERT, etc.) have no KV cache, so
-        // llama_get_kv_self returns null. llama_model_has_encoder only returns
+        // llama_get_memory returns null. llama_model_has_encoder only returns
         // true for encoder-decoder models (T5), so we also check for a null
         // KV cache to detect encoder-only architectures that need encode().
         let has_encoder = has_encoder || api.kv_self_is_null(ctx);
@@ -184,6 +191,8 @@ impl LlamaCppContext {
         // Context params
         let mut cparams = api.context_default_params();
         cparams.embeddings = false;
+        // Preserve pre-b10766 behavior (FA off; b10766 defaults it to AUTO/on).
+        cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
 
         let n_ctx = match config.and_then(|c| c.n_ctx) {
             Some(ctx) => (ctx as usize).min(train_ctx),

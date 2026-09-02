@@ -38,7 +38,11 @@ fn local_generation_uses_real_gguf() {
         .generate(
             &model,
             &GenerateRequest {
-                prompt: "Write one short sentence about embedded databases.".to_owned(),
+                // `generate` is the raw/completion API (no chat template), so
+                // use a completion prompt the model continues. An instruction
+                // ("Write a sentence…") belongs to `chat`; a chat model given a
+                // raw instruction under greedy sampling immediately emits EOS.
+                prompt: "The quick brown fox jumps over the lazy".to_owned(),
                 max_tokens: 32,
                 temperature: 0.0,
                 ..GenerateRequest::default()
