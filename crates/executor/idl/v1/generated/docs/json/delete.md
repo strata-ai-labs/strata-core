@@ -1,7 +1,7 @@
 ---
 title: "Delete JSON value"
 description: "Delete a whole JSON document or one path inside it."
-source: strata-core@1.1.0
+source: strata-core@1.1.1
 section: json
 ---
 

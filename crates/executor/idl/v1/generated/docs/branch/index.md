@@ -1,7 +1,7 @@
 ---
 title: "branch commands"
 description: "Command reference for the branch family."
-source: strata-core@1.1.0
+source: strata-core@1.1.1
 section: branch
 ---
 

@@ -1,7 +1,7 @@
 ---
 title: "Delete graph link type"
 description: "Delete a draft link type."
-source: strata-core@1.1.0
+source: strata-core@1.1.1
 section: graph
 ---
 

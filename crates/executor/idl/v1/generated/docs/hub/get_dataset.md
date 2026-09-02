@@ -1,7 +1,7 @@
 ---
 title: "Read hub dataset"
 description: "Read one StrataHub dataset card."
-source: strata-core@1.1.0
+source: strata-core@1.1.1
 section: hub
 ---
 

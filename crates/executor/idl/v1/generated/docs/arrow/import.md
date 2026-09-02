@@ -1,7 +1,7 @@
 ---
 title: "Import Arrow file"
 description: "Import an Arrow-compatible file into a product primitive."
-source: strata-core@1.1.0
+source: strata-core@1.1.1
 section: arrow
 ---
 

@@ -1,7 +1,7 @@
 ---
 title: "List hub dataset refs"
 description: "List live refs for a StrataHub dataset."
-source: strata-core@1.1.0
+source: strata-core@1.1.1
 section: hub
 ---
 

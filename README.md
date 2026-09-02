@@ -9,7 +9,7 @@ and built-in time travel. One binary, one directory, zero infrastructure.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.91%2B-orange.svg)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-1.1.0-brightgreen.svg)](https://stratadb.org/changelog)
+[![Version](https://img.shields.io/badge/version-1.1.1-brightgreen.svg)](https://stratadb.org/changelog)
 
 [Website](https://stratadb.org) · [Documentation](https://stratadb.org/docs) · [Playground](https://stratadb.org/playground) · [Agent skills](https://github.com/stratalab/strata-agent-skills)
 
@@ -154,7 +154,7 @@ Durable databases open the same way with `Database::open_local(path, DurableLoca
 
 ```bash
 curl -fsSL https://stratadb.org/install.sh | sh
-strata --cache ping                 # pong 1.1.0
+strata --cache ping                 # pong 1.1.1
 ```
 
 **Homebrew:** `brew install stratalab/tap/strata`
@@ -180,7 +180,7 @@ Deeper internals live in [`docs/architecture/`](docs/architecture/).
 
 ## Status
 
-Strata 1.1.0 is released. The install script, Homebrew tap, and hosted docs are live, and the Python SDK ships on PyPI; a Node/TypeScript SDK is next. The on-disk format, error codes, and CLI surface documented here are stable contracts.
+Strata 1.1.1 is released. The install script, Homebrew tap, and hosted docs are live, and the Python SDK ships on PyPI; a Node/TypeScript SDK is next. The on-disk format, error codes, and CLI surface documented here are stable contracts.
 
 ## License
 

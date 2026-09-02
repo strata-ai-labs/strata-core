@@ -1,7 +1,7 @@
 ---
 title: "Batch delete vectors"
 description: "Delete multiple vectors by key."
-source: strata-core@1.1.0
+source: strata-core@1.1.1
 section: vector
 ---
 
