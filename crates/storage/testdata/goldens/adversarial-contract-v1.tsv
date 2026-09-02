@@ -1,0 +1,54 @@
+branch-catalog-manifest-active-and-deleted	trunc:116R	flip:116R	ext1:R	ext8:R
+branch-catalog-manifest-empty	trunc:40R	flip:40R	ext1:R	ext8:R
+branch-catalog-manifest-single-active	trunc:82R	flip:82R	ext1:R	ext8:R
+branch-catalog-manifest-with-parent	trunc:106R	flip:106R	ext1:R	ext8:R
+immutable-table-filtered-multi-block	trunc:1071R	flip:1071R	ext1:R	ext8:R
+immutable-table-filtered	trunc:703R	flip:703R	ext1:R	ext8:R
+immutable-table-one-block	trunc:655R	flip:655R	ext1:R	ext8:R
+immutable-table-two-block	trunc:1026R	flip:1026R	ext1:R	ext8:R
+internal-key-max-version	trunc:32R1A7R	flip:16A8R6A2R8A	ext1:R	ext8:R
+internal-key-ordinary	trunc:32R1A7R	flip:16A8R6A2R8A	ext1:R	ext8:R
+internal-key-zero-user-byte	trunc:33R1A7R	flip:16A9R2A1R2A3R8A	ext1:R	ext8:R
+manifest-identity	trunc:72R	flip:72R	ext1:R	ext8:R
+manifest-recovery-facts	trunc:72R	flip:72R	ext1:R	ext8:R
+pending-releases-manifest-empty	trunc:40R	flip:40R	ext1:R	ext8:R
+pending-releases-manifest-multi	trunc:119R	flip:119R	ext1:R	ext8:R
+pending-releases-manifest-single	trunc:75R	flip:75R	ext1:R	ext8:R
+physical-key-ordinary	trunc:32R	flip:16A8R6A2R	ext1:R	ext8:A
+quarantine-inventory-empty	trunc:60R	flip:60R	ext1:R	ext8:R
+quarantine-inventory-multi-entry	trunc:180R	flip:180R	ext1:R	ext8:R
+retained-history-extension-version-only	trunc:24R	flip:8A1R8A7R	ext1:R	ext8:R
+retained-history-extension-with-timestamp	trunc:24R	flip:8A1R8A7R	ext1:R	ext8:R
+segment-metadata-sidecar	trunc:60R	flip:60R	ext1:R	ext8:R
+snapshot-container-single-section	trunc:72R17A	flip:8R40A24R17A	ext1:A	ext8:A
+snapshot-header-identity	trunc:72R	flip:8R40A24R	ext1:A	ext8:A
+snapshot-row-section-put-and-tombstone	trunc:175R	flip:1A29R16A8R6A2R24A9R5A9R16A9R2A1R2A3R16A17R	ext1:R	ext8:R
+snapshot-section-empty	trunc:9R	flip:1A8R	ext1:A	ext8:A
+snapshot-timeline-section-one-group	trunc:65R	flip:1A12R16A12R24A	ext1:R	ext8:R
+snapshot-watermark-empty	trunc:1R	flip:1R	ext1:R	ext8:R
+snapshot-watermark-max	trunc:25R	flip:1R24A	ext1:R	ext8:R
+snapshot-watermark-present	trunc:25R	flip:1R24A	ext1:R	ext8:R
+storage-row-empty-value	trunc:70R	flip:5R16A8R6A2R24A9R	ext1:R	ext8:R
+storage-row-expiring	trunc:78R	flip:5R16A8R6A2R24A9R8A	ext1:R	ext8:R
+storage-row-put	trunc:75R	flip:5R16A8R6A2R24A9R5A	ext1:R	ext8:R
+storage-row-tombstone	trunc:70R	flip:5R16A8R6A2R16A17R	ext1:R	ext8:R
+table-data-block-one-put-uncompressed-frame	trunc:145R	flip:145R	ext1:R	ext8:R
+table-data-block-put-tombstone-uncompressed-frame	trunc:263R	flip:263R	ext1:R	ext8:R
+table-data-block-zstd-frame	trunc:115R	flip:115R	ext1:R	ext8:R
+table-filter-frame	unmapped
+table-index-block	unmapped
+table-manifest-empty	trunc:57R	flip:57R	ext1:R	ext8:R
+table-manifest-extension-section	trunc:79R	flip:79R	ext1:R	ext8:R
+table-manifest-inherited-layers	trunc:640R	flip:640R	ext1:R	ext8:R
+table-manifest-materialization-provenance	trunc:250R	flip:250R	ext1:R	ext8:R
+table-manifest-owned-levels	trunc:675R	flip:675R	ext1:R	ext8:R
+table-properties-block	unmapped
+table-row-split-payload-two-splits	trunc:16R1A15R	flip:32A	ext1:R	ext8:R
+wal-commit-payload-one-put	trunc:91R	flip:21R16A8R6A2R24A9R5A	ext1:R	ext8:R
+wal-commit-payload-put-tombstone	trunc:164R	flip:21R16A8R6A2R24A9R5A9R16A8R5A2R16A17R	ext1:R	ext8:R
+wal-commit-watermark	trunc:20R	flip:20R	ext1:R	ext8:R
+wal-record-empty-pre-m3f	trunc:45R	flip:45R	ext1:R	ext8:R
+wal-record-envelope	trunc:144R	flip:8R136A	ext1:A	ext8:A
+wal-record-payload	trunc:136R	flip:136R	ext1:A	ext8:A
+wal-segment-header-max-id	trunc:36R	flip:36R	ext1:A	ext8:A
+wal-segment-header	unmapped

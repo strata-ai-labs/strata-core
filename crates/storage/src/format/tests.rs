@@ -1155,3 +1155,189 @@ fn snapshot_watermark_max_matches_golden_vector() {
         Ok(watermark)
     );
 }
+
+// --- TCP4.5b: the adversarial decode matrix — systematic deterministic
+// --- mutations of every golden vector with the decoder's verdict pinned
+// --- per position. The flip map doubles as the format's integrity-coverage
+// --- documentation: an `A` at a position means a corruption there is NOT
+// --- detected at this layer (it is protected — or not — a layer up).
+// --- Mutations run through the fuzz seam's roundtrip-armed decoders, so an
+// --- accepted mutation that re-encodes differently PANICS: non-canonical
+// --- acceptance is a finding, never silently pinned.
+
+type AdversarialArm = fn(&[u8]) -> bool;
+
+fn adversarial_decoder(file: &str) -> Option<AdversarialArm> {
+    use super::fuzzing;
+    let arms: &[(&str, AdversarialArm)] = &[
+        (
+            "branch-catalog-manifest-",
+            fuzzing::decode_branch_catalog_manifest,
+        ),
+        ("internal-key-", fuzzing::decode_key),
+        ("physical-key-", fuzzing::decode_key),
+        ("manifest-", fuzzing::decode_manifest),
+        (
+            "pending-releases-manifest-",
+            fuzzing::decode_pending_releases_manifest,
+        ),
+        (
+            "quarantine-inventory-",
+            fuzzing::decode_quarantine_inventory,
+        ),
+        (
+            "retained-history-extension-",
+            fuzzing::decode_retained_history_extension_payload,
+        ),
+        ("segment-metadata-", fuzzing::decode_segment_metadata),
+        ("snapshot-container-", fuzzing::decode_snapshot_envelope),
+        ("snapshot-header-", |bytes| {
+            super::snapshot::decode_snapshot_header(bytes).is_ok()
+        }),
+        ("snapshot-section-", |bytes| {
+            decode_snapshot_section(bytes).is_ok()
+        }),
+        ("snapshot-row-section-", |bytes| {
+            decode_snapshot_section(bytes).is_ok_and(|(section, consumed)| {
+                consumed == bytes.len()
+                    && super::decode_snapshot_row_payload(section.payload()).is_ok()
+            })
+        }),
+        ("snapshot-timeline-section-", |bytes| {
+            decode_snapshot_section(bytes).is_ok_and(|(section, consumed)| {
+                consumed == bytes.len()
+                    && super::decode_snapshot_timeline_payload(section.payload()).is_ok()
+            })
+        }),
+        ("snapshot-watermark-", fuzzing::decode_watermark),
+        ("storage-row-", fuzzing::decode_storage_row),
+        ("table-data-block-", fuzzing::decode_table_block),
+        ("table-manifest-", fuzzing::decode_table_manifest),
+        ("table-row-split-payload-", |bytes| {
+            super::table_row_split_extension::decode_table_row_split_extension_payload(bytes)
+                .is_ok()
+        }),
+        ("immutable-table-", fuzzing::decode_table_artifact),
+        ("wal-commit-payload-", fuzzing::decode_wal_commit_payload),
+        ("wal-commit-watermark", |bytes| {
+            super::decode_wal_watermark(bytes).is_ok()
+        }),
+        ("wal-record-", fuzzing::decode_wal_record),
+        ("wal-segment-header-", fuzzing::decode_wal_segment_header),
+    ];
+    arms.iter()
+        .find(|(prefix, _)| file.starts_with(prefix))
+        .map(|(_, decoder)| *decoder)
+}
+
+/// Run-length encodes an accept/reject sequence: `"5R2A"` = five rejects
+/// then two accepts.
+fn rle(verdicts: &[bool]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let mut run: Option<(bool, usize)> = None;
+    for &accepted in verdicts {
+        match &mut run {
+            Some((current, count)) if *current == accepted => *count += 1,
+            _ => {
+                if let Some((current, count)) = run.take() {
+                    write!(out, "{count}{}", if current { 'A' } else { 'R' }).expect("write");
+                }
+                run = Some((accepted, 1));
+            }
+        }
+    }
+    if let Some((current, count)) = run {
+        write!(out, "{count}{}", if current { 'A' } else { 'R' }).expect("write");
+    }
+    out
+}
+
+#[test]
+fn adversarial_matrix_matches_the_pinned_contract() {
+    let goldens_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata/goldens/storage-format-v1");
+    let manifest_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata/goldens/adversarial-contract-v1.tsv");
+
+    let mut files: Vec<String> = fs::read_dir(&goldens_dir)
+        .expect("goldens dir")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| {
+            std::path::Path::new(name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("hex"))
+        })
+        .collect();
+    files.sort();
+    assert!(
+        files.len() >= 54,
+        "the golden inventory shrank: {}",
+        files.len()
+    );
+
+    let mut lines = Vec::new();
+    for file in &files {
+        let stem = file.trim_end_matches(".hex");
+        let Some(decoder) = adversarial_decoder(stem) else {
+            lines.push(format!("{stem}\tunmapped"));
+            continue;
+        };
+        let text = fs::read_to_string(goldens_dir.join(file)).expect("golden");
+        let bytes = parse_hex(&text);
+        // Historical must-reject fixtures pin that a retired encoding STAYS
+        // rejected; every other golden must accept unmutated.
+        let must_reject_base = stem == "wal-record-empty-pre-m3f";
+        assert_eq!(
+            decoder(&bytes),
+            !must_reject_base,
+            "{stem}: unexpected base verdict under its adversarial arm"
+        );
+
+        let truncations: Vec<bool> = (0..bytes.len()).map(|len| decoder(&bytes[..len])).collect();
+        let flips: Vec<bool> = (0..bytes.len())
+            .map(|position| {
+                let mut mutated = bytes.clone();
+                mutated[position] ^= 0xFF;
+                decoder(&mutated)
+            })
+            .collect();
+        let extend = |junk: usize| {
+            let mut mutated = bytes.clone();
+            mutated.extend(std::iter::repeat_n(0xA5u8, junk));
+            if decoder(&mutated) {
+                'A'
+            } else {
+                'R'
+            }
+        };
+        lines.push(format!(
+            "{stem}\ttrunc:{}\tflip:{}\text1:{}\text8:{}",
+            rle(&truncations),
+            rle(&flips),
+            extend(1),
+            extend(8),
+        ));
+    }
+    let rendered = lines.join("\n") + "\n";
+
+    if std::env::var("STRATA_ADVERSARIAL_BLESS").is_ok() {
+        fs::write(&manifest_path, &rendered).expect("bless adversarial contract");
+        eprintln!("blessed {} adversarial contract lines", lines.len());
+        return;
+    }
+    let committed = fs::read_to_string(&manifest_path)
+        .expect("committed adversarial contract (bless once with STRATA_ADVERSARIAL_BLESS=1)");
+    assert_eq!(
+        rendered, committed,
+        "the adversarial decode contract drifted — a decoder's rejection \
+         boundary or integrity coverage changed; if intentional, review and \
+         re-bless with STRATA_ADVERSARIAL_BLESS=1"
+    );
+}
