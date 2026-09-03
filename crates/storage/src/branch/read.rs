@@ -3063,9 +3063,7 @@ impl<'a> BranchScanCursor<'a> {
             BranchScanCursorKind::SingleTable { cursor, .. } => {
                 cursor
                     .seek_to_first()
-                    .map_err(|_| BranchRuntimeError::InvalidBranchState {
-                        reason: "branch scan cursor seek failed",
-                    })?;
+                    .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
             }
             BranchScanCursorKind::NonzeroLevel(cursor) => cursor.seek_to_first()?,
         }
@@ -3077,9 +3075,7 @@ impl<'a> BranchScanCursor<'a> {
             BranchScanCursorKind::SingleTable { cursor, .. } => {
                 cursor
                     .advance()
-                    .map_err(|_| BranchRuntimeError::InvalidBranchState {
-                        reason: "branch scan cursor advance failed",
-                    })?;
+                    .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
             }
             BranchScanCursorKind::NonzeroLevel(cursor) => cursor.advance()?,
         }
@@ -3253,9 +3249,7 @@ impl<'a> BranchNonzeroLevelScanCursor<'a> {
         };
         cursor
             .advance()
-            .map_err(|_| BranchRuntimeError::InvalidBranchState {
-                reason: "branch nonzero level scan cursor advance failed",
-            })?;
+            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
         if cursor.current().is_some() {
             return Ok(());
         }
@@ -3306,9 +3300,7 @@ impl<'a> BranchNonzeroLevelScanCursor<'a> {
             let mut cursor = table.reader().bounded_cursor(self.bounds.clone());
             cursor
                 .seek_to_first()
-                .map_err(|_| BranchRuntimeError::InvalidBranchState {
-                    reason: "branch nonzero level scan cursor seek failed",
-                })?;
+                .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
             if cursor.current().is_some() {
                 self.current_table_index = Some(table_index);
                 self.current_cursor = Some(cursor);
