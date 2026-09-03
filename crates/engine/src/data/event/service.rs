@@ -284,9 +284,11 @@ impl<'a> EventService<'a> {
 
     /// Reads a sequence range.
     ///
-    /// Forward ranges read `[start_seq, end_seq)`. Reverse ranges walk
-    /// backward from `start_seq` and treat `end_seq` as an exclusive lower
-    /// bound when present.
+    /// Forward ranges read `[start_seq, end_seq)`. Reverse ranges read the
+    /// same `[start_seq, end_seq)` window in descending order, so
+    /// `reverse(window) == reversed(forward(window))`: a reverse read anchored
+    /// at the log start returns the tail (the newest events) and the `limit`
+    /// takes from the newest end.
     ///
     /// This read is latest-only by design: it has no `as_of` (commit-timeline)
     /// twin. Event's temporal reads are served by `as_of` on [`get`](Self::get)
@@ -324,17 +326,17 @@ impl<'a> EventService<'a> {
                 )?
             }
             EventRangeDirection::Reverse => {
-                if latest_len == 0 || start_seq.as_u64() >= latest_len {
-                    return Ok(EventRangePage::new(Vec::new(), false, None));
-                }
-                let lower = end_seq.map_or(0, |end| end.as_u64().saturating_add(1));
-                let upper = start_seq.as_u64().saturating_add(1).min(latest_len);
-                if lower >= upper {
+                // Same `[start_seq, end_seq)` window as forward, yielded
+                // descending: reverse(window) == reversed(forward(window)).
+                let upper = end_seq
+                    .map_or(latest_len, EventSequence::as_u64)
+                    .min(latest_len);
+                if start_seq.as_u64() >= upper {
                     return Ok(EventRangePage::new(Vec::new(), false, None));
                 }
                 let mut events = self.scan_sequence_window(
                     &record,
-                    lower,
+                    start_seq.as_u64(),
                     upper,
                     ReadSelector::Latest,
                     event_type,

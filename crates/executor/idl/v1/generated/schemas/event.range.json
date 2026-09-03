@@ -93,7 +93,7 @@
         "description": "Result ordering."
       },
       "end_seq": {
-        "description": "Optional exclusive end sequence; with reverse direction, exclusive lower bound.",
+        "description": "Optional exclusive upper bound of the sequence window (same in both directions).",
         "format": "uint64",
         "minimum": 0,
         "type": [
@@ -125,7 +125,7 @@
         ]
       },
       "start_seq": {
-        "description": "Inclusive start sequence; with reverse direction, walk backward from this sequence.",
+        "description": "Inclusive lower bound of the sequence window (same in both directions).",
         "format": "uint64",
         "minimum": 0,
         "type": "integer"

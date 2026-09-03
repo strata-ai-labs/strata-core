@@ -110,12 +110,14 @@ fn event_by_type_filters_and_reverse_range_orders() {
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["event"]["event_type"], "user.updated");
 
+    // #2694: reverse yields the [start, latest) window newest-first, so the
+    // whole log reversed with a limit of 2 is the newest two, [2, 1].
     let reverse = strata(
         &db,
         &[
             "event",
             "range",
-            "2",
+            "0",
             "--direction",
             "reverse",
             "--limit",
