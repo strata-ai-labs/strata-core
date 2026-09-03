@@ -93,7 +93,7 @@
         "description": "Result ordering."
       },
       "end_ts": {
-        "description": "Optional inclusive end timestamp in microseconds.",
+        "description": "Optional exclusive end timestamp in microseconds (half-open window,\nmatching the sequence-addressed range's exclusive end).",
         "format": "uint64",
         "minimum": 0,
         "type": [

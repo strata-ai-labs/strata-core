@@ -1925,7 +1925,7 @@
       "kind": "read.page",
       "title": "Read event time range",
       "summary": "Read a range of events by occurrence time.",
-      "description": "Reads events from the selected branch and space whose append timestamps fall inside an inclusive microsecond window. This queries when events occurred; historical log states are the timestamped read commands' job. An optional event type narrows the results.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "description": "Reads events from the selected branch and space whose append timestamps fall inside a half-open `[start_ts, end_ts)` microsecond window — the start is inclusive and the end is exclusive, matching the sequence-addressed range. This queries when events occurred; historical log states are the timestamped read commands' job. An optional event type narrows the results.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
       "docs": "/docs/event/range_time",
       "cli": {
         "path": [

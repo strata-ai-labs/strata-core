@@ -5,7 +5,7 @@ source: strata-core@1.1.1
 section: event
 ---
 
-Reads events from the selected branch and space whose append timestamps fall inside an inclusive microsecond window. This queries when events occurred; historical log states are the timestamped read commands' job. An optional event type narrows the results.
+Reads events from the selected branch and space whose append timestamps fall inside a half-open `[start_ts, end_ts)` microsecond window — the start is inclusive and the end is exclusive, matching the sequence-addressed range. This queries when events occurred; historical log states are the timestamped read commands' job. An optional event type narrows the results.
 
 Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
 
@@ -34,7 +34,7 @@ $ strata event range-time 0 forward
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `direction` | `EventRangeDirection` | yes | Result ordering. |
-| `end_ts` | `integer` | no | Optional inclusive end timestamp in microseconds. |
+| `end_ts` | `integer` | no | Optional exclusive end timestamp in microseconds (half-open window, matching the sequence-addressed range's exclusive end). |
 | `event_type` | `string` | no | Optional event type filter. |
 | `limit` | `integer` | no | Optional item limit. |
 | `start_ts` | `integer` | yes | Inclusive start timestamp in microseconds. |

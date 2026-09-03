@@ -618,12 +618,13 @@ fn assert_event_timestamp_and_list_edges(events: &mut EventService<'_>) {
                 EventRangeDirection::Forward,
                 None,
             )
-            .expect("closed time range succeeds")
+            .expect("zero-width time range succeeds")
             .events()
             .iter()
             .map(|event| event.sequence().as_u64())
             .collect::<Vec<_>>(),
-        vec![2]
+        // #2695: a zero-width `[ts, ts)` window is empty under the half-open end.
+        Vec::<u64>::new()
     );
     assert!(events
         .range_by_time(
@@ -874,7 +875,11 @@ fn assert_event_time_ranges(events: &mut EventService<'_>, reads: &EventReadFact
         events
             .range_by_time(
                 reads.first_event,
-                Some(reads.third_event),
+                // #2695: end_ts is exclusive, so include the third event by
+                // ending one tick past it.
+                Some(Timestamp::from_micros(
+                    reads.third_event.as_micros().saturating_add(1),
+                )),
                 None,
                 EventRangeDirection::Forward,
                 Some(&event_type("user.created")),

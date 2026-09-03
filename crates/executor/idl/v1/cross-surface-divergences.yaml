@@ -8,12 +8,6 @@
 # deletion and the flip to the real parity assertion. A pin test with no entry
 # — or an entry with no pin test — fails the harness's ledger guard. New
 # entries require a filed issue; this is a bug ledger, not an escape hatch.
-- axis: event_range_endpoint
-  surfaces: [event_range, event_range_by_time]
-  behavior: >-
-    event_range treats end_seq as exclusive while event_range_by_time treats
-    end_ts as inclusive
-  issue: 2695
 - axis: branch_space_lifecycle
   surfaces: [space_create/space_delete, branch_create/branch_delete]
   behavior: >-

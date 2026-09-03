@@ -369,7 +369,9 @@ impl<'a> EventService<'a> {
         let mut events = self.event_rows(&record, ReadSelector::Latest, None)?;
         events.retain(|event| {
             event.timestamp() >= start_ts
-                && end_ts.is_none_or(|end| event.timestamp() <= end)
+                // Half-open `[start_ts, end_ts)`, matching the sequence axis's
+                // exclusive end (#2695).
+                && end_ts.is_none_or(|end| event.timestamp() < end)
                 && event_type.is_none_or(|expected| event.event_type() == expected)
         });
         events.sort_by_key(|event| (event.timestamp(), event.sequence()));

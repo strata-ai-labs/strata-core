@@ -1094,7 +1094,8 @@ pub enum Command {
         space: Option<String>,
         /// Inclusive start timestamp in microseconds.
         start_ts: u64,
-        /// Optional inclusive end timestamp in microseconds.
+        /// Optional exclusive end timestamp in microseconds (half-open window,
+        /// matching the sequence-addressed range's exclusive end).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         end_ts: Option<u64>,
         /// Optional item limit.
