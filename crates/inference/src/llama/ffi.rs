@@ -53,17 +53,27 @@ pub const LLAMA_POOLING_TYPE_CLS: i32 = 2;
 pub const LLAMA_POOLING_TYPE_LAST: i32 = 3;
 pub const LLAMA_POOLING_TYPE_RANK: i32 = 4;
 
+// Load mode enum values (llama_load_mode in llama.h, b10766).
+pub const LLAMA_LOAD_MODE_AUTO: i32 = -1;
+
+// Flash-attention type (llama_flash_attn_type in llama.h, b10766). The default
+// is AUTO, which enables FA — a behavior change from the pre-b10766 bool default
+// (off) that breaks encoder/embedding context init, so we pin DISABLED.
+pub const LLAMA_FLASH_ATTN_TYPE_DISABLED: i32 = 0;
+
 // ---------------------------------------------------------------------------
 // #[repr(C)] struct definitions matching llama.h
 // ---------------------------------------------------------------------------
 
-/// Matches `struct llama_model_params` from llama.h (72 bytes on x86_64).
+/// Matches `struct llama_model_params` from llama.h (80 bytes on x86_64, b10766).
 #[repr(C)]
 pub struct LlamaModelParams {
     pub devices: *mut c_void,                 // ggml_backend_dev_t *
     pub tensor_buft_overrides: *const c_void, // const llama_model_tensor_buft_override *
     pub n_gpu_layers: i32,
     pub split_mode: i32, // enum llama_split_mode
+    pub load_mode: i32,  // enum llama_load_mode (b10766: replaces use_mmap/use_direct_io)
+    pub lazy_mode: i32,  // enum llama_lazy_mode
     pub main_gpu: i32,
     _pad0: i32, // padding to align tensor_split ptr
     pub tensor_split: *const f32,
@@ -71,26 +81,28 @@ pub struct LlamaModelParams {
     pub progress_callback_user_data: *mut c_void,
     pub kv_overrides: *const c_void,
     pub vocab_only: bool,
-    pub use_mmap: bool,
-    pub use_direct_io: bool,
-    pub use_mlock: bool,
     pub check_tensors: bool,
     pub use_extra_bufts: bool,
     pub no_host: bool,
     pub no_alloc: bool,
+    pub load_mtp: bool,
 }
 
-const _: () = assert!(std::mem::size_of::<LlamaModelParams>() == 72);
+const _: () = assert!(std::mem::size_of::<LlamaModelParams>() == 80);
 
-/// Matches `struct llama_context_params` from llama.h (136 bytes on x86_64).
+/// Matches `struct llama_context_params` from llama.h (160 bytes on x86_64, b10766).
 #[repr(C)]
 pub struct LlamaContextParams {
     pub n_ctx: u32,
     pub n_batch: u32,
     pub n_ubatch: u32,
     pub n_seq_max: u32,
+    pub n_rs_seq: u32,              // b10766: recurrent-state snapshots per seq
+    pub n_outputs_max: u32,         // b10766: max outputs in a ubatch
+    pub n_outputs_max_per_seq: u32, // b10766: max outputs per sequence
     pub n_threads: i32,
     pub n_threads_batch: i32,
+    pub ctx_type: i32,          // enum llama_context_type (b10766)
     pub rope_scaling_type: i32, // enum llama_rope_scaling_type
     pub pooling_type: i32,      // enum llama_pooling_type
     pub attention_type: i32,    // enum llama_attention_type
@@ -118,9 +130,10 @@ pub struct LlamaContextParams {
     _pad_bools: [u8; 2],       // padding to align next pointer
     pub samplers: *mut c_void, // struct llama_sampler_seq_config *
     pub n_samplers: usize,
+    pub ctx_other: *mut c_void, // struct llama_context * (b10766)
 }
 
-const _: () = assert!(std::mem::size_of::<LlamaContextParams>() == 136);
+const _: () = assert!(std::mem::size_of::<LlamaContextParams>() == 160);
 
 /// Matches `struct llama_sampler_chain_params` from llama.h.
 #[repr(C)]
@@ -157,21 +170,6 @@ pub struct LlamaChatMessage {
 // Statically linked extern "C" symbols
 // ---------------------------------------------------------------------------
 
-// b5440 uses llama_kv_self_clear(ctx) instead of the newer
-// llama_get_memory(ctx) + llama_memory_clear(mem, data) API.
-// These shims bridge the two: get_memory returns the ctx pointer itself,
-// and memory_clear passes it back to llama_kv_self_clear.
-
-/// Returns the ctx pointer as the "memory" handle.
-unsafe extern "C" fn shim_get_memory(ctx: LlamaContext) -> LlamaMemory {
-    ctx
-}
-
-/// Calls llama_kv_self_clear with the ctx pointer (passed as mem).
-unsafe extern "C" fn shim_memory_clear(mem: LlamaMemory, _data: bool) {
-    unsafe { llama_kv_self_clear(mem as LlamaContext) };
-}
-
 extern "C" {
     // Backend
     pub fn llama_backend_init();
@@ -191,9 +189,9 @@ extern "C" {
     pub fn llama_init_from_model(model: LlamaModel, params: LlamaContextParams) -> LlamaContext;
     pub fn llama_free(ctx: LlamaContext);
 
-    // Memory (b5440 uses the older KV cache API -- called via shims above)
-    pub fn llama_get_kv_self(ctx: LlamaContext) -> LlamaMemory;
-    pub fn llama_kv_self_clear(ctx: LlamaContext);
+    // Memory (KV cache) — the `llama_memory_t` API (llama.cpp b10766).
+    pub fn llama_get_memory(ctx: LlamaContext) -> LlamaMemory;
+    pub fn llama_memory_clear(mem: LlamaMemory, data: bool);
 
     // Tokenize
     pub fn llama_tokenize(
@@ -326,10 +324,13 @@ impl LlamaCppApi {
 
         // Runtime layout probes: verify struct layout by checking default params.
         let mparams = unsafe { llama_model_default_params() };
-        if !mparams.use_mmap {
+        // use_extra_bufts defaults true and load_mode defaults AUTO (-1); reading
+        // either wrong means the b10766 llama_model_params layout drifted.
+        if !mparams.use_extra_bufts || mparams.load_mode != LLAMA_LOAD_MODE_AUTO {
             return Err(
-                "llama.cpp version mismatch: llama_model_default_params().use_mmap is false \
-                 (expected true). The struct layout may differ from what strata-inference expects."
+                "llama.cpp version mismatch: llama_model_default_params() layout probe failed \
+                 (use_extra_bufts/load_mode). The struct layout may differ from what \
+                 strata-inference expects."
                     .to_string(),
             );
         }
@@ -423,17 +424,17 @@ impl LlamaCppApi {
     // -----------------------------------------------------------------------
 
     pub fn get_memory(&self, ctx: LlamaContext) -> LlamaMemory {
-        unsafe { shim_get_memory(ctx) }
+        unsafe { llama_get_memory(ctx) }
     }
 
     /// Returns true if the context has no KV cache (encoder-only models like BERT).
     pub fn kv_self_is_null(&self, ctx: LlamaContext) -> bool {
-        unsafe { llama_get_kv_self(ctx) }.is_null()
+        unsafe { llama_get_memory(ctx) }.is_null()
     }
 
     pub fn memory_clear(&self, mem: LlamaMemory, data: bool) {
         if !mem.is_null() {
-            unsafe { shim_memory_clear(mem, data) };
+            unsafe { llama_memory_clear(mem, data) };
         }
     }
 
@@ -791,8 +792,8 @@ mod tests {
 
     #[test]
     fn struct_sizes_match_llama_h() {
-        assert_eq!(std::mem::size_of::<LlamaModelParams>(), 72);
-        assert_eq!(std::mem::size_of::<LlamaContextParams>(), 136);
+        assert_eq!(std::mem::size_of::<LlamaModelParams>(), 80);
+        assert_eq!(std::mem::size_of::<LlamaContextParams>(), 160);
         assert_eq!(std::mem::size_of::<LlamaSamplerChainParams>(), 1);
         assert_eq!(std::mem::size_of::<LlamaBatch>(), 56);
     }
@@ -864,7 +865,7 @@ mod tests {
         // The 8 bool fields occupy bytes 64..72 (last 8 bytes of the 72-byte struct).
         // Verify by checking that the offset of vocab_only is past all pointer fields.
         let size = std::mem::size_of::<LlamaModelParams>();
-        assert_eq!(size, 72);
+        assert_eq!(size, 80);
         // The bool fields start after kv_overrides (5 pointers * 8 = 40, but with
         // other fields in between). We can't easily test offsets without
         // offset_of!, but the size assertion + runtime probe in load() cover this.
@@ -878,7 +879,7 @@ mod tests {
         // (we can't call default_params without libllama, but we can test the
         // struct is constructible with known values)
         let size = std::mem::size_of::<LlamaContextParams>();
-        assert_eq!(size, 136);
+        assert_eq!(size, 160);
     }
 
     // --- LlamaBatch field layout ---
@@ -909,7 +910,7 @@ mod tests {
         let params: LlamaModelParams = unsafe { std::mem::zeroed() };
         // If the struct layout is correct, accessing these fields won't panic
         assert_eq!(params.n_gpu_layers, 0);
-        assert!(!params.use_mmap); // zeroed = false
+        assert!(!params.use_extra_bufts); // zeroed = false
         assert!(!params.vocab_only);
     }
 
@@ -943,12 +944,12 @@ mod tests {
                 // Verify model default params are sane
                 let mparams = api.model_default_params();
                 assert!(
-                    mparams.use_mmap,
-                    "model_default_params().use_mmap should be true"
+                    mparams.use_extra_bufts,
+                    "model_default_params().use_extra_bufts should be true"
                 );
                 assert_eq!(
-                    mparams.n_gpu_layers, 0,
-                    "default n_gpu_layers should be 0 (CPU-only default)"
+                    mparams.n_gpu_layers, -1,
+                    "default n_gpu_layers should be -1 (all layers) in b10766"
                 );
                 assert!(!mparams.vocab_only, "default vocab_only should be false");
 
