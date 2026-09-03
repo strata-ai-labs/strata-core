@@ -1452,6 +1452,67 @@ fn api_background_gc_reclaims_superseded_table_objects_off_lock() {
     runtime.close().expect("close durable runtime");
 }
 
+/// #3047 diagnostic: when a branch scan's lazy block read fails (its durable table object is
+/// gone underneath the still-referenced reader), the error MUST preserve the underlying
+/// table-runtime cause (`failed_precondition.branch.table_runtime`, source carried) rather than
+/// discarding it into the opaque `failed_precondition.branch.state`. Regression for the erased
+/// cause that made the #3046 fault-injection flake undiagnosable.
+#[cfg(feature = "localfs")]
+#[test]
+fn scan_read_failure_preserves_table_runtime_cause() {
+    let root = temp_dir_for_api_test("scan-read-failure-cause");
+    let backend = crate::testkit::leak_static(StorageBackend::local_fs(root.clone()));
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        backend,
+    )
+    .expect("open durable runtime")
+    .into_runtime();
+
+    runtime
+        .commit(&put_batch(b"cause-a", b"one"))
+        .expect("commit");
+    runtime
+        .flush_default_branch_for_test()
+        .expect("flush the row into an L0 data object");
+    let objects = table_data_object_files(&root);
+    assert!(!objects.is_empty(), "the flush produced a data object");
+    // The durable L0 reader is lazy (BS4.4j): it block-reads its object on demand. Remove the
+    // object file under the still-installed reader and drop the block cache so the next scan is
+    // forced to read the now-missing object from the backend — the exact effect of the
+    // reader-vs-sweep race in #3047, reproduced deterministically.
+    for object in &objects {
+        std::fs::remove_file(object).expect("delete the data object file");
+    }
+    runtime.clear_block_cache_for_test();
+
+    let error = runtime
+        .scan_prefix(&PrefixScanReadRequest::new(
+            branch(),
+            engine_space(),
+            api_key(b"cause-"),
+            ReadBound::Latest,
+            None,
+        ))
+        .expect_err("the scan must fail once its object is gone");
+    // The API surface is stable: both the old and fixed paths classify a failed table read as an
+    // internal storage error (a vanished object is never a caller precondition).
+    assert_eq!(error.class(), StorageApiErrorClass::Internal);
+    assert_eq!(error.code(), "internal.storage_api.branch");
+    // The fix: the branch scan error PRESERVES its underlying table-read cause instead of erasing
+    // it into the opaque `branch scan cursor seek failed`. Without the fix the branch-layer cause
+    // terminates the source chain; with it, the chain continues down to the missing-object backend
+    // failure — the difference that turns an undiagnosable flake into a self-explaining error.
+    let branch_cause =
+        std::error::Error::source(&error).expect("the storage error wraps a branch-layer cause");
+    assert!(
+        std::error::Error::source(branch_cause).is_some(),
+        "the branch scan read failure must preserve its underlying table-runtime cause, not \
+         dead-end at an opaque branch-state error",
+    );
+    runtime.close().expect("close durable runtime");
+}
+
 /// Reader interlock: the sweep defers while a retired read view is still held (durable readers
 /// are name-addressed with no held fd — deleting a superseded source object would break their
 /// block fetches), and proceeds once the reader drops it.

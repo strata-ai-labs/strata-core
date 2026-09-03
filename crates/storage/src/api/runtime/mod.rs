@@ -3219,6 +3219,16 @@ impl<'a> StorageRuntime<'a> {
         self.rotate_branch_for_test(DEFAULT_BRANCH_ID)
     }
 
+    /// Drop the table-object block cache so the next lazy read hits the backend (#3047 cold-read
+    /// exercise). Cache mode is non-durable and has no such cache, so it is a no-op there.
+    #[cfg(test)]
+    pub(crate) fn clear_block_cache_for_test(&mut self) {
+        match &mut self.inner {
+            StorageRuntimeInner::DurableOwned(slot) => slot.lock().clear_block_cache_for_test(),
+            StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => {}
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn rotate_branch_for_test(&mut self, branch_id: BranchId) -> StorageApiResult<()> {
         match &mut self.inner {

@@ -984,6 +984,15 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             .set_runtime_total_bytes(resident.saturating_add(cache));
     }
 
+    /// Drop every cached table block so the next lazy read is forced to the backend. Lets a test
+    /// exercise the cold-read failure path (#3047) after removing an object under a live reader.
+    #[cfg(test)]
+    pub(crate) fn clear_block_cache_for_test(&self) {
+        if let Some(cache) = self.services.table_object().block_cache() {
+            cache.clear();
+        }
+    }
+
     #[cfg(any(test, feature = "testkit"))]
     pub(crate) fn force_close_requested_for_test(&mut self) -> LifecycleResult<()> {
         self.state
