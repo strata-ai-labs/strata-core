@@ -70,11 +70,11 @@ diverging silently.
   integration smoke tests run wherever `--features fault-injection` lanes
   run.
 - **Nightly** (`storage-soak-lanes`): deep multi-seed soaks via the
-  `#[ignore]` tests; `STRATA_STORAGE_FAULT_CASES` scales depth. The
-  whole-DB soak line is DEFERRED until the #2828 tracker closes (the first
-  deepened sweep found 66/200 seeds failing — #2826, #2827, #2828; no
-  born-red lanes). The whole-DB smoke (seeds 0–5, green) runs nightly in
-  the deterministic-simulation step.
+  `#[ignore]` tests; `STRATA_STORAGE_FAULT_CASES` scales depth. The whole-DB
+  soak line is **LIVE** — the #2828 and #2859 trackers both closed at zero
+  (2026-07-30/31), the deepened sweep is clean (canonical 0–1999: 0 failures;
+  deep 0–399: 0), and the full whole-DB soak runs nightly in the
+  deterministic-simulation step.
 
 ## Whole-DB seed corpus (canonical shape: 3 epochs × 24 steps)
 
@@ -94,9 +94,11 @@ seeds still exercise what they are named for).
 
 The first deepened sweep (seeds 0–199, 2026-07-27) failed 66 seeds across
 seven signature families — #2826 (41 seeds, dominant), #2827 (4), and five
-families tracked on #2828. Every failing seed reproduces via the replay
-contract above. The Phase 4 exit gate ("DST soaks clean across seed
-corpora") is open until #2828 closes.
+families tracked on #2828. Every failing seed reproduced via the replay
+contract above, and **all were fixed**: the #2828 tracker (ten fixes) and the
+#2859 successor tracker (four fixes) both closed at zero (2026-07-30/31), taking
+the deepened sweep to 0 failures (canonical 0–1999 and deep 0–399). **The Phase 4
+DST exit gate is CLOSED**; the whole-DB soak now runs nightly born-green.
 
 Fault-lane named seeds: 5 (crash perturbation pin — re-seeded from 3 when
 the #2827 model correction made `SplitRename` damage-free), 155 (the
@@ -133,9 +135,11 @@ pre-fork at-version boundary; per-PR sweep rides the workspace lib tests, the
 (`STRATA_LINEAGE_SEEDS`). Fork-current only, no faults/pruning — history stays
 fully retained so at-version reads are exact.
 
-**4.12b (planned): concurrent isolation histories** — record per-session
-histories from the `stress_random` multi-session workload (add a process/op
-dimension), list-append registers, Adya-style anomaly inference (the #2682
-class), and faulted/pruned trajectories. `ExpectedState`
+**4.12b (landed subset; full Adya SSG + faulted/pruned trajectories are
+headroom): concurrent isolation histories** — the concurrent read-atomicity
+leg landed (`api/tests/concurrent_history.rs` + nightly `concurrent_history_soak`):
+single-snapshot multi-key reads judged offline for fractured/torn/phantom reads
+(the #2682 class). Still headroom: full Adya-style SSG cycle inference and
+faulted/pruned trajectories, seeded from the `stress_random` multi-session workload. `ExpectedState`
 (`candidate_watermarks`/`mutations_at`) and the whole-DB per-run facts remain
 the substrate a concurrent checker will consume.
