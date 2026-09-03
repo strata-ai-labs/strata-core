@@ -503,6 +503,12 @@ struct UncoveredErrorCodesSource {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReplaySkippedCommandsSource {
+    /// Debt-count budget (W0b): MUST equal `skipped.len()`. The per-entry
+    /// allowlist below is shrink-only; this budget makes the *total* debt a
+    /// reviewed number — growth requires a justified raise in the same change,
+    /// and draining forces the budget down to lock in the reduction. Enforced by
+    /// `enforce_debt_budget`.
+    budget: usize,
     skipped: Vec<String>,
 }
 
@@ -515,6 +521,11 @@ struct ReplaySkippedCommandsSource {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UnreplayedErrorCodesSource {
+    /// Debt-count budget (W0b): MUST equal `unreplayed.len()`. The per-entry
+    /// allowlist below is shrink-only; this budget caps the *total* debt so it
+    /// cannot grow silently — see `enforce_debt_budget` (growth needs a reviewed
+    /// raise, drains ratchet the budget down).
+    budget: usize,
     unreplayed: Vec<String>,
 }
 
@@ -1488,6 +1499,11 @@ fn enforce_command_exhaustiveness(
 fn enforce_replay_skip_ratchet(idl_root: &Path, resolved: &[ResolvedCommand]) -> Result<()> {
     let allowlist: ReplaySkippedCommandsSource =
         read_yaml(&idl_root.join(REPLAY_SKIPPED_COMMANDS_FILE))?;
+    enforce_debt_budget(
+        REPLAY_SKIPPED_COMMANDS_FILE,
+        allowlist.skipped.len(),
+        allowlist.budget,
+    )?;
     let ids: BTreeSet<&str> = resolved.iter().map(|entry| entry.id.as_str()).collect();
     let skipped: BTreeSet<&str> = resolved
         .iter()
@@ -1527,6 +1543,36 @@ fn enforce_replay_skip_lists(
                 "command `{id}` sets replay_skip but is not listed in replay-skipped-commands.yaml; make it replayable or justify and list the skip (the allowlist may only shrink)"
             )));
         }
+    }
+    Ok(())
+}
+
+/// W0b debt-count budget: a debt allowlist's length MUST EQUAL its committed
+/// `budget`, so every change to the list is a deliberate, reviewed number.
+///
+/// The per-entry guards above are shrink-only (they reject stale or unlisted
+/// entries) but do NOT cap the *total* — so the count could still creep up as
+/// long as each new entry was properly listed (the audit found the unreplayed
+/// list had grown 105→110 and the skip list 7→12 exactly this way). This budget
+/// closes that: growth past it fails unless `budget` is raised in the same change
+/// (a visible act carrying its own rationale — the "debt-budget ledger update"),
+/// and a budget left above a drained list fails too, forcing the ratchet DOWN so
+/// a reduction is locked in rather than silently leaving slack for later regrowth.
+fn enforce_debt_budget(file: &str, count: usize, budget: usize) -> Result<()> {
+    if count > budget {
+        return Err(invalid(format!(
+            "{file}: debt grew past its budget ({count} entries > budget {budget}). Draining is \
+             the goal; if this addition is genuinely necessary, raise `budget` to {count} in the \
+             same change with a rationale (owner + issue/slice + planned harness) — a reviewed, \
+             deliberate act, not silent drift"
+        )));
+    }
+    if count < budget {
+        return Err(invalid(format!(
+            "{file}: debt is below its budget ({count} entries < budget {budget}). The budget \
+             ratchets DOWN — lower `budget` to {count} in the same change to lock in the reduction \
+             (the debt-budget ledger must track the real count)"
+        )));
     }
     Ok(())
 }
@@ -1668,6 +1714,11 @@ pub(super) fn enforce_error_replay_coverage(
     let idl_root = repo_root.join(IDL_DIR);
     let allowlist: UnreplayedErrorCodesSource =
         read_yaml(&idl_root.join(UNREPLAYED_ERROR_CODES_FILE))?;
+    enforce_debt_budget(
+        UNREPLAYED_ERROR_CODES_FILE,
+        allowlist.unreplayed.len(),
+        allowlist.budget,
+    )?;
 
     let mut declared: BTreeSet<&str> = BTreeSet::new();
     let mut declared_by_command: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
@@ -2412,6 +2463,32 @@ mod tests {
         let listed = vec!["kv.get".to_owned()];
         let error = enforce_replay_skip_lists(&ids, &skipped, &listed).unwrap_err();
         assert!(error.to_string().contains("only shrink"));
+    }
+
+    #[test]
+    fn debt_budget_accepts_an_exact_match() {
+        assert!(enforce_debt_budget("any.yaml", 110, 110).is_ok());
+        assert!(enforce_debt_budget("any.yaml", 0, 0).is_ok());
+    }
+
+    #[test]
+    fn debt_budget_rejects_growth_past_the_budget() {
+        let error = enforce_debt_budget("unreplayed-error-codes.yaml", 111, 110).unwrap_err();
+        let msg = error.to_string();
+        assert!(msg.contains("grew past its budget"), "{msg}");
+        assert!(msg.contains("111") && msg.contains("110"), "{msg}");
+        assert!(msg.contains("raise `budget`"), "{msg}");
+    }
+
+    #[test]
+    fn debt_budget_rejects_a_stale_budget_above_the_count() {
+        // Draining an entry without lowering the budget must fail, forcing the
+        // ratchet down so the reduction is locked in (not left as regrowth slack).
+        let error = enforce_debt_budget("replay-skipped-commands.yaml", 11, 12).unwrap_err();
+        let msg = error.to_string();
+        assert!(msg.contains("ratchets DOWN"), "{msg}");
+        assert!(msg.contains("lower `budget`"), "{msg}");
+        assert!(msg.contains("11") && msg.contains("12"), "{msg}");
     }
 
     #[test]

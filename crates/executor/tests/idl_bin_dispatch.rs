@@ -77,3 +77,92 @@ fn the_test_generation_verbs_dispatch_and_the_unknown_verb_refuses() {
     let unknown = run(scratch.path(), "definitely-not-a-verb");
     assert_eq!(unknown.status.code(), Some(2), "unknown verb must exit 2");
 }
+
+/// Bump the `budget:` line in a debt-ledger YAML by one, so its budget no longer
+/// equals its entry count.
+fn bump_budget(path: &Path) {
+    let text = std::fs::read_to_string(path).expect("read debt yaml");
+    let bumped: Vec<String> = text
+        .lines()
+        .map(|line| match line.strip_prefix("budget: ") {
+            Some(n) => {
+                let n: usize = n.trim().parse().expect("budget is a usize");
+                format!("budget: {}", n + 1)
+            }
+            None => line.to_owned(),
+        })
+        .collect();
+    std::fs::write(path, format!("{}\n", bumped.join("\n"))).expect("write debt yaml");
+}
+
+/// W0b call-site coverage: the debt-count budget gates must actually fire when a
+/// ledger's `budget` no longer matches its entry count. On the CONSISTENT real
+/// tree a disabled gate is indistinguishable from a live one, so this feeds
+/// INCONSISTENT data through the real binary — `check` runs the replay-skip
+/// ratchet (via `resolve_index`) and `verify-fixtures` runs the error-replay
+/// coverage guard, so each budget is exercised through its own lane. Kills a
+/// call-site mutant that drops or neuters either `enforce_debt_budget` call.
+#[test]
+fn the_debt_budget_gates_reject_a_count_mismatch() {
+    let real = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("executor lives under crates/")
+        .to_path_buf();
+    let scratch = tempfile::tempdir().expect("scratch root");
+    for relative in ["crates/executor/idl/v1", "crates/executor/tests/fixtures"] {
+        copy_tree(&real.join(relative), &scratch.path().join(relative));
+    }
+    let src = scratch.path().join("crates/executor/src");
+    std::fs::create_dir_all(&src).expect("scratch src dir");
+    for file in ["command.rs", "output.rs"] {
+        std::fs::copy(real.join("crates/executor/src").join(file), src.join(file))
+            .expect("copy enum source");
+    }
+
+    let idl = scratch.path().join("crates/executor/idl/v1");
+    let skip_yaml = idl.join("replay-skipped-commands.yaml");
+    let unreplayed_yaml = idl.join("unreplayed-error-codes.yaml");
+    let real_skip = real.join("crates/executor/idl/v1/replay-skipped-commands.yaml");
+
+    // Clean scratch: both gates pass — proves the copied tree is valid and the
+    // committed budgets already equal their counts.
+    assert!(
+        run(scratch.path(), "check").status.success(),
+        "clean check must pass"
+    );
+    assert!(
+        run(scratch.path(), "verify-fixtures").status.success(),
+        "clean verify-fixtures must pass"
+    );
+
+    // Skip-list budget above its count -> `check` must reject.
+    bump_budget(&skip_yaml);
+    let skip = run(scratch.path(), "check");
+    assert_eq!(
+        skip.status.code(),
+        Some(1),
+        "a replay-skip budget mismatch must fail check"
+    );
+    assert!(
+        String::from_utf8_lossy(&skip.stderr).contains("budget"),
+        "check must name the budget: {}",
+        String::from_utf8_lossy(&skip.stderr)
+    );
+    // Restore the skip ledger so it does not confound the unreplayed check.
+    std::fs::copy(&real_skip, &skip_yaml).expect("restore skip yaml");
+
+    // Unreplayed budget above its count -> `verify-fixtures` must reject.
+    bump_budget(&unreplayed_yaml);
+    let unreplayed = run(scratch.path(), "verify-fixtures");
+    assert_eq!(
+        unreplayed.status.code(),
+        Some(1),
+        "an unreplayed-error-code budget mismatch must fail verify-fixtures"
+    );
+    assert!(
+        String::from_utf8_lossy(&unreplayed.stderr).contains("budget"),
+        "verify-fixtures must name the budget: {}",
+        String::from_utf8_lossy(&unreplayed.stderr)
+    );
+}
