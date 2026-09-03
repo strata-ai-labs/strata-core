@@ -92,6 +92,80 @@ fn event_range_edge_cases_run_in_cache_and_durable_modes() {
     run_database_modes(exercise_event_range_edge_cases);
 }
 
+/// #2694: a reverse range yields the same `[start_seq, end_seq)` window as
+/// forward, in descending order — `reverse(window) == reversed(forward(window))`.
+/// In particular, a reverse read anchored at the log start returns the tail
+/// (the newest N), not a single event.
+#[test]
+fn reverse_range_is_the_forward_window_reversed() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let mut events = event_service(&mut database, "default", "default");
+    for i in 0..5 {
+        events
+            .append(event_type("probe"), payload(json!({ "i": i })))
+            .expect("append succeeds");
+    }
+    let seqs = |page: &EventRangePage| {
+        page.events()
+            .iter()
+            .map(|event| event.sequence().as_u64())
+            .collect::<Vec<_>>()
+    };
+
+    // The #2694 bug: reverse anchored at start_seq=0 returned exactly [0]; it
+    // must return the whole log newest-first (the tail).
+    let from_zero = events
+        .range(
+            EventSequence::new(0),
+            None,
+            Some(10),
+            EventRangeDirection::Reverse,
+            None,
+        )
+        .expect("reverse from start");
+    assert_eq!(seqs(&from_zero), vec![4, 3, 2, 1, 0]);
+
+    // The contract: reverse(window) == reversed(forward(window)).
+    let forward = events
+        .range(
+            EventSequence::new(1),
+            Some(EventSequence::new(4)),
+            None,
+            EventRangeDirection::Forward,
+            None,
+        )
+        .expect("forward window");
+    let reverse = events
+        .range(
+            EventSequence::new(1),
+            Some(EventSequence::new(4)),
+            None,
+            EventRangeDirection::Reverse,
+            None,
+        )
+        .expect("reverse window");
+    let mut forward_reversed = seqs(&forward);
+    forward_reversed.reverse();
+    assert_eq!(
+        seqs(&reverse),
+        forward_reversed,
+        "reverse(window) must equal reversed(forward(window))"
+    );
+    assert_eq!(seqs(&reverse), vec![3, 2, 1]);
+
+    // The limit takes the newest events (the top of the descending window).
+    let newest_two = events
+        .range(
+            EventSequence::new(0),
+            None,
+            Some(2),
+            EventRangeDirection::Reverse,
+            None,
+        )
+        .expect("reverse with limit");
+    assert_eq!(seqs(&newest_two), vec![4, 3]);
+}
+
 #[test]
 fn event_type_and_payload_validation_are_engine_owned() {
     assert!(EventType::new("e".repeat(256)).is_ok());
