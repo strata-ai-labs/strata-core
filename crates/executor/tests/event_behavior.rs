@@ -637,6 +637,7 @@ fn assert_event_sequence_ranges(executor: &mut Executor) {
     assert!(has_more);
     assert_eq!(cursor, Some(1));
 
+    // #2694: reverse of the window [2, latest) descending, newest first.
     let (events, _, _) = event_range(
         executor,
         2,
@@ -645,17 +646,18 @@ fn assert_event_sequence_ranges(executor: &mut Executor) {
         EventRangeDirection::Reverse,
         None,
     );
-    assert_eq!(event_sequences(&events), vec![2, 1]);
+    assert_eq!(event_sequences(&events), vec![3, 2]);
 
+    // #2694: a bounded reverse window is [start, end) descending.
     let (events, _, _) = event_range(
         executor,
-        3,
-        Some(1),
+        1,
+        Some(3),
         None,
         EventRangeDirection::Reverse,
         None,
     );
-    assert_eq!(event_sequences(&events), vec![3, 2]);
+    assert_eq!(event_sequences(&events), vec![2, 1]);
 
     let (events, has_more, cursor) = event_range(
         executor,

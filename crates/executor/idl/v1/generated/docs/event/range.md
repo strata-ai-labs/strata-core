@@ -5,7 +5,7 @@ source: strata-core@1.1.1
 section: event
 ---
 
-Reads events from the selected branch and space by sequence range. The start sequence is inclusive and the optional end sequence is exclusive; reverse direction walks backward from the start sequence. An optional event type narrows the results.
+Reads events from the selected branch and space by sequence range. The start sequence is inclusive and the optional end sequence is exclusive; reverse direction returns the same `[start_seq, end_seq)` window in descending order (newest first). An optional event type narrows the results.
 
 Paginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.
 
@@ -34,10 +34,10 @@ $ strata event range 0 forward
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `direction` | `EventRangeDirection` | yes | Result ordering. |
-| `end_seq` | `integer` | no | Optional exclusive end sequence; with reverse direction, exclusive lower bound. |
+| `end_seq` | `integer` | no | Optional exclusive upper bound of the sequence window (same in both directions). |
 | `event_type` | `string` | no | Optional event type filter. |
 | `limit` | `integer` | no | Optional item limit. |
-| `start_seq` | `integer` | yes | Inclusive start sequence; with reverse direction, walk backward from this sequence. |
+| `start_seq` | `integer` | yes | Inclusive lower bound of the sequence window (same in both directions). |
 
 Plus the optional scope: `branch` and `space` (default to the session branch and the `"default"` space).
 

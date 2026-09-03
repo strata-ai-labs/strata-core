@@ -71,32 +71,35 @@ fn forward_full_window_is_the_whole_log_in_order() {
     assert_eq!(range_sequences(&forward), vec![0, 1, 2, 3, 4]);
 }
 
-/// PIN #2694: reverse interprets `start_seq` as the inclusive UPPER anchor
-/// and walks down — so reverse from 0 returns exactly one event, and the
-/// full reverse walk requires anchoring at the latest sequence. The parity
-/// contract (reverse(window) == reversed(forward(window))) does NOT hold.
+/// #2694 fixed: reverse yields the forward window in descending order —
+/// `reverse(window) == reversed(forward(window))` — so a reverse read anchored
+/// at the log start returns the tail (the newest N), not a single event.
 #[test]
-fn pin_2694_reverse_anchors_start_seq_as_the_upper_bound() {
-    support::pinned("event_range_direction", 2694);
+fn reverse_range_is_the_forward_window_reversed() {
     let mut executor = support::executor();
     append_events(&mut executor, 5);
 
+    // The former #2694 bug: reverse from start_seq=0 returned exactly [0]; it
+    // now returns the whole log newest-first (the tail).
     let reverse_from_zero = support::run(
         &mut executor,
         &json!({"type": "event_range", "start_seq": 0, "direction": "reverse", "limit": 10}),
     );
-    assert_eq!(
-        range_sequences(&reverse_from_zero),
-        vec![0],
-        "today: reverse from start_seq=0 returns exactly [0]; if this fails, \
-         #2694 was fixed — delete the ledger entry and assert the parity contract"
-    );
+    assert_eq!(range_sequences(&reverse_from_zero), vec![4, 3, 2, 1, 0]);
 
-    let reverse_from_latest = support::run(
+    // The parity contract now holds across the same bounded window.
+    let forward = support::run(
         &mut executor,
-        &json!({"type": "event_range", "start_seq": 4, "direction": "reverse", "limit": 10}),
+        &json!({"type": "event_range", "start_seq": 1, "end_seq": 4, "direction": "forward"}),
     );
-    assert_eq!(range_sequences(&reverse_from_latest), vec![4, 3, 2, 1, 0]);
+    let reverse = support::run(
+        &mut executor,
+        &json!({"type": "event_range", "start_seq": 1, "end_seq": 4, "direction": "reverse"}),
+    );
+    let mut forward_reversed = range_sequences(&forward);
+    forward_reversed.reverse();
+    assert_eq!(range_sequences(&reverse), forward_reversed);
+    assert_eq!(range_sequences(&reverse), vec![3, 2, 1]);
 }
 
 /// PIN #2695: the sequence-addressed window excludes its end while the
@@ -142,7 +145,7 @@ fn every_event_range_ledger_entry_is_pinned_here() {
     support::assert_ledger_entries_all_pinned(
         "event_range",
         &[
-            ("event_range_direction", 2694),
+            // event_range_direction (#2694) fixed — reverse == reversed(forward).
             ("event_range_endpoint", 2695),
         ],
     );

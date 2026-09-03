@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "b1eaf99685d5d85d4fd750b9b06a2e2ff39fc304df5ee591a16103a8d39d1d7b",
+    "checksum_sha256": "cb9bfae3cc00b970126c70576937715fc12cf61654aca0399a0f3ac14582a6ef",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -1527,7 +1527,7 @@
       "kind": "read.page",
       "title": "Read event sequence range",
       "summary": "Read a range of events by sequence number.",
-      "description": "Reads events from the selected branch and space by sequence range. The start sequence is inclusive and the optional end sequence is exclusive; reverse direction walks backward from the start sequence. An optional event type narrows the results.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "description": "Reads events from the selected branch and space by sequence range. The start sequence is inclusive and the optional end sequence is exclusive; reverse direction returns the same `[start_seq, end_seq)` window in descending order (newest first). An optional event type narrows the results.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
       "docs": "/docs/event/range",
       "feature": "core",
       "access": "read",

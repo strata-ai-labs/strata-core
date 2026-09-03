@@ -8,13 +8,6 @@
 # deletion and the flip to the real parity assertion. A pin test with no entry
 # — or an entry with no pin test — fails the harness's ledger guard. New
 # entries require a filed issue; this is a bug ledger, not an escape hatch.
-- axis: event_range_direction
-  surfaces: [event_range forward, event_range reverse]
-  behavior: >-
-    reverse anchors start_seq as the inclusive UPPER bound and walks down, so
-    reverse from start_seq=0 returns exactly one event (sequence 0) instead of
-    walking the same window backwards
-  issue: 2694
 - axis: event_range_endpoint
   surfaces: [event_range, event_range_by_time]
   behavior: >-

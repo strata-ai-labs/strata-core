@@ -164,6 +164,30 @@ fn reverse_range_is_the_forward_window_reversed() {
         )
         .expect("reverse with limit");
     assert_eq!(seqs(&newest_two), vec![4, 3]);
+
+    // Empty-window boundary (both sides): `start_seq >= upper` yields nothing,
+    // exactly as the forward direction does. start beyond the log, and an
+    // inverted `[start, end)` window.
+    let past_end = events
+        .range(
+            EventSequence::new(5),
+            None,
+            Some(10),
+            EventRangeDirection::Reverse,
+            None,
+        )
+        .expect("reverse past end");
+    assert!(past_end.events().is_empty());
+    let inverted = events
+        .range(
+            EventSequence::new(3),
+            Some(EventSequence::new(1)),
+            None,
+            EventRangeDirection::Reverse,
+            None,
+        )
+        .expect("reverse inverted window");
+    assert!(inverted.events().is_empty());
 }
 
 #[test]
@@ -753,9 +777,11 @@ fn assert_event_sequence_ranges(events: &mut EventService<'_>) {
     assert!(page.has_more());
     assert_eq!(page.cursor().expect("cursor").as_u64(), 1);
 
+    // #2694: reverse is the forward window descending, so a reverse read of the
+    // whole log pages the newest events first and walks down.
     let reverse = events
         .range(
-            EventSequence::new(2),
+            EventSequence::new(0),
             None,
             Some(2),
             EventRangeDirection::Reverse,
@@ -768,15 +794,18 @@ fn assert_event_sequence_ranges(events: &mut EventService<'_>) {
             .iter()
             .map(|event| event.sequence().as_u64())
             .collect::<Vec<_>>(),
-        vec![2, 1]
+        vec![3, 2]
     );
     assert!(reverse.has_more());
-    assert_eq!(reverse.cursor().expect("cursor").as_u64(), 1);
+    // Cursor is the last returned sequence (the exclusive upper for the next
+    // descending page): [3, 2] resumes at 2 -> next page [1, 0].
+    assert_eq!(reverse.cursor().expect("cursor").as_u64(), 2);
 
+    // #2694: a bounded reverse window is `[start_seq, end_seq)` descending.
     let bounded_reverse = events
         .range(
-            EventSequence::new(3),
-            Some(EventSequence::new(1)),
+            EventSequence::new(1),
+            Some(EventSequence::new(3)),
             None,
             EventRangeDirection::Reverse,
             None,
@@ -788,7 +817,7 @@ fn assert_event_sequence_ranges(events: &mut EventService<'_>) {
             .iter()
             .map(|event| event.sequence().as_u64())
             .collect::<Vec<_>>(),
-        vec![3, 2]
+        vec![2, 1]
     );
 }
 
