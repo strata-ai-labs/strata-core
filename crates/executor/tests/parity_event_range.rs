@@ -102,12 +102,11 @@ fn reverse_range_is_the_forward_window_reversed() {
     assert_eq!(range_sequences(&reverse), vec![3, 2, 1]);
 }
 
-/// PIN #2695: the sequence-addressed window excludes its end while the
-/// timestamp-addressed window includes it — the same log, two endpoint
-/// conventions.
+/// #2695 fixed: both range surfaces use the same half-open `[start, end)`
+/// endpoint convention — the end bound is exclusive on the sequence AND the
+/// timestamp axis, so they agree.
 #[test]
-fn pin_2695_range_end_is_exclusive_but_range_by_time_end_is_inclusive() {
-    support::pinned("event_range_endpoint", 2695);
+fn range_endpoints_are_consistent_half_open() {
     let mut executor = support::executor();
     let timestamps = append_events(&mut executor, 5);
 
@@ -132,9 +131,8 @@ fn pin_2695_range_end_is_exclusive_but_range_by_time_end_is_inclusive() {
     );
     assert_eq!(
         range_sequences(&by_time),
-        vec![1, 2, 3],
-        "today: end_ts is inclusive, diverging from end_seq; if this fails, \
-         #2695 was fixed — delete the ledger entry and assert one convention"
+        vec![1, 2],
+        "end_ts is exclusive too — the two axes agree"
     );
 }
 
@@ -145,8 +143,9 @@ fn every_event_range_ledger_entry_is_pinned_here() {
     support::assert_ledger_entries_all_pinned(
         "event_range",
         &[
-            // event_range_direction (#2694) fixed — reverse == reversed(forward).
-            ("event_range_endpoint", 2695),
+            // Both event_range divergences are fixed and their entries deleted:
+            // event_range_direction (#2694, reverse == reversed(forward)) and
+            // event_range_endpoint (#2695, both axes half-open [start, end)).
         ],
     );
 }

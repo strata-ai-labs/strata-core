@@ -712,10 +712,12 @@ fn assert_event_timestamp_ranges(
     third: &EventVersionedData,
     fourth: &EventVersionedData,
 ) {
+    // #2695: end_ts is exclusive, so include the third event by ending one tick
+    // past it.
     let (events, _, _) = event_range_by_time(
         executor,
         first.event().timestamp(),
-        Some(third.event().timestamp()),
+        Some(third.event().timestamp().saturating_add(1)),
         None,
         EventRangeDirection::Forward,
         Some("user.created"),

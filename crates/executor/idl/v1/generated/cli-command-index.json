@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "cb9bfae3cc00b970126c70576937715fc12cf61654aca0399a0f3ac14582a6ef",
+    "checksum_sha256": "7e5de66fa4429e837bd3c52b86bd836b48fbcae808d1d9715f64b1dd7ad899f4",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -1586,7 +1586,7 @@
       "kind": "read.page",
       "title": "Read event time range",
       "summary": "Read a range of events by occurrence time.",
-      "description": "Reads events from the selected branch and space whose append timestamps fall inside an inclusive microsecond window. This queries when events occurred; historical log states are the timestamped read commands' job. An optional event type narrows the results.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "description": "Reads events from the selected branch and space whose append timestamps fall inside a half-open `[start_ts, end_ts)` microsecond window — the start is inclusive and the end is exclusive, matching the sequence-addressed range. This queries when events occurred; historical log states are the timestamped read commands' job. An optional event type narrows the results.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
       "docs": "/docs/event/range_time",
       "feature": "core",
       "access": "read",

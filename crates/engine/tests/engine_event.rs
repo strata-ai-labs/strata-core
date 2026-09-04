@@ -190,6 +190,54 @@ fn reverse_range_is_the_forward_window_reversed() {
     assert!(inverted.events().is_empty());
 }
 
+/// #2695: `range_by_time` uses the same half-open `[start, end)` endpoint
+/// convention as `range` — `end_ts` is EXCLUSIVE, so the two range surfaces
+/// agree instead of the time axis silently including one more event.
+#[test]
+fn range_by_time_end_is_exclusive_like_the_sequence_axis() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let mut events = event_service(&mut database, "default", "default");
+    for i in 0..5 {
+        events
+            .append(event_type("probe"), payload(json!({ "i": i })))
+            .expect("append succeeds");
+    }
+    let ts1 = events
+        .get(EventSequence::new(1))
+        .expect("get succeeds")
+        .expect("event 1 exists")
+        .timestamp();
+    let ts3 = events
+        .get(EventSequence::new(3))
+        .expect("get succeeds")
+        .expect("event 3 exists")
+        .timestamp();
+    let seqs = |page: &EventRangePage| {
+        page.events()
+            .iter()
+            .map(|event| event.sequence().as_u64())
+            .collect::<Vec<_>>()
+    };
+
+    // end_ts is exclusive: the event at ts3 (sequence 3) is excluded.
+    let by_time = events
+        .range_by_time(ts1, Some(ts3), None, EventRangeDirection::Forward, None)
+        .expect("range_by_time succeeds");
+    assert_eq!(seqs(&by_time), vec![1, 2]);
+
+    // Parity with the sequence axis over the analogous window.
+    let by_sequence = events
+        .range(
+            EventSequence::new(1),
+            Some(EventSequence::new(3)),
+            None,
+            EventRangeDirection::Forward,
+            None,
+        )
+        .expect("range succeeds");
+    assert_eq!(seqs(&by_sequence), seqs(&by_time));
+}
+
 #[test]
 fn event_type_and_payload_validation_are_engine_owned() {
     assert!(EventType::new("e".repeat(256)).is_ok());
@@ -570,12 +618,13 @@ fn assert_event_timestamp_and_list_edges(events: &mut EventService<'_>) {
                 EventRangeDirection::Forward,
                 None,
             )
-            .expect("closed time range succeeds")
+            .expect("zero-width time range succeeds")
             .events()
             .iter()
             .map(|event| event.sequence().as_u64())
             .collect::<Vec<_>>(),
-        vec![2]
+        // #2695: a zero-width `[ts, ts)` window is empty under the half-open end.
+        Vec::<u64>::new()
     );
     assert!(events
         .range_by_time(
@@ -826,7 +875,11 @@ fn assert_event_time_ranges(events: &mut EventService<'_>, reads: &EventReadFact
         events
             .range_by_time(
                 reads.first_event,
-                Some(reads.third_event),
+                // #2695: end_ts is exclusive, so include the third event by
+                // ending one tick past it.
+                Some(Timestamp::from_micros(
+                    reads.third_event.as_micros().saturating_add(1),
+                )),
                 None,
                 EventRangeDirection::Forward,
                 Some(&event_type("user.created")),
