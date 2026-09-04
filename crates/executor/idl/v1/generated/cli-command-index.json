@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "d1781baf42e358087db4bb85ccc749eb38187b04ed7cfe6367925b50623c946d",
+    "checksum_sha256": "c07bccc45d8d08e31058f49fafb2bba8ed4cb7d7ce2796b346ab05dd39175a3b",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -1987,7 +1987,7 @@
       "kind": "batch.atomic_mutation",
       "title": "Batch write graph",
       "summary": "Apply graph mutations atomically.",
-      "description": "Applies a list of graph operations - `upsert_node`, `delete_node`, `upsert_edge`, `delete_edge` - in one engine commit. Validation failures (bad ids, missing edge endpoints, frozen-ontology violations) reject the whole batch; nothing is partially applied. The response reports one positional item result per operation, all sharing the same commit receipt.\n\nAtomic batches validate every operation up front and apply all of them in one engine commit, or none at all. The response still reports one positional item result per operation; all item results share the same commit receipt.",
+      "description": "Applies a list of graph operations - `upsert_node`, `delete_node`, `upsert_edge`, `delete_edge` - in one engine commit. Validation failures (bad ids, missing edge endpoints, frozen-ontology violations) reject the whole batch; nothing is partially applied. The response reports one positional item result per operation, all sharing the same commit receipt.\n\nThis whole-batch atomicity is deliberate, and differs from the itemwise `kv`, `json`, and `event` batch writes (where the valid items of a mixed batch still commit and the invalid one carries a typed per-item error). A graph batch mixes node and edge upserts, and an edge references its endpoint nodes, so applying only the valid items could leave an edge pointing at a node that never landed. Rejecting the whole batch keeps graph references consistent - referential integrity is the reason the graph channel is atomic where its siblings are itemwise.\n\nAtomic batches validate every operation up front and apply all of them in one engine commit, or none at all. The response still reports one positional item result per operation; all item results share the same commit receipt.",
       "docs": "/docs/graph/batch_write",
       "feature": "core",
       "access": "write",
