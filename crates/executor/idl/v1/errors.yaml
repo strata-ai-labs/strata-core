@@ -96,6 +96,7 @@ errors:
   - invalid_argument.executor.arrow_embedding_type
   - invalid_argument.executor.arrow_vector_dimension
   - invalid_argument.executor.arrow_json_key
+  - invalid_argument.executor.arrow_non_finite_float
   - invalid_argument.executor.arrow_base64
   - invalid_argument.executor.arrow_empty_export
   - invalid_argument.executor.arrow_vector_key

@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "c07bccc45d8d08e31058f49fafb2bba8ed4cb7d7ce2796b346ab05dd39175a3b",
+    "checksum_sha256": "350758b952d3aaa127f1c668bf52d6d7d6d5e4b5c4f9385a27c0ce72e5cb9b48",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -374,6 +374,10 @@
         {
           "code": "invalid_argument.executor.arrow_json_key",
           "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_json_key"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_non_finite_float",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_non_finite_float"
         },
         {
           "code": "invalid_argument.executor.arrow_base64",

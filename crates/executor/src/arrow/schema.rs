@@ -412,6 +412,22 @@ fn cell_to_json_document(column: &dyn Array, row: usize) -> ExecutorResult<Value
     }
 }
 
+/// JSON has no representation for non-finite floats: `serde_json::json!(NaN|Inf)`
+/// silently yields `Value::Null` (`Number::from_f64` returns `None`), dropping
+/// the number under a successful import (#3078). Reject them with a typed error
+/// instead of corrupting the document. Finite floats produce the exact JSON
+/// `serde_json` already produced (an f32 widens to f64 identically).
+fn finite_float_to_json(value: f64) -> ExecutorResult<Value> {
+    if value.is_finite() {
+        Ok(serde_json::json!(value))
+    } else {
+        Err(invalid_input(
+            "invalid_argument.executor.arrow_non_finite_float",
+            format!("a float column holds a non-finite value ({value}) that JSON cannot represent"),
+        ))
+    }
+}
+
 fn cell_to_json(column: &dyn Array, row: usize) -> ExecutorResult<Value> {
     if column.is_null(row) {
         return Ok(Value::Null);
@@ -464,14 +480,14 @@ fn cell_to_json(column: &dyn Array, row: usize) -> ExecutorResult<Value> {
                 .as_any()
                 .downcast_ref::<array::Float32Array>()
                 .unwrap();
-            Ok(serde_json::json!(array.value(row)))
+            finite_float_to_json(f64::from(array.value(row)))
         }
         DataType::Float64 => {
             let array = column
                 .as_any()
                 .downcast_ref::<array::Float64Array>()
                 .unwrap();
-            Ok(serde_json::json!(array.value(row)))
+            finite_float_to_json(array.value(row))
         }
         DataType::Boolean => {
             let array = column
@@ -1119,5 +1135,51 @@ mod tests {
         let value = cell_to_json(&list, 0).expect("list converts");
         assert_eq!(value, json!([1, null, 3]));
         assert!(value.is_array(), "reconstructed value must be a JSON array");
+    }
+
+    #[test]
+    fn cell_to_json_rejects_non_finite_floats_instead_of_nulling_them() {
+        // #3078: serde_json maps NaN/±Inf to null, silently dropping the number.
+        // A non-finite float cell must fail loudly, never corrupt to JSON null.
+        let f64s = Float64Array::from(vec![1.5, f64::NAN]);
+        assert_eq!(cell_to_json(&f64s, 0).expect("finite converts"), json!(1.5));
+        let err = cell_to_json(&f64s, 1).expect_err("NaN must be rejected, not nulled");
+        assert_eq!(err.class(), ExecutorErrorClass::InvalidInput);
+        assert_eq!(
+            err.code(),
+            "invalid_argument.executor.arrow_non_finite_float"
+        );
+
+        // Both f32 infinities are rejected too; a finite f32 still converts.
+        let f32s = Float32Array::from(vec![2.5, f32::INFINITY, f32::NEG_INFINITY]);
+        assert_eq!(
+            cell_to_json(&f32s, 0).expect("finite f32 converts"),
+            json!(2.5)
+        );
+        assert_eq!(
+            cell_to_json(&f32s, 1).expect_err("+Inf rejected").code(),
+            "invalid_argument.executor.arrow_non_finite_float"
+        );
+        assert_eq!(
+            cell_to_json(&f32s, 2).expect_err("-Inf rejected").code(),
+            "invalid_argument.executor.arrow_non_finite_float"
+        );
+    }
+
+    #[test]
+    fn finite_float_to_json_keeps_finite_and_rejects_non_finite() {
+        // Finite values pass through as JSON numbers...
+        assert_eq!(finite_float_to_json(2.5).expect("finite"), json!(2.5));
+        assert_eq!(finite_float_to_json(0.0).expect("zero"), json!(0.0));
+        assert_eq!(finite_float_to_json(-1.0).expect("negative"), json!(-1.0));
+        // ...while every non-finite value is rejected with the stable code.
+        for non_finite in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = finite_float_to_json(non_finite).expect_err("non-finite rejected");
+            assert_eq!(err.class(), ExecutorErrorClass::InvalidInput);
+            assert_eq!(
+                err.code(),
+                "invalid_argument.executor.arrow_non_finite_float"
+            );
+        }
     }
 }

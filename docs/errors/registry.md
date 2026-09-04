@@ -568,6 +568,9 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="invalid_argument.executor.arrow_key_column"></a>
 - `invalid_argument.executor.arrow_key_column`
 
+<a id="invalid_argument.executor.arrow_non_finite_float"></a>
+- `invalid_argument.executor.arrow_non_finite_float`
+
 <a id="invalid_argument.executor.arrow_value_column"></a>
 - `invalid_argument.executor.arrow_value_column`
 

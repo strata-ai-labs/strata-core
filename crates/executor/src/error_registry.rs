@@ -206,6 +206,15 @@ const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
         ARROW_SCHEMA,
     ),
     entry(
+        "invalid_argument.executor.arrow_non_finite_float",
+        ErrorClass::InvalidArgument,
+        RetryPolicy::Never,
+        CommitOutcomeStatus::NotStarted,
+        "A float column holds a non-finite value (NaN or infinity) that JSON cannot represent.",
+        "Replace or drop the NaN/infinity float values before importing to a JSON target.",
+        ARROW_SCHEMA,
+    ),
+    entry(
         "invalid_argument.executor.arrow_value_column",
         ErrorClass::InvalidArgument,
         RetryPolicy::Never,

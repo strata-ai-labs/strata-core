@@ -956,6 +956,52 @@ fn missing_input_is_reported_before_arrow_feature_work() {
     );
 }
 
+/// #3078: a Parquet Float64 column holding NaN must fail the import with a typed
+/// error, not silently store `{"score": null}`. (JSONL cannot carry a literal
+/// NaN — the JSON parser rejects it — so a float column is the reachable path.)
+#[test]
+fn parquet_import_rejects_non_finite_float_instead_of_storing_null() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = dir.path().join("scores.parquet");
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Utf8, false),
+        Field::new("score", DataType::Float64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["a", "b"])),
+            Arc::new(arrow::array::Float64Array::from(vec![1.5, f64::NAN])),
+        ],
+    )
+    .expect("record batch");
+    let file = std::fs::File::create(&path).expect("create parquet");
+    let mut writer =
+        parquet::arrow::ArrowWriter::try_new(file, schema, None).expect("create parquet writer");
+    writer.write(&batch).expect("write parquet batch");
+    writer.close().expect("close parquet writer");
+
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let error = executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Parquet),
+            target: ArrowImportTarget::Json,
+            key_column: Some("key".to_owned()),
+            value_column: None,
+            collection: None,
+            graph: None,
+        })
+        .expect_err("a non-finite float must fail the import, not store null");
+    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+    assert_eq!(
+        error.code(),
+        "invalid_argument.executor.arrow_non_finite_float"
+    );
+}
+
 fn assert_import_result(
     result: &ArrowImportResult,
     target: ArrowImportTarget,
