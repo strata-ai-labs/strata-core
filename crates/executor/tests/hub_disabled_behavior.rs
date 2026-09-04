@@ -6,11 +6,10 @@
 use strata_executor::{Command, Executor, ExecutorError, ExecutorErrorClass, Output};
 
 fn assert_hub_feature_disabled(error: ExecutorError) {
-    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
-    assert_eq!(
-        error.code(),
-        "invalid_argument.executor.hub_feature_disabled"
-    );
+    // A build without the hub feature is `unsupported` (#2750); the compat
+    // class for `unsupported` is `Unavailable`.
+    assert_eq!(error.class(), ExecutorErrorClass::Unavailable);
+    assert_eq!(error.code(), "unsupported.executor.hub_feature_disabled");
 }
 
 #[test]

@@ -32,7 +32,7 @@ Status commands return a scalar or compact status payload and do not mutate data
 
 - [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
 - [`not_found.engine.branch`](https://stratadb.org/e/not_found.engine.branch)
-- [`invalid_argument.executor.hub_feature_disabled`](https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled)
+- [`unsupported.executor.hub_feature_disabled`](https://stratadb.org/e/unsupported.executor.hub_feature_disabled)
 - [`invalid_argument.executor.hub_url`](https://stratadb.org/e/invalid_argument.executor.hub_url)
 - [`unavailable.executor.hub_transport`](https://stratadb.org/e/unavailable.executor.hub_transport)
 - [`invalid_argument.executor.hub_filter`](https://stratadb.org/e/invalid_argument.executor.hub_filter)

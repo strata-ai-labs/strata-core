@@ -28,7 +28,7 @@ Plus the optional scope: `branch` and `space` (default to the session branch and
 - [`failed_precondition.engine.runtime_closed`](https://stratadb.org/e/failed_precondition.engine.runtime_closed)
 - [`invalid_argument.executor.hub_dataset`](https://stratadb.org/e/invalid_argument.executor.hub_dataset)
 - [`invalid_argument.executor.hub_branch`](https://stratadb.org/e/invalid_argument.executor.hub_branch)
-- [`invalid_argument.executor.hub_feature_disabled`](https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled)
+- [`unsupported.executor.hub_feature_disabled`](https://stratadb.org/e/unsupported.executor.hub_feature_disabled)
 - [`invalid_argument.executor.hub_url`](https://stratadb.org/e/invalid_argument.executor.hub_url)
 - [`failed_precondition.executor.hub_clone`](https://stratadb.org/e/failed_precondition.executor.hub_clone)
 - [`unavailable.executor.hub_transport`](https://stratadb.org/e/unavailable.executor.hub_transport)

@@ -87,7 +87,7 @@ errors:
   - unsupported.engine.graph_binding_cross_branch
   - resource_exhausted.engine.graph_analytics_budget
   - invalid_argument.engine.config_key
-  - invalid_argument.executor.arrow_feature_disabled
+  - unsupported.executor.arrow_feature_disabled
   - invalid_argument.executor.arrow_format
   - invalid_argument.executor.arrow_input_missing
   - invalid_argument.executor.arrow_key_column
@@ -105,7 +105,7 @@ errors:
   - internal.executor.arrow
   - invalid_argument.executor.hub_dataset
   - invalid_argument.executor.hub_branch
-  - invalid_argument.executor.hub_feature_disabled
+  - unsupported.executor.hub_feature_disabled
   - invalid_argument.executor.hub_url
   - invalid_argument.executor.hub_filter
   - invalid_argument.executor.hub_since

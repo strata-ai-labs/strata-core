@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "7e5de66fa4429e837bd3c52b86bd836b48fbcae808d1d9715f64b1dd7ad899f4",
+    "checksum_sha256": "acd6c72621229d35891d64ec2f536db4242fde0a94fb7fd62637e8c2b5874580",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -253,8 +253,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
-          "code": "invalid_argument.executor.arrow_feature_disabled",
-          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_feature_disabled"
+          "code": "unsupported.executor.arrow_feature_disabled",
+          "docs": "https://stratadb.org/e/unsupported.executor.arrow_feature_disabled"
         },
         {
           "code": "invalid_argument.executor.arrow_format",
@@ -340,8 +340,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
-          "code": "invalid_argument.executor.arrow_feature_disabled",
-          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_feature_disabled"
+          "code": "unsupported.executor.arrow_feature_disabled",
+          "docs": "https://stratadb.org/e/unsupported.executor.arrow_feature_disabled"
         },
         {
           "code": "invalid_argument.executor.arrow_format",
@@ -1029,8 +1029,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.executor.hub_branch"
         },
         {
-          "code": "invalid_argument.executor.hub_feature_disabled",
-          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
+          "code": "unsupported.executor.hub_feature_disabled",
+          "docs": "https://stratadb.org/e/unsupported.executor.hub_feature_disabled"
         },
         {
           "code": "invalid_argument.executor.hub_url",
@@ -3976,8 +3976,8 @@
           "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
-          "code": "invalid_argument.executor.hub_feature_disabled",
-          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
+          "code": "unsupported.executor.hub_feature_disabled",
+          "docs": "https://stratadb.org/e/unsupported.executor.hub_feature_disabled"
         },
         {
           "code": "invalid_argument.executor.hub_url",
@@ -4039,8 +4039,8 @@
           "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
-          "code": "invalid_argument.executor.hub_feature_disabled",
-          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
+          "code": "unsupported.executor.hub_feature_disabled",
+          "docs": "https://stratadb.org/e/unsupported.executor.hub_feature_disabled"
         },
         {
           "code": "invalid_argument.executor.hub_url",
@@ -4094,8 +4094,8 @@
           "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
-          "code": "invalid_argument.executor.hub_feature_disabled",
-          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
+          "code": "unsupported.executor.hub_feature_disabled",
+          "docs": "https://stratadb.org/e/unsupported.executor.hub_feature_disabled"
         },
         {
           "code": "invalid_argument.executor.hub_url",
@@ -4159,8 +4159,8 @@
           "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
-          "code": "invalid_argument.executor.hub_feature_disabled",
-          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
+          "code": "unsupported.executor.hub_feature_disabled",
+          "docs": "https://stratadb.org/e/unsupported.executor.hub_feature_disabled"
         },
         {
           "code": "invalid_argument.executor.hub_url",
@@ -4222,8 +4222,8 @@
           "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
-          "code": "invalid_argument.executor.hub_feature_disabled",
-          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
+          "code": "unsupported.executor.hub_feature_disabled",
+          "docs": "https://stratadb.org/e/unsupported.executor.hub_feature_disabled"
         },
         {
           "code": "invalid_argument.executor.hub_url",

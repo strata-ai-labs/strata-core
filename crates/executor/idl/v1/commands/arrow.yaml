@@ -11,7 +11,7 @@ commands:
     prose: commands/arrow.import.md
     errors+:
       - invalid_argument.engine.product_space
-      - invalid_argument.executor.arrow_feature_disabled
+      - unsupported.executor.arrow_feature_disabled
       - invalid_argument.executor.arrow_format
       - invalid_argument.executor.arrow_input_missing
       - invalid_argument.executor.arrow_key_column
@@ -38,7 +38,7 @@ commands:
     prose: commands/arrow.export.md
     errors+:
       - invalid_argument.engine.product_space
-      - invalid_argument.executor.arrow_feature_disabled
+      - unsupported.executor.arrow_feature_disabled
       - invalid_argument.executor.arrow_format
       - invalid_argument.executor.arrow_empty_export
       - invalid_argument.executor.arrow_value_column

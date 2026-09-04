@@ -26,7 +26,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use strata_executor::{
-    public_error_code_entries, Command, CommitOutcomeStatus, Executor, ExecutorError, RetryPolicy,
+    public_error_code_entries, Command, CommitOutcomeStatus, ErrorClass, Executor, ExecutorError,
+    RetryPolicy,
 };
 
 // ---------------------------------------------------------------------------
@@ -372,28 +373,15 @@ fn opening_a_locked_database_reports_retryable_unavailable() {
 // Registry-wide semantic coherence (all 200+ public codes)
 // ---------------------------------------------------------------------------
 
-/// Shrink-only exceptions to `invalid_argument ⇒ never` (#2750): the
-/// feature-disabled codes carry a retry policy only a state change can honor,
-/// which is the evidence their class is wrong. Each entry is pinned below;
-/// fixing #2750 breaks the pin and forces the entry's deletion here.
-const INVALID_ARGUMENT_RETRY_EXCEPTIONS: &[(&str, &str)] = &[
-    ("invalid_argument.executor.hub_feature_disabled", "#2750"),
-    ("invalid_argument.executor.arrow_feature_disabled", "#2750"),
-];
-
 #[test]
 fn permanent_classes_never_advise_retry() {
     let mut violations = Vec::new();
     for entry in public_error_code_entries() {
         let prefix = entry.code.split('.').next().expect("code has a prefix");
-        let excepted = INVALID_ARGUMENT_RETRY_EXCEPTIONS
-            .iter()
-            .any(|(code, _)| *code == entry.code);
-        let permanent = match prefix {
-            "corruption" | "data_loss" => true,
-            "invalid_argument" => !excepted,
-            _ => false,
-        };
+        // #2750 removed the last exception: the feature-disabled codes moved to
+        // `unsupported.*`, so every `invalid_argument.*` code is now permanent
+        // with no carve-out.
+        let permanent = matches!(prefix, "corruption" | "data_loss" | "invalid_argument");
         if permanent && entry.retry_policy != RetryPolicy::Never {
             violations.push(format!(
                 "{}: {prefix} condition with {:?}",
@@ -477,21 +465,29 @@ fn unknowable_outcomes_stay_unknowable() {
     );
 }
 
-/// Pin for #2750 (shrink-only in both directions): each excepted code must
-/// still exist and still carry the divergent policy. Fixing the class or the
-/// policy breaks this pin and forces the exception's removal above.
+/// #2750 contract (promoted from `pin_2750_*`): a build without the hub/arrow
+/// feature is `unsupported.executor.*` — the command is well-formed, the
+/// capability is simply absent — and keeps `AfterStateChange` retry (rebuild
+/// with the feature, then the same request works). It is NOT `invalid_argument`
+/// (which means malformed input that no retry can fix).
 #[test]
-fn pin_2750_feature_disabled_codes_still_carry_state_change_retry() {
-    for (code, issue) in INVALID_ARGUMENT_RETRY_EXCEPTIONS {
+fn feature_disabled_codes_are_unsupported_with_state_change_retry() {
+    for code in [
+        "unsupported.executor.hub_feature_disabled",
+        "unsupported.executor.arrow_feature_disabled",
+    ] {
         let entry = public_error_code_entries()
-            .find(|entry| entry.code == *code)
-            .unwrap_or_else(|| {
-                panic!("stale exception: `{code}` ({issue}) is no longer registered — delete it")
-            });
+            .find(|entry| entry.code == code)
+            .unwrap_or_else(|| panic!("`{code}` must be registered"));
+        assert_eq!(
+            entry.class,
+            ErrorClass::Unsupported,
+            "{code}: a build-absent feature is unsupported, not invalid_argument"
+        );
         assert_eq!(
             entry.retry_policy,
             RetryPolicy::AfterStateChange,
-            "{code} ({issue}): divergent policy changed — resolve the exception"
+            "{code}: rebuilding with the feature is the state change that helps"
         );
     }
 }
