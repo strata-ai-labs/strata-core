@@ -1410,6 +1410,56 @@ fn event_import_reports_rows_the_engine_rejected_as_skipped() {
     assert_eq!(event_count(&mut executor), 1);
 }
 
+/// #3082: vector export to CSV cannot work — the embedding is a nested
+/// `FixedSizeList` the CSV writer can't serialize. It must be rejected up front
+/// with a non-retryable error and must not truncate/create the output file
+/// (the old path left a stale header-only file and reported a retryable IO
+/// error, so a retrying caller looped forever).
+#[test]
+fn vector_export_to_csv_is_rejected_up_front_without_touching_the_output_file() {
+    let dir = TempDir::new().expect("temp dir");
+    let source_path = dir.path().join("source.parquet");
+    let out_path = dir.path().join("vectors.csv");
+    write_vector_parquet(&source_path);
+
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    create_docs_collection(&mut executor);
+    executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: source_path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Parquet),
+            target: ArrowImportTarget::Vector,
+            key_column: None,
+            value_column: None,
+            collection: Some("docs".to_owned()),
+            graph: None,
+        })
+        .expect("seed import succeeds");
+
+    let error = executor
+        .execute(Command::ArrowExport {
+            branch: None,
+            space: None,
+            primitive: ArrowExportPrimitive::Vector,
+            format: ArrowFileFormat::Csv,
+            path: out_path.to_string_lossy().into_owned(),
+            prefix: None,
+            limit: None,
+            collection: Some("docs".to_owned()),
+            graph: None,
+            event_type: None,
+        })
+        .expect_err("vector export to CSV must be rejected");
+    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+    assert_eq!(error.code(), "invalid_argument.executor.arrow_format");
+    // Permanent incompatibility — a retrying caller must not loop.
+    assert!(!error.retryable(), "the rejection must be non-retryable");
+    // The output file was never opened, so no stale/truncated file is left.
+    assert!(!out_path.exists(), "no output file should be created");
+}
+
 fn assert_import_result(
     result: &ArrowImportResult,
     target: ArrowImportTarget,
