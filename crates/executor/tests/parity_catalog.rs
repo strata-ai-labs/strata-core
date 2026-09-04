@@ -60,12 +60,12 @@ fn pin_2704_json_scan_seeks_rather_than_prefix_filters() {
     );
 }
 
-/// PIN #2704: no catalog id (dotted) is executable as a wire `type` tag —
-/// every one of the 127 ids is rejected by the command parser, and the
-/// executable `snake_case` name appears in no catalog field.
+/// #2704 (promoted from `pin_2704_catalog_ids_are_not_executable_wire_names`):
+/// every catalog entry now publishes its executable wire `type` tag in the
+/// `wire` field, so a tool reading the offline catalog can construct a real
+/// call. The dotted `id` stays a stable identifier, never a wire tag.
 #[test]
-fn pin_2704_catalog_ids_are_not_executable_wire_names() {
-    support::pinned("catalog_id_not_wire_name", 2704);
+fn catalog_entries_publish_executable_wire_names() {
     let index_path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("idl/v1/generated/command-index.json");
     let index: Value = serde_json::from_str(
@@ -77,16 +77,49 @@ fn pin_2704_catalog_ids_are_not_executable_wire_names() {
         .as_array()
         .expect("index carries commands");
     assert!(commands.len() >= 100, "the catalog is the full surface");
+
+    let mut executable_wire_seen = false;
     for entry in commands {
         let id = entry["id"].as_str().expect("entry carries an id");
+        let wire = entry["wire"]
+            .as_str()
+            .unwrap_or_else(|| panic!("entry `{id}` must carry an executable `wire` tag"));
+        assert!(
+            !wire.is_empty()
+                && wire
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+            "wire `{wire}` (id `{id}`) must be a snake_case wire tag"
+        );
+        assert_ne!(wire, id, "the wire tag is not the dotted id (`{id}`)");
+        // The dotted id is a stable identifier, never a wire type tag.
         assert!(
             serde_json::from_value::<Command>(json!({"type": id})).is_err(),
-            "today: catalog id `{id}` must not parse as a wire type tag; if \
-             one does, #2704's naming leg changed — update the ledger"
+            "catalog id `{id}` must not parse as a wire type tag"
         );
+        // A field-less command's published wire tag constructs a real call.
+        if serde_json::from_value::<Command>(json!({"type": wire})).is_ok() {
+            executable_wire_seen = true;
+        }
     }
-    // Positive control: the derived snake_case wire tag is executable.
-    serde_json::from_value::<Command>(json!({"type": "ping"})).expect("wire tags parse");
+    assert!(
+        executable_wire_seen,
+        "at least one catalog `wire` tag parses as a command, proving the field is executable"
+    );
+
+    // Exact wire tags for representative commands pin the derivation.
+    let wire_of = |command_id: &str| -> String {
+        commands
+            .iter()
+            .find(|entry| entry["id"] == command_id)
+            .unwrap_or_else(|| panic!("catalog carries `{command_id}`"))["wire"]
+            .as_str()
+            .unwrap_or_else(|| panic!("`{command_id}` carries a wire tag"))
+            .to_owned()
+    };
+    assert_eq!(wire_of("kv.list"), "kv_list");
+    assert_eq!(wire_of("json.scan"), "json_scan");
+    assert_eq!(wire_of("admin.ping"), "ping");
 }
 
 /// #2691 regression pin (fixed): every primitive that can be exported can be
@@ -108,6 +141,7 @@ fn contract_2691_arrow_export_and_import_cover_the_same_primitives() {
 /// Ledger guards (entry ⇒ pin) for the axes this target owns.
 #[test]
 fn every_catalog_and_scan_ledger_entry_is_pinned_here() {
-    support::assert_ledger_entries_all_pinned("catalog", &[("catalog_id_not_wire_name", 2704)]);
+    // catalog_id_not_wire_name (#2704) is fixed: entries now publish `wire`.
+    support::assert_ledger_entries_all_pinned("catalog", &[]);
     support::assert_ledger_entries_all_pinned("json_scan", &[("json_scan_addressing", 2704)]);
 }

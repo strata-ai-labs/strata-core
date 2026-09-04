@@ -54,9 +54,3 @@
     space (returns keys past the prefix) while sibling json_count filters by
     real prefix
   issue: 2704
-- axis: catalog_id_not_wire_name
-  surfaces: [command-index ids, wire type tags]
-  behavior: >-
-    no catalog id (dotted, e.g. kv.list) is executable as a wire type tag
-    (snake_case, e.g. kv_list); the executable name appears in no catalog field
-  issue: 2704
