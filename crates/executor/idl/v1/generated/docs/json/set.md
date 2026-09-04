@@ -1,7 +1,7 @@
 ---
 title: "Set JSON value"
 description: "Set a JSON value at a document path, creating the document when missing."
-source: strata-core@1.1.1
+source: strata-core@1.2.0
 section: json
 ---
 

@@ -1,7 +1,7 @@
 ---
 title: "event commands"
 description: "Command reference for the event family."
-source: strata-core@1.1.1
+source: strata-core@1.2.0
 section: event
 ---
 

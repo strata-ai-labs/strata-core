@@ -1,7 +1,7 @@
 ---
 title: "Batch upsert vectors"
 description: "Upsert multiple vectors in one itemwise batch."
-source: strata-core@1.1.1
+source: strata-core@1.2.0
 section: vector
 ---
 

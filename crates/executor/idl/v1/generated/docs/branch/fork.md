@@ -1,7 +1,7 @@
 ---
 title: "Fork branch from current head"
 description: "Fork a new branch from the current head of a source branch."
-source: strata-core@1.1.1
+source: strata-core@1.2.0
 section: branch
 ---
 
