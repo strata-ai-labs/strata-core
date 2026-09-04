@@ -26,6 +26,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::ConfigGet",
+      "wire": "config_get",
       "output": "Output::Config",
       "outputs": [
         "Output::Config"
@@ -73,6 +74,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::ConfigureGetKey",
+      "wire": "configure_get_key",
       "output": "Output::ConfigValue",
       "outputs": [
         "Output::ConfigValue"
@@ -123,6 +125,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::Describe",
+      "wire": "describe",
       "output": "Output::Described",
       "outputs": [
         "Output::Described"
@@ -177,6 +180,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::Health",
+      "wire": "health",
       "output": "Output::Health",
       "outputs": [
         "Output::Health"
@@ -231,6 +235,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::HubClone",
+      "wire": "hub_clone",
       "output": "Output::HubCloneResult",
       "outputs": [
         "Output::HubCloneResult",
@@ -306,6 +311,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::Info",
+      "wire": "info",
       "output": "Output::DatabaseInfo",
       "outputs": [
         "Output::DatabaseInfo"
@@ -361,6 +367,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::IpcStatus",
+      "wire": "ipc_status",
       "output": "Output::IpcStatus",
       "outputs": [
         "Output::IpcStatus"
@@ -408,6 +415,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::IpcStop",
+      "wire": "ipc_stop",
       "output": "Output::IpcStop",
       "outputs": [
         "Output::IpcStop"
@@ -454,6 +462,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::Metrics",
+      "wire": "metrics",
       "output": "Output::Metrics",
       "outputs": [
         "Output::Metrics"
@@ -508,6 +517,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::Ping",
+      "wire": "ping",
       "output": "Output::Pong",
       "outputs": [
         "Output::Pong"
@@ -554,6 +564,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::RemoteGet",
+      "wire": "remote_get",
       "output": "Output::RemoteOriginResult",
       "outputs": [
         "Output::RemoteOriginResult"
@@ -601,6 +612,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::ArrowExport",
+      "wire": "arrow_export",
       "output": "Output::ArrowExportResult",
       "outputs": [
         "Output::ArrowExportResult"
@@ -697,6 +709,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::ArrowImport",
+      "wire": "arrow_import",
       "output": "Output::ArrowImportResult",
       "outputs": [
         "Output::ArrowImportResult"
@@ -801,6 +814,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::BranchCreate",
+      "wire": "branch_create",
       "output": "Output::Branch",
       "outputs": [
         "Output::Branch"
@@ -869,6 +883,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::BranchDelete",
+      "wire": "branch_delete",
       "output": "Output::BranchDeleteResult",
       "outputs": [
         "Output::BranchDeleteResult"
@@ -935,6 +950,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::BranchDiff",
+      "wire": "branch_diff",
       "output": "Output::BranchComparison",
       "outputs": [
         "Output::BranchComparison"
@@ -998,6 +1014,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::BranchForkCurrent",
+      "wire": "branch_fork_current",
       "output": "Output::Branch",
       "outputs": [
         "Output::Branch"
@@ -1064,6 +1081,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::BranchForkAtTimestamp",
+      "wire": "branch_fork_at_timestamp",
       "output": "Output::Branch",
       "outputs": [
         "Output::Branch"
@@ -1134,6 +1152,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::BranchForkAtVersion",
+      "wire": "branch_fork_at_version",
       "output": "Output::Branch",
       "outputs": [
         "Output::Branch"
@@ -1204,6 +1223,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::BranchGet",
+      "wire": "branch_get",
       "output": "Output::Branch",
       "outputs": [
         "Output::Branch"
@@ -1266,6 +1286,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::BranchList",
+      "wire": "branch_list",
       "output": "Output::Branches",
       "outputs": [
         "Output::Branches"
@@ -1316,6 +1337,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::BranchMerge",
+      "wire": "branch_merge",
       "output": "Output::BranchMerge",
       "outputs": [
         "Output::BranchMerge"
@@ -1407,6 +1429,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::BranchPreview",
+      "wire": "branch_preview",
       "output": "Output::BranchPreview",
       "outputs": [
         "Output::BranchPreview"
@@ -1485,6 +1508,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::EventAppend",
+      "wire": "event_append",
       "output": "Output::EventAppendResult",
       "outputs": [
         "Output::EventAppendResult"
@@ -1558,6 +1582,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::EventBatchAppend",
+      "wire": "event_batch_append",
       "output": "Output::EventBatchAppendResults",
       "outputs": [
         "Output::EventBatchAppendResults"
@@ -1629,6 +1654,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::EventCount",
+      "wire": "event_count",
       "output": "Output::EventCount",
       "outputs": [
         "Output::EventCount"
@@ -1688,6 +1714,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::EventExists",
+      "wire": "event_exists",
       "output": "Output::Bool",
       "outputs": [
         "Output::Bool"
@@ -1746,6 +1773,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::EventGet",
+      "wire": "event_get",
       "output": "Output::EventRecord",
       "outputs": [
         "Output::EventRecord"
@@ -1805,6 +1833,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::EventList",
+      "wire": "event_list",
       "output": "Output::EventRecords",
       "outputs": [
         "Output::EventRecords"
@@ -1873,6 +1902,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::EventRange",
+      "wire": "event_range",
       "output": "Output::EventRangeResult",
       "outputs": [
         "Output::EventRangeResult"
@@ -1941,6 +1971,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::EventRangeByTime",
+      "wire": "event_range_by_time",
       "output": "Output::EventRangeResult",
       "outputs": [
         "Output::EventRangeResult"
@@ -2009,6 +2040,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::EventListTypes",
+      "wire": "event_list_types",
       "output": "Output::EventTypeList",
       "outputs": [
         "Output::EventTypeList"
@@ -2068,6 +2100,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::EventVerifyChain",
+      "wire": "event_verify_chain",
       "output": "Output::EventChainVerification",
       "outputs": [
         "Output::EventChainVerification"
@@ -2127,6 +2160,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::GraphBfs",
+      "wire": "graph_bfs",
       "output": "Output::GraphBfsResult",
       "outputs": [
         "Output::GraphBfsResult"
@@ -2218,6 +2252,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::GraphCdlp",
+      "wire": "graph_cdlp",
       "output": "Output::GraphCdlpResult",
       "outputs": [
         "Output::GraphCdlpResult"
@@ -2299,6 +2334,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::GraphLcc",
+      "wire": "graph_lcc",
       "output": "Output::GraphLccResult",
       "outputs": [
         "Output::GraphLccResult"
@@ -2379,6 +2415,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::GraphPagerank",
+      "wire": "graph_pagerank",
       "output": "Output::GraphPagerankResult",
       "outputs": [
         "Output::GraphPagerankResult"
@@ -2468,6 +2505,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::GraphSssp",
+      "wire": "graph_sssp",
       "output": "Output::GraphSsspResult",
       "outputs": [
         "Output::GraphSsspResult"
@@ -2555,6 +2593,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::GraphWcc",
+      "wire": "graph_wcc",
       "output": "Output::GraphWccResult",
       "outputs": [
         "Output::GraphWccResult"
@@ -2636,6 +2675,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::GraphApplyDeletePolicy",
+      "wire": "graph_apply_delete_policy",
       "output": "Output::GraphDeletePolicyResult",
       "outputs": [
         "Output::GraphDeletePolicyResult"
@@ -2699,6 +2739,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::GraphBatchWrite",
+      "wire": "graph_batch_write",
       "output": "Output::GraphBatchWriteResult",
       "outputs": [
         "Output::GraphBatchWriteResult"
@@ -2789,6 +2830,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::GraphBindingsForEntity",
+      "wire": "graph_bindings_for_entity",
       "output": "Output::GraphBindingPage",
       "outputs": [
         "Output::GraphBindingPage"
@@ -2852,6 +2894,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::GraphBulkInsert",
+      "wire": "graph_bulk_insert",
       "output": "Output::GraphBulkInsertResult",
       "outputs": [
         "Output::GraphBulkInsertResult"
@@ -2954,6 +2997,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::GraphCreate",
+      "wire": "graph_create",
       "output": "Output::GraphCreateResult",
       "outputs": [
         "Output::GraphCreateResult"
@@ -3034,6 +3078,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::GraphDelete",
+      "wire": "graph_delete",
       "output": "Output::GraphDeleteResult",
       "outputs": [
         "Output::GraphDeleteResult"
@@ -3100,6 +3145,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::GraphAddEdge",
+      "wire": "graph_add_edge",
       "output": "Output::GraphEdgeWriteResult",
       "outputs": [
         "Output::GraphEdgeWriteResult"
@@ -3208,6 +3254,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::GraphGetEdge",
+      "wire": "graph_get_edge",
       "output": "Output::GraphEdgeResult",
       "outputs": [
         "Output::GraphEdgeResult"
@@ -3285,6 +3332,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::GraphRemoveEdge",
+      "wire": "graph_remove_edge",
       "output": "Output::GraphDeleteResult",
       "outputs": [
         "Output::GraphDeleteResult"
@@ -3362,6 +3410,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::GraphList",
+      "wire": "graph_list",
       "output": "Output::GraphNamePage",
       "outputs": [
         "Output::GraphNamePage"
@@ -3424,6 +3473,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::GraphGetMeta",
+      "wire": "graph_get_meta",
       "output": "Output::GraphInfoResult",
       "outputs": [
         "Output::GraphInfoResult"
@@ -3493,6 +3543,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::GraphNeighbors",
+      "wire": "graph_neighbors",
       "output": "Output::GraphNeighborPage",
       "outputs": [
         "Output::GraphNeighborPage"
@@ -3572,6 +3623,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::GraphAddNode",
+      "wire": "graph_add_node",
       "output": "Output::GraphNodeWriteResult",
       "outputs": [
         "Output::GraphNodeWriteResult"
@@ -3670,6 +3722,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::GraphGetNode",
+      "wire": "graph_get_node",
       "output": "Output::GraphNodeResult",
       "outputs": [
         "Output::GraphNodeResult"
@@ -3741,6 +3794,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::GraphListNodes",
+      "wire": "graph_list_nodes",
       "output": "Output::GraphNodePage",
       "outputs": [
         "Output::GraphNodePage"
@@ -3814,6 +3868,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::GraphRemoveNode",
+      "wire": "graph_remove_node",
       "output": "Output::GraphDeleteResult",
       "outputs": [
         "Output::GraphDeleteResult"
@@ -3885,6 +3940,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::GraphNodesByType",
+      "wire": "graph_nodes_by_type",
       "output": "Output::GraphNodePage",
       "outputs": [
         "Output::GraphNodePage"
@@ -3963,6 +4019,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::GraphDefineLinkType",
+      "wire": "graph_define_link_type",
       "output": "Output::GraphOntologyWriteResult",
       "outputs": [
         "Output::GraphOntologyWriteResult"
@@ -4047,6 +4104,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::GraphDefineObjectType",
+      "wire": "graph_define_object_type",
       "output": "Output::GraphOntologyWriteResult",
       "outputs": [
         "Output::GraphOntologyWriteResult"
@@ -4130,6 +4188,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::GraphDeleteLinkType",
+      "wire": "graph_delete_link_type",
       "output": "Output::GraphOntologyDeleteResult",
       "outputs": [
         "Output::GraphOntologyDeleteResult"
@@ -4207,6 +4266,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::GraphDeleteObjectType",
+      "wire": "graph_delete_object_type",
       "output": "Output::GraphOntologyDeleteResult",
       "outputs": [
         "Output::GraphOntologyDeleteResult"
@@ -4283,6 +4343,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::GraphFreezeOntology",
+      "wire": "graph_freeze_ontology",
       "output": "Output::GraphOntologyFreezeResult",
       "outputs": [
         "Output::GraphOntologyFreezeResult"
@@ -4360,6 +4421,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::GraphGetOntology",
+      "wire": "graph_get_ontology",
       "output": "Output::GraphOntologyResult",
       "outputs": [
         "Output::GraphOntologyResult"
@@ -4430,6 +4492,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::GraphOntologySummary",
+      "wire": "graph_ontology_summary",
       "output": "Output::GraphOntologySummaryResult",
       "outputs": [
         "Output::GraphOntologySummaryResult"
@@ -4500,6 +4563,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::GraphSample",
+      "wire": "graph_sample",
       "output": "Output::GraphSampleResult",
       "outputs": [
         "Output::GraphSampleResult"
@@ -4569,6 +4633,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::HubGetDataset",
+      "wire": "hub_get_dataset",
       "output": "Output::HubDataset",
       "outputs": [
         "Output::HubDataset"
@@ -4641,6 +4706,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::HubInfo",
+      "wire": "hub_info",
       "output": "Output::HubInfo",
       "outputs": [
         "Output::HubInfo"
@@ -4705,6 +4771,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::HubListDatasets",
+      "wire": "hub_list_datasets",
       "output": "Output::HubDatasets",
       "outputs": [
         "Output::HubDatasets"
@@ -4779,6 +4846,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::HubListRefs",
+      "wire": "hub_list_refs",
       "output": "Output::HubRefs",
       "outputs": [
         "Output::HubRefs"
@@ -4851,6 +4919,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::HubListYanked",
+      "wire": "hub_list_yanked",
       "output": "Output::HubYanked",
       "outputs": [
         "Output::HubYanked"
@@ -4929,6 +4998,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::InferenceCacheStatus",
+      "wire": "inference_cache_status",
       "output": "Output::InferenceCacheStatus",
       "outputs": [
         "Output::InferenceCacheStatus"
@@ -4980,6 +5050,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::InferenceModelCapability",
+      "wire": "inference_model_capability",
       "output": "Output::InferenceCapability",
       "outputs": [
         "Output::InferenceCapability"
@@ -5035,6 +5106,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::InferenceDetokenize",
+      "wire": "inference_detokenize",
       "output": "Output::InferenceText",
       "outputs": [
         "Output::InferenceText"
@@ -5106,6 +5178,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::InferenceEmbed",
+      "wire": "inference_embed",
       "output": "Output::InferenceEmbeddings",
       "outputs": [
         "Output::InferenceEmbeddings"
@@ -5197,6 +5270,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::InferenceGenerate",
+      "wire": "inference_generate",
       "output": "Output::InferenceGeneration",
       "outputs": [
         "Output::InferenceGeneration"
@@ -5305,6 +5379,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::InferenceModelsList",
+      "wire": "inference_models_list",
       "output": "Output::InferenceModels",
       "outputs": [
         "Output::InferenceModels"
@@ -5357,6 +5432,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::InferenceModelsLocal",
+      "wire": "inference_models_local",
       "output": "Output::InferenceModels",
       "outputs": [
         "Output::InferenceModels"
@@ -5409,6 +5485,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::InferenceModelsPull",
+      "wire": "inference_models_pull",
       "output": "Output::InferenceModelPulled",
       "outputs": [
         "Output::InferenceModelPulled"
@@ -5484,6 +5561,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::InferenceRank",
+      "wire": "inference_rank",
       "output": "Output::InferenceRanking",
       "outputs": [
         "Output::InferenceRanking"
@@ -5555,6 +5633,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::InferenceTokenize",
+      "wire": "inference_tokenize",
       "output": "Output::InferenceTokenIds",
       "outputs": [
         "Output::InferenceTokenIds"
@@ -5626,6 +5705,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::InferenceUnload",
+      "wire": "inference_unload",
       "output": "Output::InferenceUnloadResult",
       "outputs": [
         "Output::InferenceUnloadResult"
@@ -5677,6 +5757,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::JsonBatchDelete",
+      "wire": "json_batch_delete",
       "output": "Output::JsonBatchResults",
       "outputs": [
         "Output::JsonBatchResults"
@@ -5755,6 +5836,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::JsonBatchExists",
+      "wire": "json_batch_exists",
       "output": "Output::JsonBatchExistsResults",
       "outputs": [
         "Output::JsonBatchExistsResults"
@@ -5817,6 +5899,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::JsonBatchGet",
+      "wire": "json_batch_get",
       "output": "Output::JsonBatchGetResults",
       "outputs": [
         "Output::JsonBatchGetResults"
@@ -5887,6 +5970,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::JsonBatchSet",
+      "wire": "json_batch_set",
       "output": "Output::JsonBatchResults",
       "outputs": [
         "Output::JsonBatchResults"
@@ -5982,6 +6066,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::JsonCount",
+      "wire": "json_count",
       "output": "Output::Uint",
       "outputs": [
         "Output::Uint"
@@ -6044,6 +6129,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::JsonDelete",
+      "wire": "json_delete",
       "output": "Output::JsonDeleteResult",
       "outputs": [
         "Output::JsonDeleteResult"
@@ -6115,6 +6201,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::JsonExists",
+      "wire": "json_exists",
       "output": "Output::Bool",
       "outputs": [
         "Output::Bool"
@@ -6177,6 +6264,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::JsonGet",
+      "wire": "json_get",
       "output": "Output::JsonVersionedValue",
       "outputs": [
         "Output::JsonValue",
@@ -6260,6 +6348,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::JsonHistory",
+      "wire": "json_history",
       "output": "Output::JsonVersionHistory",
       "outputs": [
         "Output::JsonVersionHistory"
@@ -6324,6 +6413,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::JsonCreateIndex",
+      "wire": "json_create_index",
       "output": "Output::JsonIndexDefinition",
       "outputs": [
         "Output::JsonIndexDefinition"
@@ -6400,6 +6490,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::JsonDropIndex",
+      "wire": "json_drop_index",
       "output": "Output::Bool",
       "outputs": [
         "Output::Bool"
@@ -6467,6 +6558,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::JsonListIndexes",
+      "wire": "json_list_indexes",
       "output": "Output::JsonIndexList",
       "outputs": [
         "Output::JsonIndexList"
@@ -6525,6 +6617,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::JsonList",
+      "wire": "json_list",
       "output": "Output::JsonListResult",
       "outputs": [
         "Output::JsonListResult"
@@ -6587,6 +6680,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::JsonSample",
+      "wire": "json_sample",
       "output": "Output::JsonSampleResult",
       "outputs": [
         "Output::JsonSampleResult"
@@ -6649,6 +6743,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::JsonScan",
+      "wire": "json_scan",
       "output": "Output::JsonScanResult",
       "outputs": [
         "Output::JsonScanResult"
@@ -6711,6 +6806,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::JsonSet",
+      "wire": "json_set",
       "output": "Output::JsonWriteResult",
       "outputs": [
         "Output::JsonWriteResult"
@@ -6808,6 +6904,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::KvBatchDelete",
+      "wire": "kv_batch_delete",
       "output": "Output::BatchResults",
       "outputs": [
         "Output::BatchResults"
@@ -6882,6 +6979,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::KvBatchExists",
+      "wire": "kv_batch_exists",
       "output": "Output::BatchExistsResults",
       "outputs": [
         "Output::BatchExistsResults"
@@ -6948,6 +7046,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::KvBatchGet",
+      "wire": "kv_batch_get",
       "output": "Output::BatchGetResults",
       "outputs": [
         "Output::BatchGetResults"
@@ -7014,6 +7113,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::KvBatchPut",
+      "wire": "kv_batch_put",
       "output": "Output::BatchResults",
       "outputs": [
         "Output::BatchResults"
@@ -7091,6 +7191,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::KvCount",
+      "wire": "kv_count",
       "output": "Output::Uint",
       "outputs": [
         "Output::Uint"
@@ -7153,6 +7254,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::KvDelete",
+      "wire": "kv_delete",
       "output": "Output::DeleteResult",
       "outputs": [
         "Output::DeleteResult"
@@ -7212,6 +7314,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::KvExists",
+      "wire": "kv_exists",
       "output": "Output::Bool",
       "outputs": [
         "Output::Bool"
@@ -7274,6 +7377,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::KvGet",
+      "wire": "kv_get",
       "output": "Output::KvVersionedValue",
       "outputs": [
         "Output::KvVersionedValue"
@@ -7347,6 +7451,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::KvHistory",
+      "wire": "kv_history",
       "output": "Output::VersionHistory",
       "outputs": [
         "Output::VersionHistory"
@@ -7410,6 +7515,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::KvList",
+      "wire": "kv_list",
       "output": "Output::KeysPage",
       "outputs": [
         "Output::KeysPage"
@@ -7474,6 +7580,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::KvPut",
+      "wire": "kv_put",
       "output": "Output::WriteResult",
       "outputs": [
         "Output::WriteResult"
@@ -7539,6 +7646,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::KvSample",
+      "wire": "kv_sample",
       "output": "Output::SampleResult",
       "outputs": [
         "Output::SampleResult"
@@ -7601,6 +7709,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::KvScan",
+      "wire": "kv_scan",
       "output": "Output::KvScanResult",
       "outputs": [
         "Output::KvScanResult"
@@ -7665,6 +7774,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::SpaceCreate",
+      "wire": "space_create",
       "output": "Output::SpaceCreateResult",
       "outputs": [
         "Output::SpaceCreateResult"
@@ -7724,6 +7834,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::SpaceDelete",
+      "wire": "space_delete",
       "output": "Output::SpaceDeleteResult",
       "outputs": [
         "Output::SpaceDeleteResult"
@@ -7804,6 +7915,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::SpaceExists",
+      "wire": "space_exists",
       "output": "Output::Bool",
       "outputs": [
         "Output::Bool"
@@ -7866,6 +7978,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::SpaceList",
+      "wire": "space_list",
       "output": "Output::SpaceList",
       "outputs": [
         "Output::SpaceList"
@@ -7920,6 +8033,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::VectorBatchDelete",
+      "wire": "vector_batch_delete",
       "output": "Output::VectorBatchDeleteResults",
       "outputs": [
         "Output::VectorBatchDeleteResults"
@@ -8000,6 +8114,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::VectorBatchExists",
+      "wire": "vector_batch_exists",
       "output": "Output::VectorBatchExistsResults",
       "outputs": [
         "Output::VectorBatchExistsResults"
@@ -8072,6 +8187,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::VectorBatchGet",
+      "wire": "vector_batch_get",
       "output": "Output::VectorBatchGetResults",
       "outputs": [
         "Output::VectorBatchGetResults"
@@ -8148,6 +8264,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::VectorBatchUpsert",
+      "wire": "vector_batch_upsert",
       "output": "Output::VectorBatchUpsertResults",
       "outputs": [
         "Output::VectorBatchUpsertResults"
@@ -8239,6 +8356,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::VectorCreateCollection",
+      "wire": "vector_create_collection",
       "output": "Output::VectorCollectionList",
       "outputs": [
         "Output::VectorCollectionList"
@@ -8321,6 +8439,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::VectorDeleteCollection",
+      "wire": "vector_delete_collection",
       "output": "Output::Bool",
       "outputs": [
         "Output::Bool"
@@ -8392,6 +8511,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::VectorListCollections",
+      "wire": "vector_list_collections",
       "output": "Output::VectorCollectionList",
       "outputs": [
         "Output::VectorCollectionList"
@@ -8463,6 +8583,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::VectorCollectionStats",
+      "wire": "vector_collection_stats",
       "output": "Output::VectorCollectionList",
       "outputs": [
         "Output::VectorCollectionList"
@@ -8533,6 +8654,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::VectorCount",
+      "wire": "vector_count",
       "output": "Output::Uint",
       "outputs": [
         "Output::Uint"
@@ -8603,6 +8725,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::VectorDelete",
+      "wire": "vector_delete",
       "output": "Output::VectorDeleteResult",
       "outputs": [
         "Output::VectorDeleteResult"
@@ -8675,6 +8798,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::VectorDeleteAll",
+      "wire": "vector_delete_all",
       "output": "Output::VectorBulkDeleteResult",
       "outputs": [
         "Output::VectorBulkDeleteResult"
@@ -8747,6 +8871,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::VectorDeleteByFilter",
+      "wire": "vector_delete_by_filter",
       "output": "Output::VectorBulkDeleteResult",
       "outputs": [
         "Output::VectorBulkDeleteResult"
@@ -8823,6 +8948,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::VectorExists",
+      "wire": "vector_exists",
       "output": "Output::Bool",
       "outputs": [
         "Output::Bool"
@@ -8895,6 +9021,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::VectorGet",
+      "wire": "vector_get",
       "output": "Output::VectorData",
       "outputs": [
         "Output::VectorData"
@@ -8973,6 +9100,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::VectorHistory",
+      "wire": "vector_history",
       "output": "Output::VectorVersionHistory",
       "outputs": [
         "Output::VectorVersionHistory"
@@ -9046,6 +9174,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::VectorIndexQuery",
+      "wire": "vector_index_query",
       "output": "Output::VectorIndexQuery",
       "outputs": [
         "Output::VectorIndexQuery"
@@ -9126,6 +9255,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::VectorListKeys",
+      "wire": "vector_list_keys",
       "output": "Output::VectorKeyPage",
       "outputs": [
         "Output::VectorKeyPage"
@@ -9198,6 +9328,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::VectorUpdateMetadata",
+      "wire": "vector_update_metadata",
       "output": "Output::VectorMetadataUpdateResult",
       "outputs": [
         "Output::VectorMetadataUpdateResult"
@@ -9274,6 +9405,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::VectorQuery",
+      "wire": "vector_query",
       "output": "Output::VectorMatches",
       "outputs": [
         "Output::VectorMatches"
@@ -9354,6 +9486,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::VectorSample",
+      "wire": "vector_sample",
       "output": "Output::VectorSampleResult",
       "outputs": [
         "Output::VectorSampleResult"
@@ -9426,6 +9559,7 @@
       "feature": "core",
       "access": "read",
       "input": "Command::VectorScan",
+      "wire": "vector_scan",
       "output": "Output::VectorScanResult",
       "outputs": [
         "Output::VectorScanResult"
@@ -9498,6 +9632,7 @@
       "feature": "core",
       "access": "write",
       "input": "Command::VectorUpsert",
+      "wire": "vector_upsert",
       "output": "Output::VectorWriteResult",
       "outputs": [
         "Output::VectorWriteResult"

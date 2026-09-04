@@ -167,6 +167,9 @@ pub struct ResolvedCommand {
     pub access: String,
     /// Executor command variant reference.
     pub input: String,
+    /// Executable wire name — the `type` literal a caller serializes to invoke
+    /// this command (e.g. `kv_list`), distinct from the dotted `id` and CLI path.
+    pub wire: String,
     /// Executor output variant reference.
     pub output: String,
     /// All executor output variants this command can produce on the current wire.
@@ -1341,6 +1344,7 @@ fn resolve_command(
         feature: required(layer.feature, "feature", &command.id)?,
         access: required(layer.access, "access", &command.id)?,
         input: command.input.clone(),
+        wire: variant_wire_tag(&command.input, "Command")?,
         output: command.output.clone(),
         outputs,
         wire_status,
@@ -2522,6 +2526,38 @@ mod tests {
             variant_wire_tag("Output::VectorIndexQuery", "Output").expect("output tag resolves"),
             "vector_index_query"
         );
+    }
+
+    #[test]
+    fn resolved_commands_publish_executable_wire_tags() {
+        // #2704: each resolved catalog entry carries the executable wire `type`
+        // tag derived from its Command variant, so a tool reading the catalog
+        // can construct a call. Exercises the ResolvedCommand construction.
+        let index = resolve_default_index().expect("resolve default command index");
+        let wire_of = |id: &str| -> String {
+            index
+                .commands
+                .iter()
+                .find(|command| command.id == id)
+                .unwrap_or_else(|| panic!("`{id}` resolves"))
+                .wire
+                .clone()
+        };
+        assert_eq!(wire_of("kv.list"), "kv_list");
+        assert_eq!(wire_of("json.scan"), "json_scan");
+        assert_eq!(wire_of("admin.ping"), "ping");
+        for command in &index.commands {
+            assert!(
+                !command.wire.is_empty(),
+                "{} carries a wire tag",
+                command.id
+            );
+            assert_ne!(
+                command.wire, command.id,
+                "{} wire tag is not its id",
+                command.id
+            );
+        }
     }
 
     #[test]
