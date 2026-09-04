@@ -340,7 +340,8 @@ fn public_class_for_code(legacy_class: EngineErrorClass, code: &str) -> ErrorCla
         Some("resource_exhausted") => ErrorClass::ResourceExhausted,
         Some("unavailable") => ErrorClass::Unavailable,
         Some("io") => ErrorClass::Io,
-        Some("corruption" | "data_loss") => ErrorClass::Corruption,
+        Some("corruption") => ErrorClass::Corruption,
+        Some("data_loss") => ErrorClass::DataLoss,
         Some("serialization") => ErrorClass::Serialization,
         Some("internal") => ErrorClass::Internal,
         _ => match legacy_class {
@@ -716,6 +717,47 @@ mod tests {
             }
         }
         codes
+    }
+
+    #[test]
+    fn public_class_for_code_splits_data_loss_from_corruption() {
+        // #2749: the public wire class segment IS the code's own class. A
+        // `data_loss.*` code must surface `DataLoss`, distinct from
+        // `corruption.*`, so an SDK can tell unrecoverable loss from a detected
+        // integrity violation.
+        assert_eq!(
+            public_class_for_code(EngineErrorClass::Corruption, "data_loss.engine.kv_value"),
+            ErrorClass::DataLoss,
+        );
+        assert_eq!(
+            public_class_for_code(
+                EngineErrorClass::Corruption,
+                "corruption.engine.persistence_recovery",
+            ),
+            ErrorClass::Corruption,
+        );
+        // Direction control: the prefix wins over the legacy class. Feeding a
+        // non-corruption legacy class proves each prefix arm is load-bearing —
+        // deleting it would fall through to the legacy fallback and change the
+        // result.
+        assert_eq!(
+            public_class_for_code(
+                EngineErrorClass::Internal,
+                "corruption.engine.persistence_recovery",
+            ),
+            ErrorClass::Corruption,
+        );
+        assert_eq!(
+            public_class_for_code(EngineErrorClass::Internal, "data_loss.engine.kv_value"),
+            ErrorClass::DataLoss,
+        );
+        // The `io` arm rides into the same diff hunk as the split; cover it so
+        // its deletion is caught. A `.engine.`-free string keeps it out of the
+        // source-registration scanner.
+        assert_eq!(
+            public_class_for_code(EngineErrorClass::Internal, "io.probe"),
+            ErrorClass::Io,
+        );
     }
 
     #[test]
