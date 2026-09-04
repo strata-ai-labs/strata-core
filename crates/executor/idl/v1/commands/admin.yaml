@@ -154,7 +154,7 @@ commands:
     errors+:
       - invalid_argument.executor.hub_dataset
       - invalid_argument.executor.hub_branch
-      - invalid_argument.executor.hub_feature_disabled
+      - unsupported.executor.hub_feature_disabled
       - invalid_argument.executor.hub_url
       - failed_precondition.executor.hub_clone
       - unavailable.executor.hub_transport

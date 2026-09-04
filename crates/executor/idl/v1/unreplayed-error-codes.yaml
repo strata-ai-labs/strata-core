@@ -107,7 +107,7 @@ unreplayed:
   - invalid_argument.executor.arrow_embedding_type
   - invalid_argument.executor.arrow_empty_export
   - invalid_argument.executor.arrow_event
-  - invalid_argument.executor.arrow_feature_disabled
+  - unsupported.executor.arrow_feature_disabled
   - invalid_argument.executor.arrow_format
   - invalid_argument.executor.arrow_graph
   - invalid_argument.executor.arrow_input_missing
@@ -119,7 +119,7 @@ unreplayed:
   - invalid_argument.executor.graph_analytics_budget
   - invalid_argument.executor.hub_branch
   - invalid_argument.executor.hub_dataset
-  - invalid_argument.executor.hub_feature_disabled
+  - unsupported.executor.hub_feature_disabled
   - invalid_argument.executor.hub_filter
   - invalid_argument.executor.hub_since
   - invalid_argument.executor.hub_url

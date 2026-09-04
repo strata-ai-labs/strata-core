@@ -523,8 +523,8 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="invalid_argument.executor.hub_dataset"></a>
 - `invalid_argument.executor.hub_dataset`
 
-<a id="invalid_argument.executor.hub_feature_disabled"></a>
-- `invalid_argument.executor.hub_feature_disabled`
+<a id="unsupported.executor.hub_feature_disabled"></a>
+- `unsupported.executor.hub_feature_disabled`
 
 <a id="invalid_argument.executor.hub_filter"></a>
 - `invalid_argument.executor.hub_filter`
@@ -550,8 +550,8 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="invalid_argument.executor.arrow_event"></a>
 - `invalid_argument.executor.arrow_event`
 
-<a id="invalid_argument.executor.arrow_feature_disabled"></a>
-- `invalid_argument.executor.arrow_feature_disabled`
+<a id="unsupported.executor.arrow_feature_disabled"></a>
+- `unsupported.executor.arrow_feature_disabled`
 
 <a id="invalid_argument.executor.arrow_format"></a>
 - `invalid_argument.executor.arrow_format`

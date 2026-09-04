@@ -21,7 +21,7 @@ families:
   - id: hub
     docs: /docs/hub/{op_path}
     errors:
-      - invalid_argument.executor.hub_feature_disabled
+      - unsupported.executor.hub_feature_disabled
       - invalid_argument.executor.hub_url
       - unavailable.executor.hub_transport
   - id: inference

@@ -98,8 +98,8 @@ const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
         EXECUTOR_SCHEMA,
     ),
     entry(
-        "invalid_argument.executor.hub_feature_disabled",
-        ErrorClass::InvalidArgument,
+        "unsupported.executor.hub_feature_disabled",
+        ErrorClass::Unsupported,
         RetryPolicy::AfterStateChange,
         CommitOutcomeStatus::NotStarted,
         "Hub support is not enabled in this build.",
@@ -143,8 +143,8 @@ const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
         ARROW_SCHEMA,
     ),
     entry(
-        "invalid_argument.executor.arrow_feature_disabled",
-        ErrorClass::InvalidArgument,
+        "unsupported.executor.arrow_feature_disabled",
+        ErrorClass::Unsupported,
         RetryPolicy::AfterStateChange,
         CommitOutcomeStatus::NotStarted,
         "Arrow support is not enabled in this build.",

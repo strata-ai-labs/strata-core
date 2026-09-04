@@ -28,11 +28,8 @@ fn arrow_commands_return_stable_feature_disabled_errors_without_feature() {
             graph: None,
         })
         .expect_err("feature disabled import fails");
-    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
-    assert_eq!(
-        error.code(),
-        "invalid_argument.executor.arrow_feature_disabled"
-    );
+    assert_eq!(error.class(), ExecutorErrorClass::Unavailable);
+    assert_eq!(error.code(), "unsupported.executor.arrow_feature_disabled");
 
     let error = executor
         .execute(Command::ArrowExport {
@@ -48,11 +45,8 @@ fn arrow_commands_return_stable_feature_disabled_errors_without_feature() {
             event_type: None,
         })
         .expect_err("feature disabled export fails");
-    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
-    assert_eq!(
-        error.code(),
-        "invalid_argument.executor.arrow_feature_disabled"
-    );
+    assert_eq!(error.class(), ExecutorErrorClass::Unavailable);
+    assert_eq!(error.code(), "unsupported.executor.arrow_feature_disabled");
 }
 
 #[test]
