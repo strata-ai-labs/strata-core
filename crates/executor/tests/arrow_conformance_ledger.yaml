@@ -156,7 +156,11 @@ cells:
     note: export/import error lists are cross-wired (#3058 class)
 
   # ---- silent-success (import reports OK but data not stored) -----------------
-  - id: silent.event_graph_overreport
-    scenario: event/graph import reports real rows_skipped when the engine rejects rows
-    status: gap
-    issue: 3081
+  - id: silent.event_overreport
+    scenario: event import reports real rows_skipped when the engine rejects rows, not a success overstating what landed
+    status: covered
+    test: event_import_reports_rows_the_engine_rejected_as_skipped
+  - id: silent.graph_atomic_no_partial
+    scenario: graph batch import cannot over-report — it is atomic (all-or-Err)
+    status: accepted
+    note: "#3081 graph claim falsified: graph_batch_item_result only builds BatchItem::ok, so a rejected op fails the whole GraphBatchWrite with an Err (never a partial Ok); rows_skipped=0 is always correct"
