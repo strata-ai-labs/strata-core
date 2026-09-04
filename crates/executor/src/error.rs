@@ -759,6 +759,10 @@ fn public_class_for_executor(class: ExecutorErrorClass, code: &str) -> ErrorClas
         Some("resource_exhausted") => ErrorClass::ResourceExhausted,
         Some("unavailable") => ErrorClass::Unavailable,
         Some("io") => ErrorClass::Io,
+        // Internal prefix-fold only; the wire class is registry-driven (see
+        // `public_error_code_entry(...).class`). `data_loss` and `corruption`
+        // share the internal corruption posture here, so splitting them would
+        // change nothing observable — the split lives in the registry.
         Some("corruption" | "data_loss") => ErrorClass::Corruption,
         Some("serialization") => ErrorClass::Serialization,
         Some("internal") => ErrorClass::Internal,
@@ -796,7 +800,9 @@ fn executor_class_for_status(status: &ErrorStatus) -> ExecutorErrorClass {
         | ErrorClass::AccessDenied
         | ErrorClass::FailedPrecondition => ExecutorErrorClass::Unavailable,
         ErrorClass::AmbiguousCommit => ExecutorErrorClass::AmbiguousCommit,
-        ErrorClass::Corruption => ExecutorErrorClass::Corruption,
+        // `data_loss` shares the internal corruption class: same non-retryable
+        // "stop and inspect" posture, only the public class segment differs.
+        ErrorClass::Corruption | ErrorClass::DataLoss => ExecutorErrorClass::Corruption,
         _ => ExecutorErrorClass::Internal,
     }
 }
@@ -966,5 +972,43 @@ mod tests {
         // Carries a per-process token beyond the bare namespace, so ids do not
         // collide across runs.
         assert!(prefix.len() > "err_local_".len() + 1);
+    }
+
+    #[test]
+    fn data_loss_error_surfaces_data_loss_public_class_but_corruption_compat_class() {
+        use super::{ErrorClass, ExecutorError, ExecutorErrorClass};
+
+        // #2749: a registered `data_loss.*` code surfaces its own public wire
+        // class, driven by the registry entry, not folded onto `corruption`.
+        let error = ExecutorError::new(
+            ExecutorErrorClass::Corruption,
+            "data_loss.engine.kv_value",
+            false,
+            "stored KV row is missing a value",
+        );
+        assert_eq!(error.public_class(), ErrorClass::DataLoss);
+        // The compatibility class stays `Corruption`: `data_loss` shares the
+        // non-retryable "stop and inspect" posture, and `.class()` must not
+        // regress to `Internal` now that the public class is its own variant.
+        assert_eq!(error.class(), ExecutorErrorClass::Corruption);
+        assert!(!error.retryable());
+    }
+
+    #[test]
+    fn compat_class_maps_the_arm_adjacent_to_the_data_loss_change() {
+        use super::{ErrorClass, ExecutorError, ExecutorErrorClass};
+
+        // `executor_class_for_status`'s `AmbiguousCommit` arm sits directly
+        // above the `Corruption | DataLoss` arm this fix adds, so it rides into
+        // the same diff hunk; pin it so its deletion is caught rather than
+        // folding an ambiguous-commit error onto `Internal`.
+        let error = ExecutorError::new(
+            ExecutorErrorClass::AmbiguousCommit,
+            "ambiguous_commit.engine.persistence",
+            false,
+            "commit outcome could not be proven",
+        );
+        assert_eq!(error.public_class(), ErrorClass::AmbiguousCommit);
+        assert_eq!(error.class(), ExecutorErrorClass::AmbiguousCommit);
     }
 }

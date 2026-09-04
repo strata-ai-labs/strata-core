@@ -361,6 +361,11 @@
           "type": "string"
         },
         {
+          "const": "data_loss",
+          "description": "Durable engine state that should exist cannot be reconstructed — a\nstored record failed to decode or a required artifact is gone. Distinct\nfrom `Corruption` (integrity violation detected) in that the data is\nunrecoverable, not merely inconsistent.",
+          "type": "string"
+        },
+        {
           "const": "serialization",
           "description": "Encoding, decoding, schema, format, or protocol conversion failed.",
           "type": "string"

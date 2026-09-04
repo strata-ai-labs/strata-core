@@ -96,16 +96,12 @@ const STORAGE_LEAK_TERMS: &[&str] = &[
     "storage_api",
 ];
 
-/// Expected class-field value for a code prefix. The `data_loss` fold onto
-/// `corruption` is a pinned divergence (#2749): the `ErrorClass` enum has no
-/// `DataLoss` variant, so those codes surface `class=corruption`. When #2749
-/// lands, `pin_2749_data_loss_codes_surface_corruption_class` breaks and this
-/// arm must be deleted.
+/// Expected class-field value for a code prefix. The contract's rule is that a
+/// code's class segment IS its class, so every prefix maps to itself. (#2749
+/// removed the last exception: `data_loss` codes once folded onto `corruption`
+/// because `ErrorClass` had no `DataLoss` variant; it now does.)
 fn expected_class_for_prefix(prefix: &str) -> &str {
-    match prefix {
-        "data_loss" => "corruption",
-        other => other,
-    }
+    prefix
 }
 
 const RETRYABLE_POLICIES: &[&str] = &["after_state_change", "same_request", "idempotent_only"];
@@ -637,9 +633,12 @@ mod fault_seam {
     }
 
     /// A stored row whose value went missing is unrecoverable loss on the read
-    /// path — non-retryable, and pinned as #2749's divergent class fold.
+    /// path — non-retryable, and (as of #2749) surfaces its own `data_loss`
+    /// class on the wire rather than folding onto `corruption`. Promoted from
+    /// `pin_2749_*` when the fix landed: the wire `class` segment now equals the
+    /// code's class segment for every code, `data_loss` included.
     #[test]
-    fn pin_2749_data_loss_codes_surface_corruption_class() {
+    fn data_loss_codes_surface_their_own_data_loss_class() {
         let mut db = cache_database();
         db.inject_scan_corruption_for_test(RowCorruption::DropValue);
         let mut executor = Executor::from_database(db);
@@ -658,19 +657,17 @@ mod fault_seam {
             false,
             std::path::Path::new(""),
         );
-        // The pin (shrink-only): today the class field folds to `corruption`
-        // because `ErrorClass` has no `DataLoss` variant. When #2749 lands
-        // this assertion breaks — delete it AND the `data_loss` arm in
-        // `expected_class_for_prefix`, asserting `class == "data_loss"`.
+        // #2749 contract: the class field is the code's own class, not a fold
+        // onto `corruption`. An SDK switching on `class` can now distinguish
+        // unrecoverable loss from detected-inconsistency.
         assert_eq!(
             field(&status, "class"),
-            "corruption",
-            "#2749 resolved: data_loss codes now surface their own class — remove this pin \
-             and the expected_class_for_prefix fold"
+            "data_loss",
+            "data_loss.* codes must surface class=data_loss, not corruption"
         );
         assert!(
             coherence_violations(&status).is_empty(),
-            "the pinned fold is the only tolerated divergence"
+            "the promoted contract must remain internally coherent"
         );
     }
 }

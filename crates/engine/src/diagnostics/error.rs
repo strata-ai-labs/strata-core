@@ -38,6 +38,11 @@ pub enum ErrorClass {
     Io,
     /// Durable state or provider output violates integrity expectations.
     Corruption,
+    /// Durable engine state that should exist cannot be reconstructed — a
+    /// stored record failed to decode or a required artifact is gone. Distinct
+    /// from `Corruption` (integrity violation detected) in that the data is
+    /// unrecoverable, not merely inconsistent.
+    DataLoss,
     /// Encoding, decoding, schema, format, or protocol conversion failed.
     Serialization,
     /// Strata hit an invariant failure.
@@ -507,7 +512,8 @@ fn public_class_for_legacy(class: EngineErrorClass, code: &str) -> ErrorClass {
         Some("resource_exhausted") => ErrorClass::ResourceExhausted,
         Some("unavailable") => ErrorClass::Unavailable,
         Some("io") => ErrorClass::Io,
-        Some("corruption" | "data_loss") => ErrorClass::Corruption,
+        Some("corruption") => ErrorClass::Corruption,
+        Some("data_loss") => ErrorClass::DataLoss,
         Some("serialization") => ErrorClass::Serialization,
         Some("internal") => ErrorClass::Internal,
         _ => match class {
@@ -572,5 +578,47 @@ const fn default_suggested_fix(class: EngineErrorClass) -> &'static str {
         EngineErrorClass::Internal => {
             "Capture the reference id and report this as a Strata bug."
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{public_class_for_legacy, EngineErrorClass, ErrorClass};
+
+    #[test]
+    fn public_class_for_legacy_splits_data_loss_from_corruption() {
+        // #2749: EngineErrorStatus surfaces the code's own class. `data_loss.*`
+        // must resolve to `DataLoss`, distinct from `corruption.*`.
+        assert_eq!(
+            public_class_for_legacy(EngineErrorClass::Corruption, "data_loss.engine.kv_value"),
+            ErrorClass::DataLoss,
+        );
+        assert_eq!(
+            public_class_for_legacy(
+                EngineErrorClass::Corruption,
+                "corruption.engine.persistence_recovery",
+            ),
+            ErrorClass::Corruption,
+        );
+        // Direction control: the prefix wins over the legacy class, so each
+        // prefix arm is load-bearing rather than shadowed by the fallback.
+        assert_eq!(
+            public_class_for_legacy(
+                EngineErrorClass::Internal,
+                "corruption.engine.persistence_recovery",
+            ),
+            ErrorClass::Corruption,
+        );
+        assert_eq!(
+            public_class_for_legacy(EngineErrorClass::Internal, "data_loss.engine.kv_value"),
+            ErrorClass::DataLoss,
+        );
+        // The `io` arm rides into the same diff hunk as the split; cover it so
+        // its deletion is caught. A `.engine.`-free string keeps it out of the
+        // source-registration scanner.
+        assert_eq!(
+            public_class_for_legacy(EngineErrorClass::Internal, "io.probe"),
+            ErrorClass::Io,
+        );
     }
 }
