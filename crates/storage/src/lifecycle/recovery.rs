@@ -318,6 +318,17 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
                     None,
                 ));
             }
+            Err(SnapshotServiceError::Missing { .. }) => {
+                // #2754: reached only when the manifest attests a snapshot (id +
+                // watermark present) yet its objects are gone. Under strict
+                // recovery on a quiescent single-writer directory that is
+                // permanent loss, not a transient outage — refuse as
+                // non-retryable recovery corruption instead of advising an
+                // endless retry (mirrors the missing-manifest arm, #3015).
+                return Err(LifecycleError::recovery_corruption(
+                    "manifest attests a snapshot but its objects are missing",
+                ));
+            }
             Err(source) => {
                 return Err(snapshot_error(source));
             }

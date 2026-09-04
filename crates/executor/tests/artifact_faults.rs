@@ -360,38 +360,14 @@ fn emptying_the_manifest_directory_refuses_open_as_permanent_corruption() {
 }
 
 // ---------------------------------------------------------------------------
-// The #2754 pins: absence misclassified as transient (shrink-only)
+// #2754: durable-artifact absence refuses open as permanent corruption
 // ---------------------------------------------------------------------------
-
-/// Asserts today's #2754 behavior exactly: the open refuses (loud — good)
-/// but classifies permanent artifact loss as a retryable outage, so a caller
-/// obeying the advice retries forever. When #2754 lands these refusals
-/// become non-retryable corruption: this pin breaks — delete it and move the
-/// condition up to `assert_permanent_refusal`.
-fn assert_pinned_transient_misclassification(root: &Path, label: &str) {
-    let error = Executor::open_durable_local(root)
-        .err()
-        .unwrap_or_else(|| panic!("#2754 pin ({label}): the open refuses today"));
-    let status = serde_json::to_value(error.status()).expect("serialize error status");
-    assert_eq!(
-        status["code"].as_str(),
-        Some("unavailable.engine.persistence"),
-        "#2754 pin ({label}): envelope changed — if now corruption/non-retryable, \
-         the fix landed: delete this pin and promote to assert_permanent_refusal: {status}"
-    );
-    assert_eq!(
-        status["retryable"].as_bool(),
-        Some(true),
-        "#2754 pin ({label}): the retry-forever advice is the defect being pinned: {status}"
-    );
-}
 
 /// Promoted from `pin_2754_missing_current_manifest_reports_transient_unavailable`
 /// by the #3015 fix: a store with durable objects but no database manifest
 /// has LOST it (the manifest is the first durable publish of a new store),
 /// so the open now refuses as non-retryable recovery corruption instead of
-/// advising an endless retry. The missing-SNAPSHOT half of #2754 stays
-/// pinned below.
+/// advising an endless retry. The missing-SNAPSHOT half is fixed below.
 #[test]
 fn missing_current_manifest_refuses_open_as_permanent_corruption() {
     let mut stage = Stage::new();
@@ -401,8 +377,13 @@ fn missing_current_manifest_refuses_open_as_permanent_corruption() {
     assert_permanent_refusal(&copy, "missing current manifest");
 }
 
+/// #2754 (promoted from `pin_2754_missing_snapshot_objects_report_transient_unavailable`):
+/// a store whose manifest attests a snapshot but whose snapshot objects are
+/// gone has lost permanent state, so strict open refuses as non-retryable
+/// recovery corruption rather than advising an endless retry — matching the
+/// sibling missing-current-manifest case above.
 #[test]
-fn pin_2754_missing_snapshot_objects_report_transient_unavailable() {
+fn missing_snapshot_objects_refuse_open_as_permanent_corruption() {
     let mut stage = Stage::new();
 
     let contents_gone = stage.copy();
@@ -412,9 +393,9 @@ fn pin_2754_missing_snapshot_objects_report_transient_unavailable() {
     {
         std::fs::remove_file(entry.path()).expect("delete snapshot object");
     }
-    assert_pinned_transient_misclassification(&contents_gone, "snapshot objects deleted");
+    assert_permanent_refusal(&contents_gone, "snapshot objects deleted");
 
     let dir_gone = stage.copy();
     std::fs::remove_dir_all(dir_gone.join("snapshots")).expect("remove snapshots dir");
-    assert_pinned_transient_misclassification(&dir_gone, "snapshots directory missing");
+    assert_permanent_refusal(&dir_gone, "snapshots directory missing");
 }

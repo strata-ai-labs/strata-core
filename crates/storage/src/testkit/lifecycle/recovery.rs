@@ -316,9 +316,18 @@ fn check_strict_missing_snapshot(
     let error = LifecycleRecoveryRuntime::new(&mut shell)
         .recover(&request)
         .expect_err("strict missing snapshot rejects");
+    // #2754: a manifest-attested snapshot whose objects are gone is permanent
+    // loss under strict recovery — non-retryable recovery corruption, not the
+    // transient lower-layer outage that advised an endless retry.
     ensure(
-        matches!(error, LifecycleError::LowerLayer { .. }),
-        "strict missing snapshot was not a lower-layer failure",
+        matches!(
+            error,
+            LifecycleError::RecoveryCorruption {
+                reason: "manifest attests a snapshot but its objects are missing",
+                ..
+            }
+        ),
+        "strict missing snapshot was not a recovery corruption",
     )?;
     outcome.strict_failure_cases += 1;
     Ok(())

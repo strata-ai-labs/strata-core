@@ -1407,15 +1407,18 @@ fn recovery_rejects_missing_snapshot_in_strict_mode() {
         .recover(&request)
         .expect_err("strict missing snapshot rejects");
 
-    assert!(matches!(
+    // #2754: a manifest that attests a snapshot whose objects are gone is
+    // permanent loss under strict recovery — a non-retryable recovery
+    // corruption, not the transient lower-layer outage that advised an endless
+    // retry. The lossy direction control
+    // (`bootstrap_preserves_degraded_recovery_health_while_replaying_tail`)
+    // still degrades instead of refusing.
+    assert_eq!(
         error,
-        LifecycleError::LowerLayer {
-            layer: LifecycleLowerLayer::Service,
-            reason: "manifest-listed snapshot is missing",
-            ..
-        }
-    ));
-    assert!(error.source().is_some());
+        LifecycleError::recovery_corruption(
+            "manifest attests a snapshot but its objects are missing"
+        )
+    );
     assert!(shell.branch_state().is_empty());
 }
 
