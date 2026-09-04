@@ -4,6 +4,63 @@ All notable changes to StrataDB are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.0] - 2026-09-04
+
+A hardening release on the V1 line, led by a self-update command and a batch of
+error-contract and `event_range` corrections surfaced by the V1 test-coverage
+audit. Several changes are **wire-visible**: a small set of error codes were
+renamed or reclassified, and the `event_range` family's window semantics were
+corrected. Callers that switch on the affected error codes/classes, or that
+relied on the previous `event_range` behavior, should review **Changed** below.
+The on-disk format is unchanged.
+
+### Added
+
+- **`strata update`.** Channel-aware in-place self-update: fetches the latest
+  release for your channel, verifies the download, and swaps the binary. (#3038)
+
+### Changed
+
+- **`event_range` reverse now returns the descending window (the tail).** A
+  reverse range anchored at the log start previously returned only the first
+  event; it now walks the same window as the forward range, newest-first, so a
+  reverse read returns the newest N events. (#2694)
+- **`event_range_by_time` end is now exclusive.** The time window is half-open
+  `[start_ts, end_ts)`, matching the sequence-addressed `event_range`; an event
+  exactly at `end_ts` is no longer included. (#2695)
+- **`data_loss.*` errors now report `class = "data_loss"`.** A new `data_loss`
+  error class distinguishes unrecoverable durable-state loss from a detected
+  integrity violation (`corruption`); the `data_loss.engine.*` codes previously
+  surfaced `class = "corruption"`. (#2749)
+- **Feature-disabled errors are now `unsupported.executor.*`.** The hub/arrow
+  "feature not enabled in this build" codes moved from
+  `invalid_argument.executor.{hub,arrow}_feature_disabled` to
+  `unsupported.executor.{hub,arrow}_feature_disabled`, keeping their
+  retry-after-rebuild advice. (#2750)
+- **Missing durable artifacts refuse open as permanent corruption.** Opening a
+  store whose current manifest or snapshot objects are gone now fails with a
+  non-retryable `corruption.engine.persistence_recovery` instead of a retryable
+  `unavailable`; the loss is permanent, so retry-forever advice was wrong.
+  (#2754)
+- **The command catalog publishes executable wire names.** Each
+  `command-index.json` entry now carries a `wire` field with the exact `type`
+  literal to invoke the command, so a tool reading the offline catalog can
+  construct a call. (#2704)
+
+### Fixed
+
+- **Vendored llama.cpp updated** to upstream b10766 (from b5440), tracking the
+  current stable local-inference FFI surface. (#3043)
+- **Branch scan read failures preserve their underlying cause** in the error
+  chain instead of masking it, sharpening recovery diagnostics. (#3047)
+
+### Documentation
+
+- **Graph batch atomicity is documented.** `graph.batch_write` applies all
+  operations in one commit or none; unlike the itemwise kv/json/event batch
+  writes, a graph batch rejects the whole batch on an invalid item to preserve
+  referential integrity (an edge references its endpoint nodes). (#2701)
+
 ## [1.1.1] - 2026-09-02
 
 A maintenance and hardening release on the V1 line. Modest additive polish —

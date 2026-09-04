@@ -1,7 +1,7 @@
 ---
 title: "Create empty branch"
 description: "Create a new empty root branch."
-source: strata-core@1.1.1
+source: strata-core@1.2.0
 section: branch
 ---
 
