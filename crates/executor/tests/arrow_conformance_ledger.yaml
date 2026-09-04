@@ -86,11 +86,15 @@ cells:
   - id: value.temporal_decimal
     scenario: Decimal/Timestamp/Date/Time/Duration/Dictionary -> correct JSON, not Display string
     status: gap
-    issue: 3075
-  - id: value.nested_map_largelist_fixedsizelist
-    scenario: Map / LargeList / FixedSizeList value -> real JSON, not Display string
+    issue: 3091
+  - id: value.largelist_fixedsizelist
+    scenario: LargeList / FixedSizeList value -> real JSON array, not the Display string
+    status: covered
+    test: cell_to_json_reconstructs_large_list
+  - id: value.nested_map
+    scenario: Map value -> real JSON object, not the Display string
     status: gap
-    issue: 3075
+    issue: 3091
 
   # ---- edge cases -------------------------------------------------------------
   - id: edge.encoding_nonbase64

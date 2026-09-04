@@ -552,6 +552,34 @@ fn cell_to_json(column: &dyn Array, row: usize) -> ExecutorResult<Value> {
             }
             Ok(Value::Array(items))
         }
+        DataType::LargeList(_) => {
+            // #3075: a Parquet LargeList value column must reconstruct a JSON
+            // array, not fall to the lossy Arrow `Display` string.
+            let array = column
+                .as_any()
+                .downcast_ref::<array::LargeListArray>()
+                .unwrap();
+            let values = array.value(row);
+            let mut items = Vec::with_capacity(values.len());
+            for index in 0..values.len() {
+                items.push(cell_to_json(values.as_ref(), index)?);
+            }
+            Ok(Value::Array(items))
+        }
+        DataType::FixedSizeList(_, _) => {
+            // #3075: a Parquet FixedSizeList value column must reconstruct a JSON
+            // array, not fall to the lossy Arrow `Display` string.
+            let array = column
+                .as_any()
+                .downcast_ref::<array::FixedSizeListArray>()
+                .unwrap();
+            let values = array.value(row);
+            let mut items = Vec::with_capacity(values.len());
+            for index in 0..values.len() {
+                items.push(cell_to_json(values.as_ref(), index)?);
+            }
+            Ok(Value::Array(items))
+        }
         _ => Ok(Value::String(cell_to_string(column, row)?)),
     }
 }
@@ -642,7 +670,7 @@ mod tests {
 
     use arrow::array::{
         BinaryArray, BooleanArray, FixedSizeListBuilder, Float32Array, Float32Builder,
-        Float64Array, Float64Builder, Int16Array, Int32Array, Int64Array, Int8Array,
+        Float64Array, Float64Builder, Int16Array, Int32Array, Int64Array, Int64Builder, Int8Array,
         LargeBinaryArray, LargeStringArray, ListBuilder, NullArray, StringArray, UInt16Array,
         UInt32Array, UInt64Array, UInt8Array,
     };
@@ -1147,6 +1175,35 @@ mod tests {
         ])]);
         let value = cell_to_json(&list, 0).expect("list converts");
         assert_eq!(value, json!([1, null, 3]));
+        assert!(value.is_array(), "reconstructed value must be a JSON array");
+    }
+
+    #[test]
+    fn cell_to_json_reconstructs_large_list() {
+        // #3075: a LargeList value column (reachable via Parquet) must reconstruct
+        // a real JSON array with nulls preserved, not the Arrow Display string.
+        let list = array::LargeListArray::from_iter_primitive::<Int64Type, _, _>(vec![Some(vec![
+            Some(1_i64),
+            None,
+            Some(3_i64),
+        ])]);
+        let value = cell_to_json(&list, 0).expect("large list converts");
+        assert_eq!(value, json!([1, null, 3]));
+        assert!(value.is_array(), "reconstructed value must be a JSON array");
+    }
+
+    #[test]
+    fn cell_to_json_reconstructs_fixed_size_list() {
+        // #3075: a FixedSizeList value column (reachable via Parquet) must
+        // reconstruct a real JSON array, not the Arrow Display string.
+        let mut builder = FixedSizeListBuilder::new(Int64Builder::new(), 3);
+        builder.values().append_value(1);
+        builder.values().append_value(2);
+        builder.values().append_value(3);
+        builder.append(true);
+        let list = builder.finish();
+        let value = cell_to_json(&list, 0).expect("fixed-size list converts");
+        assert_eq!(value, json!([1, 2, 3]));
         assert!(value.is_array(), "reconstructed value must be a JSON array");
     }
 
