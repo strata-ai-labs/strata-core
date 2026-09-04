@@ -53,13 +53,15 @@ fn empty_batches_succeed_across_families() {
     );
 }
 
-/// PIN #2701: kv, json, and event report one invalid item ITEMWISE (batch
-/// succeeds, valid items commit, the bad item carries a typed error) — but
-/// graph aborts the whole batch. The itemwise legs are the converged
-/// contract; the graph leg is the ledgered divergence.
+/// #2701 contract (promoted from `pin_2701_graph_aborts_where_its_siblings_report_itemwise`):
+/// kv, json, and event report one invalid item ITEMWISE (batch succeeds, valid
+/// items commit, the bad item carries a typed error), while graph is whole-batch
+/// atomic. Both are intentional: independent items commit independently, but a
+/// graph batch mixes node and edge upserts where an edge references its endpoint
+/// nodes, so applying only the valid items could leave a dangling edge. Graph
+/// rejects the whole batch to keep references consistent (see `graph.batch_write`).
 #[test]
-fn pin_2701_graph_aborts_where_its_siblings_report_itemwise() {
-    support::pinned("batch_invalid_item_channel", 2701);
+fn graph_batch_is_atomic_while_siblings_are_itemwise() {
     let mut executor = support::executor();
 
     // kv: itemwise — the batch succeeds and the valid entry is readable.
@@ -128,7 +130,9 @@ fn pin_2701_graph_aborts_where_its_siblings_report_itemwise() {
     );
     assert_eq!(
         graph_code, "invalid_argument.engine.graph_node_id",
-        "today: graph aborts the whole batch with the item's error at the top          level; if this fails, #2701's graph leg converged — delete the ledger          entry and extend the itemwise contract to graph"
+        "graph is whole-batch atomic by design: an invalid item rejects the \
+         whole batch with the item's error at the top level (referential \
+         integrity), unlike the itemwise siblings above"
     );
     let node = support::run(
         &mut executor,
@@ -196,8 +200,9 @@ fn pin_2701_no_engine_side_item_cap() {
 /// Ledger guard (entry ⇒ pin): every `batch*` ledger entry is pinned here.
 #[test]
 fn every_batch_ledger_entry_is_pinned_here() {
-    support::assert_ledger_entries_all_pinned(
-        "batch",
-        &[("batch_invalid_item_channel", 2701), ("batch_limits", 2701)],
-    );
+    // batch_invalid_item_channel (#2701) is resolved: kv/json/event converged
+    // itemwise and graph's whole-batch atomicity is the intended contract
+    // (referential integrity), documented in graph.batch_write and asserted by
+    // `graph_batch_is_atomic_while_siblings_are_itemwise`.
+    support::assert_ledger_entries_all_pinned("batch", &[("batch_limits", 2701)]);
 }
