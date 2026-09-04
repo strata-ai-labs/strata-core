@@ -16,10 +16,9 @@
 cells:
   # ---- round-trip: target × format (export -> file -> import identity) --------
   - id: roundtrip.kv.csv
-    scenario: KV export -> CSV -> import preserves bytes
-    status: gap
-    issue: 3077
-    note: numeric-looking keys/values retyped by CSV re-inference (00501 -> 501)
+    scenario: KV export -> CSV -> import preserves bytes (leading-zero keys/values)
+    status: covered
+    test: csv_import_preserves_numeric_looking_string_keys_and_values
   - id: roundtrip.kv.jsonl
     scenario: KV export -> JSONL -> import preserves bytes
     status: covered
@@ -59,11 +58,14 @@ cells:
     scenario: graph export -> import restores nodes and edges
     status: covered
     test: graph_export_import_round_trip_restores_nodes_and_edges
-  - id: roundtrip.graph_event.csv_numeric_ids
-    scenario: graph/event CSV round-trip with numeric-looking string ids
-    status: gap
-    issue: 3077
-    note: CSV re-inference retypes ids to Int64; strict StringArray downcast fails
+  - id: roundtrip.graph.csv_numeric_ids
+    scenario: graph CSV round-trip with numeric-looking string node/edge ids
+    status: covered
+    test: csv_graph_round_trip_preserves_numeric_looking_node_and_edge_ids
+  - id: roundtrip.event.csv_numeric_type
+    scenario: event CSV round-trip with a numeric-looking event_type
+    status: covered
+    test: csv_event_round_trip_preserves_numeric_looking_event_types
 
   # ---- value fidelity: Arrow type -> correct JSON/value -----------------------
   - id: value.scalars

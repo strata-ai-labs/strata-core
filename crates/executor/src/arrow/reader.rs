@@ -5,13 +5,63 @@ use std::io::{BufReader, Seek};
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow::datatypes::Schema;
+use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 
 use crate::error::ExecutorResult;
 use crate::types::ArrowFileFormat;
 
 use super::{invalid_input, io_error};
+
+/// Column names Strata's own Arrow exporters declare as `Utf8`. CSV carries no
+/// embedded schema, so `infer_schema_from_files` would re-type a numeric-looking
+/// text column — a `"00501"` key becomes `Int64 501` and its leading zeros are
+/// lost on round-trip (#3077). We force these columns back to `Utf8`, mirroring
+/// how `COPY`/`.import` parse against the destination's known column types,
+/// while leaving genuinely-numeric columns (graph `weight`, the discarded
+/// `version`/`timestamp`/`sequence`/`vector_revision`) to inference. Parquet and
+/// JSONL carry real schemas, so only the CSV path needs this.
+const STRATA_TEXT_COLUMNS: &[&str] = &[
+    "key",
+    "key_encoding",
+    "value",
+    "value_encoding",
+    "document",
+    "event_type",
+    "payload",
+    "previous_hash",
+    "hash",
+    "metadata",
+    "graph",
+    "node_id",
+    "properties",
+    "binding",
+    "src",
+    "edge_type",
+    "dst",
+];
+
+/// Re-type every column CSV inference may have numified back to `Utf8` when its
+/// name is one Strata exports as text. Pure over the schema so it can be
+/// truth-tabled directly.
+fn force_text_columns(schema: &Schema) -> Schema {
+    let fields = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            if STRATA_TEXT_COLUMNS.contains(&field.name().as_str()) {
+                Arc::new(Field::new(
+                    field.name(),
+                    DataType::Utf8,
+                    field.is_nullable(),
+                ))
+            } else {
+                field.clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    Schema::new(fields)
+}
 
 pub(crate) fn read_file(
     path: &Path,
@@ -53,7 +103,7 @@ fn read_csv(path: &Path) -> ExecutorResult<(Schema, Vec<RecordBatch>)> {
         true,
     )
     .map_err(|error| io_error(format!("failed to infer CSV schema: {error}")))?;
-    let schema = Arc::new(schema);
+    let schema = Arc::new(force_text_columns(&schema));
     let file = open_file(path)?;
     let reader = arrow::csv::ReaderBuilder::new(schema.clone())
         .with_header(true)
@@ -141,6 +191,39 @@ mod tests {
             read_file(&malformed, ArrowFileFormat::Parquet).expect_err("malformed file fails");
         assert_eq!(error.class(), ExecutorErrorClass::Unavailable);
         assert_eq!(error.code(), "unavailable.executor.arrow_io");
+    }
+
+    #[test]
+    fn force_text_columns_utf8s_known_string_columns_and_leaves_numerics() {
+        // A CSV whose text columns inference numified, plus genuinely-numeric
+        // columns that must stay as inferred.
+        let inferred = Schema::new(vec![
+            Field::new("key", DataType::Int64, false),
+            Field::new("value", DataType::Int64, false),
+            Field::new("node_id", DataType::Int64, false),
+            Field::new("weight", DataType::Float64, false),
+            Field::new("version", DataType::UInt64, true),
+        ]);
+
+        let forced = force_text_columns(&inferred);
+        let by_name = |name: &str| {
+            forced
+                .field_with_name(name)
+                .expect("field present")
+                .data_type()
+                .clone()
+        };
+
+        // Known text columns are forced back to Utf8...
+        assert_eq!(by_name("key"), DataType::Utf8);
+        assert_eq!(by_name("value"), DataType::Utf8);
+        assert_eq!(by_name("node_id"), DataType::Utf8);
+        // ...while genuinely-numeric columns are left exactly as inferred.
+        assert_eq!(by_name("weight"), DataType::Float64);
+        assert_eq!(by_name("version"), DataType::UInt64);
+        // Nullability is preserved when a column is re-typed.
+        assert!(forced.field_with_name("version").unwrap().is_nullable());
+        assert!(!forced.field_with_name("key").unwrap().is_nullable());
     }
 
     fn sample_batch() -> RecordBatch {
