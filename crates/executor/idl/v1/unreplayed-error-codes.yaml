@@ -30,7 +30,10 @@
 # *.executor.arrow* debt group — arrow.import's fixture is replay_skip'd (it reads
 # a real file the scratch executor lacks), so pinning this envelope needs the same
 # file-reading arrow replay harness the sibling arrow codes are waiting on.
-budget: 111
+# 111 -> 112 (#3079): invalid_argument.executor.arrow_encoding joins the same
+# *.executor.arrow* group for the same replay-skip reason (unsupported key/value
+# cell encoding on import).
+budget: 112
 unreplayed:
   - already_exists.engine.json_index
   - failed_precondition.engine.graph_negative_weight
@@ -111,6 +114,7 @@ unreplayed:
   - invalid_argument.executor.arrow_collection
   - invalid_argument.executor.arrow_embedding_type
   - invalid_argument.executor.arrow_empty_export
+  - invalid_argument.executor.arrow_encoding
   - invalid_argument.executor.arrow_event
   - unsupported.executor.arrow_feature_disabled
   - invalid_argument.executor.arrow_format

@@ -63,6 +63,7 @@ Plus the optional scope: `branch` and `space` (default to the session branch and
 - [`invalid_argument.executor.arrow_value_column`](https://stratadb.org/e/invalid_argument.executor.arrow_value_column)
 - [`invalid_argument.executor.arrow_collection`](https://stratadb.org/e/invalid_argument.executor.arrow_collection)
 - [`invalid_argument.executor.arrow_embedding_type`](https://stratadb.org/e/invalid_argument.executor.arrow_embedding_type)
+- [`invalid_argument.executor.arrow_encoding`](https://stratadb.org/e/invalid_argument.executor.arrow_encoding)
 - [`invalid_argument.executor.arrow_vector_dimension`](https://stratadb.org/e/invalid_argument.executor.arrow_vector_dimension)
 - [`invalid_argument.executor.arrow_json_key`](https://stratadb.org/e/invalid_argument.executor.arrow_json_key)
 - [`invalid_argument.executor.arrow_non_finite_float`](https://stratadb.org/e/invalid_argument.executor.arrow_non_finite_float)

@@ -143,6 +143,15 @@ const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
         ARROW_SCHEMA,
     ),
     entry(
+        "invalid_argument.executor.arrow_encoding",
+        ErrorClass::InvalidArgument,
+        RetryPolicy::Never,
+        CommitOutcomeStatus::NotStarted,
+        "The Arrow key/value cell encoding is not supported.",
+        "Declare a 'utf8' or 'base64' key_encoding/value_encoding, or omit the encoding column.",
+        ARROW_SCHEMA,
+    ),
+    entry(
         "unsupported.executor.arrow_feature_disabled",
         ErrorClass::Unsupported,
         RetryPolicy::AfterStateChange,

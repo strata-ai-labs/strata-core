@@ -95,9 +95,9 @@ cells:
 
   # ---- edge cases -------------------------------------------------------------
   - id: edge.encoding_nonbase64
-    scenario: value_encoding/key_encoding other than base64 (hex, base64url) honored
-    status: gap
-    issue: 3079
+    scenario: an unsupported key_encoding/value_encoding (hex, base64url, ...) is rejected, not silently mis-decoded as raw bytes
+    status: covered
+    test: kv_import_rejects_an_unsupported_value_encoding
   - id: edge.late_field_inference
     scenario: a JSONL field first appearing after row 100 is not dropped from the schema
     status: covered

@@ -369,16 +369,29 @@ fn cell_to_bytes(
     if column.is_null(row) {
         return Ok(Vec::new());
     }
-    if matches!(encoding, Some("base64")) {
-        let encoded = cell_to_string(column, row)?;
-        return base64::engine::general_purpose::STANDARD
-            .decode(encoded.as_bytes())
-            .map_err(|error| {
-                invalid_input(
-                    "invalid_argument.executor.arrow_base64",
-                    format!("failed to decode base64 Arrow cell: {error}"),
-                )
-            });
+    match encoding {
+        Some("base64") => {
+            let encoded = cell_to_string(column, row)?;
+            return base64::engine::general_purpose::STANDARD
+                .decode(encoded.as_bytes())
+                .map_err(|error| {
+                    invalid_input(
+                        "invalid_argument.executor.arrow_base64",
+                        format!("failed to decode base64 Arrow cell: {error}"),
+                    )
+                });
+        }
+        // `utf8` (what the exporter emits for text) and an absent encoding column
+        // fall through to the raw column bytes below.
+        None | Some("utf8") => {}
+        // Any other declared encoding was silently mis-decoded as raw ASCII on the
+        // very column meant to prevent that (#3079); reject it instead.
+        Some(other) => {
+            return Err(invalid_input(
+                "invalid_argument.executor.arrow_encoding",
+                format!("unsupported cell encoding '{other}'; expected 'utf8' or 'base64'"),
+            ));
+        }
     }
     match column.data_type() {
         DataType::Binary => {
@@ -1135,6 +1148,33 @@ mod tests {
         let value = cell_to_json(&list, 0).expect("list converts");
         assert_eq!(value, json!([1, null, 3]));
         assert!(value.is_array(), "reconstructed value must be a JSON array");
+    }
+
+    #[test]
+    fn cell_to_bytes_rejects_unknown_encoding_and_honors_utf8_and_base64() {
+        // #3079: a declared encoding cell_to_bytes doesn't understand must fail
+        // loudly, not silently fall through to the raw ASCII bytes.
+        let cell = StringArray::from(vec!["deadbeef"]);
+        for unknown in ["hex", "base64url", "utf-16"] {
+            let err = cell_to_bytes(&cell, 0, Some(unknown))
+                .expect_err("unknown encoding must be rejected");
+            assert_eq!(err.class(), ExecutorErrorClass::InvalidInput);
+            assert_eq!(err.code(), "invalid_argument.executor.arrow_encoding");
+        }
+        // The encodings Strata's exporter emits (plus no-encoding) still decode.
+        assert_eq!(
+            cell_to_bytes(&cell, 0, Some("utf8")).expect("utf8 ok"),
+            b"deadbeef".to_vec()
+        );
+        assert_eq!(
+            cell_to_bytes(&cell, 0, None).expect("no encoding ok"),
+            b"deadbeef".to_vec()
+        );
+        let b64 = StringArray::from(vec!["aGk="]);
+        assert_eq!(
+            cell_to_bytes(&b64, 0, Some("base64")).expect("base64 ok"),
+            b"hi".to_vec()
+        );
     }
 
     #[test]
