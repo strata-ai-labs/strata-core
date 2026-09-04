@@ -122,6 +122,241 @@ fn csv_kv_import_and_jsonl_export_round_trip_bytes() {
     assert!(lines.contains("\"value_encoding\":\"base64\""));
 }
 
+/// #3077: CSV carries no schema, so `read_csv` used to re-infer column types and
+/// retype a numeric-looking text column — a `"00501"` key came back `501`,
+/// silently corrupting the stored bytes on round-trip. The reader must honor the
+/// text columns Strata's own exporters declare (`key`/`value`/...).
+#[test]
+fn csv_import_preserves_numeric_looking_string_keys_and_values() {
+    let dir = TempDir::new().expect("temp dir");
+    let input_path = dir.path().join("kv.csv");
+    // Every key/value looks numeric, so blind inference would pick Int64 and
+    // drop the leading zeros.
+    fs::write(
+        &input_path,
+        "key,key_encoding,value,value_encoding\n00501,utf8,00042,utf8\n00777,utf8,00088,utf8\n",
+    )
+    .expect("write csv");
+
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let output = executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: input_path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Csv),
+            target: ArrowImportTarget::Kv,
+            key_column: None,
+            value_column: None,
+            collection: None,
+            graph: None,
+        })
+        .expect("kv import succeeds");
+    let Output::ArrowImportResult(result) = output else {
+        panic!("unexpected import output");
+    };
+    assert_import_result(&result, ArrowImportTarget::Kv, 2, 0, 1);
+
+    // Leading zeros survive: the key is the exact bytes "00501", not "501".
+    assert_eq!(
+        kv_get(&mut executor, Bytes::from("00501")),
+        Some(b"00042".to_vec())
+    );
+    assert_eq!(
+        kv_get(&mut executor, Bytes::from("00777")),
+        Some(b"00088".to_vec())
+    );
+    // The re-inferred (corrupted) key must not be what got stored.
+    assert_eq!(kv_get(&mut executor, Bytes::from("501")), None);
+}
+
+/// #3077 (graph/event arm): numeric-looking node/edge ids exported as Utf8 were
+/// re-inferred as `Int64` on CSV import, so the strict `StringArray` downcast
+/// failed the whole import. Honoring the text columns lets a graph with
+/// leading-zero ids round-trip through CSV intact.
+#[test]
+fn csv_graph_round_trip_preserves_numeric_looking_node_and_edge_ids() {
+    let dir = TempDir::new().expect("temp dir");
+    let export_path = dir.path().join("g.csv");
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    executor
+        .execute(Command::GraphCreate {
+            branch: None,
+            space: None,
+            graph: "g".to_owned(),
+        })
+        .expect("graph create succeeds");
+    for node_id in ["00501", "00777"] {
+        executor
+            .execute(Command::GraphAddNode {
+                object_type: None,
+                branch: None,
+                space: None,
+                graph: "g".to_owned(),
+                node_id: node_id.to_owned(),
+                properties: Some(json!({"kind": "person"})),
+                binding: None,
+            })
+            .expect("node add succeeds");
+    }
+    executor
+        .execute(Command::GraphAddEdge {
+            branch: None,
+            space: None,
+            graph: "g".to_owned(),
+            src: "00501".to_owned(),
+            edge_type: "knows".to_owned(),
+            dst: "00777".to_owned(),
+            weight: Some(1.5),
+            properties: None,
+        })
+        .expect("edge add succeeds");
+
+    executor
+        .execute(Command::ArrowExport {
+            branch: None,
+            space: None,
+            primitive: ArrowExportPrimitive::Graph,
+            format: ArrowFileFormat::Csv,
+            path: export_path.to_string_lossy().into_owned(),
+            prefix: None,
+            limit: None,
+            collection: None,
+            graph: Some("g".to_owned()),
+            event_type: None,
+        })
+        .expect("graph csv export succeeds");
+
+    executor
+        .execute(Command::GraphCreate {
+            branch: None,
+            space: None,
+            graph: "g2".to_owned(),
+        })
+        .expect("second graph create succeeds");
+    let output = executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: export_path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Csv),
+            target: ArrowImportTarget::Graph,
+            key_column: None,
+            value_column: None,
+            collection: None,
+            graph: Some("g2".to_owned()),
+        })
+        .expect("graph csv import succeeds");
+    let Output::ArrowImportResult(result) = output else {
+        panic!("unexpected import output");
+    };
+    // Two nodes + one edge, nothing skipped — the strict downcast no longer fails.
+    assert_import_result(&result, ArrowImportTarget::Graph, 3, 0, 2);
+
+    // The leading-zero node ids survive exactly (not "501"/"777").
+    let nodes = graph_node_properties(&mut executor, "g2");
+    assert_eq!(nodes.len(), 2);
+    assert_eq!(
+        nodes.get("00501").cloned().flatten(),
+        Some(json!({"kind": "person"}))
+    );
+    assert!(nodes.contains_key("00777"));
+    assert!(!nodes.contains_key("501"));
+
+    // The edge keeps its numeric-looking endpoints and weight.
+    let edges = graph_outgoing_edges(&mut executor, "g2", "00501");
+    assert_eq!(
+        edges,
+        vec![(
+            "00501".to_owned(),
+            "knows".to_owned(),
+            "00777".to_owned(),
+            1.5
+        )]
+    );
+}
+
+/// #3077 (event arm): a numeric-looking `event_type` exported as Utf8 was
+/// re-inferred as `Int64` on CSV import, failing the strict `StringArray`
+/// downcast. Honoring the text columns lets an event log round-trip through CSV.
+#[test]
+fn csv_event_round_trip_preserves_numeric_looking_event_types() {
+    let dir = TempDir::new().expect("temp dir");
+    let export_path = dir.path().join("events.csv");
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    executor
+        .execute(Command::EventBatchAppend {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchEventEntry::new("40001", json!({"id": 1})),
+                BatchEventEntry::new("40002", json!({"id": 2})),
+            ],
+        })
+        .expect("event batch append succeeds");
+
+    executor
+        .execute(Command::ArrowExport {
+            branch: None,
+            space: None,
+            primitive: ArrowExportPrimitive::Event,
+            format: ArrowFileFormat::Csv,
+            path: export_path.to_string_lossy().into_owned(),
+            prefix: None,
+            limit: None,
+            collection: None,
+            graph: None,
+            event_type: None,
+        })
+        .expect("event csv export succeeds");
+
+    executor
+        .execute(Command::BranchCreate {
+            branch: "restore".to_owned(),
+        })
+        .expect("branch create succeeds");
+    let output = executor
+        .execute(Command::ArrowImport {
+            branch: Some("restore".to_owned()),
+            space: None,
+            file_path: export_path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Csv),
+            target: ArrowImportTarget::Event,
+            key_column: None,
+            value_column: None,
+            collection: None,
+            graph: None,
+        })
+        .expect("event csv import succeeds");
+    let Output::ArrowImportResult(result) = output else {
+        panic!("unexpected import output");
+    };
+    assert_eq!(result.rows_imported(), 2);
+
+    let range = executor
+        .execute(Command::EventRange {
+            branch: Some("restore".to_owned()),
+            space: None,
+            start_seq: 0,
+            end_seq: None,
+            limit: None,
+            direction: EventRangeDirection::Forward,
+            event_type: None,
+        })
+        .expect("event range read succeeds");
+    let Output::EventRangeResult { items, .. } = range else {
+        panic!("unexpected range output");
+    };
+    assert_eq!(items.len(), 2);
+    // The event types survive as the exact strings "40001"/"40002", not integers.
+    assert_eq!(items[0].event().event_type(), "40001");
+    assert_eq!(items[0].event().payload(), &json!({"id": 1}));
+    assert_eq!(items[1].event().event_type(), "40002");
+    assert_eq!(items[1].event().payload(), &json!({"id": 2}));
+}
+
 #[test]
 fn csv_json_import_and_jsonl_export_preserve_documents() {
     let dir = TempDir::new().expect("temp dir");
