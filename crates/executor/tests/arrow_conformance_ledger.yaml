@@ -46,10 +46,9 @@ cells:
     status: covered
     test: vector_export_import_round_trip_preserves_metadata_without_leaking_internals
   - id: roundtrip.vector.csv
-    scenario: vector export -> CSV
-    status: gap
-    issue: 3082
-    note: FixedSizeList cannot CSV-serialize; 100% broken, truncated file, wrong class
+    scenario: vector export -> CSV is rejected up front (non-retryable, no truncated file) since embeddings are nested
+    status: covered
+    test: vector_export_to_csv_is_rejected_up_front_without_touching_the_output_file
   - id: roundtrip.event
     scenario: event export -> import restores payloads and types
     status: covered

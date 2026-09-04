@@ -46,6 +46,20 @@ pub(crate) fn export_file(
     let mut size_bytes = 0;
     let row_count;
 
+    // CSV cannot serialize a vector embedding column (a nested FixedSizeList); the
+    // write only failed after truncating the output file and as a *retryable* IO
+    // error, so a retrying caller looped forever (#3082). Reject the combination
+    // up front, before any file is opened.
+    if matches!(
+        (primitive, format),
+        (ArrowExportPrimitive::Vector, ArrowFileFormat::Csv)
+    ) {
+        return Err(invalid_input(
+            "invalid_argument.executor.arrow_format",
+            "vector export to CSV is not supported: embeddings are nested list columns CSV cannot represent; export vectors as jsonl or parquet",
+        ));
+    }
+
     match primitive {
         ArrowExportPrimitive::Kv => {
             let batch = export_kv(executor, branch.as_deref(), space.as_deref(), prefix, limit)?;
