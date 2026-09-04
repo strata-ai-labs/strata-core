@@ -1237,6 +1237,58 @@ fn parquet_import_rejects_non_finite_float_instead_of_storing_null() {
     );
 }
 
+/// #3081: `import_event` discarded the per-item batch result and reported every
+/// row imported with zero skipped. When the engine rejects some rows (here an
+/// empty `event_type`, which `EventType::new` refuses), the import must report
+/// the real counts, not a success that overstates what landed.
+#[test]
+fn event_import_reports_rows_the_engine_rejected_as_skipped() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = dir.path().join("events.parquet");
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("event_type", DataType::Utf8, false),
+        Field::new("payload", DataType::Utf8, false),
+    ]));
+    // Row 1 is valid; row 2 has an empty event_type the engine rejects per-item.
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["order.created", ""])),
+            Arc::new(StringArray::from(vec![r#"{"id":1}"#, r#"{"id":2}"#])),
+        ],
+    )
+    .expect("record batch");
+    let file = std::fs::File::create(&path).expect("create parquet");
+    let mut writer =
+        parquet::arrow::ArrowWriter::try_new(file, schema, None).expect("create parquet writer");
+    writer.write(&batch).expect("write parquet batch");
+    writer.close().expect("close parquet writer");
+
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let output = executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Parquet),
+            target: ArrowImportTarget::Event,
+            key_column: None,
+            value_column: None,
+            collection: None,
+            graph: None,
+        })
+        .expect("event import succeeds (as a partial)");
+    let Output::ArrowImportResult(result) = output else {
+        panic!("unexpected import output");
+    };
+    // One row landed, one was rejected — not the old "2 imported, 0 skipped".
+    assert_eq!(result.rows_imported(), 1);
+    assert_eq!(result.rows_skipped(), 1);
+
+    // And the valid event really is the only one present on the branch.
+    assert_eq!(event_count(&mut executor), 1);
+}
+
 fn assert_import_result(
     result: &ArrowImportResult,
     target: ArrowImportTarget,

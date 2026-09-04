@@ -391,8 +391,8 @@ fn import_event(
     let event_type_idx = event_column_index(schema, "event_type")?;
     let payload_idx = event_column_index(schema, "payload")?;
 
+    let mut counts = ImportCounts::default();
     let mut entries = Vec::new();
-    let mut rows = 0_usize;
     for batch in batches {
         for row in 0..batch.num_rows() {
             let event_type = event_string_cell(batch, event_type_idx, row)?;
@@ -404,7 +404,6 @@ fn import_event(
                 )
             })?;
             entries.push(BatchEventEntry::new(event_type, payload));
-            rows += 1;
         }
     }
 
@@ -414,16 +413,22 @@ fn import_event(
             space: space.map(str::to_owned),
             entries,
         })?;
-        let Output::EventBatchAppendResults(_) = output else {
+        let Output::EventBatchAppendResults(results) = output else {
             return Err(unexpected_output("event_batch_append"));
         };
+        // The engine validates each entry (empty/oversized type, bad payload) and
+        // returns a per-item result; a rejected row must count as skipped, not
+        // silently inflate rows_imported (#3081).
+        for item in results.items() {
+            if item.error_status().is_some() {
+                counts.rows_skipped += 1;
+            } else {
+                counts.rows_imported += 1;
+            }
+        }
     }
-
-    Ok(ImportCounts {
-        rows_imported: rows as u64,
-        rows_skipped: 0,
-        batches_processed: batches.len() as u64,
-    })
+    counts.batches_processed = batches.len() as u64;
+    Ok(counts)
 }
 
 fn event_column_index(schema: &Schema, name: &str) -> ExecutorResult<usize> {
