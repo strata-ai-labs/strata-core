@@ -177,6 +177,47 @@ fn csv_json_import_and_jsonl_export_preserve_documents() {
 }
 
 #[test]
+fn jsonl_struct_import_stores_a_real_document_not_a_display_string() {
+    // #3063: a jsonl value column that is a nested object arrives as an Arrow
+    // struct. It must store a queryable JSON document, not the struct's Display
+    // string — before the fix the stored value was a string, nulls were
+    // dropped, and every path query returned nil.
+    let dir = TempDir::new().expect("temp dir");
+    let input_path = dir.path().join("docs.jsonl");
+    fs::write(
+        &input_path,
+        "{\"key\":\"a\",\"doc\":{\"n\":1,\"nul\":null,\"nest\":{\"k\":\"v\"}}}\n",
+    )
+    .expect("write jsonl");
+
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let output = executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: input_path.to_string_lossy().into_owned(),
+            format: None,
+            target: ArrowImportTarget::Json,
+            key_column: Some("key".to_owned()),
+            value_column: Some("doc".to_owned()),
+            collection: None,
+            graph: None,
+        })
+        .expect("json import succeeds");
+    let Output::ArrowImportResult(result) = output else {
+        panic!("unexpected import output");
+    };
+    assert_import_result(&result, ArrowImportTarget::Json, 1, 0, 1);
+
+    let stored = json_get(&mut executor, "a").expect("document present after import");
+    assert_eq!(stored, json!({"n": 1, "nul": null, "nest": {"k": "v"}}));
+    assert!(
+        stored.is_object(),
+        "the imported value is a real JSON object, not a Display string: {stored}"
+    );
+}
+
+#[test]
 fn parquet_vector_import_and_export_uses_batch_commands() {
     let dir = TempDir::new().expect("temp dir");
     let input_path = dir.path().join("vectors.parquet");

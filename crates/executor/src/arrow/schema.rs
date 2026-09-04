@@ -498,6 +498,31 @@ fn cell_to_json(column: &dyn Array, row: usize) -> ExecutorResult<Value> {
                 base64::engine::general_purpose::STANDARD.encode(array.value(row)),
             ))
         }
+        DataType::Struct(fields) => {
+            // #3063: reconstruct a real JSON object from the struct's fields
+            // instead of falling through to the Arrow `Display` string (which
+            // stored a lossy, unqueryable rendering and dropped nulls).
+            let array = column
+                .as_any()
+                .downcast_ref::<array::StructArray>()
+                .unwrap();
+            let mut object = serde_json::Map::with_capacity(fields.len());
+            for (field, child) in fields.iter().zip(array.columns()) {
+                object.insert(field.name().clone(), cell_to_json(child.as_ref(), row)?);
+            }
+            Ok(Value::Object(object))
+        }
+        DataType::List(_) => {
+            // #3063: a JSON array field becomes an Arrow list; reconstruct the
+            // array element-by-element rather than the Arrow `Display` string.
+            let array = column.as_any().downcast_ref::<array::ListArray>().unwrap();
+            let values = array.value(row);
+            let mut items = Vec::with_capacity(values.len());
+            for index in 0..values.len() {
+                items.push(cell_to_json(values.as_ref(), index)?);
+            }
+            Ok(Value::Array(items))
+        }
         _ => Ok(Value::String(cell_to_string(column, row)?)),
     }
 }
@@ -592,7 +617,7 @@ mod tests {
         LargeBinaryArray, LargeStringArray, ListBuilder, NullArray, StringArray, UInt16Array,
         UInt32Array, UInt64Array, UInt8Array,
     };
-    use arrow::datatypes::Field;
+    use arrow::datatypes::{Field, Int64Type};
     use base64::Engine;
     use serde_json::json;
 
@@ -1050,5 +1075,49 @@ mod tests {
             ],
         )
         .expect("embedding batch")
+    }
+
+    #[test]
+    fn cell_to_json_reconstructs_nested_struct_and_preserves_null() {
+        // #3063: a value column that is an Arrow struct must reconstruct a real
+        // JSON object — with nested objects and nulls intact — not the Arrow
+        // `Display` string (which dropped the null and quoted nothing), which
+        // was stored under a success report and made every path query nil.
+        let nest: array::ArrayRef = Arc::new(array::StructArray::from(vec![(
+            Arc::new(Field::new("k", DataType::Utf8, false)),
+            Arc::new(StringArray::from(vec!["v"])) as array::ArrayRef,
+        )]));
+        let nest_dt = nest.data_type().clone();
+        let doc = array::StructArray::from(vec![
+            (
+                Arc::new(Field::new("n", DataType::Int64, false)),
+                Arc::new(Int64Array::from(vec![1_i64])) as array::ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("nul", DataType::Int64, true)),
+                Arc::new(Int64Array::from(vec![None::<i64>])) as array::ArrayRef,
+            ),
+            (Arc::new(Field::new("nest", nest_dt, false)), nest),
+        ]);
+        let value = cell_to_json(&doc, 0).expect("nested struct converts");
+        assert_eq!(value, json!({"n": 1, "nul": null, "nest": {"k": "v"}}));
+        assert!(
+            value.is_object(),
+            "reconstructed value must be a JSON object"
+        );
+    }
+
+    #[test]
+    fn cell_to_json_reconstructs_list() {
+        // #3063: a JSON array field lands as an Arrow list; it must reconstruct
+        // a real JSON array (with nulls preserved), not the Display string.
+        let list = array::ListArray::from_iter_primitive::<Int64Type, _, _>(vec![Some(vec![
+            Some(1_i64),
+            None,
+            Some(3_i64),
+        ])]);
+        let value = cell_to_json(&list, 0).expect("list converts");
+        assert_eq!(value, json!([1, null, 3]));
+        assert!(value.is_array(), "reconstructed value must be a JSON array");
     }
 }
