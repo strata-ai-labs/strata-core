@@ -3,12 +3,12 @@
 This page is the stable target for public Strata V1 error-code documentation.
 Runtime docs URLs use the form:
 
-`https://strata.dev/docs/errors/registry#<error-code>`
+`https://stratadb.org/e/<error-code>`
 
 The source of truth for code metadata is:
 
-- `crates/engine-next/src/diagnostics/registry.rs` for engine-owned codes.
-- `crates/executor-next/src/error_registry.rs` for executor and inference-boundary codes.
+- `crates/engine/src/diagnostics/registry.rs` for engine-owned codes.
+- `crates/executor/src/error_registry.rs` for executor and inference-boundary codes.
 
 Each registry entry records the public class, retry policy, commit outcome,
 message template, suggested fix, docs slug, and details schema. Public

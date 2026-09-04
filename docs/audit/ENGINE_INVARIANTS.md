@@ -814,8 +814,10 @@ for the default configuration MUST be documented. On flash storage, total write 
 **Audit**: Current shape: L0 trigger 4 (`LEVEL_ZERO_COMPACTION_THRESHOLD`), growth factor 10
 (`NONZERO_LEVEL_TARGET_GROWTH_FACTOR`), 8 levels (`DEFAULT_MAX_LEVEL_COUNT`,
 `branch/config.rs`). The live regression gate is `SCALED_COMPACTION_AMPLIFICATION_GATE = 4`
-(`api/tests/mod.rs`) — verify it still gates. RECORDED GAP (#2906): the endurance derivation
-document this entry requires does not exist yet.
+(`api/tests/mod.rs`) — verify it still gates. The endurance derivation this entry requires
+lives in `docs/architecture/storage/write-amplification-and-endurance.md` (#2906): worst-case
+`WA_device ≈ 1 (WAL) + 1 (flush) + 1 (L0→L1) + T×(k−1)` for `k` populated levels, ~63× pessimal
+at a full 8-level tree, with the SD-TBW envelope. Verify the doc's anchored constants still match.
 
 ### SCALE-006: Maintenance pressure control is deferral + throttle + lanes, not a bandwidth limiter
 
