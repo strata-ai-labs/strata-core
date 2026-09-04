@@ -1,0 +1,160 @@
+# Arrow conformance ledger — the tracked map of what the Arrow import/export
+# surface HAS and HAS NOT been tested. One entry per scenario "cell".
+#
+# The lint (`arrow_conformance.rs`) enforces:
+#   status: covered  => `test:` names a #[test] fn that exists in an arrow test
+#                        source (arrow_behavior.rs / arrow_disabled_behavior.rs /
+#                        arrow/schema.rs / arrow_conformance.rs).
+#   status: gap      => `issue:` names the tracking issue.
+#   status: accepted => `note:` states why it is intentionally not covered.
+#
+# Scenario space (see docs/architecture/arrow-conformance.md):
+#   direction × target{kv,json,vector,event,graph} × format{csv,jsonl,parquet}
+#   + value fidelity (per Arrow type) + edge cases + error paths + silent-success.
+# NOTE: IPC (.arrow) is NOT a supported format — ArrowFileFormat = {Csv,Jsonl,Parquet}.
+
+cells:
+  # ---- round-trip: target × format (export -> file -> import identity) --------
+  - id: roundtrip.kv.csv
+    scenario: KV export -> CSV -> import preserves bytes
+    status: gap
+    issue: 3077
+    note: numeric-looking keys/values retyped by CSV re-inference (00501 -> 501)
+  - id: roundtrip.kv.jsonl
+    scenario: KV export -> JSONL -> import preserves bytes
+    status: covered
+    test: csv_kv_import_and_jsonl_export_round_trip_bytes
+  - id: roundtrip.kv.parquet
+    scenario: KV export -> Parquet -> import preserves bytes
+    status: gap
+    issue: 3083
+    note: no parquet-kv round-trip test yet
+  - id: roundtrip.json.string_column
+    scenario: JSON doc as a Utf8/string column round-trips (CSV in, JSONL out)
+    status: covered
+    test: csv_json_import_and_jsonl_export_preserve_documents
+  - id: roundtrip.json.nested_struct_jsonl
+    scenario: JSON doc with nested object/array/null via JSONL (Arrow struct)
+    status: covered
+    test: jsonl_struct_import_stores_a_real_document_not_a_display_string
+  - id: roundtrip.json.parquet
+    scenario: JSON doc round-trips through Parquet (struct/list value column)
+    status: gap
+    issue: 3083
+    note: no parquet-json nested round-trip test yet
+  - id: roundtrip.vector.jsonl_parquet
+    scenario: vector export -> import preserves embedding + metadata, no internal leak
+    status: covered
+    test: vector_export_import_round_trip_preserves_metadata_without_leaking_internals
+  - id: roundtrip.vector.csv
+    scenario: vector export -> CSV
+    status: gap
+    issue: 3082
+    note: FixedSizeList cannot CSV-serialize; 100% broken, truncated file, wrong class
+  - id: roundtrip.event
+    scenario: event export -> import restores payloads and types
+    status: covered
+    test: event_export_import_round_trip_restores_payloads_and_types
+  - id: roundtrip.graph
+    scenario: graph export -> import restores nodes and edges
+    status: covered
+    test: graph_export_import_round_trip_restores_nodes_and_edges
+  - id: roundtrip.graph_event.csv_numeric_ids
+    scenario: graph/event CSV round-trip with numeric-looking string ids
+    status: gap
+    issue: 3077
+    note: CSV re-inference retypes ids to Int64; strict StringArray downcast fails
+
+  # ---- value fidelity: Arrow type -> correct JSON/value -----------------------
+  - id: value.scalars
+    scenario: all Arrow scalar types (int/uint/float/bool/utf8/binary/null) convert
+    status: covered
+    test: json_document_and_object_conversion_cover_arrow_scalars
+  - id: value.nested_struct
+    scenario: Arrow Struct value -> JSON object (nested, nulls preserved)
+    status: covered
+    test: cell_to_json_reconstructs_nested_struct_and_preserves_null
+  - id: value.nested_list
+    scenario: Arrow List value -> JSON array (nulls preserved)
+    status: covered
+    test: cell_to_json_reconstructs_list
+  - id: value.float_nonfinite
+    scenario: Float NaN/Inf value -> must not silently become JSON null
+    status: gap
+    issue: 3078
+  - id: value.temporal_decimal
+    scenario: Decimal/Timestamp/Date/Time/Duration/Dictionary -> correct JSON, not Display string
+    status: gap
+    issue: 3075
+  - id: value.nested_map_largelist_fixedsizelist
+    scenario: Map / LargeList / FixedSizeList value -> real JSON, not Display string
+    status: gap
+    issue: 3075
+
+  # ---- edge cases -------------------------------------------------------------
+  - id: edge.encoding_nonbase64
+    scenario: value_encoding/key_encoding other than base64 (hex, base64url) honored
+    status: gap
+    issue: 3079
+  - id: edge.late_field_inference
+    scenario: a field first appearing after row 100 is not dropped
+    status: gap
+    issue: 3080
+  - id: edge.null_cells
+    scenario: null KV value / null graph weight / null endpoint handled (not flattened)
+    status: gap
+    issue: 3083
+  - id: edge.empty_jsonl_export
+    scenario: an empty (0-row) export round-trips to zero imported rows
+    status: gap
+    issue: 3083
+  - id: edge.unicode_and_delimiters
+    scenario: unicode + embedded commas/newlines/quotes survive each format
+    status: gap
+    issue: 3083
+    note: CSV quoting/escaping of embedded JSON not yet exercised
+  - id: edge.branch_space_isolation
+    scenario: import/export respects branch and space isolation
+    status: covered
+    test: arrow_import_export_respects_branch_and_space_isolation
+  - id: edge.durable_reopen
+    scenario: durable import survives reopen and re-exports
+    status: covered
+    test: durable_arrow_import_survives_reopen_and_exports
+
+  # ---- error paths ------------------------------------------------------------
+  - id: error.unknown_format
+    scenario: unknown/unsupported format rejected before storage mutation
+    status: covered
+    test: arrow_import_rejects_unknown_format_before_storage_mutation
+  - id: error.missing_input
+    scenario: missing input file reported before feature work
+    status: covered
+    test: missing_input_is_reported_before_arrow_feature_work
+  - id: error.missing_primitive_options
+    scenario: export missing required primitive options rejected
+    status: covered
+    test: arrow_export_rejects_missing_primitive_options
+  - id: error.event_missing_columns
+    scenario: event import rejects a file missing event columns
+    status: covered
+    test: event_import_rejects_a_file_missing_event_columns
+  - id: error.vector_missing_collection
+    scenario: vector import into a missing collection fails, no metric defaulting
+    status: covered
+    test: vector_import_into_missing_collection_fails_instead_of_defaulting_a_metric
+  - id: error.feature_disabled
+    scenario: arrow commands return stable feature-disabled errors without the feature
+    status: covered
+    test: arrow_commands_return_stable_feature_disabled_errors_without_feature
+  - id: error.code_list_accuracy
+    scenario: the IDL error-code list per arrow command matches what it can emit
+    status: gap
+    issue: 3083
+    note: export/import error lists are cross-wired (#3058 class)
+
+  # ---- silent-success (import reports OK but data not stored) -----------------
+  - id: silent.event_graph_overreport
+    scenario: event/graph import reports real rows_skipped when the engine rejects rows
+    status: gap
+    issue: 3081
