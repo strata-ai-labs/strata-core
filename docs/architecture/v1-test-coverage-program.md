@@ -44,9 +44,12 @@ W0 (honest-ledger cleanup + debt-count budgets + STH status-lint), W1 (fix the
 4.7/4.8/4.9 product-defect pins), W2 (release-tag soak + mutation-plateau ledger),
 W3 (re-entry coverage for surfaces landed after their phase — branch ops, new CLI
 verbs, hub browse), W4 (the remaining generators: 4.1b, the 110-code replay drain,
-4.9 fault families, 4.12 Adya), and Phase 5's 5.3–5.6. The drifted
-`scripts/cli-tests/08_time_travel.sh` suite (`event len`, since renamed
-`event count`; one failure overlaps the open as_of gap #2702) is remediation W0e.
+4.9 fault families, 4.12 Adya), and Phase 5's 5.3–5.6. The drifted shell CLI
+corpora (`scripts/cli-tests/`, `scripts/cli-corpus/`, the `cli_next_*` scripts)
+were RETIRED in W0e: unmaintained and run by no CI lane, they had drifted on
+several renames (`event len`→`event count`, the `strata-cli-next` build target,
+and reshaped outputs) and no longer built or passed. The real-binary Rust suite
+`crates/cli/tests/cli_execution.rs` is the authoritative CLI coverage.
 
 ## Purpose
 
