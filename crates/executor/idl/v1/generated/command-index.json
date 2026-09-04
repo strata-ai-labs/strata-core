@@ -761,6 +761,10 @@
           "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_embedding_type"
         },
         {
+          "code": "invalid_argument.executor.arrow_encoding",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_encoding"
+        },
+        {
           "code": "invalid_argument.executor.arrow_vector_dimension",
           "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_vector_dimension"
         },

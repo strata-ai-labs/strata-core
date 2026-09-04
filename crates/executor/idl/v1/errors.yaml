@@ -94,6 +94,7 @@ errors:
   - invalid_argument.executor.arrow_value_column
   - invalid_argument.executor.arrow_collection
   - invalid_argument.executor.arrow_embedding_type
+  - invalid_argument.executor.arrow_encoding
   - invalid_argument.executor.arrow_vector_dimension
   - invalid_argument.executor.arrow_json_key
   - invalid_argument.executor.arrow_non_finite_float

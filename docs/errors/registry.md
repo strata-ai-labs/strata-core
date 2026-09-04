@@ -547,6 +547,9 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="invalid_argument.executor.arrow_empty_export"></a>
 - `invalid_argument.executor.arrow_empty_export`
 
+<a id="invalid_argument.executor.arrow_encoding"></a>
+- `invalid_argument.executor.arrow_encoding`
+
 <a id="invalid_argument.executor.arrow_event"></a>
 - `invalid_argument.executor.arrow_event`
 

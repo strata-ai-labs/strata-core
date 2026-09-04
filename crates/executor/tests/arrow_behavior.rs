@@ -171,6 +171,39 @@ fn csv_import_preserves_numeric_looking_string_keys_and_values() {
     assert_eq!(kv_get(&mut executor, Bytes::from("501")), None);
 }
 
+/// #3079: a `value_encoding` the reader does not understand (here `hex`) must
+/// fail the import with a typed error, not silently store the raw ASCII bytes
+/// on the very column meant to prevent mis-decoding.
+#[test]
+fn kv_import_rejects_an_unsupported_value_encoding() {
+    let dir = TempDir::new().expect("temp dir");
+    let input_path = dir.path().join("kv.csv");
+    fs::write(
+        &input_path,
+        "key,key_encoding,value,value_encoding\nk1,utf8,deadbeef,hex\n",
+    )
+    .expect("write csv");
+
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let error = executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: input_path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Csv),
+            target: ArrowImportTarget::Kv,
+            key_column: None,
+            value_column: None,
+            collection: None,
+            graph: None,
+        })
+        .expect_err("an unsupported value_encoding must fail the import");
+    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+    assert_eq!(error.code(), "invalid_argument.executor.arrow_encoding");
+    // The error fires while building entries, before any storage write.
+    assert_eq!(kv_get(&mut executor, Bytes::from("k1")), None);
+}
+
 /// #3077 (graph/event arm): numeric-looking node/edge ids exported as Utf8 were
 /// re-inferred as `Int64` on CSV import, so the strict `StringArray` downcast
 /// failed the whole import. Honoring the text columns lets a graph with
