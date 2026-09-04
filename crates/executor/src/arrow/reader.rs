@@ -99,7 +99,9 @@ fn read_csv(path: &Path) -> ExecutorResult<(Schema, Vec<RecordBatch>)> {
     let schema = arrow::csv::reader::infer_schema_from_files(
         &[path.to_string_lossy().into_owned()],
         b',',
-        Some(100),
+        // Infer over the whole file, not a 100-row prefix: a column whose type is
+        // only disambiguated by a later row must not be mis-typed (#3080).
+        None,
         true,
     )
     .map_err(|error| io_error(format!("failed to infer CSV schema: {error}")))?;
@@ -118,7 +120,9 @@ fn read_csv(path: &Path) -> ExecutorResult<(Schema, Vec<RecordBatch>)> {
 fn read_jsonl(path: &Path) -> ExecutorResult<(Schema, Vec<RecordBatch>)> {
     let file = open_file(path)?;
     let mut reader = BufReader::new(file);
-    let (schema, _) = arrow::json::reader::infer_json_schema_from_seekable(&mut reader, Some(100))
+    // Infer over the whole file, not a 100-row prefix: a field first appearing
+    // after row 100 must not be dropped from the schema and silently lost (#3080).
+    let (schema, _) = arrow::json::reader::infer_json_schema_from_seekable(&mut reader, None)
         .map_err(|error| io_error(format!("failed to infer JSONL schema: {error}")))?;
     let schema = Arc::new(schema);
     reader
