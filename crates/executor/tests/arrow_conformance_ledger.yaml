@@ -82,8 +82,8 @@ cells:
     test: cell_to_json_reconstructs_list
   - id: value.float_nonfinite
     scenario: Float NaN/Inf value -> must not silently become JSON null
-    status: gap
-    issue: 3078
+    status: covered
+    test: cell_to_json_rejects_non_finite_floats_instead_of_nulling_them
   - id: value.temporal_decimal
     scenario: Decimal/Timestamp/Date/Time/Duration/Dictionary -> correct JSON, not Display string
     status: gap

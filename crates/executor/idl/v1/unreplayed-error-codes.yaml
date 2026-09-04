@@ -25,7 +25,12 @@
 # raising `budget` in the same change with a rationale (owner + issue/slice +
 # planned harness); draining entries requires lowering `budget` to match. Enforced
 # by `enforce_debt_budget` in `crates/executor/src/idl_tooling.rs`.
-budget: 110
+#
+# 110 -> 111 (#3078): invalid_argument.executor.arrow_non_finite_float joins the
+# *.executor.arrow* debt group — arrow.import's fixture is replay_skip'd (it reads
+# a real file the scratch executor lacks), so pinning this envelope needs the same
+# file-reading arrow replay harness the sibling arrow codes are waiting on.
+budget: 111
 unreplayed:
   - already_exists.engine.json_index
   - failed_precondition.engine.graph_negative_weight
@@ -113,6 +118,7 @@ unreplayed:
   - invalid_argument.executor.arrow_input_missing
   - invalid_argument.executor.arrow_json_key
   - invalid_argument.executor.arrow_key_column
+  - invalid_argument.executor.arrow_non_finite_float
   - invalid_argument.executor.arrow_value_column
   - invalid_argument.executor.arrow_vector_dimension
   - invalid_argument.executor.arrow_vector_key

@@ -769,6 +769,10 @@
           "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_json_key"
         },
         {
+          "code": "invalid_argument.executor.arrow_non_finite_float",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_non_finite_float"
+        },
+        {
           "code": "invalid_argument.executor.arrow_base64",
           "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_base64"
         },
