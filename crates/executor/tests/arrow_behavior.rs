@@ -2,6 +2,7 @@
 
 #![cfg(feature = "arrow")]
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -409,6 +410,93 @@ fn csv_json_import_and_jsonl_export_preserve_documents() {
     assert!(exported.contains("\"key\":\"user-a\""));
     assert!(!exported.contains("\"key\":\"user-b\""));
     assert!(exported.contains("\\\"name\\\":\\\"Ada\\\""));
+}
+
+/// #3080: JSONL schema inference was bounded to the first 100 rows, so a field
+/// first appearing at row 101 was dropped from the schema and silently omitted
+/// from every stored document under a success report. Inference must span the
+/// whole file. Uses a row-object import (no `value`/`document` column) so the
+/// late field lands in the reconstructed document.
+#[test]
+fn jsonl_import_keeps_a_field_that_first_appears_after_row_100() {
+    let dir = TempDir::new().expect("temp dir");
+    let input_path = dir.path().join("late.jsonl");
+    // 101 rows: the first 100 carry only key + `a`; the last adds `late`.
+    let mut jsonl = String::new();
+    for i in 0..100 {
+        writeln!(jsonl, "{{\"key\":\"k{i}\",\"a\":\"a{i}\"}}").unwrap();
+    }
+    jsonl.push_str("{\"key\":\"k100\",\"a\":\"a100\",\"late\":\"important\"}\n");
+    fs::write(&input_path, jsonl).expect("write jsonl");
+
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let output = executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: input_path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Jsonl),
+            target: ArrowImportTarget::Json,
+            key_column: Some("key".to_owned()),
+            value_column: None,
+            collection: None,
+            graph: None,
+        })
+        .expect("json import succeeds");
+    let Output::ArrowImportResult(result) = output else {
+        panic!("unexpected import output");
+    };
+    assert_eq!(result.rows_imported(), 101);
+
+    // The late field must survive on the row that introduced it.
+    let doc = json_get(&mut executor, "k100").expect("k100 present");
+    assert_eq!(doc.get("late"), Some(&json!("important")));
+    assert_eq!(doc.get("a"), Some(&json!("a100")));
+    // A first-window row keeps its own field; under the now-unified schema a
+    // row-object import represents the absent field as an explicit null (a
+    // consistent shape), never dropping the column outright.
+    let doc0 = json_get(&mut executor, "k0").expect("k0 present");
+    assert_eq!(doc0.get("a"), Some(&json!("a0")));
+    assert_eq!(doc0.get("late"), Some(&json!(null)));
+}
+
+/// #3080 (CSV arm): a column that looks integer for the first 100 rows but holds
+/// a decimal at row 101 was typed `Int64` from the prefix, so the later value
+/// could not be read. Whole-file inference must see the widening value.
+#[test]
+fn csv_import_infers_column_type_from_a_value_after_row_100() {
+    let dir = TempDir::new().expect("temp dir");
+    let input_path = dir.path().join("late.csv");
+    // Header + 101 data rows: `n` is integer-looking for 100 rows, decimal at 101.
+    let mut csv = String::from("key,n\n");
+    for i in 0..100 {
+        writeln!(csv, "k{i},{i}").unwrap();
+    }
+    csv.push_str("k100,2.5\n");
+    fs::write(&input_path, csv).expect("write csv");
+
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let output = executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: input_path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Csv),
+            target: ArrowImportTarget::Json,
+            key_column: Some("key".to_owned()),
+            value_column: None,
+            collection: None,
+            graph: None,
+        })
+        .expect("csv import succeeds (the decimal row is not rejected)");
+    let Output::ArrowImportResult(result) = output else {
+        panic!("unexpected import output");
+    };
+    assert_eq!(result.rows_imported(), 101);
+
+    // The widening value at row 101 is preserved, not lost to a prefix-only type.
+    let doc = json_get(&mut executor, "k100").expect("k100 present");
+    assert_eq!(doc.get("n"), Some(&json!(2.5)));
 }
 
 #[test]

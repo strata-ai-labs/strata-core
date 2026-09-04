@@ -99,9 +99,13 @@ cells:
     status: gap
     issue: 3079
   - id: edge.late_field_inference
-    scenario: a field first appearing after row 100 is not dropped
-    status: gap
-    issue: 3080
+    scenario: a JSONL field first appearing after row 100 is not dropped from the schema
+    status: covered
+    test: jsonl_import_keeps_a_field_that_first_appears_after_row_100
+  - id: edge.late_column_type_inference
+    scenario: a CSV column type only disambiguated by a row after 100 is not mis-typed from the prefix
+    status: covered
+    test: csv_import_infers_column_type_from_a_value_after_row_100
   - id: edge.null_cells
     scenario: null KV value / null graph weight / null endpoint handled (not flattened)
     status: gap
