@@ -42,6 +42,10 @@ pub(crate) fn import_file(
         None => detect_format(&path)?,
     };
 
+    // #3083: a flag that does not apply to the target must be rejected, not
+    // silently ignored.
+    validate_import_flags(target, collection.is_some(), graph.is_some())?;
+
     // Graph import reads two files (nodes + edges) with dedicated schemas, so it
     // bypasses the generic single-file `read_file`/`resolve_mapping` path that
     // kv/json/vector share.
@@ -129,6 +133,29 @@ struct ImportCounts {
     rows_imported: u64,
     rows_skipped: u64,
     batches_processed: u64,
+}
+
+/// Rejects import flags that do not apply to the target (#3083): `--collection`
+/// is only meaningful for a vector import, `--graph` only for a graph import.
+/// Accepting them silently hid a caller mistake.
+fn validate_import_flags(
+    target: ArrowImportTarget,
+    has_collection: bool,
+    has_graph: bool,
+) -> ExecutorResult<()> {
+    if has_collection && !matches!(target, ArrowImportTarget::Vector) {
+        return Err(invalid_input(
+            "invalid_argument.executor.arrow_collection",
+            "a collection is only valid for a vector import",
+        ));
+    }
+    if has_graph && !matches!(target, ArrowImportTarget::Graph) {
+        return Err(invalid_input(
+            "invalid_argument.executor.arrow_graph",
+            "a graph is only valid for a graph import",
+        ));
+    }
+    Ok(())
 }
 
 fn import_kv(
@@ -594,7 +621,27 @@ mod tests {
 
     use crate::ExecutorErrorClass;
 
-    use super::graph_string_cell;
+    use super::{graph_string_cell, validate_import_flags, ArrowImportTarget};
+
+    #[test]
+    fn validate_import_flags_rejects_flags_that_do_not_apply_to_the_target() {
+        use ArrowImportTarget::{Event, Graph, Json, Kv, Vector};
+        // --collection is valid only for vector; --graph only for graph.
+        for target in [Kv, Json, Event, Graph] {
+            let error = validate_import_flags(target, true, false)
+                .expect_err("collection is irrelevant here");
+            assert_eq!(error.code(), "invalid_argument.executor.arrow_collection");
+        }
+        for target in [Kv, Json, Event, Vector] {
+            let error =
+                validate_import_flags(target, false, true).expect_err("graph is irrelevant here");
+            assert_eq!(error.code(), "invalid_argument.executor.arrow_graph");
+        }
+        // The applicable combinations, and the no-flags case, are accepted.
+        validate_import_flags(Vector, true, false).expect("collection ok for vector");
+        validate_import_flags(Graph, false, true).expect("graph ok for graph");
+        validate_import_flags(Kv, false, false).expect("no flags ok");
+    }
 
     #[test]
     fn graph_string_cell_rejects_a_null_id_instead_of_fabricating_an_empty_string() {

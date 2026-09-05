@@ -137,6 +137,10 @@ cells:
     scenario: an empty (0-row) file imports as a no-op (zero rows), not a missing-key error
     status: covered
     test: empty_jsonl_import_is_a_no_op_not_a_missing_key_error
+  - id: edge.irrelevant_import_flags
+    scenario: an import flag that doesn't apply to the target (--collection unless vector, --graph unless graph) is rejected, not silently ignored
+    status: covered
+    test: validate_import_flags_rejects_flags_that_do_not_apply_to_the_target
   - id: edge.unicode_and_delimiters
     scenario: unicode + embedded commas/newlines/quotes survive each format
     status: gap
