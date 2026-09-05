@@ -204,6 +204,55 @@ fn kv_import_rejects_an_unsupported_value_encoding() {
     assert_eq!(kv_get(&mut executor, Bytes::from("k1")), None);
 }
 
+/// #3083: a null value cell must be skipped, not stored as an empty-byte value
+/// (which is indistinguishable from a real empty value).
+#[test]
+fn kv_import_skips_a_null_value_cell_instead_of_storing_empty_bytes() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = dir.path().join("kv.parquet");
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Utf8, false),
+        Field::new("value", DataType::Utf8, true),
+    ]));
+    // Row "a" has a value; row "b"'s value is null.
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["a", "b"])),
+            Arc::new(StringArray::from(vec![Some("x"), None])),
+        ],
+    )
+    .expect("record batch");
+    let file = std::fs::File::create(&path).expect("create parquet");
+    let mut writer =
+        parquet::arrow::ArrowWriter::try_new(file, schema, None).expect("create parquet writer");
+    writer.write(&batch).expect("write parquet batch");
+    writer.close().expect("close parquet writer");
+
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let output = executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Parquet),
+            target: ArrowImportTarget::Kv,
+            key_column: None,
+            value_column: None,
+            collection: None,
+            graph: None,
+        })
+        .expect("kv import succeeds");
+    let Output::ArrowImportResult(result) = output else {
+        panic!("unexpected import output");
+    };
+    // "a" imported; "b" skipped for its null value — not stored as empty bytes.
+    assert_eq!(result.rows_imported(), 1);
+    assert_eq!(result.rows_skipped(), 1);
+    assert_eq!(kv_get(&mut executor, Bytes::from("a")), Some(b"x".to_vec()));
+    assert_eq!(kv_get(&mut executor, Bytes::from("b")), None);
+}
+
 /// #3077 (graph/event arm): numeric-looking node/edge ids exported as Utf8 were
 /// re-inferred as `Int64` on CSV import, so the strict `StringArray` downcast
 /// failed the whole import. Honoring the text columns lets a graph with

@@ -121,8 +121,12 @@ cells:
     scenario: a null node_id/src/dst/edge_type is rejected, not read as "" (no empty-id phantom node)
     status: covered
     test: graph_string_cell_rejects_a_null_id_instead_of_fabricating_an_empty_string
-  - id: edge.null_cells
-    scenario: null KV value (skip) / null graph weight (not flattened to 0.0) handled
+  - id: edge.null_kv_value
+    scenario: a null KV value cell is skipped, not stored as an empty-byte value
+    status: covered
+    test: kv_import_skips_a_null_value_cell_instead_of_storing_empty_bytes
+  - id: edge.null_graph_weight
+    scenario: a null graph edge weight is not flattened to 0.0
     status: gap
     issue: 3083
   - id: edge.empty_jsonl_export
