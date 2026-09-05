@@ -94,6 +94,7 @@ required-features = ["differential"]
 tiny_http = "0.12"
 url = "2"
 tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
 # The TCP4.7 parity harness reads its shrink-only divergence ledger
 # (idl/v1/cross-surface-divergences.yaml) without requiring `idl-tooling`.
 serde_yaml = { workspace = true }

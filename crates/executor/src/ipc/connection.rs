@@ -112,15 +112,19 @@ impl Connection {
         host: bool,
         access: SessionAccess,
     ) -> ExecutorResult<Self> {
-        match Executor::open_durable_local_with_options(path, options.clone()) {
+        // Quiet open: a lost-lock loss that then brokers to the owner must not
+        // cross the logging boundary as an engine failure (#3071). Only a
+        // definitive failure is converted to a logged `ExecutorError` below.
+        match Executor::open_durable_local_quiet(path, options.clone()) {
             Ok(executor) => Ok(Self::local_hosting(path, executor, host, access)),
             // Contention: the store is already owned. Ride the owner start-up /
             // shut-down window, brokering to its socket if one appears.
             Err(error) if error.code() == LOCK_CONTENTION_CODE => {
                 Self::broker_to_owner(path, options, host, access)
             }
-            // A non-contention open error never brokers — propagate it as-is.
-            Err(error) => Err(error),
+            // A non-contention open error never brokers — surface it (this is a
+            // genuine failure, so it logs at the executor boundary).
+            Err(error) => Err(crate::ExecutorError::from(error)),
         }
     }
 
@@ -156,18 +160,23 @@ impl Connection {
                     }
                 }
             }
-            match Executor::open_durable_local_with_options(path, options.clone()) {
+            match Executor::open_durable_local_quiet(path, options.clone()) {
                 Ok(executor) => return Ok(Self::local_hosting(path, executor, host, access)),
                 Err(error) if error.code() == LOCK_CONTENTION_CODE => {
                     std::thread::sleep(OPEN_RETRY_STEP);
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(crate::ExecutorError::from(error)),
             }
         }
-        match Executor::open_durable_local_with_options(path, options) {
+        // The window closed with the store still locked: this contention did
+        // NOT recover, so the failure is genuine and crosses the logging
+        // boundary (a capacity refusal, if seen, is the truthful error).
+        match Executor::open_durable_local_quiet(path, options) {
             Ok(executor) => Ok(Self::local_hosting(path, executor, host, access)),
-            Err(error) if error.code() == LOCK_CONTENTION_CODE => Err(at_capacity.unwrap_or(error)),
-            Err(error) => Err(error),
+            Err(error) if error.code() == LOCK_CONTENTION_CODE => {
+                Err(at_capacity.unwrap_or_else(|| crate::ExecutorError::from(error)))
+            }
+            Err(error) => Err(crate::ExecutorError::from(error)),
         }
     }
 
@@ -418,8 +427,26 @@ impl Connection {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+    use tracing_subscriber::Layer;
+
     use super::{Connection, SessionAccess};
     use crate::{Command, DurableLocalOpenOptions, Executor, IpcMode, Output};
+
+    /// Counts ERROR-level tracing events on the current thread — the seam the
+    /// broker open dance must stay quiet on for a recovered lock contention.
+    struct ErrorCounter(Arc<AtomicUsize>);
+
+    impl<S: tracing::Subscriber> Layer<S> for ErrorCounter {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            if *event.metadata().level() == tracing::Level::ERROR {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
 
     fn ipc_status(conn: &Connection) -> crate::types::AdminIpcStatus {
         match conn
@@ -1153,6 +1180,87 @@ mod tests {
             panic!("opt-out should refuse a held store, not broker");
         };
         assert_eq!(error.code(), super::LOCK_CONTENTION_CODE);
+
+        owner.close().expect("owner close");
+    }
+
+    #[test]
+    fn a_client_brokering_to_an_owner_does_not_log_a_lost_lock_as_an_error() {
+        // #3071: a one-shot (IpcMode::Client) against a hosted database loses
+        // the direct lock to the owner and brokers to it. That lost attempt is
+        // expected contention with a designed recovery, so it must NOT surface
+        // as an engine error at ERROR level on the success path.
+        let dir = tempfile::tempdir().expect("tmp");
+        let owner = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            IpcMode::Host,
+            SessionAccess::ReadWrite,
+        )
+        .expect("owner open");
+
+        let errors = Arc::new(AtomicUsize::new(0));
+        let subscriber = tracing_subscriber::registry().with(ErrorCounter(errors.clone()));
+        let client = tracing::subscriber::with_default(subscriber, || {
+            Connection::open_durable_local_brokered(
+                dir.path(),
+                DurableLocalOpenOptions::new(),
+                IpcMode::Client,
+                SessionAccess::ReadWrite,
+            )
+        })
+        .expect("client brokers to the owner");
+
+        assert!(
+            !client.is_local(),
+            "the client lost the lock and brokered to the owner"
+        );
+        assert_eq!(
+            errors.load(Ordering::SeqCst),
+            0,
+            "a recovered lock contention must not log at ERROR (#3071)"
+        );
+
+        drop(client);
+        owner.close().expect("owner close");
+    }
+
+    #[test]
+    fn a_definitive_contention_refusal_still_logs_at_error() {
+        // Direction control for #3071: the fix silences only *recovered*
+        // contention (the Client broker path). A definitive refusal —
+        // IpcMode::Off against a held store, which has no fallback — must still
+        // cross the logging boundary so genuine contention stays diagnosable
+        // (#3005). The lost lock carries an OS-error source chain, so the
+        // boundary log fires.
+        let dir = tempfile::tempdir().expect("tmp");
+        let owner = Connection::open_durable_local_brokered(
+            dir.path(),
+            DurableLocalOpenOptions::new(),
+            IpcMode::Host,
+            SessionAccess::ReadWrite,
+        )
+        .expect("owner open");
+
+        let errors = Arc::new(AtomicUsize::new(0));
+        let subscriber = tracing_subscriber::registry().with(ErrorCounter(errors.clone()));
+        let refused = tracing::subscriber::with_default(subscriber, || {
+            Connection::open_durable_local_brokered(
+                dir.path(),
+                DurableLocalOpenOptions::new(),
+                IpcMode::Off,
+                SessionAccess::ReadWrite,
+            )
+        });
+
+        let Err(error) = refused else {
+            panic!("opt-out against a held store must refuse, not broker");
+        };
+        assert_eq!(error.code(), super::LOCK_CONTENTION_CODE);
+        assert!(
+            errors.load(Ordering::SeqCst) >= 1,
+            "a definitive contention refusal must still log at ERROR (#3005)"
+        );
 
         owner.close().expect("owner close");
     }

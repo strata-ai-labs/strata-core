@@ -250,6 +250,20 @@ impl Executor {
         Ok(Self::from_database(outcome.into_database()))
     }
 
+    /// Opens a durable-local executor returning the raw [`EngineError`] instead
+    /// of an [`ExecutorError`], so the failure does NOT cross the logging
+    /// boundary. The broker open dance uses this: an expected lock-contention
+    /// loss that then recovers via the owner's socket must not be reported as
+    /// an engine failure (#3071); only a definitive open failure is converted
+    /// (and logged) by the caller.
+    pub(crate) fn open_durable_local_quiet(
+        path: impl Into<PathBuf>,
+        options: DurableLocalOpenOptions,
+    ) -> Result<Self, strata_engine::EngineError> {
+        let outcome = Database::open_local(path, options)?;
+        Ok(Self::from_database(outcome.into_database()))
+    }
+
     /// Wraps an engine database handle.
     pub fn from_database(database: Database) -> Self {
         let default_branch = database.default_branch().as_str().to_owned();
