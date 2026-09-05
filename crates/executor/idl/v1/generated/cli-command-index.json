@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "3fe4c82527885d9417d653d038690aa52069a9fb46976e04bbf08d7e3949ccb8",
+    "checksum_sha256": "ac0c74503e29855cbf1457a80137b02f1aabe901ee59b7f1003b6a3aef32058d",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },

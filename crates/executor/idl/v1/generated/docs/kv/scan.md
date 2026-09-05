@@ -16,14 +16,16 @@ Scan full rows from the start, in key order.
 ### CLI
 
 ```console
-$ strata command run --command-json '{"entries":[{"key":"YQ==","value":"MQ=="},{"key":"Yg==","value":"Mg=="}],"type":"kv_batch_put"}'
+$ strata kv put a 1
+$ strata kv put b 2
 $ strata kv scan
 ```
 
 ### Wire
 
 ```json
-{"entries":[{"key":"YQ==","value":"MQ=="},{"key":"Yg==","value":"Mg=="}],"type":"kv_batch_put"}
+{"key":"YQ==","type":"kv_put","value":"MQ=="}
+{"key":"Yg==","type":"kv_put","value":"Mg=="}
 {"type":"kv_scan"}
 ```
 

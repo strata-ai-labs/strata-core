@@ -1080,10 +1080,6 @@
       "description": "Forks a new branch anchored at a retained source timestamp (microseconds, on Strata's logical commit clock). The engine resolves the timestamp to the covering retained commit; the returned parent lineage records both the fork timestamp and the resolved fork version. A timestamp outside retained history fails with `history_unavailable.engine.persistence_history`.\n\nThis command has no dedicated CLI verb: the CLI expresses it as `strata branch fork <SOURCE> <BRANCH> --timestamp <TIMESTAMP>` (one shared `branch fork` verb routes to all three fork commands, so only `branch.fork` owns the CLI path). It remains fully reachable through the generic wire surface — `strata command run`, MCP, and SDKs.\n\nSuccessful mutations return an acknowledgement of the outcome: for a state-changing write, the affected target with the mutation effect and commit facts; for mutations that produce a domain result (such as a branch or a promotion outcome), that result object.",
       "docs": "/docs/branch/fork_at_timestamp",
       "cli": {
-        "path": [
-          "branch",
-          "fork-at-timestamp"
-        ],
         "surface": "wire"
       },
       "mcp": {
@@ -1151,10 +1147,6 @@
       "description": "Forks a new branch anchored at a retained commit version of the source branch, giving time-travel semantics: the new branch sees exactly the data visible at that version. A version outside retained history fails with `history_unavailable.engine.persistence_history`.\n\nThis command has no dedicated CLI verb: the CLI expresses it as `strata branch fork <SOURCE> <BRANCH> --version <VERSION>` (one shared `branch fork` verb routes to all three fork commands, so only `branch.fork` owns the CLI path). It remains fully reachable through the generic wire surface — `strata command run`, MCP, and SDKs.\n\nSuccessful mutations return an acknowledgement of the outcome: for a state-changing write, the affected target with the mutation effect and commit facts; for mutations that produce a domain result (such as a branch or a promotion outcome), that result object.",
       "docs": "/docs/branch/fork_at_version",
       "cli": {
-        "path": [
-          "branch",
-          "fork-at-version"
-        ],
         "surface": "wire"
       },
       "mcp": {
@@ -1581,10 +1573,6 @@
       "description": "Appends multiple events to the selected branch and space in one engine commit. Sequences are assigned in entry order. Entries that fail validation report a positional item error while valid entries still append.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
       "docs": "/docs/event/batch_append",
       "cli": {
-        "path": [
-          "event",
-          "batch-append"
-        ],
         "surface": "wire"
       },
       "mcp": {
@@ -2674,10 +2662,6 @@
       "description": "Applies an explicit policy to every graph node bound to the given entity target: `cascade` deletes the bound nodes and their incident edges, `detach` keeps the nodes but removes their bindings, and `keep_dangling` preserves the bindings so traversal can report the target's status. The acknowledgement reports how many bound nodes the policy covered.\n\nSuccessful mutations return an acknowledgement of the outcome: for a state-changing write, the affected target with the mutation effect and commit facts; for mutations that produce a domain result (such as a branch or a promotion outcome), that result object.",
       "docs": "/docs/graph/apply_delete_policy",
       "cli": {
-        "path": [
-          "graph",
-          "apply-delete-policy"
-        ],
         "surface": "wire"
       },
       "mcp": {
@@ -2738,10 +2722,6 @@
       "description": "Applies a list of graph operations - `upsert_node`, `delete_node`, `upsert_edge`, `delete_edge` - in one engine commit. Validation failures (bad ids, missing edge endpoints, frozen-ontology violations) reject the whole batch; nothing is partially applied. The response reports one positional item result per operation, all sharing the same commit receipt.\n\nThis whole-batch atomicity is deliberate, and differs from the itemwise `kv`, `json`, and `event` batch writes (where the valid items of a mixed batch still commit and the invalid one carries a typed per-item error). A graph batch mixes node and edge upserts, and an edge references its endpoint nodes, so applying only the valid items could leave an edge pointing at a node that never landed. Rejecting the whole batch keeps graph references consistent - referential integrity is the reason the graph channel is atomic where its siblings are itemwise.\n\nAtomic batches validate every operation up front and apply all of them in one engine commit, or none at all. The response still reports one positional item result per operation; all item results share the same commit receipt.",
       "docs": "/docs/graph/batch_write",
       "cli": {
-        "path": [
-          "graph",
-          "batch-write"
-        ],
         "surface": "wire"
       },
       "mcp": {
@@ -2829,10 +2809,6 @@
       "description": "Searches every graph in the selected branch and space for nodes whose entity binding matches the given target (primitive, space, key). This is the reverse index of node bindings: given an entity, find the graph facts attached to it. Results paginate by an opaque cursor.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
       "docs": "/docs/graph/bindings",
       "cli": {
-        "path": [
-          "graph",
-          "bindings"
-        ],
         "surface": "wire"
       },
       "mcp": {
@@ -5756,10 +5732,6 @@
       "description": "Deletes multiple document/path entries and returns one positional mutation result per entry. Missing documents and paths are represented as no-op item results; applied items share one engine commit.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
       "docs": "/docs/json/batch_delete",
       "cli": {
-        "path": [
-          "json",
-          "batch-delete"
-        ],
         "surface": "wire"
       },
       "mcp": {
@@ -5835,10 +5807,6 @@
       "description": "Checks several JSON documents and returns positional boolean status values. The response preserves the input order.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
       "docs": "/docs/json/batch_exists",
       "cli": {
-        "path": [
-          "json",
-          "batch-exists"
-        ],
         "surface": "wire"
       },
       "mcp": {
@@ -5898,10 +5866,6 @@
       "description": "Reads several document/path entries and returns positional item results. Each item records whether the value was found and includes version metadata when present.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
       "docs": "/docs/json/batch_get",
       "cli": {
-        "path": [
-          "json",
-          "batch-get"
-        ],
         "surface": "wire"
       },
       "mcp": {
@@ -5969,10 +5933,6 @@
       "description": "Writes multiple document/path/value entries using the executor batch contract. Valid items share one engine commit; entries targeting the same document are merged in order into a single new document version.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
       "docs": "/docs/json/batch_set",
       "cli": {
-        "path": [
-          "json",
-          "batch-set"
-        ],
         "surface": "wire"
       },
       "mcp": {
@@ -6903,10 +6863,6 @@
       "description": "Deletes multiple KV keys and returns one positional mutation result per key. Missing keys are represented as no-op item results.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
       "docs": "/docs/kv/batch_delete",
       "cli": {
-        "path": [
-          "kv",
-          "batch-delete"
-        ],
         "surface": "wire"
       },
       "mcp": {
@@ -6978,10 +6934,6 @@
       "description": "Checks several KV keys and returns positional boolean status values. The response preserves the input order.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
       "docs": "/docs/kv/batch_exists",
       "cli": {
-        "path": [
-          "kv",
-          "batch-exists"
-        ],
         "surface": "wire"
       },
       "mcp": {
@@ -7045,10 +6997,6 @@
       "description": "Reads several KV keys and returns positional item results. Each item records whether the corresponding key was found and includes value metadata when present.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
       "docs": "/docs/kv/batch_get",
       "cli": {
-        "path": [
-          "kv",
-          "batch-get"
-        ],
         "surface": "wire"
       },
       "mcp": {
@@ -7112,10 +7060,6 @@
       "description": "Writes multiple KV entries using the executor batch contract. Valid items share commit facts where the underlying engine applies them together.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
       "docs": "/docs/kv/batch_put",
       "cli": {
-        "path": [
-          "kv",
-          "batch-put"
-        ],
         "surface": "wire"
       },
       "mcp": {
@@ -8032,10 +7976,6 @@
       "description": "Deletes multiple vector keys and returns one positional mutation result per input key.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
       "docs": "/docs/vector/batch_delete",
       "cli": {
-        "path": [
-          "vector",
-          "batch-delete"
-        ],
         "surface": "wire"
       },
       "mcp": {
@@ -8113,10 +8053,6 @@
       "description": "Checks several vector keys in one collection and returns positional boolean status values. The response preserves the input order.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
       "docs": "/docs/vector/batch_exists",
       "cli": {
-        "path": [
-          "vector",
-          "batch-exists"
-        ],
         "surface": "wire"
       },
       "mcp": {
@@ -8186,10 +8122,6 @@
       "description": "Reads several vector keys and returns positional item results. Each item records found or missing state.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
       "docs": "/docs/vector/batch_get",
       "cli": {
-        "path": [
-          "vector",
-          "batch-get"
-        ],
         "surface": "wire"
       },
       "mcp": {
@@ -8263,10 +8195,6 @@
       "description": "Writes multiple vector entries and returns positional mutation results. Valid items share commit facts where the engine applies them together.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
       "docs": "/docs/vector/batch_upsert",
       "cli": {
-        "path": [
-          "vector",
-          "batch-upsert"
-        ],
         "surface": "wire"
       },
       "mcp": {
@@ -9172,11 +9100,6 @@
       "description": "Runs vector search and includes planner diagnostics such as index policy, source usage, artifact status, and fallback facts.\n\nSearch responses return a bounded list of matches ordered by the engine. They are not cursor pages unless a later command explicitly advertises pagination.\n\nDiagnostic responses include operational facts intended for debugging and tuning. They should not be required for application correctness.",
       "docs": "/docs/vector/index/query",
       "cli": {
-        "path": [
-          "vector",
-          "index",
-          "query"
-        ],
         "surface": "wire"
       },
       "mcp": {

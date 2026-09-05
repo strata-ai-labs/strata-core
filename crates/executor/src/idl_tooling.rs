@@ -193,13 +193,36 @@ pub struct ResolvedCommand {
 }
 
 /// Future CLI routing facts.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 pub struct CliInfo {
-    /// CLI path segments.
+    /// CLI path segments — the command's logical family/op path, kept for
+    /// internal routing (flat catalog, dedup, example rendering). It is
+    /// advertised in the generated index ONLY for a real clap verb; a `wire`
+    /// surface omits it on the wire (see the `Serialize` impl, #3058).
+    #[serde(default)]
     pub path: Vec<String>,
     /// Which surface implements this path: a real clap verb (`verb`) or
     /// the generic wire path only (`wire` — `command run`, MCP, SDKs).
     pub surface: String,
+}
+
+impl Serialize for CliInfo {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+        // #3058: a `wire` command is escape-hatch only (`command run`), so it
+        // advertises NO runnable `path`. A consumer that renders `cli.path` as
+        // the invocation then never prints a subcommand strata cannot resolve.
+        let advertise_path = self.surface == "verb";
+        let mut cli = serializer.serialize_struct("CliInfo", 1 + usize::from(advertise_path))?;
+        if advertise_path {
+            cli.serialize_field("path", &self.path)?;
+        }
+        cli.serialize_field("surface", &self.surface)?;
+        cli.end()
+    }
 }
 
 /// Future MCP metadata.
@@ -1086,11 +1109,20 @@ fn validate_cli_source_index(index: &CommandIndex) -> Result<()> {
 
 fn cli_entry_from_resolved(command: ResolvedCommand) -> Result<CliCommandEntry> {
     let wire = variant_wire_tag(&command.input, "Command")?;
+    // A `wire` command omits its `cli.path` on the shipped command-index.json
+    // (#3058), but the CLI-routing catalog still needs the logical path.
+    // Reconstruct it from the command id — the same rule the generator used to
+    // synthesize it — so this stays derivable from the generated index alone.
+    let cli_path = if command.cli.path.is_empty() {
+        default_cli_path_for_command_id(&command.id)
+    } else {
+        command.cli.path
+    };
     let entry = CliCommandEntry {
         id: command.id,
-        path_display: cli_path_key(&command.cli.path),
+        path_display: cli_path_key(&cli_path),
         surface: command.cli.surface,
-        path: command.cli.path,
+        path: cli_path,
         family: command.family,
         op: command.op,
         kind: command.kind,
@@ -2303,6 +2335,35 @@ mod tests {
 
     fn refs(names: &[&str]) -> BTreeSet<String> {
         names.iter().map(|n| (*n).to_owned()).collect()
+    }
+
+    #[test]
+    fn cli_info_advertises_a_path_only_for_verb_surface() {
+        // #3058: a real clap verb advertises its runnable path; a `wire`
+        // (escape-hatch) command omits it so consumers never render an
+        // invocation strata cannot resolve.
+        let verb = CliInfo {
+            path: vec!["kv".to_owned(), "put".to_owned()],
+            surface: "verb".to_owned(),
+        };
+        let verb_json = serde_json::to_value(&verb).expect("serializes");
+        assert_eq!(
+            verb_json["path"],
+            serde_json::json!(["kv", "put"]),
+            "a verb advertises its runnable path"
+        );
+        assert_eq!(verb_json["surface"], serde_json::json!("verb"));
+
+        let wire = CliInfo {
+            path: vec!["kv".to_owned(), "batch-put".to_owned()],
+            surface: "wire".to_owned(),
+        };
+        let wire_json = serde_json::to_value(&wire).expect("serializes");
+        assert!(
+            wire_json.get("path").is_none(),
+            "a wire command must not advertise a runnable cli.path: {wire_json}"
+        );
+        assert_eq!(wire_json["surface"], serde_json::json!("wire"));
     }
 
     #[test]

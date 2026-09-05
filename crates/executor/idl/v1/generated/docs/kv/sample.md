@@ -16,14 +16,18 @@ A representative sample plus the total population size.
 ### CLI
 
 ```console
-$ strata command run --command-json '{"entries":[{"key":"YQ==","value":"MQ=="},{"key":"Yg==","value":"Mg=="},{"key":"Yw==","value":"Mw=="}],"type":"kv_batch_put"}'
+$ strata kv put a 1
+$ strata kv put b 2
+$ strata kv put c 3
 $ strata kv sample
 ```
 
 ### Wire
 
 ```json
-{"entries":[{"key":"YQ==","value":"MQ=="},{"key":"Yg==","value":"Mg=="},{"key":"Yw==","value":"Mw=="}],"type":"kv_batch_put"}
+{"key":"YQ==","type":"kv_put","value":"MQ=="}
+{"key":"Yg==","type":"kv_put","value":"Mg=="}
+{"key":"Yw==","type":"kv_put","value":"Mw=="}
 {"type":"kv_sample"}
 ```
 
