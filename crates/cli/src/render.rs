@@ -737,6 +737,34 @@ fn humanize_kv_bytes(output: &Output, value: &mut Value) {
         Output::WriteResult { .. } | Output::DeleteResult { .. } => {
             decode_bytes_fields(data, &["key"]);
         }
+        // Branch diff/merge/preview identities (and values) are logical keys —
+        // decode them like `kv history` does, so the one command whose job is
+        // to be read by a human is readable (#3061).
+        Output::BranchComparison(_) => {
+            if let Some(spaces) = data.get_mut("spaces").and_then(Value::as_array_mut) {
+                for space in spaces {
+                    for group in ["added", "removed", "modified"] {
+                        decode_bytes_in_array(space, group, &["identity"]);
+                    }
+                }
+            }
+        }
+        Output::BranchMerge(_) => {
+            decode_bytes_in_array(data, "applied", &["identity", "value"]);
+            decode_bytes_in_array(data, "deleted", &["identity", "value"]);
+            decode_bytes_in_array(
+                data,
+                "conflicts",
+                &["identity", "source_value", "target_value"],
+            );
+        }
+        Output::BranchPreview(_) => {
+            decode_bytes_in_array(
+                data,
+                "conflicts",
+                &["identity", "source_value", "target_value"],
+            );
+        }
         // Batch outputs also carry Bytes but are not reachable from any CLI
         // verb today; their base64 form is still correct if that changes.
         _ => {}
@@ -744,7 +772,13 @@ fn humanize_kv_bytes(output: &Output, value: &mut Value) {
 }
 
 fn decode_bytes_item_fields(data: &mut Value, fields: &[&str]) {
-    if let Some(items) = data.get_mut("items").and_then(Value::as_array_mut) {
+    decode_bytes_in_array(data, "items", fields);
+}
+
+/// Decodes `fields` on every object in `object[array_field]`, when that is an
+/// array. Used for the item lists KV, branch diff, and promotion outputs carry.
+fn decode_bytes_in_array(object: &mut Value, array_field: &str, fields: &[&str]) {
+    if let Some(items) = object.get_mut(array_field).and_then(Value::as_array_mut) {
         for item in items {
             decode_bytes_fields(item, fields);
         }
@@ -837,8 +871,10 @@ fn human_error_line(value: &Value) -> String {
 mod tests {
     use serde_json::json;
     use strata_executor::{
-        Bytes, CommitDurability, CommitReceipt, Maybe, MutationEffect, Output, PageInfo, ScanItem,
-        VersionedValue,
+        BranchComparisonItem, BranchPreviewItem, Bytes, CommitDurability, CommitReceipt,
+        ComparedCapability, ComparedEntityItem, ConflictKind, ConflictStrategyResult, Maybe,
+        MutationEffect, Output, PageInfo, PreviewConflictItem, PromotedEntityItem,
+        PromotionOutcomeItem, PromotionStrategy, ScanItem, SpaceComparisonItem, VersionedValue,
     };
 
     use super::humanize_kv_bytes;
@@ -1021,6 +1057,169 @@ mod tests {
         let mut value = serde_json::to_value(&output).expect("output serializes");
         humanize_kv_bytes(&output, &mut value);
         assert_eq!(value["data"]["value"]["value"], json!("//4="));
+    }
+
+    // --- #3061: branch diff/merge/preview identities and values decode ---
+
+    fn kv_comparison(entities: Vec<ComparedEntityItem>) -> Output {
+        let space = SpaceComparisonItem::new(
+            "default".to_owned(),
+            ComparedCapability::KeyValue,
+            Vec::new(),
+            Vec::new(),
+            entities,
+        );
+        Output::BranchComparison(BranchComparisonItem::new(
+            "default".to_owned(),
+            "cleaned".to_owned(),
+            vec![space],
+        ))
+    }
+
+    #[test]
+    fn branch_diff_identities_decode_for_human_output() {
+        // Every change group (added/removed/modified) decodes, not just one.
+        let space = SpaceComparisonItem::new(
+            "default".to_owned(),
+            ComparedCapability::KeyValue,
+            vec![ComparedEntityItem::new(bytes("added:key"), 42)],
+            vec![ComparedEntityItem::new(bytes("removed:key"), 40)],
+            vec![ComparedEntityItem::new(bytes("meta:survival_rate"), 41)],
+        );
+        let output = Output::BranchComparison(BranchComparisonItem::new(
+            "default".to_owned(),
+            "cleaned".to_owned(),
+            vec![space],
+        ));
+        let mut value = serde_json::to_value(&output).expect("output serializes");
+        assert_eq!(
+            value["data"]["spaces"][0]["modified"][0]["identity"],
+            json!("bWV0YTpzdXJ2aXZhbF9yYXRl")
+        );
+        humanize_kv_bytes(&output, &mut value);
+        let space = &value["data"]["spaces"][0];
+        assert_eq!(space["added"][0]["identity"], json!("added:key"));
+        assert_eq!(space["removed"][0]["identity"], json!("removed:key"));
+        assert_eq!(
+            space["modified"][0]["identity"],
+            json!("meta:survival_rate")
+        );
+    }
+
+    #[test]
+    fn branch_diff_non_utf8_identity_keeps_base64() {
+        // Direction control: a non-UTF-8 identity falls back to base64.
+        let output = kv_comparison(vec![ComparedEntityItem::new(
+            Bytes::new(vec![0xff, 0xfe]),
+            1,
+        )]);
+        let mut value = serde_json::to_value(&output).expect("output serializes");
+        humanize_kv_bytes(&output, &mut value);
+        assert_eq!(
+            value["data"]["spaces"][0]["modified"][0]["identity"],
+            json!("//4=")
+        );
+    }
+
+    #[test]
+    fn branch_merge_identities_and_values_decode() {
+        // applied (identity + value), deleted (identity, no value), and any
+        // conflicts (identity + both sides) all decode.
+        let applied = PromotedEntityItem::new(
+            ComparedCapability::KeyValue,
+            "default".to_owned(),
+            bytes("meta:survival_rate"),
+            Some(bytes("0.62")),
+        );
+        let deleted = PromotedEntityItem::new(
+            ComparedCapability::KeyValue,
+            "default".to_owned(),
+            bytes("meta:stale_key"),
+            None,
+        );
+        let conflict = PreviewConflictItem::new(
+            ComparedCapability::KeyValue,
+            "default".to_owned(),
+            bytes("meta:disputed"),
+            Some(bytes("mine")),
+            Some(bytes("theirs")),
+            ConflictKind::ValueDivergence,
+            ConflictStrategyResult::SourceWins,
+        );
+        let output = Output::BranchMerge(PromotionOutcomeItem::new(
+            "cleaned".to_owned(),
+            "default".to_owned(),
+            10,
+            PromotionStrategy::SourceWins,
+            Some(44),
+            Some(94),
+            vec![applied],
+            vec![deleted],
+            vec![conflict],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ));
+        let mut value = serde_json::to_value(&output).expect("output serializes");
+        humanize_kv_bytes(&output, &mut value);
+        let data = &value["data"];
+        assert_eq!(data["applied"][0]["identity"], json!("meta:survival_rate"));
+        assert_eq!(data["applied"][0]["value"], json!("0.62"));
+        assert_eq!(data["deleted"][0]["identity"], json!("meta:stale_key"));
+        assert_eq!(data["conflicts"][0]["identity"], json!("meta:disputed"));
+        assert_eq!(data["conflicts"][0]["source_value"], json!("mine"));
+        assert_eq!(data["conflicts"][0]["target_value"], json!("theirs"));
+    }
+
+    #[test]
+    fn branch_preview_conflict_identities_and_values_decode() {
+        let conflict = PreviewConflictItem::new(
+            ComparedCapability::KeyValue,
+            "default".to_owned(),
+            bytes("meta:survival_rate"),
+            Some(bytes("0.62")),
+            Some(bytes("0.5")),
+            ConflictKind::ValueDivergence,
+            ConflictStrategyResult::SourceWins,
+        );
+        let output = Output::BranchPreview(BranchPreviewItem::new(
+            "cleaned".to_owned(),
+            "default".to_owned(),
+            10,
+            PromotionStrategy::SourceWins,
+            vec![conflict],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ));
+        let mut value = serde_json::to_value(&output).expect("output serializes");
+        humanize_kv_bytes(&output, &mut value);
+        let rendered = &value["data"]["conflicts"][0];
+        assert_eq!(rendered["identity"], json!("meta:survival_rate"));
+        assert_eq!(rendered["source_value"], json!("0.62"));
+        assert_eq!(rendered["target_value"], json!("0.5"));
+    }
+
+    #[test]
+    fn branch_diff_human_decodes_but_json_stays_wire_true() {
+        // End-to-end at the call site: the human/raw formats decode, JSON stays
+        // base64 (machine-consumable), matching the KV commands (#3061).
+        let output = kv_comparison(vec![ComparedEntityItem::new(
+            bytes("meta:survival_rate"),
+            41,
+        )]);
+        let human = super::output_to_string(&output, super::Format::Human).expect("human renders");
+        assert!(
+            human.contains("meta:survival_rate"),
+            "human output decodes the identity: {human}"
+        );
+        let json = super::output_to_string(&output, super::Format::Json).expect("json renders");
+        assert!(
+            json.contains("bWV0YTpzdXJ2aXZhbF9yYXRl") && !json.contains("meta:survival_rate"),
+            "json output stays base64: {json}"
+        );
     }
 
     #[test]
