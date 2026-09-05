@@ -26,6 +26,8 @@ use strata_executor::{Executor, IpcMode};
 #[cfg(feature = "native")]
 mod agents;
 #[cfg(test)]
+mod arg_spec;
+#[cfg(test)]
 mod catalog_guard;
 mod context;
 #[cfg(feature = "native")]

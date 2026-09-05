@@ -24,6 +24,33 @@ use crate::Command;
 
 const EXAMPLES_SUBDIR: &str = "examples";
 const MISSING_EXAMPLES_FILE: &str = "missing-examples.yaml";
+const CLI_ARG_SPEC_FILE: &str = "generated/cli-arg-spec.json";
+
+/// The CLI argument spec (#3073), authored from the clap tree by strata-cli.
+/// Maps a verb path (`"graph add-node"`) to its positional wire fields in order
+/// and its wire-field → long-flag map, so CLI examples render with the CLI's
+/// real spellings (`--type`, not `--object-type`) and fall back to
+/// `command run` for any wire field the verb does not expose.
+#[derive(Default, Deserialize)]
+pub(super) struct CliArgSpec {
+    verbs: BTreeMap<String, VerbArgSpec>,
+}
+
+#[derive(Deserialize)]
+struct VerbArgSpec {
+    positionals: Vec<String>,
+    flags: BTreeMap<String, String>,
+}
+
+/// Loads the committed CLI argument spec.
+pub(super) fn load_arg_spec(repo_root: &Path) -> Result<CliArgSpec> {
+    let path = repo_root.join(super::IDL_DIR).join(CLI_ARG_SPEC_FILE);
+    let text = fs::read_to_string(&path).map_err(|source| IdlError::Read {
+        path: path.clone(),
+        source,
+    })?;
+    serde_json::from_str(&text).map_err(|source| IdlError::Json { path, source })
+}
 
 /// Rationale for `.expect()` on `write!` into a `String`: the `fmt::Write`
 /// impl for `String` never returns `Err`.
@@ -568,6 +595,7 @@ pub(super) fn render_section(
     by_id: &BTreeMap<&str, &ResolvedCommand>,
     schemas: &BTreeMap<String, Value>,
     example: &Example,
+    arg_spec: &CliArgSpec,
 ) -> String {
     let bindings = resolve_example_bindings(example, schemas);
     let mut out = String::from("## Examples\n\n");
@@ -578,7 +606,7 @@ pub(super) fn render_section(
 
     out.push_str("### CLI\n\n```console\n");
     for step in &example.steps {
-        let line = render_cli(by_id, schemas, step, &bindings);
+        let line = render_cli(by_id, schemas, step, &bindings, arg_spec);
         let note = step
             .note
             .as_deref()
@@ -597,49 +625,64 @@ pub(super) fn render_section(
     out
 }
 
+/// Whether a clap verb can spell every field the step supplies — each must be
+/// one of the verb's positionals or a known flag. When any field is not exposed
+/// (a wire-only capability, a different arg shape), the caller falls back to
+/// `command run` (#3073). Pure over the spec so the decision is unit-testable.
+fn all_fields_expressible<'a>(spec: &VerbArgSpec, fields: impl Iterator<Item = &'a str>) -> bool {
+    fields.into_iter().all(|field| {
+        spec.positionals
+            .iter()
+            .any(|positional| positional == field)
+            || spec.flags.contains_key(field)
+    })
+}
+
 fn render_cli(
     by_id: &BTreeMap<&str, &ResolvedCommand>,
     schemas: &BTreeMap<String, Value>,
     step: &ExampleStep,
     bindings: &BTreeMap<String, Value>,
+    arg_spec: &CliArgSpec,
 ) -> String {
     let Some(command) = by_id.get(step.call.as_str()) else {
         return step.call.clone();
     };
     let schema = schemas.get(&step.call);
     let resolve = |value: &Value| resolve_refs(&resolve_tmpdir(value, DOC_TMPDIR), bindings);
-    // Wire-only commands have no dedicated clap verb; their CLI form is the
-    // generic command runner over the exact wire JSON.
-    if command.cli.surface != "verb" {
-        if let Some(wire) =
-            schema.and_then(|s| step_wire_json("", 0, step, s, DOC_TMPDIR, bindings).ok())
-        {
-            return format!("strata command run --command-json '{}'", compact(&wire));
-        }
+    let command_run = || {
+        // The escape-hatch CLI form: the generic runner over the exact wire
+        // JSON. Used for wire-only commands and for any verb step whose args a
+        // clap verb cannot spell (#3073).
+        schema
+            .and_then(|s| step_wire_json("", 0, step, s, DOC_TMPDIR, bindings).ok())
+            .map(|wire| format!("strata command run --command-json '{}'", compact(&wire)))
+    };
+
+    // A verb renders as its real clap invocation — but only when the clap tree
+    // (via `cli-arg-spec.json`) actually spells every arg the step supplies.
+    // Otherwise (a renamed field aside, a field the verb does not expose, a
+    // wire-only command) fall back to the runner so the example still runs.
+    let spec = (command.cli.surface == "verb")
+        .then(|| arg_spec.verbs.get(&command.cli.path.join(" ")))
+        .flatten();
+    let Some(spec) = spec else {
+        return command_run().unwrap_or_else(|| step.call.clone());
+    };
+    if !all_fields_expressible(spec, step.args.keys().map(String::as_str)) {
+        return command_run().unwrap_or_else(|| step.call.clone());
     }
+
     let mut tokens = vec![String::from("strata")];
     tokens.extend(command.cli.path.iter().cloned());
-    if let Some(schema) = schema {
-        // Required scalars render as positionals in schema order; the rest as
-        // long flags. Faithful for the seeded verb commands; broader arg-layout
-        // fidelity is a later CLI-golden-runner slice.
-        for name in schema_required(schema) {
-            if name == "type" {
-                continue;
-            }
-            if let Some(value) = step.args.get(name) {
-                tokens.push(cli_token(&resolve(value)));
-            }
+    for field in &spec.positionals {
+        if let Some(value) = step.args.get(field) {
+            tokens.push(cli_token(&resolve(value)));
         }
-        let required: BTreeSet<&str> = schema_required(schema).into_iter().collect();
-        for (name, value) in &step.args {
-            if !required.contains(name.as_str()) {
-                tokens.push(format!(
-                    "--{} {}",
-                    name.replace('_', "-"),
-                    cli_token(&resolve(value))
-                ));
-            }
+    }
+    for (field, flag) in &spec.flags {
+        if let Some(value) = step.args.get(field) {
+            tokens.push(format!("--{flag} {}", cli_token(&resolve(value))));
         }
     }
     tokens.join(" ")
@@ -682,6 +725,28 @@ fn compact(value: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn expressibility_gates_the_verb_form_on_the_arg_spec() {
+        // graph add-node: `graph`/`node_id` positional, `object_type` a flag —
+        // but NO `binding` flag (#3073).
+        let spec = VerbArgSpec {
+            positionals: vec!["graph".to_owned(), "node_id".to_owned()],
+            flags: BTreeMap::from([("object_type".to_owned(), "type".to_owned())]),
+        };
+        // Every field maps to a positional or flag → renderable as a verb.
+        assert!(all_fields_expressible(
+            &spec,
+            ["graph", "node_id", "object_type"].into_iter()
+        ));
+        // A field the verb does not expose (binding) → fall back to command run.
+        assert!(!all_fields_expressible(
+            &spec,
+            ["graph", "node_id", "binding"].into_iter()
+        ));
+        // No args at all is trivially expressible.
+        assert!(all_fields_expressible(&spec, std::iter::empty()));
+    }
 
     #[test]
     fn is_miss_reads_the_maybe_found_flag_not_a_bare_null() {

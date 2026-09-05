@@ -25,11 +25,11 @@ Compare a fork against the branch it came from, across primitives.
 ### CLI
 
 ```console
-$ strata vector collection create notes 2 cosine
+$ strata vector collection create notes 2 --metric cosine
 $ strata kv put config base
 $ strata branch fork default experiment
-$ strata kv put config tuned --branch experiment  # diverge the key-value entry on the fork
-$ strata vector upsert notes n1 [0.1,0.2] --branch experiment  # add a vector on the fork
+$ strata command run --command-json '{"branch":"experiment","key":"Y29uZmln","type":"kv_put","value":"dHVuZWQ="}'  # diverge the key-value entry on the fork
+$ strata command run --command-json '{"branch":"experiment","collection":"notes","key":"n1","type":"vector_upsert","vector":[0.1,0.2]}'  # add a vector on the fork
 $ strata branch diff default experiment  # reports the key-value change and the new vector, grouped by capability
 ```
 

@@ -16,7 +16,7 @@ Read many vectors at once.
 ### CLI
 
 ```console
-$ strata vector collection create docs 3 cosine
+$ strata vector collection create docs 3 --metric cosine
 $ strata command run --command-json '{"collection":"docs","entries":[{"key":"a","vector":[1.0,0.0,0.0]},{"key":"b","vector":[0.0,1.0,0.0]}],"type":"vector_batch_upsert"}'
 $ strata command run --command-json '{"collection":"docs","keys":["a","b"],"type":"vector_batch_get"}'
 ```

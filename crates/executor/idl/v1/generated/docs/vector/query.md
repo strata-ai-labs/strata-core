@@ -16,10 +16,10 @@ Find the nearest vectors to a query vector.
 ### CLI
 
 ```console
-$ strata vector collection create docs 3 cosine
+$ strata vector collection create docs 3 --metric cosine
 $ strata vector upsert docs a [1.0,0.0,0.0]
 $ strata vector upsert docs b [0.0,1.0,0.0]
-$ strata vector query docs [1.0,0.0,0.0] 2
+$ strata vector query docs [1.0,0.0,0.0] --k 2
 ```
 
 ### Wire

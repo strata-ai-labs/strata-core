@@ -16,7 +16,7 @@ List vector collections.
 ### CLI
 
 ```console
-$ strata vector collection create docs 3 cosine
+$ strata vector collection create docs 3 --metric cosine
 $ strata vector collection list
 ```
 

@@ -16,7 +16,7 @@ Delete a collection.
 ### CLI
 
 ```console
-$ strata vector collection create temp 3 cosine
+$ strata vector collection create temp 3 --metric cosine
 $ strata vector collection delete temp
 $ strata vector collection list
 ```

@@ -17,9 +17,9 @@ Import a primitive's rows from a Parquet file written by export.
 
 ```console
 $ strata kv put greeting hello
-$ strata arrow export kv parquet /tmp/exports/kv.parquet
+$ strata command run --command-json '{"format":"parquet","path":"/tmp/exports/kv.parquet","primitive":"kv","type":"arrow_export"}'
 $ strata kv delete greeting
-$ strata arrow import /tmp/exports/kv.parquet kv  # Rows are keyed by their source column; kv restores greeting=hello.
+$ strata arrow import /tmp/exports/kv.parquet --target kv  # Rows are keyed by their source column; kv restores greeting=hello.
 $ strata kv get greeting
 ```
 

@@ -16,7 +16,7 @@ Delete one vector.
 ### CLI
 
 ```console
-$ strata vector collection create docs 3 cosine
+$ strata vector collection create docs 3 --metric cosine
 $ strata vector upsert docs a [1.0,0.0,0.0]
 $ strata vector delete docs a
 $ strata vector exists docs a

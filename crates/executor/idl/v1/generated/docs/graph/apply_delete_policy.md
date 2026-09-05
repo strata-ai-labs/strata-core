@@ -17,7 +17,7 @@ Cascade-delete graph facts bound to an entity.
 
 ```console
 $ strata graph create kb
-$ strata graph add-node kb ada --binding {"target":{"key":"user:1","primitive":"kv","space":"default"}}
+$ strata command run --command-json '{"binding":{"target":{"key":"user:1","primitive":"kv","space":"default"}},"graph":"kb","node_id":"ada","type":"graph_add_node"}'
 $ strata command run --command-json '{"policy":"cascade","target":{"key":"user:1","primitive":"kv","space":"default"},"type":"graph_apply_delete_policy"}'  # cascade removes the bound node and its incident edges.
 $ strata graph get-node kb ada
 ```

@@ -21,7 +21,7 @@ Fork a branch at an earlier commit timestamp — time-travel into a branch.
 $ strata kv put greeting original  # The receipt carries this commit's timestamp (microseconds).
 $ strata kv put greeting updated
 $ strata command run --command-json '{"branch":"snapshot","source":"default","timestamp":3,"type":"branch_fork_at_timestamp"}'  # snapshot forks default's history as of that instant.
-$ strata kv get greeting --branch snapshot
+$ strata command run --command-json '{"branch":"snapshot","key":"Z3JlZXRpbmc=","type":"kv_get"}'
 ```
 
 ### Wire

@@ -16,7 +16,7 @@ Create a secondary index on a JSON field.
 ### CLI
 
 ```console
-$ strata json index create by_name $.name tag
+$ strata json index create by_name $.name --index-type tag
 $ strata json index list
 ```
 

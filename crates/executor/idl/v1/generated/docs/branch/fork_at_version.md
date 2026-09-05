@@ -21,7 +21,7 @@ Fork a branch at an earlier commit version — a snapshot of history.
 $ strata kv put greeting original  # The receipt carries this commit's version.
 $ strata kv put greeting updated
 $ strata command run --command-json '{"branch":"snapshot","source":"default","type":"branch_fork_at_version","version":3}'  # snapshot forks default's history at that version.
-$ strata kv get greeting --branch snapshot
+$ strata command run --command-json '{"branch":"snapshot","key":"Z3JlZXRpbmc=","type":"kv_get"}'
 ```
 
 ### Wire

@@ -1,0 +1,1037 @@
+{
+  "verbs": {
+    "agents commands": {
+      "positionals": [],
+      "flags": {}
+    },
+    "agents errors": {
+      "positionals": [],
+      "flags": {}
+    },
+    "agents guide": {
+      "positionals": [],
+      "flags": {}
+    },
+    "agents init": {
+      "positionals": [],
+      "flags": {
+        "apply": "apply"
+      }
+    },
+    "agents skill": {
+      "positionals": [],
+      "flags": {
+        "force": "force",
+        "targets": "for",
+        "write": "write"
+      }
+    },
+    "arrow export": {
+      "positionals": [
+        "path"
+      ],
+      "flags": {
+        "arrow_export_format": "format",
+        "collection": "collection",
+        "event_type": "event-type",
+        "graph": "graph",
+        "limit": "limit",
+        "prefix": "prefix",
+        "primitive": "primitive"
+      }
+    },
+    "arrow import": {
+      "positionals": [
+        "file_path"
+      ],
+      "flags": {
+        "arrow_import_format": "format",
+        "collection": "collection",
+        "graph": "graph",
+        "key_column": "key-column",
+        "target": "target",
+        "value_column": "value-column"
+      }
+    },
+    "branch create": {
+      "positionals": [
+        "branch"
+      ],
+      "flags": {}
+    },
+    "branch delete": {
+      "positionals": [
+        "branch"
+      ],
+      "flags": {}
+    },
+    "branch diff": {
+      "positionals": [
+        "branch_a",
+        "branch_b"
+      ],
+      "flags": {
+        "as_of": "as-of"
+      }
+    },
+    "branch fork": {
+      "positionals": [
+        "source",
+        "branch"
+      ],
+      "flags": {
+        "timestamp": "timestamp",
+        "version": "version"
+      }
+    },
+    "branch get": {
+      "positionals": [
+        "branch"
+      ],
+      "flags": {}
+    },
+    "branch list": {
+      "positionals": [],
+      "flags": {}
+    },
+    "branch merge": {
+      "positionals": [
+        "source",
+        "target"
+      ],
+      "flags": {
+        "strategy": "strategy"
+      }
+    },
+    "branch preview": {
+      "positionals": [
+        "source",
+        "target"
+      ],
+      "flags": {
+        "strategy": "strategy"
+      }
+    },
+    "clone": {
+      "positionals": [
+        "dataset",
+        "dest"
+      ],
+      "flags": {
+        "branch": "branch",
+        "hub": "hub",
+        "progress": "progress"
+      }
+    },
+    "command print": {
+      "positionals": [],
+      "flags": {
+        "print_command_file": "file",
+        "print_command_json": "command-json"
+      }
+    },
+    "command run": {
+      "positionals": [],
+      "flags": {
+        "run_command_file": "file",
+        "run_command_json": "command-json"
+      }
+    },
+    "config get": {
+      "positionals": [],
+      "flags": {}
+    },
+    "config get-key": {
+      "positionals": [
+        "key"
+      ],
+      "flags": {}
+    },
+    "config path": {
+      "positionals": [],
+      "flags": {}
+    },
+    "config set": {
+      "positionals": [
+        "key",
+        "value"
+      ],
+      "flags": {}
+    },
+    "config show": {
+      "positionals": [],
+      "flags": {}
+    },
+    "config unset": {
+      "positionals": [
+        "key"
+      ],
+      "flags": {}
+    },
+    "describe": {
+      "positionals": [],
+      "flags": {}
+    },
+    "doctor": {
+      "positionals": [],
+      "flags": {}
+    },
+    "event append": {
+      "positionals": [
+        "event_type",
+        "payload"
+      ],
+      "flags": {
+        "file": "file"
+      }
+    },
+    "event by-type": {
+      "positionals": [
+        "event_type"
+      ],
+      "flags": {
+        "after_sequence": "after-sequence",
+        "as_of": "as-of",
+        "limit": "limit"
+      }
+    },
+    "event count": {
+      "positionals": [],
+      "flags": {
+        "as_of": "as-of"
+      }
+    },
+    "event exists": {
+      "positionals": [
+        "sequence"
+      ],
+      "flags": {}
+    },
+    "event get": {
+      "positionals": [
+        "sequence"
+      ],
+      "flags": {
+        "as_of": "as-of"
+      }
+    },
+    "event list": {
+      "positionals": [],
+      "flags": {
+        "after_sequence": "after-sequence",
+        "as_of": "as-of",
+        "event_type": "event-type",
+        "limit": "limit"
+      }
+    },
+    "event range": {
+      "positionals": [
+        "start_seq"
+      ],
+      "flags": {
+        "direction": "direction",
+        "end_seq": "end-seq",
+        "event_type": "event-type",
+        "limit": "limit"
+      }
+    },
+    "event range-time": {
+      "positionals": [
+        "start_ts"
+      ],
+      "flags": {
+        "direction": "direction",
+        "end_ts": "end-ts",
+        "event_type": "event-type",
+        "limit": "limit"
+      }
+    },
+    "event types": {
+      "positionals": [],
+      "flags": {
+        "as_of": "as-of"
+      }
+    },
+    "event verify-chain": {
+      "positionals": [],
+      "flags": {}
+    },
+    "graph add-edge": {
+      "positionals": [
+        "graph",
+        "src",
+        "edge_type",
+        "dst"
+      ],
+      "flags": {
+        "properties": "properties",
+        "properties_file": "properties-file",
+        "weight": "weight"
+      }
+    },
+    "graph add-node": {
+      "positionals": [
+        "graph",
+        "node_id"
+      ],
+      "flags": {
+        "object_type": "type",
+        "properties": "properties",
+        "properties_file": "properties-file"
+      }
+    },
+    "graph bfs": {
+      "positionals": [
+        "graph",
+        "start"
+      ],
+      "flags": {
+        "as_of": "as-of",
+        "direction": "direction",
+        "edge_types": "edge-type",
+        "max_depth": "max-depth",
+        "max_nodes": "max-nodes"
+      }
+    },
+    "graph bulk-insert": {
+      "positionals": [
+        "graph"
+      ],
+      "flags": {
+        "chunk_size": "chunk-size",
+        "data": "data",
+        "file": "file"
+      }
+    },
+    "graph cdlp": {
+      "positionals": [
+        "graph"
+      ],
+      "flags": {
+        "as_of": "as-of",
+        "direction": "direction",
+        "max_iterations": "max-iterations"
+      }
+    },
+    "graph create": {
+      "positionals": [
+        "graph"
+      ],
+      "flags": {}
+    },
+    "graph delete": {
+      "positionals": [
+        "graph"
+      ],
+      "flags": {}
+    },
+    "graph get-edge": {
+      "positionals": [
+        "graph",
+        "src",
+        "edge_type",
+        "dst"
+      ],
+      "flags": {
+        "as_of": "as-of"
+      }
+    },
+    "graph get-node": {
+      "positionals": [
+        "graph",
+        "node_id"
+      ],
+      "flags": {
+        "as_of": "as-of"
+      }
+    },
+    "graph lcc": {
+      "positionals": [
+        "graph"
+      ],
+      "flags": {
+        "as_of": "as-of"
+      }
+    },
+    "graph list": {
+      "positionals": [],
+      "flags": {
+        "as_of": "as-of",
+        "cursor": "cursor",
+        "limit": "limit"
+      }
+    },
+    "graph list-nodes": {
+      "positionals": [
+        "graph"
+      ],
+      "flags": {
+        "as_of": "as-of",
+        "cursor": "cursor",
+        "limit": "limit",
+        "prefix": "prefix"
+      }
+    },
+    "graph meta": {
+      "positionals": [
+        "graph"
+      ],
+      "flags": {
+        "as_of": "as-of"
+      }
+    },
+    "graph neighbors": {
+      "positionals": [
+        "graph",
+        "node_id"
+      ],
+      "flags": {
+        "as_of": "as-of",
+        "cursor": "cursor",
+        "direction": "direction",
+        "edge_type": "edge-type",
+        "limit": "limit"
+      }
+    },
+    "graph nodes-by-type": {
+      "positionals": [
+        "graph",
+        "object_type"
+      ],
+      "flags": {
+        "as_of": "as-of",
+        "cursor": "cursor",
+        "limit": "limit"
+      }
+    },
+    "graph ontology define-link-type": {
+      "positionals": [
+        "graph",
+        "name",
+        "source",
+        "target"
+      ],
+      "flags": {
+        "cardinality": "cardinality",
+        "properties": "properties",
+        "properties_file": "properties-file"
+      }
+    },
+    "graph ontology define-object-type": {
+      "positionals": [
+        "graph",
+        "name"
+      ],
+      "flags": {
+        "properties": "properties",
+        "properties_file": "properties-file"
+      }
+    },
+    "graph ontology delete-link-type": {
+      "positionals": [
+        "graph",
+        "name"
+      ],
+      "flags": {}
+    },
+    "graph ontology delete-object-type": {
+      "positionals": [
+        "graph",
+        "name"
+      ],
+      "flags": {}
+    },
+    "graph ontology freeze": {
+      "positionals": [
+        "graph"
+      ],
+      "flags": {}
+    },
+    "graph ontology get": {
+      "positionals": [
+        "graph"
+      ],
+      "flags": {
+        "as_of": "as-of"
+      }
+    },
+    "graph ontology summary": {
+      "positionals": [
+        "graph"
+      ],
+      "flags": {
+        "as_of": "as-of"
+      }
+    },
+    "graph pagerank": {
+      "positionals": [
+        "graph"
+      ],
+      "flags": {
+        "as_of": "as-of",
+        "damping": "damping",
+        "max_iterations": "max-iterations",
+        "personalization": "personalization",
+        "tolerance": "tolerance"
+      }
+    },
+    "graph remove-edge": {
+      "positionals": [
+        "graph",
+        "src",
+        "edge_type",
+        "dst"
+      ],
+      "flags": {}
+    },
+    "graph remove-node": {
+      "positionals": [
+        "graph",
+        "node_id"
+      ],
+      "flags": {}
+    },
+    "graph sample": {
+      "positionals": [
+        "graph"
+      ],
+      "flags": {
+        "count": "count"
+      }
+    },
+    "graph sssp": {
+      "positionals": [
+        "graph",
+        "source"
+      ],
+      "flags": {
+        "as_of": "as-of",
+        "direction": "direction"
+      }
+    },
+    "graph wcc": {
+      "positionals": [
+        "graph"
+      ],
+      "flags": {
+        "as_of": "as-of"
+      }
+    },
+    "health": {
+      "positionals": [],
+      "flags": {}
+    },
+    "hub get-dataset": {
+      "positionals": [
+        "name"
+      ],
+      "flags": {
+        "hub": "hub"
+      }
+    },
+    "hub info": {
+      "positionals": [],
+      "flags": {
+        "hub": "hub"
+      }
+    },
+    "hub list-datasets": {
+      "positionals": [],
+      "flags": {
+        "hub": "hub",
+        "license": "license",
+        "limit": "limit",
+        "offset": "offset",
+        "primitives": "primitive",
+        "size_max_bytes": "size-max-bytes",
+        "size_min_bytes": "size-min-bytes",
+        "sort": "sort",
+        "tags": "tag",
+        "tasks": "task"
+      }
+    },
+    "hub list-refs": {
+      "positionals": [
+        "dataset"
+      ],
+      "flags": {
+        "hub": "hub"
+      }
+    },
+    "hub list-yanked": {
+      "positionals": [],
+      "flags": {
+        "hub": "hub",
+        "since": "since"
+      }
+    },
+    "inference cache-status": {
+      "positionals": [],
+      "flags": {}
+    },
+    "inference capability": {
+      "positionals": [
+        "model"
+      ],
+      "flags": {}
+    },
+    "inference detokenize": {
+      "positionals": [
+        "model",
+        "ids"
+      ],
+      "flags": {}
+    },
+    "inference embed": {
+      "positionals": [
+        "model",
+        "inputs"
+      ],
+      "flags": {
+        "dimensions": "dimensions",
+        "input_type": "input-type",
+        "normalize": "normalize"
+      }
+    },
+    "inference generate": {
+      "positionals": [
+        "model",
+        "prompt"
+      ],
+      "flags": {
+        "chat_format": "chat-format",
+        "frequency_penalty": "frequency-penalty",
+        "grammar": "grammar",
+        "json_body": "json-body",
+        "logprobs": "logprobs",
+        "max_tokens": "max-tokens",
+        "messages": "message",
+        "messages_json": "messages-json",
+        "min_p": "min-p",
+        "n_ctx": "n-ctx",
+        "n_gpu_layers": "n-gpu-layers",
+        "presence_penalty": "presence-penalty",
+        "repeat_penalty": "repeat-penalty",
+        "response_format": "response-format",
+        "response_schema": "response-schema",
+        "response_schema_name": "response-schema-name",
+        "seed": "seed",
+        "stop_sequences": "stop",
+        "stop_tokens": "stop-token",
+        "system": "system",
+        "temperature": "temperature",
+        "tool_choice": "tool-choice",
+        "tools_json": "tools-json",
+        "top_k": "top-k",
+        "top_logprobs": "top-logprobs",
+        "top_p": "top-p"
+      }
+    },
+    "inference models list": {
+      "positionals": [],
+      "flags": {}
+    },
+    "inference models local": {
+      "positionals": [],
+      "flags": {}
+    },
+    "inference models pull": {
+      "positionals": [
+        "model"
+      ],
+      "flags": {}
+    },
+    "inference rank": {
+      "positionals": [
+        "model",
+        "query",
+        "passages"
+      ],
+      "flags": {}
+    },
+    "inference tokenize": {
+      "positionals": [
+        "model",
+        "text"
+      ],
+      "flags": {
+        "special": "special"
+      }
+    },
+    "inference unload": {
+      "positionals": [
+        "model"
+      ],
+      "flags": {}
+    },
+    "info": {
+      "positionals": [],
+      "flags": {}
+    },
+    "init": {
+      "positionals": [],
+      "flags": {}
+    },
+    "ipc status": {
+      "positionals": [],
+      "flags": {}
+    },
+    "ipc stop": {
+      "positionals": [],
+      "flags": {}
+    },
+    "json count": {
+      "positionals": [],
+      "flags": {
+        "prefix": "prefix"
+      }
+    },
+    "json delete": {
+      "positionals": [
+        "key",
+        "path"
+      ],
+      "flags": {}
+    },
+    "json exists": {
+      "positionals": [
+        "key"
+      ],
+      "flags": {}
+    },
+    "json get": {
+      "positionals": [
+        "key",
+        "path"
+      ],
+      "flags": {
+        "as_of": "as-of"
+      }
+    },
+    "json history": {
+      "positionals": [
+        "key"
+      ],
+      "flags": {}
+    },
+    "json index create": {
+      "positionals": [
+        "name",
+        "field_path"
+      ],
+      "flags": {
+        "index_type": "index-type"
+      }
+    },
+    "json index drop": {
+      "positionals": [
+        "name"
+      ],
+      "flags": {}
+    },
+    "json index list": {
+      "positionals": [],
+      "flags": {}
+    },
+    "json list": {
+      "positionals": [],
+      "flags": {
+        "as_of": "as-of",
+        "cursor": "cursor",
+        "limit": "limit",
+        "prefix": "prefix"
+      }
+    },
+    "json sample": {
+      "positionals": [],
+      "flags": {
+        "count": "count",
+        "prefix": "prefix"
+      }
+    },
+    "json scan": {
+      "positionals": [],
+      "flags": {
+        "cursor": "cursor",
+        "limit": "limit",
+        "start": "start"
+      }
+    },
+    "json set": {
+      "positionals": [
+        "key",
+        "path",
+        "value"
+      ],
+      "flags": {
+        "file": "file"
+      }
+    },
+    "kv count": {
+      "positionals": [],
+      "flags": {
+        "prefix": "prefix"
+      }
+    },
+    "kv delete": {
+      "positionals": [
+        "key"
+      ],
+      "flags": {}
+    },
+    "kv exists": {
+      "positionals": [
+        "key"
+      ],
+      "flags": {}
+    },
+    "kv get": {
+      "positionals": [
+        "key"
+      ],
+      "flags": {
+        "as_of": "as-of"
+      }
+    },
+    "kv history": {
+      "positionals": [
+        "key"
+      ],
+      "flags": {}
+    },
+    "kv list": {
+      "positionals": [],
+      "flags": {
+        "as_of": "as-of",
+        "cursor": "cursor",
+        "limit": "limit",
+        "prefix": "prefix"
+      }
+    },
+    "kv put": {
+      "positionals": [
+        "key",
+        "value"
+      ],
+      "flags": {
+        "file": "file"
+      }
+    },
+    "kv sample": {
+      "positionals": [],
+      "flags": {
+        "count": "count",
+        "prefix": "prefix"
+      }
+    },
+    "kv scan": {
+      "positionals": [],
+      "flags": {
+        "cursor": "cursor",
+        "limit": "limit",
+        "start": "start"
+      }
+    },
+    "mcp serve": {
+      "positionals": [],
+      "flags": {}
+    },
+    "metrics": {
+      "positionals": [],
+      "flags": {}
+    },
+    "ping": {
+      "positionals": [],
+      "flags": {}
+    },
+    "remote": {
+      "positionals": [],
+      "flags": {}
+    },
+    "space create": {
+      "positionals": [
+        "space"
+      ],
+      "flags": {}
+    },
+    "space delete": {
+      "positionals": [
+        "space"
+      ],
+      "flags": {
+        "force": "force"
+      }
+    },
+    "space exists": {
+      "positionals": [
+        "space"
+      ],
+      "flags": {}
+    },
+    "space list": {
+      "positionals": [],
+      "flags": {}
+    },
+    "start": {
+      "positionals": [],
+      "flags": {}
+    },
+    "stop": {
+      "positionals": [],
+      "flags": {}
+    },
+    "uninstall": {
+      "positionals": [],
+      "flags": {
+        "yes": "yes"
+      }
+    },
+    "update": {
+      "positionals": [],
+      "flags": {
+        "check": "check",
+        "version": "version"
+      }
+    },
+    "vector collection create": {
+      "positionals": [
+        "collection",
+        "dimension"
+      ],
+      "flags": {
+        "metric": "metric"
+      }
+    },
+    "vector collection delete": {
+      "positionals": [
+        "collection"
+      ],
+      "flags": {}
+    },
+    "vector collection list": {
+      "positionals": [],
+      "flags": {}
+    },
+    "vector collection stats": {
+      "positionals": [
+        "collection"
+      ],
+      "flags": {}
+    },
+    "vector count": {
+      "positionals": [
+        "collection"
+      ],
+      "flags": {}
+    },
+    "vector delete": {
+      "positionals": [
+        "collection",
+        "key"
+      ],
+      "flags": {}
+    },
+    "vector delete-all": {
+      "positionals": [
+        "collection"
+      ],
+      "flags": {}
+    },
+    "vector delete-by-filter": {
+      "positionals": [
+        "collection"
+      ],
+      "flags": {
+        "filter": "filter",
+        "filter_file": "filter-file"
+      }
+    },
+    "vector exists": {
+      "positionals": [
+        "collection",
+        "key"
+      ],
+      "flags": {}
+    },
+    "vector get": {
+      "positionals": [
+        "collection",
+        "key"
+      ],
+      "flags": {
+        "as_of": "as-of"
+      }
+    },
+    "vector history": {
+      "positionals": [
+        "collection",
+        "key"
+      ],
+      "flags": {}
+    },
+    "vector keys": {
+      "positionals": [
+        "collection"
+      ],
+      "flags": {
+        "cursor": "cursor",
+        "limit": "limit",
+        "prefix": "prefix"
+      }
+    },
+    "vector query": {
+      "positionals": [
+        "collection",
+        "query"
+      ],
+      "flags": {
+        "as_of": "as-of",
+        "diagnostics": "diagnostics",
+        "file": "file",
+        "filter": "filter",
+        "filter_file": "filter-file",
+        "k": "k"
+      }
+    },
+    "vector sample": {
+      "positionals": [
+        "collection"
+      ],
+      "flags": {
+        "count": "count"
+      }
+    },
+    "vector scan": {
+      "positionals": [
+        "collection"
+      ],
+      "flags": {
+        "cursor": "cursor",
+        "limit": "limit",
+        "start": "start"
+      }
+    },
+    "vector update-metadata": {
+      "positionals": [
+        "collection",
+        "key",
+        "patch"
+      ],
+      "flags": {
+        "file": "file"
+      }
+    },
+    "vector upsert": {
+      "positionals": [
+        "collection",
+        "key",
+        "vector"
+      ],
+      "flags": {
+        "file": "file",
+        "metadata": "metadata",
+        "metadata_file": "metadata-file"
+      }
+    }
+  }
+}

@@ -30,7 +30,7 @@ Preview promoting a fork into the branch it came from.
 ```console
 $ strata kv put config base
 $ strata branch fork default experiment
-$ strata kv put config tuned --branch experiment  # change on the fork
+$ strata command run --command-json '{"branch":"experiment","key":"Y29uZmln","type":"kv_put","value":"dHVuZWQ="}'  # change on the fork
 $ strata branch preview experiment default --strategy strict  # a clean preview — no conflicting changes on default
 ```
 
