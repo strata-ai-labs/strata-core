@@ -16,7 +16,7 @@ Read a stored vector, or nothing if the key is absent.
 ### CLI
 
 ```console
-$ strata vector collection create docs 3 cosine
+$ strata vector collection create docs 3 --metric cosine
 $ strata vector upsert docs a [1.0,0.0,0.0]
 $ strata vector get docs a
 $ strata vector get docs absent

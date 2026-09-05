@@ -116,6 +116,7 @@ fn render_all(repo_root: &Path) -> Result<BTreeMap<PathBuf, String>> {
     let documents = schemas::schema_documents(&index)?;
     let example_specs = examples::load_examples(repo_root)?;
     examples::validate_examples(repo_root, &index, &documents, &example_specs)?;
+    let arg_spec = examples::load_arg_spec(repo_root)?;
     let docs_dir = docs_dir_path(repo_root);
     let stamp = source_stamp();
 
@@ -140,6 +141,7 @@ fn render_all(repo_root: &Path) -> Result<BTreeMap<PathBuf, String>> {
                 &by_id,
                 &documents,
                 example_specs.get(&entry.id),
+                &arg_spec,
             ),
         );
     }
@@ -165,6 +167,7 @@ fn page_rel_path(entry: &ResolvedCommand) -> Result<PathBuf> {
     Ok(PathBuf::from(format!("{rel}.md")))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_page(
     entry: &ResolvedCommand,
     schema: &Value,
@@ -172,6 +175,7 @@ fn render_page(
     by_id: &BTreeMap<&str, &ResolvedCommand>,
     schemas: &BTreeMap<String, Value>,
     example: Option<&Example>,
+    arg_spec: &examples::CliArgSpec,
 ) -> String {
     let mut out = String::new();
     out.push_str("---\n");
@@ -185,7 +189,7 @@ fn render_page(
     out.push_str("\n\n");
 
     if let Some(example) = example {
-        out.push_str(&examples::render_section(by_id, schemas, example));
+        out.push_str(&examples::render_section(by_id, schemas, example, arg_spec));
     }
 
     out.push_str(&render_parameters(schema));

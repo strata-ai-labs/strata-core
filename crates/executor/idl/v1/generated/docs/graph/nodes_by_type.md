@@ -17,8 +17,8 @@ List nodes of a given object type.
 
 ```console
 $ strata graph create g
-$ strata graph add-node g a --object-type person
-$ strata graph add-node g b --object-type person
+$ strata graph add-node g a --type person
+$ strata graph add-node g b --type person
 $ strata graph nodes-by-type g person
 ```
 

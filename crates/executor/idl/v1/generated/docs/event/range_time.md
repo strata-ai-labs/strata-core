@@ -18,7 +18,7 @@ Read a range of events by timestamp.
 ```console
 $ strata event append user.created {"id":1}
 $ strata event append user.updated {"id":2}
-$ strata event range-time 0 forward
+$ strata event range-time 0 --direction forward
 ```
 
 ### Wire

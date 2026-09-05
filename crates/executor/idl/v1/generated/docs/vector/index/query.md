@@ -18,7 +18,7 @@ Nearest-neighbor search that also returns index diagnostics.
 ### CLI
 
 ```console
-$ strata vector collection create docs 3 cosine
+$ strata vector collection create docs 3 --metric cosine
 $ strata vector upsert docs a [1.0,0.0,0.0]
 $ strata vector upsert docs b [0.0,1.0,0.0]
 $ strata command run --command-json '{"collection":"docs","k":2,"query":[1.0,0.0,0.0],"type":"vector_index_query"}'

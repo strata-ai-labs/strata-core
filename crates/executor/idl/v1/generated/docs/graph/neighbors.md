@@ -20,7 +20,7 @@ $ strata graph create social
 $ strata graph add-node social alice
 $ strata graph add-node social bob
 $ strata graph add-edge social alice knows bob
-$ strata graph neighbors social alice outgoing
+$ strata graph neighbors social alice --direction outgoing
 ```
 
 ### Wire

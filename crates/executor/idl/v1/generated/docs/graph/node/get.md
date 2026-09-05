@@ -17,7 +17,7 @@ Read a node's properties, or nothing if absent.
 
 ```console
 $ strata graph create social
-$ strata graph add-node social alice --object-type person --properties {"age":30}
+$ strata graph add-node social alice --type person --properties {"age":30}
 $ strata graph get-node social alice
 $ strata graph get-node social absent
 ```

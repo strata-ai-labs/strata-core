@@ -17,9 +17,9 @@ Export a primitive to a Parquet file, then import it back.
 
 ```console
 $ strata kv put greeting hello
-$ strata arrow export kv parquet /tmp/exports/kv.parquet  # One file per primitive; Parquet by default.
+$ strata command run --command-json '{"format":"parquet","path":"/tmp/exports/kv.parquet","primitive":"kv","type":"arrow_export"}'  # One file per primitive; Parquet by default.
 $ strata kv delete greeting
-$ strata arrow import /tmp/exports/kv.parquet kv
+$ strata arrow import /tmp/exports/kv.parquet --target kv
 $ strata kv get greeting
 ```
 

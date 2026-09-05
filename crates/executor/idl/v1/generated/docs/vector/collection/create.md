@@ -16,7 +16,7 @@ Create a vector collection, then confirm its dimension.
 ### CLI
 
 ```console
-$ strata vector collection create docs 3 cosine
+$ strata vector collection create docs 3 --metric cosine
 $ strata vector collection stats docs
 ```
 

@@ -16,7 +16,7 @@ Delete every vector in a collection.
 ### CLI
 
 ```console
-$ strata vector collection create docs 3 cosine
+$ strata vector collection create docs 3 --metric cosine
 $ strata vector upsert docs a [1.0,0.0,0.0]
 $ strata vector delete-all docs
 $ strata vector count docs

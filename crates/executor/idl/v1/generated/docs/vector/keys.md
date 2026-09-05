@@ -16,7 +16,7 @@ List keys in a collection, in key order.
 ### CLI
 
 ```console
-$ strata vector collection create docs 3 cosine
+$ strata vector collection create docs 3 --metric cosine
 $ strata vector upsert docs a [1.0,0.0,0.0]
 $ strata vector upsert docs b [0.0,1.0,0.0]
 $ strata vector keys docs

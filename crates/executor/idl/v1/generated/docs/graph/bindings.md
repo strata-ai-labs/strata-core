@@ -17,7 +17,7 @@ List graph nodes bound to a product entity.
 
 ```console
 $ strata graph create kb
-$ strata graph add-node kb ada --binding {"target":{"key":"user:1","primitive":"kv","space":"default"}}  # Bind the node to a KV entity so retrieval can cross primitives.
+$ strata command run --command-json '{"binding":{"target":{"key":"user:1","primitive":"kv","space":"default"}},"graph":"kb","node_id":"ada","type":"graph_add_node"}'  # Bind the node to a KV entity so retrieval can cross primitives.
 $ strata command run --command-json '{"target":{"key":"user:1","primitive":"kv","space":"default"},"type":"graph_bindings_for_entity"}'
 ```
 
