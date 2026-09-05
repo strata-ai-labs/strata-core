@@ -83,18 +83,22 @@ cells:
     scenario: Float NaN/Inf value -> must not silently become JSON null
     status: covered
     test: cell_to_json_rejects_non_finite_floats_instead_of_nulling_them
+  - id: value.dictionary
+    scenario: a dictionary-encoded value column decodes to the underlying value's JSON (a dict int is 42, not "42")
+    status: covered
+    test: cell_to_json_decodes_dictionary_to_the_underlying_value
   - id: value.temporal_decimal
-    scenario: Decimal/Timestamp/Date/Time/Duration/Dictionary -> correct JSON, not Display string
-    status: gap
-    issue: 3091
+    scenario: Decimal/Timestamp/Date/Time/Duration render as the Arrow Display string
+    status: accepted
+    note: "#3091: JSON has no native temporal or decimal type; ISO-8601 / decimal-text is lossless (a JSON number would lose Decimal precision), so the Display string is the intended representation"
   - id: value.largelist_fixedsizelist
     scenario: LargeList / FixedSizeList value -> real JSON array, not the Display string
     status: covered
     test: cell_to_json_reconstructs_large_list
   - id: value.nested_map
     scenario: Map value -> real JSON object, not the Display string
-    status: gap
-    issue: 3091
+    status: covered
+    test: cell_to_json_reconstructs_map_as_object
 
   # ---- edge cases -------------------------------------------------------------
   - id: edge.encoding_nonbase64

@@ -1,7 +1,7 @@
 //! Arrow schema mapping and row coercion.
 
 use arrow::array::{self, Array};
-use arrow::datatypes::{DataType, Schema};
+use arrow::datatypes::{ArrowNativeType, DataType, Schema};
 use arrow::record_batch::RecordBatch;
 use base64::Engine;
 use serde_json::Value;
@@ -580,6 +580,40 @@ fn cell_to_json(column: &dyn Array, row: usize) -> ExecutorResult<Value> {
             }
             Ok(Value::Array(items))
         }
+        DataType::Map(_, _) => {
+            // #3091: a Map value column reconstructs a JSON object (string keys),
+            // not the Arrow `Display` string.
+            let array = column.as_any().downcast_ref::<array::MapArray>().unwrap();
+            let entries = array.value(row);
+            let keys = entries.column(0);
+            let values = entries.column(1);
+            let mut object = serde_json::Map::with_capacity(entries.len());
+            for index in 0..entries.len() {
+                let key = cell_to_string(keys.as_ref(), index)?;
+                object.insert(key, cell_to_json(values.as_ref(), index)?);
+            }
+            Ok(Value::Object(object))
+        }
+        DataType::Dictionary(_, _) => {
+            // #3091: a dictionary is an encoding, not a semantic type — decode to
+            // the underlying value's JSON (a dict-encoded int is the number 42,
+            // not the string "42"). Read the single key at `row` (O(1)); the
+            // whole-column `normalized_keys()` would be O(n) per cell, i.e. O(n^2)
+            // over the row loop. Null cells are handled by the is_null guard
+            // above, so the key here always references a present value.
+            arrow::array::downcast_dictionary_array!(
+                column => {
+                    let value_index = column.keys().value(row).as_usize();
+                    cell_to_json(column.values().as_ref(), value_index)
+                }
+                _ => unreachable!("outer match guarantees a dictionary array"),
+            )
+        }
+        // Timestamp/Date/Time/Duration/Decimal remain the Arrow `Display` string:
+        // JSON has no native temporal or decimal type, so ISO-8601 / decimal text
+        // is a lossless representation (a JSON number would lose Decimal
+        // precision). Tracked as `value.temporal_decimal` (accepted) in the
+        // conformance ledger.
         _ => Ok(Value::String(cell_to_string(column, row)?)),
     }
 }
@@ -669,12 +703,12 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::array::{
-        BinaryArray, BooleanArray, FixedSizeListBuilder, Float32Array, Float32Builder,
-        Float64Array, Float64Builder, Int16Array, Int32Array, Int64Array, Int64Builder, Int8Array,
-        LargeBinaryArray, LargeStringArray, ListBuilder, NullArray, StringArray, UInt16Array,
-        UInt32Array, UInt64Array, UInt8Array,
+        BinaryArray, BooleanArray, DictionaryArray, FixedSizeListBuilder, Float32Array,
+        Float32Builder, Float64Array, Float64Builder, Int16Array, Int32Array, Int64Array,
+        Int64Builder, Int8Array, LargeBinaryArray, LargeStringArray, ListBuilder, MapBuilder,
+        NullArray, StringArray, StringBuilder, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
     };
-    use arrow::datatypes::{Field, Int64Type};
+    use arrow::datatypes::{Field, Int32Type, Int64Type};
     use base64::Engine;
     use serde_json::json;
 
@@ -1205,6 +1239,41 @@ mod tests {
         let value = cell_to_json(&list, 0).expect("fixed-size list converts");
         assert_eq!(value, json!([1, 2, 3]));
         assert!(value.is_array(), "reconstructed value must be a JSON array");
+    }
+
+    #[test]
+    fn cell_to_json_reconstructs_map_as_object() {
+        // #3091: a Map value column reconstructs a JSON object, not the Display
+        // string.
+        let mut builder = MapBuilder::new(None, StringBuilder::new(), Int64Builder::new());
+        builder.keys().append_value("a");
+        builder.values().append_value(1);
+        builder.keys().append_value("b");
+        builder.values().append_value(2);
+        builder.append(true).expect("append map row");
+        let map = builder.finish();
+        let value = cell_to_json(&map, 0).expect("map converts");
+        assert_eq!(value, json!({"a": 1, "b": 2}));
+        assert!(
+            value.is_object(),
+            "reconstructed value must be a JSON object"
+        );
+    }
+
+    #[test]
+    fn cell_to_json_decodes_dictionary_to_the_underlying_value() {
+        // #3091: a dictionary is an encoding; a dict-encoded integer must decode
+        // to the JSON number 42, not the Display string "42".
+        let values = Int64Array::from(vec![42_i64, 7]);
+        let keys = Int32Array::from(vec![0_i32, 1]);
+        let dict = DictionaryArray::<Int32Type>::try_new(keys, Arc::new(values))
+            .expect("dictionary array");
+        // Row 0 -> key 0 -> 42; row 1 -> key 1 -> 7. Both rows are checked so the
+        // per-row key read (`value(row)`) is exercised, not just index 0.
+        assert_eq!(cell_to_json(&dict, 0).expect("row 0 converts"), json!(42));
+        let row1 = cell_to_json(&dict, 1).expect("row 1 converts");
+        assert_eq!(row1, json!(7));
+        assert!(row1.is_number(), "decoded value must be a JSON number");
     }
 
     #[test]
