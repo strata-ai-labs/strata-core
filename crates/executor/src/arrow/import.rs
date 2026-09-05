@@ -132,6 +132,14 @@ fn import_kv(
                 counts.rows_skipped += 1;
                 continue;
             };
+            // #3083: a null value cell is skipped, not stored as an empty-byte
+            // value (which is indistinguishable from a real empty value).
+            if let Some(value_idx) = mapping.value_idx {
+                if batch.column(value_idx).is_null(row) {
+                    counts.rows_skipped += 1;
+                    continue;
+                }
+            }
             let value = value_bytes(batch, mapping, row)?;
             entries.push(BatchKvEntry::new(Bytes::from(key), Bytes::from(value)));
         }
