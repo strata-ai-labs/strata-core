@@ -21,7 +21,7 @@ use stratahub_protocol::{Hash, Manifest};
 
 use strata_core::Timestamp;
 use strata_engine::artifact::{ArtifactModel, ArtifactSection, BranchArtifact};
-use strata_engine::{Database, DurableLocalOpenOptions};
+use strata_engine::{BranchName, Database, DurableLocalOpenOptions, EngineError};
 
 /// Failure modes of bundle import.
 #[derive(Debug)]
@@ -46,8 +46,11 @@ pub enum BundleImportError {
     },
     /// The staged database failed to materialize or verify.
     Engine {
-        /// The engine error code.
+        /// The engine error code (for programmatic handling).
         code: String,
+        /// The failing branch (when known) and the underlying engine message
+        /// and reason — #3070: the bare code alone hid which branch/call failed.
+        detail: String,
     },
     /// I/O failure while staging or renaming.
     Io {
@@ -77,8 +80,8 @@ impl fmt::Display for BundleImportError {
             Self::MalformedBundle { detail } => {
                 write!(formatter, "bundle is malformed: {detail}")
             }
-            Self::Engine { code } => {
-                write!(formatter, "staged database failed to materialize: {code}")
+            Self::Engine { detail, .. } => {
+                write!(formatter, "staged database failed to materialize: {detail}")
             }
             Self::Io { source } => write!(formatter, "I/O error during import: {source}"),
         }
@@ -132,7 +135,8 @@ pub fn import_bundle<S: std::hash::BuildHasher>(
         .prefix(".strata-import-")
         .tempdir_in(parent)?;
 
-    materialize(staging.path(), &artifacts).map_err(|code| BundleImportError::Engine { code })?;
+    materialize(staging.path(), &artifacts)
+        .map_err(|(code, detail)| BundleImportError::Engine { code, detail })?;
 
     // The staging directory becomes the target atomically; same-parent
     // placement keeps the rename on one filesystem.
@@ -315,24 +319,46 @@ fn reassemble_section<S: std::hash::BuildHasher>(
 
 /// Builds and verifies the staged database. Returns the engine error code
 /// on failure (the staging directory is discarded by the caller's `Drop`).
-fn materialize(staging: &Path, artifacts: &[BranchArtifact]) -> Result<(), String> {
+fn materialize(staging: &Path, artifacts: &[BranchArtifact]) -> Result<(), (String, String)> {
     {
         let mut db = Database::open_local(staging, DurableLocalOpenOptions::new())
-            .map_err(|error| error.code().to_owned())?
+            .map_err(|error| engine_stage_failure(None, &error))?
             .into_database();
         for artifact in artifacts {
             db.import_branch_artifact(artifact)
-                .map_err(|error| error.code().to_owned())?;
+                .map_err(|error| engine_stage_failure(Some(artifact.branch()), &error))?;
         }
     }
     // Fresh re-open proves the materialized database recovers cleanly —
     // the §6 "verify the resulting directory opens" step.
     let outcome = Database::open_local(staging, DurableLocalOpenOptions::new())
-        .map_err(|error| error.code().to_owned())?;
+        .map_err(|error| engine_stage_failure(None, &error))?;
     if outcome.summary().created() {
-        return Err("staged import produced no durable database".to_owned());
+        return Err((
+            "internal.hub.import".to_owned(),
+            "staged import produced no durable database".to_owned(),
+        ));
     }
     Ok(())
+}
+
+/// Builds `(code, detail)` for a staging failure — #3070: propagate the branch,
+/// the engine message, and the `reason` detail instead of flattening to a bare
+/// code, so an operator can see which branch and which call failed.
+fn engine_stage_failure(branch: Option<&BranchName>, error: &EngineError) -> (String, String) {
+    let location = branch
+        .map(|branch| format!("branch '{}': ", branch.as_str()))
+        .unwrap_or_default();
+    let reason = error
+        .details()
+        .iter()
+        .find(|detail| detail.key() == "reason")
+        .map(|detail| format!(" ({})", detail.value()))
+        .unwrap_or_default();
+    (
+        error.code().to_owned(),
+        format!("{location}{}: {}{reason}", error.code(), error.message()),
+    )
 }
 
 fn malformed(detail: &str) -> BundleImportError {

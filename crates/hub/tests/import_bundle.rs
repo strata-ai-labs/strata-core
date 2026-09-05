@@ -233,3 +233,87 @@ fn non_empty_target_refuses_and_empty_dir_is_claimed() {
     import_bundle(&empty, &bundle.manifest, &bundle.objects).expect("empty dir claimed");
     assert_eq!(export_bundle_at(&empty).manifest_hash, bundle.manifest_hash);
 }
+
+fn build_two_branch_fixture_db(path: &Path) {
+    let mut db = Database::open_local(path, DurableLocalOpenOptions::new())
+        .expect("fixture db opens")
+        .into_database();
+    let default = || BranchName::new("default").expect("branch");
+    let second = BranchName::new("second").expect("branch");
+    let space = || ProductSpace::new("default").expect("space");
+
+    db.kv(default(), space())
+        .expect("kv")
+        .put(KvKey::new("k1").expect("key"), KvValue::new(b"v1".to_vec()))
+        .expect("put");
+    db.branches()
+        .expect("branches")
+        .create(second.clone())
+        .expect("create second");
+    db.kv(second, space())
+        .expect("kv")
+        .put(KvKey::new("k2").expect("key"), KvValue::new(b"v2".to_vec()))
+        .expect("put");
+    // Advance default past everything on second, so importing default first
+    // raises the monotonic floor above second's timestamps.
+    db.kv(default(), space())
+        .expect("kv")
+        .put(KvKey::new("k3").expect("key"), KvValue::new(b"v3".to_vec()))
+        .expect("put");
+}
+
+fn export_two_branch_bundle_at(path: &Path) -> Bundle {
+    let mut engine = StrataCoreEngine::open(path).expect("open");
+    let mut options = EngineExportOptions::default();
+    options.branches = vec![
+        stratahub_protocol::BranchName::parse("default").expect("branch"),
+        stratahub_protocol::BranchName::parse("second").expect("branch"),
+    ];
+    let output = engine.export_bundle(&options).expect("export");
+    let manifest_hash = stratahub_protocol::hash_bytes(&output.manifest_canonical_bytes);
+    let objects = output
+        .objects
+        .into_iter()
+        .map(|object| (object.hash, object.bytes))
+        .collect();
+    Bundle {
+        manifest: output.manifest,
+        manifest_hash,
+        objects,
+    }
+}
+
+#[test]
+fn multi_branch_import_failure_names_the_branch_and_reason() {
+    // #3070 (S1): a multi-branch bundle currently fails to materialize (the
+    // import fix is S2). The failure MUST name the offending branch and the
+    // underlying reason, not a bare `invalid_argument.engine.persistence`.
+    let source = tempfile::tempdir().expect("tempdir");
+    build_two_branch_fixture_db(source.path());
+    let bundle = export_two_branch_bundle_at(source.path());
+
+    let target = tempfile::tempdir().expect("tempdir");
+    let target_path = target.path().join("clone");
+    let Err(error) = import_bundle(&target_path, &bundle.manifest, &bundle.objects) else {
+        panic!("multi-branch import currently fails to materialize");
+    };
+    let BundleImportError::Engine { code, detail } = &error else {
+        panic!("expected an Engine failure, got {error:?}");
+    };
+    assert_eq!(code, "invalid_argument.engine.persistence");
+    assert!(
+        detail.contains("branch 'second'"),
+        "detail must name the offending branch: {detail}"
+    );
+    assert!(
+        detail.contains("monotonic floor"),
+        "detail must carry the underlying reason: {detail}"
+    );
+    // The user-visible message (what the CLI prints) carries the branch and
+    // reason too — not a bare code.
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("branch 'second'") && rendered.contains("monotonic floor"),
+        "Display must surface the branch and reason: {rendered}"
+    );
+}
