@@ -13,6 +13,7 @@ use crate::{public_error_code_entries, Command, Output};
 
 mod docs;
 mod examples;
+pub use examples::{CapturedExample, CapturedStep};
 mod schemas;
 mod tests_gen;
 mod verify;
@@ -978,6 +979,16 @@ pub fn verify_fixtures(repo_root: &Path, update: bool) -> Result<Vec<PathBuf>> {
 
 /// Generates the reference documentation tree under `generated/docs/`
 /// (per-command pages, per-family indexes, and `llms.txt`) from the IDL.
+/// Replays every hermetic example and captures each step's rendered CLI input
+/// plus the wire output it produced, so a consumer (strata-cli) can render the
+/// output and ship `command-examples.json` in the docs bundle (#3059).
+pub fn capture_examples(repo_root: &Path) -> Result<Vec<examples::CapturedExample>> {
+    let index = resolve_index(repo_root)?;
+    let documents = schemas::schema_documents(&index)?;
+    let arg_spec = examples::load_arg_spec(repo_root)?;
+    examples::capture_example_runs(repo_root, &index, &documents, &arg_spec)
+}
+
 pub fn generate_docs(repo_root: &Path) -> Result<()> {
     docs::generate_docs(repo_root)
 }

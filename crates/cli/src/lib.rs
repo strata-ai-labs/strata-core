@@ -29,6 +29,8 @@ mod agents;
 mod arg_spec;
 #[cfg(test)]
 mod catalog_guard;
+#[cfg(test)]
+mod command_examples;
 mod context;
 #[cfg(feature = "native")]
 mod doctor;
