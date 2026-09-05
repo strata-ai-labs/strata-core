@@ -3966,6 +3966,7 @@ dependencies = [
  "time",
  "tiny_http",
  "tracing",
+ "tracing-subscriber",
  "url",
  "web-time",
 ]
