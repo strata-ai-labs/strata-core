@@ -216,12 +216,40 @@ fn resolve_kv_value(
     if let Ok(value_idx) = schema.index_of("value") {
         return Ok(resolve_extras(schema, &[key_idx, value_idx]));
     }
+    // 2-column shortcut: the single non-key column is the value — but only if it
+    // is an actual value, not an encoding metadata column (#3083: a `key` +
+    // `value_encoding` file must not treat the encoding as the value).
     if schema.fields().len() == 2 {
         let value_idx = usize::from(key_idx == 0);
-        return Ok((Some(value_idx), Vec::new(), Vec::new()));
+        if !is_kv_encoding_column(schema.field(value_idx).name()) {
+            return Ok((Some(value_idx), Vec::new(), Vec::new()));
+        }
     }
-    let (extra_indices, extra_names) = collect_extras(schema, &[key_idx]);
+    // Otherwise the value is a JSON object of the remaining columns — excluding
+    // the encoding metadata columns. If none remain, there is no value to import;
+    // fail instead of fabricating `b"{}"` for every key (#3083).
+    let mut exclude = vec![key_idx];
+    for name in ["key_encoding", "value_encoding"] {
+        if let Ok(index) = schema.index_of(name) {
+            exclude.push(index);
+        }
+    }
+    let (extra_indices, extra_names) = collect_extras(schema, &exclude);
+    if extra_indices.is_empty() {
+        return Err(invalid_input(
+            "invalid_argument.executor.arrow_value_column",
+            format!(
+                "no value column found; provide a `value` column, pass --value-column, or include value columns. available columns: {}",
+                format_columns(schema)
+            ),
+        ));
+    }
     Ok((None, extra_indices, extra_names))
+}
+
+/// Whether a column name is a KV encoding metadata column (never a value).
+fn is_kv_encoding_column(name: &str) -> bool {
+    matches!(name, "key_encoding" | "value_encoding")
 }
 
 fn resolve_json_document(
@@ -766,6 +794,37 @@ mod tests {
             .expect_err("missing document fails");
         assert_eq!(error.code(), "invalid_argument.executor.arrow_value_column");
         assert!(error.message().contains("payload (Utf8)"));
+    }
+
+    #[test]
+    fn resolve_kv_value_errors_instead_of_fabricating_a_value() {
+        // #3083: a key-only file has no value — must error, not resolve to an
+        // empty extras bundle that stores b"{}" for every key.
+        let one_col = Schema::new(vec![utf8_field("key")]);
+        let error = resolve_kv_value(&one_col, 0, None).expect_err("no value column");
+        assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+        assert_eq!(error.code(), "invalid_argument.executor.arrow_value_column");
+
+        // #3083: the 2-column shortcut must not pick an encoding metadata column
+        // as the value.
+        let key_enc = Schema::new(vec![utf8_field("key"), utf8_field("value_encoding")]);
+        let error = resolve_kv_value(&key_enc, 0, None).expect_err("encoding is not a value");
+        assert_eq!(error.code(), "invalid_argument.executor.arrow_value_column");
+
+        // Direction control: a real 2-column value column is still picked...
+        let key_data = Schema::new(vec![utf8_field("key"), utf8_field("data")]);
+        let (value_idx, _, _) = resolve_kv_value(&key_data, 0, None).expect("shortcut value");
+        assert_eq!(value_idx, Some(1));
+        // ...as is an explicit `value` column, and a multi-column row object.
+        let kv = Schema::new(vec![utf8_field("key"), utf8_field("value")]);
+        assert_eq!(
+            resolve_kv_value(&kv, 0, None).expect("value col").0,
+            Some(1)
+        );
+        let row_obj = Schema::new(vec![utf8_field("key"), utf8_field("a"), utf8_field("b")]);
+        let (value_idx, extras, _) = resolve_kv_value(&row_obj, 0, None).expect("row object");
+        assert_eq!(value_idx, None);
+        assert_eq!(extras, vec![1, 2]);
     }
 
     #[test]
