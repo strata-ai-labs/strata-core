@@ -324,10 +324,12 @@ fn materialize(staging: &Path, artifacts: &[BranchArtifact]) -> Result<(), (Stri
         let mut db = Database::open_local(staging, DurableLocalOpenOptions::new())
             .map_err(|error| engine_stage_failure(None, &error))?
             .into_database();
-        for artifact in artifacts {
-            db.import_branch_artifact(artifact)
-                .map_err(|error| engine_stage_failure(Some(artifact.branch()), &error))?;
-        }
+        // #3070: import every branch as one globally-ordered replay. The
+        // branches share a single interleaved commit stream, so replaying them
+        // one at a time would raise the monotonic floor past a later branch's
+        // history and reject it.
+        db.import_branch_artifacts(artifacts)
+            .map_err(|error| engine_stage_failure(None, &error))?;
     }
     // Fresh re-open proves the materialized database recovers cleanly —
     // the §6 "verify the resulting directory opens" step.
