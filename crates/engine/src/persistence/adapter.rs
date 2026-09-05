@@ -125,6 +125,11 @@ pub(crate) struct StoragePersistence {
     /// Armed by artifact import replay: the NEXT commit is stamped with
     /// this timestamp (consumed exactly once). See `crate::artifact`.
     replay_commit_timestamp: Option<Timestamp>,
+    /// Held during multi-branch import setup: any commit without a one-shot
+    /// replay timestamp (branch and space bookkeeping) is stamped with this
+    /// value so structural writes never advance the floor past the content
+    /// that replays next. Not consumed; cleared explicitly. See #3070.
+    replay_structural_timestamp: Option<Timestamp>,
     #[cfg(any(test, feature = "testkit"))]
     faults: FaultSchedule,
     #[cfg(any(test, feature = "testkit"))]
@@ -410,6 +415,7 @@ impl StoragePersistence {
                 runtime,
                 durable,
                 replay_commit_timestamp: None,
+                replay_structural_timestamp: None,
                 #[cfg(any(test, feature = "testkit"))]
                 faults: FaultSchedule::default(),
                 #[cfg(any(test, feature = "testkit"))]
@@ -620,6 +626,12 @@ impl StoragePersistence {
         self.replay_commit_timestamp = Some(timestamp);
     }
 
+    /// Holds (or clears with `None`) the structural replay timestamp used for
+    /// import setup commits that carry no one-shot timestamp. See #3070.
+    pub(crate) fn set_replay_structural_timestamp(&mut self, timestamp: Option<Timestamp>) {
+        self.replay_structural_timestamp = timestamp;
+    }
+
     pub(crate) fn commit(&mut self, plan: &CommitPlan) -> EngineResult<CommitOutcome> {
         self.guard_fault(FaultOp::Commit)?;
         let mut mutations = Vec::with_capacity(plan.mutations().len());
@@ -632,7 +644,15 @@ impl StoragePersistence {
         }
         let batch =
             CommitBatch::new(plan.branch_id(), mutations, options).map_err(map_storage_error)?;
-        let summary = match self.replay_commit_timestamp.take() {
+        // A per-item replay timestamp (consumed once) wins; otherwise a held
+        // structural timestamp (branch/space setup during import) keeps those
+        // bookkeeping commits from advancing the floor past the content that
+        // replays next. Neither set ⇒ ordinary generated allocation. See #3070.
+        let replay_timestamp = self
+            .replay_commit_timestamp
+            .take()
+            .or(self.replay_structural_timestamp);
+        let summary = match replay_timestamp {
             Some(timestamp) => self
                 .runtime
                 .commit_at(&batch, timestamp)
