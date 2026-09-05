@@ -465,17 +465,26 @@ fn graph_column_index(schema: &Schema, name: &str) -> ExecutorResult<usize> {
 
 /// Reads a required Utf8 cell (node id, edge endpoint, or edge type).
 fn graph_string_cell(batch: &RecordBatch, index: usize, row: usize) -> ExecutorResult<String> {
-    batch
+    let array = batch
         .column(index)
         .as_any()
         .downcast_ref::<StringArray>()
-        .map(|array| array.value(row).to_owned())
         .ok_or_else(|| {
             invalid_input(
                 "invalid_argument.executor.arrow_graph",
                 format!("graph import expects a string column at index {index}"),
             )
-        })
+        })?;
+    if array.is_null(row) {
+        // #3083: node_id/src/dst/edge_type are required identity columns; a null
+        // must be rejected, not read as "" (which would anchor a node/edge to an
+        // empty-id phantom node).
+        return Err(invalid_input(
+            "invalid_argument.executor.arrow_graph",
+            format!("graph import requires a non-null id at column index {index}"),
+        ));
+    }
+    Ok(array.value(row).to_owned())
 }
 
 /// Reads a required Float64 edge weight cell.
@@ -551,4 +560,35 @@ fn graph_optional_binding(
             format!("graph import binding cell is not valid JSON: {error}"),
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::array::StringArray;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+
+    use crate::ExecutorErrorClass;
+
+    use super::graph_string_cell;
+
+    #[test]
+    fn graph_string_cell_rejects_a_null_id_instead_of_fabricating_an_empty_string() {
+        // #3083: a null node_id/src/dst/edge_type must be rejected, not read as ""
+        // (which would anchor a node/edge to an empty-id phantom node).
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("src", DataType::Utf8, true)])),
+            vec![Arc::new(StringArray::from(vec![Some("a"), None]))],
+        )
+        .expect("batch");
+
+        // A present id reads through unchanged.
+        assert_eq!(graph_string_cell(&batch, 0, 0).expect("non-null id"), "a");
+        // A null id is rejected, not fabricated into "".
+        let error = graph_string_cell(&batch, 0, 1).expect_err("null id rejected");
+        assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+        assert_eq!(error.code(), "invalid_argument.executor.arrow_graph");
+    }
 }

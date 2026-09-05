@@ -59,7 +59,7 @@ runs on every PR (plain integration test, no feature gate) and enforces:
 
 - every `covered` cell names a `test:` that exists as a `#[test] fn` in an arrow
   test source (`arrow_behavior.rs`, `arrow_disabled_behavior.rs`,
-  `arrow/schema.rs`, `arrow_conformance.rs`);
+  `arrow_conformance.rs`, `arrow/schema.rs`, `arrow/import.rs`);
 - every `gap` cell names an `issue:`;
 - every `accepted` cell carries a `note:`;
 - no duplicate cell ids.
