@@ -213,8 +213,30 @@ impl Database {
         crate::artifact::import_branch(self, artifact)
     }
 
+    /// Imports several branch artifacts as one globally-ordered replay.
+    ///
+    /// Branches originally share a single interleaved commit stream, so the
+    /// per-branch monotonic floor can only be honored by replaying all of
+    /// them together in global timestamp order — importing one at a time
+    /// rejects any branch whose history predates another's latest commit
+    /// (#3070). Each target branch is created when absent and must hold no
+    /// content; summaries are returned in artifact order.
+    pub fn import_branch_artifacts(
+        &mut self,
+        artifacts: &[crate::artifact::BranchArtifact],
+    ) -> EngineResult<Vec<crate::artifact::BranchImportSummary>> {
+        crate::artifact::import_branches(self, artifacts)
+    }
+
     pub(crate) fn arm_replay_commit_timestamp(&mut self, timestamp: strata_core::Timestamp) {
         self.persistence.arm_replay_commit_timestamp(timestamp);
+    }
+
+    pub(crate) fn set_replay_structural_timestamp(
+        &mut self,
+        timestamp: Option<strata_core::Timestamp>,
+    ) {
+        self.persistence.set_replay_structural_timestamp(timestamp);
     }
 
     /// Records (or overwrites) where this database was cloned from.

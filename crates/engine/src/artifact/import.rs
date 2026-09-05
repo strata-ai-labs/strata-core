@@ -9,8 +9,10 @@
 //!
 //! Structural facts whose timestamps are not part of the payload (branch
 //! and space existence, graph creation, ontology definitions) replay at
-//! the enclosing content's minimum timestamp — invisible to re-export by
-//! construction.
+//! the global minimum content timestamp — invisible to re-export by
+//! construction. Several branches import as one globally-ordered replay so
+//! their shared commit stream is reconstructed without regressing the floor
+//! (see [`import_branches`], #3070).
 
 use serde_json::Value;
 use strata_core::Timestamp;
@@ -53,7 +55,8 @@ impl BranchImportSummary {
 /// Accumulates consecutive same-timestamp KV rows into one commit.
 type KvRun = Option<(Timestamp, Vec<(Vec<u8>, Vec<u8>)>, i64)>;
 
-/// One replay step, ordered globally by `(timestamp, section, record)`.
+/// One replay step. Ordered within a branch by `(timestamp, section, record)`
+/// and, across branches, by `(timestamp, branch, section, record)`.
 struct WorkItem {
     timestamp: Timestamp,
     section: usize,
@@ -80,26 +83,96 @@ pub fn import_branch(
     db: &mut Database,
     artifact: &BranchArtifact,
 ) -> EngineResult<BranchImportSummary> {
-    let branch = artifact.branch().clone();
-    ensure_empty_target_branch(db, &branch)?;
+    let mut summaries = import_branches(db, std::slice::from_ref(artifact))?;
+    Ok(summaries.pop().expect("one artifact yields one summary"))
+}
 
-    let items = build_schedule(artifact)?;
-    let record_count = artifact
-        .sections()
+/// Imports several branch artifacts into `db` as one globally-ordered replay.
+///
+/// Branches originally share a single interleaved commit stream, and the
+/// commit-timestamp floor (`CommitTimestampGuard`) is a single per-database
+/// value. Importing branches one at a time would raise the floor to the first
+/// branch's latest commit, then reject any later branch whose history predates
+/// it (#3070). Replaying every branch's content merged into one global
+/// timestamp order keeps each explicit commit ≥ the floor, so MVCC-007 holds
+/// with no change to the floor's semantics.
+///
+/// Branch existence is created up front — it commits through a separate branch
+/// path that does not touch the timestamp floor — and each branch's spaces are
+/// created at the global minimum content timestamp (structural, invisible to
+/// re-export, and floor-safe because it is ≤ all content). The single-branch
+/// case ([`import_branch`]) delegates here and reduces to today's schedule.
+pub fn import_branches(
+    db: &mut Database,
+    artifacts: &[BranchArtifact],
+) -> EngineResult<Vec<BranchImportSummary>> {
+    let schedules = artifacts
         .iter()
-        .map(super::ArtifactSection::record_count)
-        .sum();
-    let min_timestamp = items.first().map(|item| item.timestamp);
+        .map(build_schedule)
+        .collect::<EngineResult<Vec<_>>>()?;
+    let global_min = schedules
+        .iter()
+        .filter_map(|items| items.first().map(|item| item.timestamp))
+        .min();
 
-    create_spaces(db, &branch, artifact, min_timestamp)?;
-    for item in items {
-        replay_item(db, &branch, item)?;
+    // Structural phase. Branch creation makes control-plane bookkeeping
+    // commits that would otherwise be generated and advance the floor past
+    // the content; hold the global minimum so they land at or below it. The
+    // hold covers emptiness/creation and space registration, then clears
+    // before content replays at its own per-item timestamps.
+    db.set_replay_structural_timestamp(global_min);
+    let structural = import_structure(db, artifacts, global_min);
+    db.set_replay_structural_timestamp(None);
+    structural?;
+
+    // Merge every branch's schedule into one globally non-decreasing order.
+    // Branch identity is the tiebreak below equal timestamps, so the replay
+    // is a deterministic total order across targets.
+    let mut merged: Vec<(usize, WorkItem)> = Vec::new();
+    for (branch_index, items) in schedules.into_iter().enumerate() {
+        merged.extend(items.into_iter().map(|item| (branch_index, item)));
+    }
+    merged.sort_by(|(a_index, a), (b_index, b)| {
+        (a.timestamp, *a_index, a.section, a.record).cmp(&(
+            b.timestamp,
+            *b_index,
+            b.section,
+            b.record,
+        ))
+    });
+    for (branch_index, item) in merged {
+        replay_item(db, artifacts[branch_index].branch(), item)?;
     }
 
-    Ok(BranchImportSummary {
-        sections: artifact.sections().len(),
-        records: record_count,
-    })
+    Ok(artifacts
+        .iter()
+        .map(|artifact| BranchImportSummary {
+            sections: artifact.sections().len(),
+            records: artifact
+                .sections()
+                .iter()
+                .map(super::ArtifactSection::record_count)
+                .sum(),
+        })
+        .collect())
+}
+
+/// Emptiness check, branch creation, and space registration for every target,
+/// run while the structural replay timestamp is held so no setup commit moves
+/// the floor above `global_min` (#3070). A populated target refuses here,
+/// before any content replays.
+fn import_structure(
+    db: &mut Database,
+    artifacts: &[BranchArtifact],
+    global_min: Option<Timestamp>,
+) -> EngineResult<()> {
+    for artifact in artifacts {
+        ensure_empty_target_branch(db, artifact.branch())?;
+    }
+    for artifact in artifacts {
+        create_spaces(db, artifact.branch(), artifact, global_min)?;
+    }
+    Ok(())
 }
 
 fn ensure_empty_target_branch(db: &mut Database, branch: &BranchName) -> EngineResult<()> {

@@ -45,7 +45,7 @@ mod provenance;
 
 pub use decode::{decode_section, ArtifactRecord, ArtifactRecordIter};
 pub use export::export_branch;
-pub use import::{import_branch, BranchImportSummary};
+pub use import::{import_branch, import_branches, BranchImportSummary};
 pub(crate) use provenance::{decode_remote_origin, encode_remote_origin};
 pub use provenance::{RemoteOrigin, RemoteOriginFrontierEntry};
 
