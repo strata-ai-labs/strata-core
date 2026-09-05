@@ -4,7 +4,7 @@
 # The lint (`arrow_conformance.rs`) enforces:
 #   status: covered  => `test:` names a #[test] fn that exists in an arrow test
 #                        source (arrow_behavior.rs / arrow_disabled_behavior.rs /
-#                        arrow/schema.rs / arrow_conformance.rs).
+#                        arrow_conformance.rs / arrow/schema.rs / arrow/import.rs).
 #   status: gap      => `issue:` names the tracking issue.
 #   status: accepted => `note:` states why it is intentionally not covered.
 #
@@ -113,8 +113,12 @@ cells:
     scenario: a CSV column type only disambiguated by a row after 100 is not mis-typed from the prefix
     status: covered
     test: csv_import_infers_column_type_from_a_value_after_row_100
+  - id: edge.null_graph_endpoint
+    scenario: a null node_id/src/dst/edge_type is rejected, not read as "" (no empty-id phantom node)
+    status: covered
+    test: graph_string_cell_rejects_a_null_id_instead_of_fabricating_an_empty_string
   - id: edge.null_cells
-    scenario: null KV value / null graph weight / null endpoint handled (not flattened)
+    scenario: null KV value (skip) / null graph weight (not flattened to 0.0) handled
     status: gap
     issue: 3083
   - id: edge.empty_jsonl_export

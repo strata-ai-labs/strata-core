@@ -49,6 +49,7 @@ fn arrow_test_sources() -> String {
         "tests/arrow_disabled_behavior.rs",
         "tests/arrow_conformance.rs",
         "src/arrow/schema.rs",
+        "src/arrow/import.rs",
     ];
     let mut body = String::new();
     for file in files {
