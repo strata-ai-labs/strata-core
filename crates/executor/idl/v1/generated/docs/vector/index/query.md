@@ -37,7 +37,7 @@ $ strata command run --command-json '{"collection":"docs","k":2,"query":[1.0,0.0
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `as_of` | `integer` | no | Optional timestamp in microseconds. |
+| `as_of` | `integer` | no | Optional read-as-of commit timestamp: the `timestamp` from `history` output (a commit-timeline position, not the `version`). |
 | `collection` | `string` | yes | Collection name. |
 | `filter` | `VectorMetadataFilter` | no | Optional metadata filter. |
 | `k` | `integer` | yes | Maximum number of matches. |

@@ -145,7 +145,7 @@
     "description": "Compares two branches.",
     "properties": {
       "at_timestamp": {
-        "description": "Optional timestamp in microseconds; compare each branch as of it.",
+        "description": "Optional read-as-of commit timestamp: compare each branch as of the\n`timestamp` from `history` output (a commit-timeline position, not\nthe `version`).",
         "format": "uint64",
         "minimum": 0,
         "type": [

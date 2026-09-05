@@ -115,7 +115,7 @@
     "description": "Reads the graph's ontology (status plus every declared type).",
     "properties": {
       "as_of": {
-        "description": "Optional timestamp in microseconds. Reads the graph state visible at that instant.",
+        "description": "Optional read-as-of commit timestamp: the `timestamp` from `history`\noutput (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.",
         "format": "uint64",
         "minimum": 0,
         "type": [

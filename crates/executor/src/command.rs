@@ -209,7 +209,9 @@ pub enum Command {
         branch_a: String,
         /// The second branch (the `B` side).
         branch_b: String,
-        /// Optional timestamp in microseconds; compare each branch as of it.
+        /// Optional read-as-of commit timestamp: compare each branch as of the
+        /// `timestamp` from `history` output (a commit-timeline position, not
+        /// the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         at_timestamp: Option<u64>,
     },
@@ -303,7 +305,8 @@ pub enum Command {
         space: Option<String>,
         /// Key bytes.
         key: Bytes,
-        /// Optional timestamp in microseconds.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -335,7 +338,8 @@ pub enum Command {
         /// Optional item limit. Defaults to 100.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
-        /// Optional timestamp in microseconds.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -431,7 +435,8 @@ pub enum Command {
         /// Optional key prefix.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         prefix: Option<Bytes>,
-        /// Optional timestamp in microseconds.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -477,7 +482,8 @@ pub enum Command {
         key: String,
         /// JSON path.
         path: String,
-        /// Optional timestamp in microseconds.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -594,7 +600,8 @@ pub enum Command {
         /// Optional item limit.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
-        /// Optional timestamp in microseconds.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -624,7 +631,8 @@ pub enum Command {
         /// Optional document key prefix.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         prefix: Option<String>,
-        /// Optional timestamp in microseconds.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -734,7 +742,8 @@ pub enum Command {
         space: Option<String>,
         /// Collection name.
         collection: String,
-        /// Optional timestamp in microseconds.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -783,7 +792,8 @@ pub enum Command {
         collection: String,
         /// Vector key.
         key: String,
-        /// Optional timestamp in microseconds.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -845,7 +855,8 @@ pub enum Command {
         /// Optional item limit. Defaults to 100.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
-        /// Optional timestamp in microseconds.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -936,7 +947,8 @@ pub enum Command {
         /// Optional metadata filter.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<VectorMetadataFilter>,
-        /// Optional timestamp in microseconds.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -958,7 +970,8 @@ pub enum Command {
         /// Optional metadata filter.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<VectorMetadataFilter>,
-        /// Optional timestamp in microseconds.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1035,7 +1048,8 @@ pub enum Command {
         space: Option<String>,
         /// Event sequence.
         sequence: u64,
-        /// Optional timestamp in microseconds.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1058,7 +1072,8 @@ pub enum Command {
         /// Target product space. Defaults to `"default"`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
-        /// Optional timestamp in microseconds.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1115,7 +1130,8 @@ pub enum Command {
         /// Target product space. Defaults to `"default"`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
-        /// Optional timestamp in microseconds.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1136,7 +1152,8 @@ pub enum Command {
         /// Optional exclusive sequence cursor.
         #[serde(default, alias = "cursor", skip_serializing_if = "Option::is_none")]
         after_sequence: Option<u64>,
-        /// Optional timestamp in microseconds.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1185,7 +1202,8 @@ pub enum Command {
         /// Optional item limit. Defaults to 100.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
-        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1199,7 +1217,8 @@ pub enum Command {
         space: Option<String>,
         /// Graph name.
         graph: String,
-        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1237,7 +1256,8 @@ pub enum Command {
         graph: String,
         /// Node id.
         node_id: String,
-        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1273,7 +1293,8 @@ pub enum Command {
         /// Optional item limit. Defaults to 100.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
-        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1330,7 +1351,8 @@ pub enum Command {
         edge_type: String,
         /// Destination node id.
         dst: String,
-        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1374,7 +1396,8 @@ pub enum Command {
         /// Optional item limit. Defaults to 100.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
-        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1394,7 +1417,8 @@ pub enum Command {
         /// Optional item limit. Defaults to 100.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
-        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1498,7 +1522,8 @@ pub enum Command {
         space: Option<String>,
         /// Graph name.
         graph: String,
-        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1512,7 +1537,8 @@ pub enum Command {
         space: Option<String>,
         /// Graph name.
         graph: String,
-        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1534,7 +1560,8 @@ pub enum Command {
         /// Optional item limit. Defaults to 100.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
-        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1551,7 +1578,8 @@ pub enum Command {
         /// Optional snapshot size bounds. Defaults to the engine limits.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         budget: Option<GraphAnalyticsBudget>,
-        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1568,7 +1596,8 @@ pub enum Command {
         /// Optional snapshot size bounds. Defaults to the engine limits.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         budget: Option<GraphAnalyticsBudget>,
-        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1590,7 +1619,8 @@ pub enum Command {
         /// Optional snapshot size bounds. Defaults to the engine limits.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         budget: Option<GraphAnalyticsBudget>,
-        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1620,7 +1650,8 @@ pub enum Command {
         /// Optional snapshot size bounds. Defaults to the engine limits.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         budget: Option<GraphAnalyticsBudget>,
-        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1643,7 +1674,8 @@ pub enum Command {
         /// Optional snapshot size bounds. Defaults to the engine limits.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         budget: Option<GraphAnalyticsBudget>,
-        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
@@ -1674,7 +1706,8 @@ pub enum Command {
         /// Optional snapshot size bounds. Defaults to the engine limits.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         budget: Option<GraphAnalyticsBudget>,
-        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        /// Optional read-as-of commit timestamp: the `timestamp` from `history`
+        /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },

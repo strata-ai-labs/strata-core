@@ -33,7 +33,7 @@ $ strata graph ontology get g
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `as_of` | `integer` | no | Optional timestamp in microseconds. Reads the graph state visible at that instant. |
+| `as_of` | `integer` | no | Optional read-as-of commit timestamp: the `timestamp` from `history` output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant. |
 | `graph` | `string` | yes | Graph name. |
 
 Plus the optional scope: `branch` and `space` (default to the session branch and the `"default"` space).

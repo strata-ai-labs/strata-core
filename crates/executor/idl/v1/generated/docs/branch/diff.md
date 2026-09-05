@@ -48,7 +48,7 @@ $ strata branch diff default experiment  # reports the key-value change and the 
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `at_timestamp` | `integer` | no | Optional timestamp in microseconds; compare each branch as of it. |
+| `at_timestamp` | `integer` | no | Optional read-as-of commit timestamp: compare each branch as of the `timestamp` from `history` output (a commit-timeline position, not the `version`). |
 | `branch_a` | `string` | yes | The first branch (the `A` side). |
 | `branch_b` | `string` | yes | The second branch (the `B` side). |
 

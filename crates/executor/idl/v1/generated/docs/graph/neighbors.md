@@ -37,7 +37,7 @@ $ strata graph neighbors social alice --direction outgoing
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `as_of` | `integer` | no | Optional timestamp in microseconds. Reads the graph state visible at that instant. |
+| `as_of` | `integer` | no | Optional read-as-of commit timestamp: the `timestamp` from `history` output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant. |
 | `cursor` | `string` | no | Optional exclusive cursor. |
 | `direction` | `GraphDirection` | yes | Traversal direction. |
 | `edge_type` | `string` | no | Optional edge type filter. |

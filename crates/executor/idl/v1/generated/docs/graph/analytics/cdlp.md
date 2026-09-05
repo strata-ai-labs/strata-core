@@ -41,7 +41,7 @@ $ strata graph cdlp g
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `as_of` | `integer` | no | Optional timestamp in microseconds. Reads the graph state visible at that instant. |
+| `as_of` | `integer` | no | Optional read-as-of commit timestamp: the `timestamp` from `history` output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant. |
 | `budget` | `GraphAnalyticsBudget` | no | Optional snapshot size bounds. Defaults to the engine limits. |
 | `direction` | `GraphDirection` | no | Optional propagation direction. Defaults to both. |
 | `graph` | `string` | yes | Graph name. |
