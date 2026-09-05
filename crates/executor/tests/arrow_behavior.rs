@@ -1509,6 +1509,36 @@ fn vector_export_to_csv_is_rejected_up_front_without_touching_the_output_file() 
     assert!(!out_path.exists(), "no output file should be created");
 }
 
+/// #3083: a 0-row export writes an empty file whose inferred schema has no
+/// columns; re-importing it must be a no-op (zero rows), not fail with
+/// "no key column found".
+#[test]
+fn empty_jsonl_import_is_a_no_op_not_a_missing_key_error() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = dir.path().join("empty.jsonl");
+    std::fs::write(&path, "").expect("write empty jsonl");
+
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let output = executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Jsonl),
+            target: ArrowImportTarget::Kv,
+            key_column: None,
+            value_column: None,
+            collection: None,
+            graph: None,
+        })
+        .expect("empty import succeeds as a no-op");
+    let Output::ArrowImportResult(result) = output else {
+        panic!("unexpected import output");
+    };
+    assert_eq!(result.rows_imported(), 0);
+    assert_eq!(result.rows_skipped(), 0);
+}
+
 fn assert_import_result(
     result: &ArrowImportResult,
     target: ArrowImportTarget,

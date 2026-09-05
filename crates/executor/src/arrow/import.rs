@@ -58,6 +58,20 @@ pub(crate) fn import_file(
 
     let (schema, batches) = read_file(&path, format)?;
 
+    // #3083: a 0-row file (e.g. an empty export) infers a schema with no columns;
+    // importing it is a no-op, not a "no key column found" error. Short-circuit
+    // before any target-specific column mapping so a 0-row export round-trips to
+    // zero imported rows.
+    if batches.iter().all(|batch| batch.num_rows() == 0) {
+        return Ok(Output::ArrowImportResult(ArrowImportResult::new(
+            target,
+            file_path,
+            0,
+            0,
+            batches.len() as u64,
+        )));
+    }
+
     // Event import reads a single file with a fixed event schema (not the
     // key/value column mapping kv/json/vector share), and replays each row as an
     // ordinary append — Arrow is an analytics interchange, so the log is
