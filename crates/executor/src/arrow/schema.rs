@@ -671,7 +671,13 @@ fn extract_embedding(column: &dyn Array, row: usize) -> Option<Vec<f32>> {
         if (0..array.len()).any(|index| array.is_null(index)) {
             return None;
         }
-        return Some(array.values().to_vec());
+        let vector = array.values().to_vec();
+        // #3083: reject a non-finite (NaN/±Inf) component, consistent with the
+        // Float64 path — importing it would poison every downstream distance.
+        if vector.iter().any(|value| !value.is_finite()) {
+            return None;
+        }
+        return Some(vector);
     }
     values
         .as_any()
@@ -1274,6 +1280,31 @@ mod tests {
         let row1 = cell_to_json(&dict, 1).expect("row 1 converts");
         assert_eq!(row1, json!(7));
         assert!(row1.is_number(), "decoded value must be a JSON number");
+    }
+
+    #[test]
+    fn extract_embedding_rejects_a_non_finite_float32_component() {
+        // #3083: a NaN/Inf embedding component must be rejected (the row is
+        // skipped) — consistent with the Float64 path — not silently imported
+        // as a NaN vector that poisons every downstream distance.
+        let mut nan = FixedSizeListBuilder::new(Float32Builder::new(), 2);
+        nan.values().append_value(1.0);
+        nan.values().append_value(f32::NAN);
+        nan.append(true);
+        assert_eq!(extract_embedding(&nan.finish(), 0), None);
+
+        let mut inf = FixedSizeListBuilder::new(Float32Builder::new(), 2);
+        inf.values().append_value(f32::INFINITY);
+        inf.values().append_value(2.0);
+        inf.append(true);
+        assert_eq!(extract_embedding(&inf.finish(), 0), None);
+
+        // A finite Float32 embedding is still accepted (direction control).
+        let mut ok = FixedSizeListBuilder::new(Float32Builder::new(), 2);
+        ok.values().append_value(1.0);
+        ok.values().append_value(2.0);
+        ok.append(true);
+        assert_eq!(extract_embedding(&ok.finish(), 0), Some(vec![1.0_f32, 2.0]));
     }
 
     #[test]

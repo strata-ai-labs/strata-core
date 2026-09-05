@@ -83,6 +83,10 @@ cells:
     scenario: Float NaN/Inf value -> must not silently become JSON null
     status: covered
     test: cell_to_json_rejects_non_finite_floats_instead_of_nulling_them
+  - id: value.embedding_non_finite
+    scenario: a non-finite (NaN/Inf) vector embedding component is rejected (row skipped), consistently across Float32/Float64
+    status: covered
+    test: extract_embedding_rejects_a_non_finite_float32_component
   - id: value.dictionary
     scenario: a dictionary-encoded value column decodes to the underlying value's JSON (a dict int is 42, not "42")
     status: covered
