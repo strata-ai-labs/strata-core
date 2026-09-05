@@ -1539,6 +1539,51 @@ fn empty_jsonl_import_is_a_no_op_not_a_missing_key_error() {
     assert_eq!(result.rows_skipped(), 0);
 }
 
+/// #3083: a flag that doesn't apply to the import target must be rejected, not
+/// silently ignored — `--collection` is only for vector, `--graph` only for graph.
+#[test]
+fn kv_import_rejects_irrelevant_collection_and_graph_flags() {
+    let dir = TempDir::new().expect("temp dir");
+    let input = dir.path().join("kv.csv");
+    fs::write(&input, "key,value\na,x\n").expect("write csv");
+
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let kv_import = |collection: Option<String>, graph: Option<String>| Command::ArrowImport {
+        branch: None,
+        space: None,
+        file_path: input.to_string_lossy().into_owned(),
+        format: Some(ArrowFileFormat::Csv),
+        target: ArrowImportTarget::Kv,
+        key_column: None,
+        value_column: None,
+        collection,
+        graph,
+    };
+
+    // --collection on a kv import is rejected (only valid for vector).
+    let error = executor
+        .execute(kv_import(Some("docs".to_owned()), None))
+        .expect_err("collection is irrelevant for kv");
+    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+    assert_eq!(error.code(), "invalid_argument.executor.arrow_collection");
+
+    // --graph on a kv import is rejected (only valid for graph).
+    let error = executor
+        .execute(kv_import(None, Some("g".to_owned())))
+        .expect_err("graph is irrelevant for kv");
+    assert_eq!(error.code(), "invalid_argument.executor.arrow_graph");
+
+    // Direction control: a plain kv import (no irrelevant flags) still works.
+    let output = executor
+        .execute(kv_import(None, None))
+        .expect("plain kv import succeeds");
+    let Output::ArrowImportResult(result) = output else {
+        panic!("unexpected import output");
+    };
+    assert_eq!(result.rows_imported(), 1);
+    assert_eq!(kv_get(&mut executor, Bytes::from("a")), Some(b"x".to_vec()));
+}
+
 fn assert_import_result(
     result: &ArrowImportResult,
     target: ArrowImportTarget,
