@@ -125,6 +125,10 @@ cells:
     scenario: a null KV value cell is skipped, not stored as an empty-byte value
     status: covered
     test: kv_import_skips_a_null_value_cell_instead_of_storing_empty_bytes
+  - id: edge.kv_value_fabrication
+    scenario: KV with no real value column (key-only, or key + only an encoding column) errors, not fabricates b"{}" / picks the encoding column
+    status: covered
+    test: resolve_kv_value_errors_instead_of_fabricating_a_value
   - id: edge.null_graph_weight
     scenario: a null graph edge weight is not flattened to 0.0
     status: gap
