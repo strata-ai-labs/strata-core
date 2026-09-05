@@ -193,7 +193,7 @@ fn render_raw(value: &Value, out: &mut String) {
         "json_value" | "json_versioned_value" => {
             let found = data.get("found").and_then(Value::as_bool).unwrap_or(false);
             if let Some(leaf) = json_leaf(kind, data, found) {
-                line!(out, "{}", raw_scalar(leaf));
+                line!(out, "{}", raw_json_leaf(leaf));
             }
             return;
         }
@@ -830,6 +830,16 @@ fn raw_scalar(value: &Value) -> String {
     }
 }
 
+/// Raw form of a `json get` leaf: like [`raw_scalar`], but a present JSON `null`
+/// prints the literal `null` so a `--raw` caller can distinguish a null field
+/// from a miss, which emits nothing (#3064).
+fn raw_json_leaf(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_owned(),
+        other => raw_scalar(other),
+    }
+}
+
 // Errors teach (first-run D4): the human line carries the code, the message,
 // the actionable hint, and the stable per-code docs ref, so a human or agent
 // can self-correct without a docs round-trip.
@@ -1315,6 +1325,40 @@ mod tests {
             "data": { "found": true, "value": { "value": "hello", "version": 1, "timestamp": 10 } }
         });
         assert_eq!(raw(&found), "hello\n");
+    }
+
+    #[test]
+    fn raw_json_get_distinguishes_a_present_null_from_a_miss() {
+        // #3064: a present JSON `null` must print the literal `null`, distinct
+        // from a miss (which emits nothing), so a `--raw` script can tell a
+        // field that is null from one that is absent.
+        let present_null = json!({
+            "type": "json_value",
+            "data": { "found": true, "value": null }
+        });
+        assert_eq!(raw(&present_null), "null\n");
+
+        let missing = json!({
+            "type": "json_value",
+            "data": { "found": false, "value": null }
+        });
+        assert_eq!(raw(&missing), "");
+
+        // A present non-null leaf stays unquoted/script-friendly.
+        let present_value = json!({
+            "type": "json_value",
+            "data": { "found": true, "value": 1 }
+        });
+        assert_eq!(raw(&present_value), "1\n");
+
+        // The versioned envelope's inner null is treated the same.
+        let versioned_null = json!({
+            "type": "json_versioned_value",
+            "data": { "found": true, "value": {
+                "value": null, "version": 3, "timestamp": 30, "document_version": 1
+            } }
+        });
+        assert_eq!(raw(&versioned_null), "null\n");
     }
 
     #[test]
