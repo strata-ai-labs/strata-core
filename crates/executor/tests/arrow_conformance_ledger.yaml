@@ -174,9 +174,8 @@ cells:
     test: arrow_commands_return_stable_feature_disabled_errors_without_feature
   - id: error.code_list_accuracy
     scenario: the IDL error-code list per arrow command matches what it can emit
-    status: gap
-    issue: 3083
-    note: export/import error lists are cross-wired (#3058 class)
+    status: accepted
+    note: "reconciled arrow.import/export declared error lists against the emitted codes (audit by grepping each command's source path); the IDL check-docs gate verifies the generated /e/ pages match the declared lists. A static declared-vs-emitted guard to prevent future drift is a recommended follow-up."
 
   # ---- silent-success (import reports OK but data not stored) -----------------
   - id: silent.event_overreport

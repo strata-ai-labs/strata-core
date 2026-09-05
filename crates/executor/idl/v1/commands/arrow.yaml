@@ -19,10 +19,13 @@ commands:
       - invalid_argument.executor.arrow_collection
       - invalid_argument.executor.arrow_embedding_type
       - invalid_argument.executor.arrow_encoding
-      - invalid_argument.executor.arrow_vector_dimension
       - invalid_argument.executor.arrow_json_key
       - invalid_argument.executor.arrow_non_finite_float
       - invalid_argument.executor.arrow_base64
+      - invalid_argument.executor.arrow_vector_key
+      - invalid_argument.executor.arrow_event
+      - invalid_argument.executor.arrow_graph
+      - not_found.engine.vector_collection
       - unavailable.executor.arrow_io
       - internal.executor.arrow
     fixtures:
@@ -43,9 +46,7 @@ commands:
       - unsupported.executor.arrow_feature_disabled
       - invalid_argument.executor.arrow_format
       - invalid_argument.executor.arrow_empty_export
-      - invalid_argument.executor.arrow_value_column
-      - invalid_argument.executor.arrow_vector_key
-      - invalid_argument.executor.arrow_event
+      - invalid_argument.executor.arrow_vector_dimension
       - invalid_argument.executor.arrow_graph
       - invalid_argument.executor.arrow_collection
       - unavailable.executor.arrow_io
