@@ -34,7 +34,7 @@ $ strata event list
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `after_sequence` | `integer` | no | Optional exclusive sequence cursor. |
-| `as_of` | `integer` | no | Optional timestamp in microseconds. |
+| `as_of` | `integer` | no | Optional read-as-of commit timestamp: the `timestamp` from `history` output (a commit-timeline position, not the `version`). |
 | `event_type` | `string` | no | Optional event type filter. |
 | `limit` | `integer` | no | Optional item limit. |
 

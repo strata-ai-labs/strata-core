@@ -35,7 +35,7 @@ $ strata kv list --prefix user:
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `as_of` | `integer` | no | Optional timestamp in microseconds. |
+| `as_of` | `integer` | no | Optional read-as-of commit timestamp: the `timestamp` from `history` output (a commit-timeline position, not the `version`). |
 | `cursor` | `Bytes` | no | Optional key cursor. |
 | `limit` | `integer` | no | Optional item limit. Defaults to 100. |
 | `prefix` | `Bytes` | no | Optional key prefix. |

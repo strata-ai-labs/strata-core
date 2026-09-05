@@ -33,7 +33,7 @@ $ strata command run --command-json '{"target":{"key":"user:1","primitive":"kv",
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `as_of` | `integer` | no | Optional timestamp in microseconds. Reads the graph state visible at that instant. |
+| `as_of` | `integer` | no | Optional read-as-of commit timestamp: the `timestamp` from `history` output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant. |
 | `cursor` | `string` | no | Optional exclusive cursor. |
 | `limit` | `integer` | no | Optional item limit. Defaults to 100. |
 | `target` | `GraphBindingTarget` | yes | Entity target to search for. |

@@ -142,7 +142,7 @@
     "description": "Runs vector search with the default engine planner.",
     "properties": {
       "as_of": {
-        "description": "Optional timestamp in microseconds.",
+        "description": "Optional read-as-of commit timestamp: the `timestamp` from `history`\noutput (a commit-timeline position, not the `version`).",
         "format": "uint64",
         "minimum": 0,
         "type": [

@@ -35,7 +35,7 @@ $ strata vector get docs absent
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `as_of` | `integer` | no | Optional timestamp in microseconds. |
+| `as_of` | `integer` | no | Optional read-as-of commit timestamp: the `timestamp` from `history` output (a commit-timeline position, not the `version`). |
 | `collection` | `string` | yes | Collection name. |
 | `key` | `string` | yes | Vector key. |
 

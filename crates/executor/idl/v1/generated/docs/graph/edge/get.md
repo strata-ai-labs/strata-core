@@ -39,7 +39,7 @@ $ strata graph get-edge social alice knows absent
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `as_of` | `integer` | no | Optional timestamp in microseconds. Reads the graph state visible at that instant. |
+| `as_of` | `integer` | no | Optional read-as-of commit timestamp: the `timestamp` from `history` output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant. |
 | `dst` | `string` | yes | Destination node id. |
 | `edge_type` | `string` | yes | Edge type. |
 | `graph` | `string` | yes | Graph name. |

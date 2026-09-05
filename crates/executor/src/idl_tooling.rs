@@ -2338,6 +2338,46 @@ mod tests {
     }
 
     #[test]
+    fn as_of_descriptions_do_not_mislabel_the_timeline_position_as_microseconds() {
+        // #3066: `as_of` takes a commit timestamp — a position on the commit
+        // timeline (the `timestamp` from `history` output), not a wall-clock
+        // microsecond value. Its schema description must not say "microseconds".
+        let schemas_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("idl/v1/generated/schemas");
+        let mut checked = 0usize;
+        for entry in std::fs::read_dir(&schemas_dir)
+            .expect("read schemas dir")
+            .flatten()
+        {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let doc: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("read schema"))
+                    .expect("parse schema");
+            let Some(as_of) = doc
+                .get("request")
+                .and_then(|request| request.get("properties"))
+                .and_then(|properties| properties.get("as_of"))
+            else {
+                continue;
+            };
+            let description = as_of
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            assert!(
+                !description.to_lowercase().contains("microsecond"),
+                "{}: `as_of` is a timeline position, not microseconds: {description}",
+                path.display(),
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "expected `as_of` fields to check");
+    }
+
+    #[test]
     fn cli_info_advertises_a_path_only_for_verb_surface() {
         // #3058: a real clap verb advertises its runnable path; a `wire`
         // (escape-hatch) command omits it so consumers never render an

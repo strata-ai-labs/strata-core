@@ -35,7 +35,7 @@ $ strata graph list-nodes social
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `as_of` | `integer` | no | Optional timestamp in microseconds. Reads the graph state visible at that instant. |
+| `as_of` | `integer` | no | Optional read-as-of commit timestamp: the `timestamp` from `history` output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant. |
 | `cursor` | `string` | no | Optional exclusive node id cursor. |
 | `graph` | `string` | yes | Graph name. |
 | `limit` | `integer` | no | Optional item limit. Defaults to 100. |

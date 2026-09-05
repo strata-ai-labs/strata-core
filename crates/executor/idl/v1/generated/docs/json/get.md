@@ -35,7 +35,7 @@ $ strata json get absent $
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `as_of` | `integer` | no | Optional timestamp in microseconds. |
+| `as_of` | `integer` | no | Optional read-as-of commit timestamp: the `timestamp` from `history` output (a commit-timeline position, not the `version`). |
 | `key` | `string` | yes | Document key. |
 | `path` | `string` | yes | JSON path. |
 

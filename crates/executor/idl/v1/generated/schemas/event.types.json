@@ -7,7 +7,7 @@
     "description": "Lists event types.",
     "properties": {
       "as_of": {
-        "description": "Optional timestamp in microseconds.",
+        "description": "Optional read-as-of commit timestamp: the `timestamp` from `history`\noutput (a commit-timeline position, not the `version`).",
         "format": "uint64",
         "minimum": 0,
         "type": [
