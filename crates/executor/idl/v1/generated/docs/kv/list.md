@@ -16,14 +16,18 @@ List keys under a prefix, in key order.
 ### CLI
 
 ```console
-$ strata command run --command-json '{"entries":[{"key":"dXNlcjox","value":"YQ=="},{"key":"dXNlcjoy","value":"Yg=="},{"key":"b3RoZXI=","value":"Yw=="}],"type":"kv_batch_put"}'
+$ strata kv put user:1 a
+$ strata kv put user:2 b
+$ strata kv put other c
 $ strata kv list --prefix user:
 ```
 
 ### Wire
 
 ```json
-{"entries":[{"key":"dXNlcjox","value":"YQ=="},{"key":"dXNlcjoy","value":"Yg=="},{"key":"b3RoZXI=","value":"Yw=="}],"type":"kv_batch_put"}
+{"key":"dXNlcjox","type":"kv_put","value":"YQ=="}
+{"key":"dXNlcjoy","type":"kv_put","value":"Yg=="}
+{"key":"b3RoZXI=","type":"kv_put","value":"Yw=="}
 {"prefix":"dXNlcjo=","type":"kv_list"}
 ```
 

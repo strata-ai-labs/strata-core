@@ -16,14 +16,18 @@ List document keys under a prefix, in key order.
 ### CLI
 
 ```console
-$ strata command run --command-json '{"entries":[{"key":"user:1","path":"$","value":{"v":1}},{"key":"user:2","path":"$","value":{"v":2}},{"key":"other","path":"$","value":{"v":3}}],"type":"json_batch_set"}'
+$ strata json set user:1 $ {"v":1}
+$ strata json set user:2 $ {"v":2}
+$ strata json set other $ {"v":3}
 $ strata json list --prefix user:
 ```
 
 ### Wire
 
 ```json
-{"entries":[{"key":"user:1","path":"$","value":{"v":1}},{"key":"user:2","path":"$","value":{"v":2}},{"key":"other","path":"$","value":{"v":3}}],"type":"json_batch_set"}
+{"key":"user:1","path":"$","type":"json_set","value":{"v":1}}
+{"key":"user:2","path":"$","type":"json_set","value":{"v":2}}
+{"key":"other","path":"$","type":"json_set","value":{"v":3}}
 {"prefix":"user:","type":"json_list"}
 ```
 

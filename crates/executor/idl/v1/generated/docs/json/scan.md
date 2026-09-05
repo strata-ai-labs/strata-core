@@ -16,14 +16,16 @@ Scan documents from the start, in key order.
 ### CLI
 
 ```console
-$ strata command run --command-json '{"entries":[{"key":"a","path":"$","value":{"v":1}},{"key":"b","path":"$","value":{"v":2}}],"type":"json_batch_set"}'
+$ strata json set a $ {"v":1}
+$ strata json set b $ {"v":2}
 $ strata json scan
 ```
 
 ### Wire
 
 ```json
-{"entries":[{"key":"a","path":"$","value":{"v":1}},{"key":"b","path":"$","value":{"v":2}}],"type":"json_batch_set"}
+{"key":"a","path":"$","type":"json_set","value":{"v":1}}
+{"key":"b","path":"$","type":"json_set","value":{"v":2}}
 {"type":"json_scan"}
 ```
 

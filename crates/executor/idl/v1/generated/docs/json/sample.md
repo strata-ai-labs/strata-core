@@ -16,14 +16,18 @@ A representative sample plus the total population size.
 ### CLI
 
 ```console
-$ strata command run --command-json '{"entries":[{"key":"a","path":"$","value":{"v":1}},{"key":"b","path":"$","value":{"v":2}},{"key":"c","path":"$","value":{"v":3}}],"type":"json_batch_set"}'
+$ strata json set a $ {"v":1}
+$ strata json set b $ {"v":2}
+$ strata json set c $ {"v":3}
 $ strata json sample
 ```
 
 ### Wire
 
 ```json
-{"entries":[{"key":"a","path":"$","value":{"v":1}},{"key":"b","path":"$","value":{"v":2}},{"key":"c","path":"$","value":{"v":3}}],"type":"json_batch_set"}
+{"key":"a","path":"$","type":"json_set","value":{"v":1}}
+{"key":"b","path":"$","type":"json_set","value":{"v":2}}
+{"key":"c","path":"$","type":"json_set","value":{"v":3}}
 {"type":"json_sample"}
 ```
 

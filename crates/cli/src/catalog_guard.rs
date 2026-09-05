@@ -103,3 +103,60 @@ fn clap_tree_round_trips_against_the_generated_catalog() {
         );
     }
 }
+
+/// Drift guard (#3058): the shipped `command-index.json` must not advertise a
+/// `cli.path` for a command the CLI cannot resolve. A `surface: "wire"` command
+/// is escape-hatch only (`command run --command-json`) and must carry NO
+/// runnable path, so a consumer that renders `cli.path` as the invocation never
+/// prints a subcommand that does not exist.
+#[test]
+fn no_command_index_entry_advertises_an_unresolvable_cli_path() {
+    let mut leaves = BTreeSet::new();
+    clap_leaves(&Cli::command(), &[], &mut leaves);
+    assert!(!leaves.is_empty(), "clap tree yields leaves");
+
+    let index: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(idl_root().join("generated/command-index.json"))
+            .expect("command-index.json exists"),
+    )
+    .expect("command-index.json parses");
+    let commands = index["commands"]
+        .as_array()
+        .expect("command-index has a commands array");
+
+    let mut verbs_seen = 0usize;
+    for command in commands {
+        let id = command["id"].as_str().unwrap_or("<unknown>");
+        let cli = &command["cli"];
+        let path = cli.get("path").and_then(serde_json::Value::as_array);
+        let surface = cli.get("surface").and_then(serde_json::Value::as_str);
+
+        if surface == Some("verb") {
+            // A verb MUST advertise a runnable path that resolves to clap.
+            let path = path
+                .unwrap_or_else(|| panic!("command `{id}` is a `verb` but advertises no cli.path"));
+            let display = path
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(
+                leaves.contains(&display),
+                "command `{id}` advertises cli.path `{display}` but the clap tree has no such verb",
+            );
+            verbs_seen += 1;
+        } else {
+            // A `wire` (escape-hatch) command MUST NOT advertise a path, so a
+            // consumer rendering `cli.path` never prints an unrunnable command.
+            assert!(
+                path.is_none(),
+                "command `{id}` is surface `{surface:?}` but advertises a cli.path; \
+                 omit the path for non-verb commands",
+            );
+        }
+    }
+    assert!(
+        verbs_seen > 0,
+        "expected at least one verb command in the index",
+    );
+}
