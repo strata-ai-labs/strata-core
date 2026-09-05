@@ -284,36 +284,50 @@ fn export_two_branch_bundle_at(path: &Path) -> Bundle {
 }
 
 #[test]
-fn multi_branch_import_failure_names_the_branch_and_reason() {
-    // #3070 (S1): a multi-branch bundle currently fails to materialize (the
-    // import fix is S2). The failure MUST name the offending branch and the
-    // underlying reason, not a bare `invalid_argument.engine.persistence`.
+fn multi_branch_bundle_round_trips() {
+    // #3070 (S3): a bundle carrying more than one branch reconstitutes. The
+    // branches share one interleaved commit stream, so `materialize` replays
+    // them in global order (`import_branch_artifacts`) instead of one-at-a-time
+    // — the sequential loop raised the monotonic floor above `second`'s
+    // history and rejected it (`invalid_argument.engine.persistence`).
     let source = tempfile::tempdir().expect("tempdir");
     build_two_branch_fixture_db(source.path());
     let bundle = export_two_branch_bundle_at(source.path());
 
     let target = tempfile::tempdir().expect("tempdir");
     let target_path = target.path().join("clone");
-    let Err(error) = import_bundle(&target_path, &bundle.manifest, &bundle.objects) else {
-        panic!("multi-branch import currently fails to materialize");
-    };
-    let BundleImportError::Engine { code, detail } = &error else {
-        panic!("expected an Engine failure, got {error:?}");
-    };
-    assert_eq!(code, "invalid_argument.engine.persistence");
-    assert!(
-        detail.contains("branch 'second'"),
-        "detail must name the offending branch: {detail}"
+    import_bundle(&target_path, &bundle.manifest, &bundle.objects)
+        .expect("multi-branch import succeeds");
+
+    // Re-export reproduces the manifest hash — round-trip identity across both
+    // branches (HB6b, generalized).
+    assert_eq!(
+        export_two_branch_bundle_at(&target_path).manifest_hash,
+        bundle.manifest_hash,
+        "multi-branch import → re-export must reproduce the manifest hash"
     );
-    assert!(
-        detail.contains("monotonic floor"),
-        "detail must carry the underlying reason: {detail}"
+
+    // Both branches serve their divergent content through normal reads.
+    let mut db = Database::open_local(&target_path, DurableLocalOpenOptions::new())
+        .expect("clone opens")
+        .into_database();
+    let space = || ProductSpace::new("default").expect("space");
+    assert_eq!(
+        db.kv(BranchName::new("default").expect("branch"), space())
+            .expect("kv")
+            .get(&KvKey::new("k3").expect("key"))
+            .expect("get")
+            .expect("present")
+            .as_bytes(),
+        b"v3"
     );
-    // The user-visible message (what the CLI prints) carries the branch and
-    // reason too — not a bare code.
-    let rendered = error.to_string();
-    assert!(
-        rendered.contains("branch 'second'") && rendered.contains("monotonic floor"),
-        "Display must surface the branch and reason: {rendered}"
+    assert_eq!(
+        db.kv(BranchName::new("second").expect("branch"), space())
+            .expect("kv")
+            .get(&KvKey::new("k2").expect("key"))
+            .expect("get")
+            .expect("present")
+            .as_bytes(),
+        b"v2"
     );
 }
