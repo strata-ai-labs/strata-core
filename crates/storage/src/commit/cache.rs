@@ -115,6 +115,15 @@ where
 
         self.branch
             .append_committed_rows_atomically(combined_rows)?;
+        // #3112 S2b: `committed_at` is commit-scoped and deliberately absent
+        // from rows, so the row-driven apply funnel cannot observe it. Upgrade
+        // the entry the funnel just created — only AFTER the apply succeeded,
+        // mirroring the funnel's own rule that a rolled-back batch leaves no
+        // timeline trace.
+        if let Some(instant) = stamp.committed_at() {
+            self.branch
+                .observe_commit_instant(stamp.commit_version(), instant);
+        }
 
         perf_trace::record_commit_visible_publish_attempt();
         let publish = self.visible.publish_from_facts(facts);

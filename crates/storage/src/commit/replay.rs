@@ -236,6 +236,14 @@ where
                 source,
             ));
         }
+        // #3112 S2b: restore the commit's recorded wall-clock instant (durable
+        // in the WAL record since S2a) onto the timeline entry the row-driven
+        // funnel just created. This is the path that carries `committed_at`
+        // across a reopen, so recovered history keeps its real dates.
+        if let Some(instant) = stamp.committed_at() {
+            self.branch
+                .observe_commit_instant(stamp.commit_version(), instant);
+        }
         Ok(())
     }
 
@@ -292,11 +300,16 @@ impl CommitReplayRequest {
     }
 
     fn stamp(&self) -> CommitRuntimeResult<CommitStamp> {
-        CommitStamp::new(
+        Ok(CommitStamp::new(
             self.branch_id(),
             self.commit_version(),
             self.commit_timestamp(),
-        )
+        )?
+        // #3112 S2b: carry the record's durable wall-clock instant onto the
+        // replayed stamp. `CommitStamp::new` defaults it to unknown, so without
+        // this a reopen would apply every row correctly while silently
+        // downgrading each recovered commit's instant to "unknown".
+        .with_committed_at(self.record.committed_at()))
     }
 
     fn validate(&self) -> CommitRuntimeResult<()> {

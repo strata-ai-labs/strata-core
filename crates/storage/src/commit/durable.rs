@@ -19,7 +19,7 @@ use crate::format::{WalCommitPayload, WalRecord};
 use crate::observability::perf_trace;
 use crate::row::StorageRow;
 use crate::service::{WalAppend, WalService, WalServiceError};
-use strata_core::{BranchId, CommitVersion};
+use strata_core::{BranchId, CommitVersion, Timestamp};
 
 #[derive(Debug)]
 pub(crate) struct CommitDurableRuntime<'a, S, W, B = BranchLocalState, V = VisibleVersionTracker> {
@@ -140,6 +140,17 @@ pub(crate) trait CommitBranchApplyTarget {
         &mut self,
         rows: Vec<StorageRow>,
     ) -> CommitRuntimeResult<()>;
+    /// #3112 S2b: attaches the commit's wall-clock instant to the
+    /// retained-timeline entry the apply funnel just created. `committed_at` is
+    /// commit-scoped and deliberately absent from rows (storage-format spec §10
+    /// req 13), so the row-driven funnel cannot carry it; the caller invokes
+    /// this only AFTER the apply succeeds, so a rolled-back batch leaves no
+    /// instant behind just as it leaves no timeline trace.
+    ///
+    /// Defaulted to a no-op: a target with no timeline index (test doubles,
+    /// perf probes) simply leaves the instant unknown, which is a legal state
+    /// rather than a defect.
+    fn observe_commit_instant(&mut self, _commit_version: CommitVersion, _instant: Timestamp) {}
 }
 
 pub(crate) trait CommitVisiblePublisher {
@@ -189,6 +200,11 @@ impl CommitBranchApplyTarget for BranchLocalState {
                     source,
                 )
             })
+    }
+
+    fn observe_commit_instant(&mut self, commit_version: CommitVersion, instant: Timestamp) {
+        self.retained_timeline()
+            .observe_committed_at(commit_version, instant);
     }
 }
 
@@ -452,6 +468,14 @@ where
                     reason,
                     source,
                 ));
+            }
+            // #3112 S2b: the row-driven apply funnel cannot see the
+            // commit-scoped `committed_at`, so upgrade the entry it just
+            // created — only after a successful apply, matching the funnel's
+            // rule that a rolled-back batch leaves no timeline trace.
+            if let Some(instant) = stamp.committed_at() {
+                self.branch
+                    .observe_commit_instant(stamp.commit_version(), instant);
             }
         }
 

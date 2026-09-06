@@ -27,6 +27,14 @@ use strata_core::{CommitVersion, Timestamp};
 pub(crate) struct RetainedTimelineEntry {
     commit_version: CommitVersion,
     commit_timestamp: Timestamp,
+    /// The commit's wall-clock instant (#3112 S2b). `None` means unknown — a
+    /// first-class, documented state (storage-format spec §10 req 12), not a
+    /// defect: legacy pre-elision timeline rows and pre-`committed_at`
+    /// checkpoint sections never carried it. It is NOT part of the index's
+    /// ordering or dedup key — `commit_version` orders, and
+    /// `commit_version`/`commit_timestamp` decide entry sameness — so knowing
+    /// or not knowing it never changes which commits the index reports.
+    committed_at: Option<Timestamp>,
 }
 
 impl RetainedTimelineEntry {
@@ -34,7 +42,20 @@ impl RetainedTimelineEntry {
         Self {
             commit_version,
             commit_timestamp,
+            committed_at: None,
         }
+    }
+
+    /// Attaches the commit's wall-clock instant. Kept as a builder so `new`'s
+    /// call sites stay put (#3112 S2b).
+    #[must_use]
+    pub(crate) const fn with_committed_at(mut self, committed_at: Option<Timestamp>) -> Self {
+        self.committed_at = committed_at;
+        self
+    }
+
+    pub(crate) const fn committed_at(self) -> Option<Timestamp> {
+        self.committed_at
     }
 
     pub(crate) const fn commit_version(self) -> CommitVersion {
@@ -204,6 +225,43 @@ impl RetainedCommitTimeline {
     /// index complete. A version present in both with disagreeing timestamps
     /// keeps the index incomplete (corruption guard — the scan stays the
     /// source of truth).
+    /// Attaches the wall-clock instant to an already-observed commit (#3112
+    /// S2b). `committed_at` is commit-scoped and deliberately absent from rows
+    /// (storage-format spec §10 req 13), so the row-driven apply funnel cannot
+    /// carry it; the commit runtime — which holds the stamp — upgrades the
+    /// entry here after the apply succeeds, and WAL replay does the same from
+    /// the record.
+    ///
+    /// The rule is deliberately fail-soft and order-independent, because an
+    /// unknown instant is a legal state while a wrong one is not:
+    ///
+    /// - unknown -> known upgrades (the stamp/WAL outranks an older checkpoint
+    ///   section that predates the field),
+    /// - known -> the same value is a no-op (replay idempotence),
+    /// - known -> a DIFFERENT value is an inconsistency and poisons
+    ///   completeness, exactly as a conflicting `commit_timestamp` does,
+    /// - known -> unknown never downgrades,
+    /// - an unobserved version is a no-op: the commit either never applied or
+    ///   was rolled back, and inventing an entry here would forge a commit.
+    pub(crate) fn observe_committed_at(&self, commit_version: CommitVersion, instant: Timestamp) {
+        let mut state = self.inner.write();
+        let Ok(at) = state
+            .entries
+            .binary_search_by_key(&commit_version.as_u64(), |entry| {
+                entry.commit_version().as_u64()
+            })
+        else {
+            return;
+        };
+        match state.entries[at].committed_at() {
+            None => {
+                state.entries[at] = state.entries[at].with_committed_at(Some(instant));
+            }
+            Some(existing) if existing == instant => {}
+            Some(_) => state.complete = false,
+        }
+    }
+
     pub(crate) fn seed_from_scan(&self, scanned: &[RetainedTimelineEntry]) {
         let mut state = self.inner.write();
         let mut merged = Vec::with_capacity(scanned.len().saturating_add(state.entries.len()));
@@ -217,15 +275,22 @@ impl RetainedCommitTimeline {
                     break;
                 }
             }
+            let mut entry = *entry;
             if let Some(next) = observed.peek().copied() {
                 if next.commit_version() == entry.commit_version() {
                     if next.commit_timestamp() != entry.commit_timestamp() {
                         return; // corruption guard: stay incomplete
                     }
+                    // #3112 S2b: a scan can never supply `committed_at` (legacy
+                    // timeline rows never carried it), so an instant already
+                    // observed from the commit stamp or a WAL record must
+                    // survive the merge — otherwise seeding would silently
+                    // downgrade a known instant to unknown.
+                    entry = entry.with_committed_at(entry.committed_at().or(next.committed_at()));
                     observed.next();
                 }
             }
-            merged.push(*entry);
+            merged.push(entry);
         }
         merged.extend(observed);
         let timestamps_monotonic = merged
@@ -343,6 +408,107 @@ fn bounded_prefix(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #3112 S2b: the `observe_committed_at` upgrade rule, arm by arm. The rule
+    /// is deliberately fail-soft — an unknown instant is legal, a wrong one is
+    /// not — so each arm is pinned separately.
+    #[test]
+    fn observe_committed_at_upgrades_unknown_to_known() {
+        let index = RetainedCommitTimeline::new();
+        index.mark_complete_from_birth();
+        index.observe(CommitVersion::new(1), Timestamp::from_micros(10));
+        assert_eq!(
+            index.materialized_entries(None).expect("complete")[0].committed_at(),
+            None,
+            "the row-driven funnel cannot supply the instant"
+        );
+
+        index.observe_committed_at(CommitVersion::new(1), Timestamp::from_micros(1_788_000));
+        let entries = index.materialized_entries(None).expect("still complete");
+        assert_eq!(
+            entries[0].committed_at(),
+            Some(Timestamp::from_micros(1_788_000))
+        );
+        // The upgrade must not disturb the identity fields or completeness.
+        assert_eq!(entries[0].commit_version(), CommitVersion::new(1));
+        assert_eq!(entries[0].commit_timestamp(), Timestamp::from_micros(10));
+    }
+
+    #[test]
+    fn observe_committed_at_is_idempotent_for_the_same_instant() {
+        // Replay re-applies commits a restored checkpoint already covers, so
+        // re-observing the SAME instant must be a no-op, not a conflict.
+        let index = RetainedCommitTimeline::new();
+        index.mark_complete_from_birth();
+        index.observe(CommitVersion::new(1), Timestamp::from_micros(10));
+        index.observe_committed_at(CommitVersion::new(1), Timestamp::from_micros(1_788_000));
+        index.observe_committed_at(CommitVersion::new(1), Timestamp::from_micros(1_788_000));
+
+        let entries = index.materialized_entries(None).expect("still complete");
+        assert_eq!(
+            entries[0].committed_at(),
+            Some(Timestamp::from_micros(1_788_000))
+        );
+    }
+
+    #[test]
+    fn observe_committed_at_poisons_completeness_on_a_conflicting_instant() {
+        // Two different instants for one commit is an inconsistency, handled
+        // exactly like a conflicting commit_timestamp: stop claiming exactness.
+        let index = RetainedCommitTimeline::new();
+        index.mark_complete_from_birth();
+        index.observe(CommitVersion::new(1), Timestamp::from_micros(10));
+        index.observe_committed_at(CommitVersion::new(1), Timestamp::from_micros(1_788_000));
+        index.observe_committed_at(CommitVersion::new(1), Timestamp::from_micros(1_999_000));
+
+        assert!(
+            !index.is_complete_for_test(),
+            "a conflicting instant must poison completeness"
+        );
+    }
+
+    #[test]
+    fn observe_committed_at_never_forges_an_unobserved_commit() {
+        // The commit either never applied or was rolled back; inventing an
+        // entry here would fabricate a commit the timeline never saw.
+        let index = RetainedCommitTimeline::new();
+        index.mark_complete_from_birth();
+        index.observe(CommitVersion::new(1), Timestamp::from_micros(10));
+        index.observe_committed_at(CommitVersion::new(7), Timestamp::from_micros(1_788_000));
+
+        let entries = index.materialized_entries(None).expect("still complete");
+        assert_eq!(entries.len(), 1, "no entry may be forged");
+        assert_eq!(entries[0].commit_version(), CommitVersion::new(1));
+    }
+
+    #[test]
+    fn seeding_from_a_scan_preserves_an_already_known_instant() {
+        // A scan reads legacy timeline rows, which never carried `committed_at`.
+        // Merging one over a live-observed commit must NOT downgrade a known
+        // instant to unknown — the seed is a completeness repair, not a source
+        // of truth for the wall clock.
+        let index = RetainedCommitTimeline::new();
+        index.mark_complete_from_birth();
+        index.observe(CommitVersion::new(1), Timestamp::from_micros(10));
+        index.observe_committed_at(CommitVersion::new(1), Timestamp::from_micros(1_788_000));
+
+        index.seed_from_scan(&[entry(1, 10), entry(2, 20)]);
+
+        let entries = index
+            .materialized_entries(None)
+            .expect("complete after seed");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0].committed_at(),
+            Some(Timestamp::from_micros(1_788_000)),
+            "the scan must not erase an instant it cannot supply"
+        );
+        assert_eq!(
+            entries[1].committed_at(),
+            None,
+            "a scan-only commit stays unknown"
+        );
+    }
 
     fn entry(version: u64, timestamp: u64) -> RetainedTimelineEntry {
         RetainedTimelineEntry::new(
