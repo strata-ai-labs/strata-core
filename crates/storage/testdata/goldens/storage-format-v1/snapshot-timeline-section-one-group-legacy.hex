@@ -1,0 +1,12 @@
+# format: snapshot_section carrying a timeline payload
+# group: ordinary branch, versions 1@100us and 2@200us
+# hex:
+# section_kind: 2 (legacy, predates committed_at)
+# purpose: backward-compat pin (#3112 S2c) - a checkpoint written before
+#          committed_at existed must stay restorable, instants unknown.
+#          Never re-blessed to kind 3.
+02 38 00 00 00 00 00 00 00 01 00 00 00 00 01 02
+03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 02 00 00
+00 01 00 00 00 00 00 00 00 64 00 00 00 00 00 00
+00 02 00 00 00 00 00 00 00 c8 00 00 00 00 00 00
+00

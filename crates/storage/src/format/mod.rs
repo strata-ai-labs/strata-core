@@ -61,7 +61,8 @@ pub(crate) use snapshot_rows::{
 };
 pub(crate) use snapshot_timeline::{
     decode_snapshot_timeline_payload, encode_snapshot_timeline_section,
-    SnapshotTimelineBranchGroup, SNAPSHOT_TIMELINE_SECTION_KIND,
+    SnapshotTimelineBranchGroup, SnapshotTimelineEntry, SNAPSHOT_TIMELINE_SECTION_KIND,
+    SNAPSHOT_TIMELINE_SECTION_KIND_LEGACY,
 };
 pub(crate) use storage_row::{decode_storage_row, encode_storage_row};
 #[expect(

@@ -1070,6 +1070,54 @@ fn committed_at_survives_a_durable_reopen_through_wal_replay() {
     );
 }
 
+/// #3112 S2c: the instant survives a reopen whose index is restored from the
+/// CHECKPOINT section. S2b covered the WAL-replay path; this pins the other
+/// restore path — the checkpoint's timeline section now persists `committed_at`
+/// (section kind 3), so a commit already folded into a checkpoint keeps its
+/// real date instead of coming back undated.
+#[cfg(feature = "localfs")]
+#[test]
+fn committed_at_survives_a_durable_reopen_through_the_checkpoint_section() {
+    let root = temp_dir_for_api_test("read-committed-at-checkpoint");
+    let committed_at = Timestamp::from_micros(1_788_000_000_000_000);
+    let version = {
+        let mut runtime = open_durable_runtime(root.clone());
+        let summary = commit_put_with_committed_at(&mut runtime, b"k", b"v", 10, committed_at);
+        // Seed by scan first: a fresh durable branch starts unproven, and only a
+        // COMPLETE index is persisted into the checkpoint section.
+        runtime
+            .read_point(&point_request(
+                b"k",
+                ReadBound::AtTimestamp(Timestamp::from_micros(10)),
+            ))
+            .expect("pre-close timestamp read");
+        assert!(runtime
+            .retained_timeline_complete_for_test(branch())
+            .expect("complete pre-close"));
+        let checkpoint = MaintenanceRequest::new(
+            MaintenanceTask::Checkpoint,
+            MaintenanceScope::Branch(branch()),
+        );
+        runtime.maintenance(&checkpoint).expect("checkpoint");
+        runtime.close().expect("close durable runtime");
+        summary.commit_version()
+    };
+
+    let runtime = open_durable_runtime(root);
+    // Complete before any read means the index came from the checkpoint
+    // section, not from a seeding scan.
+    assert!(runtime
+        .retained_timeline_complete_for_test(branch())
+        .expect("complete post-reopen"));
+    assert_eq!(
+        runtime
+            .retained_committed_at_for_test(branch(), version)
+            .expect("inspect post-reopen"),
+        Some(committed_at),
+        "the checkpoint section must restore the wall-clock instant"
+    );
+}
+
 /// W3.1b oracle: a durable reopen restores the retained-timeline index
 /// COMPLETE from the checkpoint section, before any read runs a seeding
 /// scan — and the restored index answers exactly. The pre-close `as_of`

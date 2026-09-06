@@ -1650,7 +1650,14 @@ pub(super) fn timeline_group_for_branch(
         branch_id: branch.branch_id(),
         entries: entries
             .iter()
-            .map(|entry| (entry.commit_version(), entry.commit_timestamp()))
+            .map(|entry| crate::format::SnapshotTimelineEntry {
+                commit_version: entry.commit_version(),
+                commit_timestamp: entry.commit_timestamp(),
+                // #3112 S2c: persist the wall-clock instant too, so a reopen
+                // served from this checkpoint restores it instead of reporting
+                // every checkpointed commit as undated.
+                committed_at: entry.committed_at(),
+            })
             .collect(),
     })
 }
