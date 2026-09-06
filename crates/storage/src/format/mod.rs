@@ -135,9 +135,18 @@ const SNAPSHOT_SECTION_HEADER_SIZE: usize = 9;
 const STORAGE_ROW_FORMAT_VERSION: u8 = 1;
 const STORAGE_ROW_FLAGS_NONE: u32 = 0;
 const WAL_RECORD_ENVELOPE_HEADER_SIZE: usize = 8;
-const WAL_RECORD_FORMAT_VERSION: u8 = 1;
+// Current WAL record version. Version 3, not 2: `validate_wal_record_version`
+// maps `0 | 2` to PreV1Format, so reusing 2 would alias a pre-V1 record into
+// the current format instead of failing closed (#3112 S2).
+const WAL_RECORD_FORMAT_VERSION: u8 = 3;
+// Version 1 records predate the wall-clock `committed_at` field and stay
+// readable: they decode with `committed_at: None`. Writing is always current.
+const WAL_RECORD_FORMAT_VERSION_V1: u8 = 1;
 // Minimum V1 WAL record length after the 4-byte length prefix: fixed record
-// fields plus the smallest row-native commit payload containing one row.
+// fields plus the smallest row-native commit payload containing one row. This
+// is the pre-version length guard, so it stays at the smallest legal record
+// across every supported version (v1); v3 adds its own check once the version
+// byte is known.
 const WAL_RECORD_MIN_LEN_AFTER_PREFIX: usize = 116;
 const WAL_SEGMENT_BASE_HEADER_SIZE: usize = 32;
 const WAL_SEGMENT_FORMAT_VERSION: u32 = 1;

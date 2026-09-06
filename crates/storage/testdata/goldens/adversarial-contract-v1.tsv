@@ -48,7 +48,9 @@ wal-commit-payload-one-put	trunc:91R	flip:21R16A8R6A2R24A9R5A	ext1:R	ext8:R
 wal-commit-payload-put-tombstone	trunc:164R	flip:21R16A8R6A2R24A9R5A9R16A8R5A2R16A17R	ext1:R	ext8:R
 wal-commit-watermark	trunc:20R	flip:20R	ext1:R	ext8:R
 wal-record-empty-pre-m3f	trunc:45R	flip:45R	ext1:R	ext8:R
-wal-record-envelope	trunc:144R	flip:8R136A	ext1:A	ext8:A
-wal-record-payload	trunc:136R	flip:136R	ext1:A	ext8:A
+wal-record-envelope-v1	trunc:144R	flip:8R136A	ext1:A	ext8:A
+wal-record-envelope	trunc:152R	flip:8R144A	ext1:A	ext8:A
+wal-record-payload-v1	trunc:136R	flip:136R	ext1:A	ext8:A
+wal-record-payload	trunc:144R	flip:144R	ext1:A	ext8:A
 wal-segment-header-max-id	trunc:36R	flip:36R	ext1:A	ext8:A
 wal-segment-header	unmapped

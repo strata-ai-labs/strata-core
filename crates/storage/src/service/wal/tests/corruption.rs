@@ -14,7 +14,9 @@ const RECORD_LEN_OFFSET: usize = WAL_SEGMENT_HEADER_SIZE + ENVELOPE_HEADER_SIZE;
 const RECORD_LEN_CRC_OFFSET: usize = RECORD_LEN_OFFSET + 5;
 const RECORD_BRANCH_ID_OFFSET: usize = RECORD_LEN_OFFSET + 17;
 const RECORD_TIMESTAMP_OFFSET: usize = RECORD_LEN_OFFSET + 33;
-const RECORD_PAYLOAD_OFFSET: usize = RECORD_LEN_OFFSET + 41;
+// 49 = len prefix(4) + version(1) + len_crc(4) + commit_version(8)
+// + branch_id(16) + commit_timestamp(8) + committed_at(8, v3 — #3112 S2).
+const RECORD_PAYLOAD_OFFSET: usize = RECORD_LEN_OFFSET + 49;
 
 fn single_record_service(
     backend: &StoredWalBackend,
@@ -256,7 +258,9 @@ fn second_envelope_offset(bytes: &[u8]) -> usize {
 }
 
 fn commit_payload_first_row_start_at(record_offset: usize) -> usize {
-    let commit_payload_start = record_offset + 41;
+    // 49 = len prefix(4) + version(1) + len_crc(4) + commit_version(8)
+    // + branch_id(16) + commit_timestamp(8) + committed_at(8, v3 — #3112 S2).
+    let commit_payload_start = record_offset + 49;
     let row_len_offset = commit_payload_start + 4 + 4 + 4;
     row_len_offset + 4
 }
