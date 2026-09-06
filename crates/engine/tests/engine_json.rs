@@ -11,6 +11,61 @@ use strata_engine::{
 
 use common::{branch, open_cache_database, open_durable_database, space};
 
+/// #3112 S4: JSON history rows carry their own commit's wall-clock instant.
+/// In the ENGINE crate because the join is engine code and the mutation gate
+/// runs each mutated crate's own tests.
+#[test]
+fn json_history_rows_carry_their_commits_wall_clock_instant() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let doc = JsonDocumentId::new("doc").expect("valid document id");
+    let mut json = database
+        .json(branch("default"), space("default"))
+        .expect("JSON service opens");
+
+    json.create(doc.clone(), json_value(json!({})))
+        .expect("document created");
+
+    let first = json
+        .set(doc.clone(), &path("field"), json_value(json!("one")))
+        .expect("first set succeeds")
+        .commit()
+        .committed_at()
+        .expect("write ack carries an instant");
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let second = json
+        .set(doc.clone(), &path("field"), json_value(json!("two")))
+        .expect("second set succeeds")
+        .commit()
+        .committed_at()
+        .expect("write ack carries an instant");
+    assert!(second > first, "commits must land at distinct instants");
+
+    let history = json
+        .get_versions(&doc)
+        .expect("history succeeds")
+        .expect("history exists");
+    // Three rows newest-first: the two sets, plus the create that made the
+    // document.
+    let rows = history.rows();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(
+        rows[0].committed_at(),
+        Some(second),
+        "the newest row must carry the second set's instant"
+    );
+    assert_eq!(
+        rows[1].committed_at(),
+        Some(first),
+        "the middle row must carry the first set's instant"
+    );
+    assert!(
+        rows[2]
+            .committed_at()
+            .is_some_and(|created| created < first),
+        "the create is dated too, and precedes both sets"
+    );
+}
+
 #[test]
 fn json_contract_runs_in_cache_and_durable_modes() {
     run_database_modes(exercise_json_contract);
