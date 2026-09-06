@@ -3110,11 +3110,11 @@ fn seed_non_seeded_branch_timelines(
                     .entries
                     .iter()
                     .copied()
-                    .filter(|(version, _)| {
+                    .filter(|entry| {
                         !parentless_content_predates_generation(
                             false,
                             descriptor.created_at(),
-                            *version,
+                            entry.commit_version,
                         )
                     })
                     .collect(),

@@ -19,7 +19,7 @@ use crate::branch::state::BranchLocalState;
 use crate::format::{
     decode_snapshot_row_payload, decode_snapshot_timeline_payload, encode_snapshot_row_section,
     FormatError, SnapshotContainer, SnapshotSection, WalRecord, SNAPSHOT_ROW_SECTION_KIND,
-    SNAPSHOT_TIMELINE_SECTION_KIND,
+    SNAPSHOT_TIMELINE_SECTION_KIND, SNAPSHOT_TIMELINE_SECTION_KIND_LEGACY,
 };
 use crate::object::ObjectName;
 use crate::row::StorageRow;
@@ -904,15 +904,21 @@ fn decode_timeline_groups(
 ) -> LifecycleResult<Vec<crate::format::SnapshotTimelineBranchGroup>> {
     let mut groups = Vec::new();
     for section in sections {
-        if section.section_kind() != SNAPSHOT_TIMELINE_SECTION_KIND {
+        // #3112 S2c: both the current section kind and the pre-`committed_at`
+        // legacy kind are restorable; the decoder needs the kind because the
+        // entry width differs.
+        if section.section_kind() != SNAPSHOT_TIMELINE_SECTION_KIND
+            && section.section_kind() != SNAPSHOT_TIMELINE_SECTION_KIND_LEGACY
+        {
             continue;
         }
-        let decoded = decode_snapshot_timeline_payload(section.payload()).map_err(format_error)?;
+        let decoded = decode_snapshot_timeline_payload(section.payload(), section.section_kind())
+            .map_err(format_error)?;
         for group in &decoded {
             if group
                 .entries
                 .last()
-                .is_some_and(|(version, _)| version.as_u64() > watermark.as_u64())
+                .is_some_and(|entry| entry.commit_version.as_u64() > watermark.as_u64())
             {
                 return Err(LifecycleError::RecoveryFailed {
                     reason: "timeline section entry exceeds snapshot watermark",
@@ -983,8 +989,14 @@ pub(crate) fn seed_branch_timeline_from_groups(
         let entries = group
             .entries
             .iter()
-            .map(|(version, timestamp)| {
-                crate::timeline_index::RetainedTimelineEntry::new(*version, *timestamp)
+            .map(|entry| {
+                // #3112 S2c: restore the persisted wall-clock instant with the
+                // entry; a legacy kind-2 section yields None (unknown).
+                crate::timeline_index::RetainedTimelineEntry::new(
+                    entry.commit_version,
+                    entry.commit_timestamp,
+                )
+                .with_committed_at(entry.committed_at)
             })
             .collect::<Vec<_>>();
         branch.retained_timeline().seed_from_scan(&entries);

@@ -660,6 +660,20 @@ V1 direction:
 9. Section decoders MUST reject length fields that cannot fit the host address
    space or would overflow envelope-size arithmetic before allocating or
    copying payload bytes.
+10. The retained-timeline section uses `section_kind = 0x03`, whose entries are
+    `(commit_version, commit_timestamp_micros, committed_at_micros)` with
+    `committed_at_micros = 0` meaning unknown. `section_kind = 0x02` is the
+    pre-`committed_at` layout: it MUST remain decodable, with every wall-clock
+    instant unknown, and MUST NOT be written any more.
+11. Entry width in a retained-timeline section is a property of the SECTION
+    KIND — kind `0x02` entries are 8 bytes narrower than kind `0x03`. A decoder
+    MUST select the width from the kind and MUST reject an unrecognized kind
+    rather than guessing, because reading one kind at the other's width
+    silently reinterprets every field instead of failing closed.
+12. A retired retained-timeline section kind MUST NOT be reused for a future
+    revision, for the same reason WAL record version `2` may not be (section 10
+    requirement 9): reuse aliases old bytes into a current layout instead of
+    failing closed.
 
 ## 14. Snapshot Row Payloads
 

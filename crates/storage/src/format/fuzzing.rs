@@ -147,14 +147,17 @@ pub(crate) fn decode_snapshot_row_payload(bytes: &[u8]) -> bool {
 }
 
 pub(crate) fn decode_snapshot_timeline_payload(bytes: &[u8]) -> bool {
-    match snapshot_timeline::decode_snapshot_timeline_payload(bytes) {
+    // Fuzz the CURRENT section kind; the legacy kind's narrower entries are
+    // covered by the format tests' explicit legacy-decode pin (#3112 S2c).
+    let kind = snapshot_timeline::SNAPSHOT_TIMELINE_SECTION_KIND;
+    match snapshot_timeline::decode_snapshot_timeline_payload(bytes, kind) {
         Ok(groups) => roundtrip(
             &groups,
             |groups| {
                 snapshot_timeline::encode_snapshot_timeline_section(groups)
                     .map(|section| section.payload().to_vec())
             },
-            snapshot_timeline::decode_snapshot_timeline_payload,
+            |bytes| snapshot_timeline::decode_snapshot_timeline_payload(bytes, kind),
         ),
         Err(_) => false,
     }

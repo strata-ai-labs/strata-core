@@ -1,8 +1,12 @@
 # format: snapshot_section carrying a timeline payload
+# section_kind: 3 (entries carry committed_at)
 # group: ordinary branch, versions 1@100us and 2@200us
+# entry 1 committed_at_micros: 1788000000654321
+# entry 2 committed_at_micros: 0 (unknown)
 # hex:
-02 38 00 00 00 00 00 00 00 01 00 00 00 00 01 02
+03 48 00 00 00 00 00 00 00 01 00 00 00 00 01 02
 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 02 00 00
 00 01 00 00 00 00 00 00 00 64 00 00 00 00 00 00
-00 02 00 00 00 00 00 00 00 c8 00 00 00 00 00 00
+00 f1 bb e5 30 2d 5a 06 00 02 00 00 00 00 00 00
+00 c8 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 00

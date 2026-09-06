@@ -1117,12 +1117,45 @@ fn snapshot_row_section_matches_golden_vector() {
 }
 
 #[test]
+#[ignore = "prints the kind-3 timeline-section golden bytes; run when regenerating"]
+fn dump_snapshot_timeline_section_golden_bytes() {
+    let groups = vec![super::SnapshotTimelineBranchGroup {
+        branch_id: ordinary_branch_id(),
+        entries: vec![
+            super::SnapshotTimelineEntry {
+                commit_version: CommitVersion::new(1),
+                commit_timestamp: Timestamp::from_micros(100),
+                committed_at: Some(Timestamp::from_micros(1_788_000_000_654_321)),
+            },
+            super::SnapshotTimelineEntry {
+                commit_version: CommitVersion::new(2),
+                commit_timestamp: Timestamp::from_micros(200),
+                committed_at: None,
+            },
+        ],
+    }];
+    let section = super::encode_snapshot_timeline_section(&groups).expect("timeline section");
+    let bytes = super::snapshot::encode_snapshot_section(&section).expect("encode section");
+    eprintln!("TIMELINE_SECTION\n{}", to_hex_lines(&bytes));
+}
+
+#[test]
 fn snapshot_timeline_section_matches_golden_vector() {
     let groups = vec![super::SnapshotTimelineBranchGroup {
         branch_id: ordinary_branch_id(),
         entries: vec![
-            (CommitVersion::new(1), Timestamp::from_micros(100)),
-            (CommitVersion::new(2), Timestamp::from_micros(200)),
+            // One entry with a wall-clock instant and one without, so the
+            // golden pins both the present and the unknown encoding (#3112 S2c).
+            super::SnapshotTimelineEntry {
+                commit_version: CommitVersion::new(1),
+                commit_timestamp: Timestamp::from_micros(100),
+                committed_at: Some(Timestamp::from_micros(1_788_000_000_654_321)),
+            },
+            super::SnapshotTimelineEntry {
+                commit_version: CommitVersion::new(2),
+                commit_timestamp: Timestamp::from_micros(200),
+                committed_at: None,
+            },
         ],
     }];
     let section = super::encode_snapshot_timeline_section(&groups).expect("timeline section");
@@ -1134,7 +1167,7 @@ fn snapshot_timeline_section_matches_golden_vector() {
     let (decoded, consumed) = decode_snapshot_section(&golden).expect("decode section");
     assert_eq!(consumed, golden.len());
     assert_eq!(
-        super::decode_snapshot_timeline_payload(decoded.payload()),
+        super::decode_snapshot_timeline_payload(decoded.payload(), decoded.section_kind()),
         Ok(groups)
     );
 }
@@ -1284,7 +1317,11 @@ fn adversarial_decoder(file: &str) -> Option<AdversarialArm> {
         ("snapshot-timeline-section-", |bytes| {
             decode_snapshot_section(bytes).is_ok_and(|(section, consumed)| {
                 consumed == bytes.len()
-                    && super::decode_snapshot_timeline_payload(section.payload()).is_ok()
+                    && super::decode_snapshot_timeline_payload(
+                        section.payload(),
+                        section.section_kind(),
+                    )
+                    .is_ok()
             })
         }),
         ("snapshot-watermark-", fuzzing::decode_watermark),

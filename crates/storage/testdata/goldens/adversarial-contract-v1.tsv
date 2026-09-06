@@ -24,7 +24,8 @@ snapshot-container-single-section	trunc:72R17A	flip:8R40A24R17A	ext1:A	ext8:A
 snapshot-header-identity	trunc:72R	flip:8R40A24R	ext1:A	ext8:A
 snapshot-row-section-put-and-tombstone	trunc:175R	flip:1A29R16A8R6A2R24A9R5A9R16A9R2A1R2A3R16A17R	ext1:R	ext8:R
 snapshot-section-empty	trunc:9R	flip:1A8R	ext1:A	ext8:A
-snapshot-timeline-section-one-group	trunc:65R	flip:1A12R16A12R24A	ext1:R	ext8:R
+snapshot-timeline-section-one-group-legacy	trunc:65R	flip:13R16A12R24A	ext1:R	ext8:R
+snapshot-timeline-section-one-group	trunc:81R	flip:13R16A12R40A	ext1:R	ext8:R
 snapshot-watermark-empty	trunc:1R	flip:1R	ext1:R	ext8:R
 snapshot-watermark-max	trunc:25R	flip:1R24A	ext1:R	ext8:R
 snapshot-watermark-present	trunc:25R	flip:1R24A	ext1:R	ext8:R
