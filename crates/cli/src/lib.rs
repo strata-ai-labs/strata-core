@@ -1008,6 +1008,7 @@ fn kv_command(command: KvCommand, scope: &Scope) -> Result<Command, CliError> {
             space: scope.space.clone(),
             key: bytes(key),
             as_of,
+            as_of_time: None,
         },
         KvCommand::Delete { key } => Command::KvDelete {
             branch: scope.branch.clone(),

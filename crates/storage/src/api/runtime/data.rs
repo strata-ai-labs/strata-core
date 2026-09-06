@@ -11,8 +11,10 @@ use super::{
     StorageApiLowerLayer, StorageApiResult, StorageKey, StorageReadRow, StorageRow, StorageSpaceId,
     StorageValue, Timestamp, API_PHYSICAL_SPACE, COMMIT_TIMELINE_SPACE,
 };
+use crate::api::read::WallClockLookupOutcome;
 use crate::api::StorageImmutableSource;
 use crate::branch::read::BranchImmutableRowSource;
+use crate::timeline_index::WallClockResolution;
 
 pub(super) fn map_commit_summary(
     outcome: &crate::commit::CommitOutcome,
@@ -410,6 +412,60 @@ pub(super) fn timeline_version_at_or_before(
     let scanned = timeline_view_from_read_view(view)?;
     seed_retained_timeline(index, &scanned);
     Ok(scanned.version_at_or_before(timestamp))
+}
+
+/// #3112 S3a: resolve a wall-clock instant to a commit boundary.
+///
+/// Unlike every other timeline lookup here there is **no scan fallback**:
+/// `committed_at` is commit-scoped and never written to timeline rows
+/// (storage-format spec §10 req 13), so a scan cannot supply it even where the
+/// scan itself succeeds. An index that cannot prove exactness therefore
+/// refuses — falling through to logical semantics would silently answer a
+/// different question than the one asked.
+///
+/// Each refusal carries its own `reason`, because they are different facts
+/// about the store and a client acts on them differently: retry later, widen
+/// the window, or stop asking in wall-clock terms on this branch.
+pub(super) fn timeline_resolve_wall_clock(
+    view: &BranchReadView,
+    instant: Timestamp,
+) -> StorageApiResult<WallClockLookupOutcome> {
+    let unavailable = |reason: &'static str| StorageApiError::TimestampHistoryUnavailable {
+        branch_id: view.branch_id(),
+        reason,
+    };
+    let Some((index, live_active)) = view.retained_timeline() else {
+        return Err(unavailable(
+            "wall-clock history is unavailable on this branch",
+        ));
+    };
+    let resolution = index
+        .resolve_wall_clock(instant, pinned_view_bound(view, live_active))
+        .ok_or_else(|| unavailable("wall-clock history is unavailable on this branch"))?;
+    match resolution {
+        WallClockResolution::Matched(entry) => Ok(WallClockLookupOutcome::new(
+            entry.commit_version(),
+            entry.commit_timestamp(),
+            entry
+                .committed_at()
+                .ok_or_else(|| unavailable("resolved commit carries no wall-clock instant"))?,
+        )),
+        WallClockResolution::AfterLatestDated => Err(unavailable(
+            "wall-clock instant is after the latest dated commit",
+        )),
+        WallClockResolution::BeforeDatedWithUndatedPrefix => Err(unavailable(
+            "wall-clock instant is before the first dated commit; earlier history is undated",
+        )),
+        WallClockResolution::BeforeDatedHistory => Err(unavailable(
+            "wall-clock instant is before the first dated commit",
+        )),
+        WallClockResolution::NoDatedHistory => Err(unavailable(
+            "branch has no commits carrying a wall-clock instant",
+        )),
+        WallClockResolution::InconsistentDating => Err(unavailable(
+            "branch timeline mixes dated and undated commits inconsistently",
+        )),
+    }
 }
 
 /// W3.1a: `timestamp_for_version` with the same index-or-scan-and-seed shape.

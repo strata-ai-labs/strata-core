@@ -354,6 +354,7 @@ fn read_sweep() -> Vec<(String, Command)> {
                 space: None,
                 key: Bytes::from(format!("k{key}").as_str()),
                 as_of: None,
+                as_of_time: None,
             },
         ));
     }
@@ -385,6 +386,7 @@ fn read_sweep() -> Vec<(String, Command)> {
                 space: None,
                 key: Bytes::from(key),
                 as_of: None,
+                as_of_time: None,
             },
         ));
     }
@@ -572,6 +574,7 @@ fn run_config(case: ConfigCase, seed: u64, ops: usize) -> BTreeMap<String, Value
                     space: None,
                     key: Bytes::from(key.as_str()),
                     as_of: None,
+                    as_of_time: None,
                 })
                 .unwrap_or_else(|err| panic!("{}: probe read refused: {err:?}", case.label()));
             let mut value = serde_json::to_value(&output).expect("probe serializes");

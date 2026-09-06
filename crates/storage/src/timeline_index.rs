@@ -79,6 +79,35 @@ pub(crate) enum RetainedTimelineLookup {
     Empty,
 }
 
+/// The outcome of resolving a wall-clock instant to a commit boundary (#3112
+/// S3a). Every non-`Matched` arm is a distinct refusal: the caller maps each to
+/// its own `reason`, because "before the database existed" and "before the
+/// database had a clock" are different facts about the store.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WallClockResolution {
+    /// The instant resolves to this commit boundary. Its `commit_timestamp` is
+    /// the logical `as_of` the read then runs at.
+    Matched(RetainedTimelineEntry),
+    /// Past the latest dated commit. Raises rather than clamping to current
+    /// state, per the locked temporal contract (design doc D3).
+    AfterLatestDated,
+    /// Before the first dated commit, on a branch that HAS earlier history —
+    /// it simply predates `committed_at`. Distinct from
+    /// `BeforeDatedHistory` because that earlier history is retained and
+    /// readable; only its wall-clock position is unknown.
+    BeforeDatedWithUndatedPrefix,
+    /// Before the first dated commit, with no earlier history at all.
+    BeforeDatedHistory,
+    /// No commit on the branch carries an instant. Every wall-clock question is
+    /// unanswerable here.
+    NoDatedHistory,
+    /// A dated commit is followed by an undated one. Instants only ever arrive
+    /// as a suffix (`observe_committed_at` never downgrades, `seed_from_scan`
+    /// preserves, and every commit since S2a carries one), so this shape means
+    /// the index disagrees with itself — refuse rather than resolve against it.
+    InconsistentDating,
+}
+
 /// The index's answer for a version→timestamp lookup. `Unproven` means the
 /// index cannot prove equivalence with a scan — the caller falls back.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -353,6 +382,35 @@ impl RetainedCommitTimeline {
         })
     }
 
+    /// #3112 S3a: resolve a wall-clock instant to a commit boundary, among
+    /// entries with version ≤ `version_bound`.
+    ///
+    /// `None` means the index cannot prove exactness — and unlike every other
+    /// lookup here, the caller has NO fallback: `committed_at` is commit-scoped
+    /// and absent from timeline rows (storage-format spec §10 req 13), so a
+    /// scan cannot supply it even where the scan itself succeeds (legacy
+    /// pre-elision rows, testkit views). The caller must refuse, never fall
+    /// through to logical semantics.
+    ///
+    /// Note this does NOT require `timestamps_monotonic`: that flag guards
+    /// binary search over the LOGICAL clock, which is a different axis. The
+    /// wall-clock search builds its own monotonic key (see
+    /// `resolve_wall_clock`).
+    pub(crate) fn resolve_wall_clock(
+        &self,
+        target: Timestamp,
+        version_bound: Option<CommitVersion>,
+    ) -> Option<WallClockResolution> {
+        let state = self.inner.read();
+        if !state.complete {
+            return None;
+        }
+        Some(resolve_wall_clock(
+            bounded_prefix(&state.entries, version_bound),
+            target,
+        ))
+    }
+
     /// The timestamp recorded for `version` among entries with version ≤
     /// `version_bound`. Outer `None` = fall back to the scan; inner `None` =
     /// proven absent from retained history.
@@ -382,6 +440,78 @@ impl RetainedCommitTimeline {
             Ok(at) => RetainedVersionLookup::Found(prefix[at].commit_timestamp()),
             Err(_) => RetainedVersionLookup::Absent,
         }
+    }
+}
+
+/// #3112 S3a: the wall-clock resolution rule, pure over a version-ordered
+/// entry slice.
+///
+/// ```text
+/// resolve(T) = the greatest version V such that runmax(V) <= T
+/// where runmax(V) = max(committed_at[i]) over dated i <= V
+/// ```
+///
+/// **Why the running max.** Raw `committed_at` is non-monotonic by construction
+/// (NTP steps, cross-machine skew) while any at-or-before search needs a
+/// monotonic key. The running max is not a smoothing convenience — it is the
+/// only prefix-sound reading. Time travel selects a PREFIX of history, so a
+/// commit whose instant regressed below its predecessor's cannot be selected
+/// without also selecting that predecessor. Concretely, for instants
+/// `[100, 105, 102, 110]`, `resolve(103)` is V1 — NOT the V3 that carries 102 —
+/// because reaching V3 would drag in V2 at 105, which is after the target.
+///
+/// **Undated commits** (`committed_at == None`) are part of history at every
+/// in-range target and are never themselves boundaries: version order decides
+/// what a prefix contains, and they sit below every dated commit in it. Their
+/// instants are unknown, so they cannot be compared to a target — which is also
+/// why a target landing before the dated range refuses instead of guessing.
+fn resolve_wall_clock(entries: &[RetainedTimelineEntry], target: Timestamp) -> WallClockResolution {
+    let Some(dated_start) = entries
+        .iter()
+        .position(|entry| entry.committed_at().is_some())
+    else {
+        return WallClockResolution::NoDatedHistory;
+    };
+    let dated = &entries[dated_start..];
+    if dated.iter().any(|entry| entry.committed_at().is_none()) {
+        return WallClockResolution::InconsistentDating;
+    }
+
+    // Past the tip raises rather than clamping to current state (D3), so the
+    // global max is checked before searching. It is the runmax of the last
+    // entry, which is what "the latest dated commit" means once instants can
+    // regress.
+    let latest_dated = dated
+        .iter()
+        .filter_map(|entry| entry.committed_at())
+        .max()
+        .expect("a non-empty dated suffix has a maximum instant");
+    if target > latest_dated {
+        return WallClockResolution::AfterLatestDated;
+    }
+
+    // Walk once, carrying the running max; `matched` trails the last entry
+    // whose runmax still fits under the target. Non-decreasing by
+    // construction, so the first overshoot ends the search.
+    let mut running_max: Option<Timestamp> = None;
+    let mut matched: Option<RetainedTimelineEntry> = None;
+    for entry in dated {
+        let instant = entry
+            .committed_at()
+            .expect("dated suffix entries all carry an instant");
+        let next_max = running_max.map_or(instant, |current| current.max(instant));
+        if next_max > target {
+            break;
+        }
+        running_max = Some(next_max);
+        matched = Some(*entry);
+    }
+
+    match matched {
+        Some(entry) => WallClockResolution::Matched(entry),
+        // Nothing fit: the target sits below the first dated instant.
+        None if dated_start > 0 => WallClockResolution::BeforeDatedWithUndatedPrefix,
+        None => WallClockResolution::BeforeDatedHistory,
     }
 }
 
@@ -515,6 +645,251 @@ mod tests {
             CommitVersion::new(version),
             Timestamp::from_micros(timestamp),
         )
+    }
+
+    /// A dated entry: logical timestamp and wall-clock instant chosen
+    /// independently, because conflating the two clocks is exactly the bug
+    /// this epic exists to prevent.
+    fn dated(version: u64, timestamp: u64, instant: u64) -> RetainedTimelineEntry {
+        entry(version, timestamp).with_committed_at(Some(Timestamp::from_micros(instant)))
+    }
+
+    fn resolve(entries: &[RetainedTimelineEntry], target: u64) -> WallClockResolution {
+        resolve_wall_clock(entries, Timestamp::from_micros(target))
+    }
+
+    /// #3112 S3a: the resolution rule's truth table. Each arm is pinned
+    /// separately — the arms are the contract, and the mutation gate mutates
+    /// each comparison that separates them.
+    #[test]
+    fn wall_clock_resolves_to_the_boundary_at_or_before_the_target() {
+        let entries = [dated(1, 10, 100), dated(2, 20, 200), dated(3, 30, 300)];
+
+        assert_eq!(
+            resolve(&entries, 200),
+            WallClockResolution::Matched(entries[1]),
+            "an exact instant resolves to its own commit"
+        );
+        assert_eq!(
+            resolve(&entries, 250),
+            WallClockResolution::Matched(entries[1]),
+            "a target between commits resolves to the earlier boundary"
+        );
+        assert_eq!(
+            resolve(&entries, 100),
+            WallClockResolution::Matched(entries[0]),
+            "the first dated instant is inclusive"
+        );
+    }
+
+    /// The running max is the whole point: a commit whose instant regressed
+    /// below its predecessor's cannot be selected without also selecting that
+    /// predecessor, because time travel selects a PREFIX.
+    #[test]
+    fn wall_clock_running_max_never_selects_past_a_later_instant() {
+        // Instants 100, 105, 102, 110 -> runmax 100, 105, 105, 110.
+        let entries = [
+            dated(1, 10, 100),
+            dated(2, 20, 105),
+            dated(3, 30, 102),
+            dated(4, 40, 110),
+        ];
+
+        assert_eq!(
+            resolve(&entries, 103),
+            WallClockResolution::Matched(entries[0]),
+            "V3 carries 102 <= 103 but reaching it would drag in V2 at 105"
+        );
+        assert_eq!(
+            resolve(&entries, 104),
+            WallClockResolution::Matched(entries[0]),
+            "still below V2's instant"
+        );
+        assert_eq!(
+            resolve(&entries, 105),
+            WallClockResolution::Matched(entries[2]),
+            "at 105 the regressed V3 becomes reachable, and is the greatest such version"
+        );
+        assert_eq!(
+            resolve(&entries, 109),
+            WallClockResolution::Matched(entries[2]),
+            "V4's instant is still ahead"
+        );
+    }
+
+    /// D3: past the tip raises rather than clamping to current state. With
+    /// regressed instants "the tip" means the greatest instant, not the last
+    /// entry's.
+    #[test]
+    fn wall_clock_past_the_latest_dated_instant_raises() {
+        let entries = [dated(1, 10, 100), dated(2, 20, 110), dated(3, 30, 105)];
+
+        assert_eq!(
+            resolve(&entries, 111),
+            WallClockResolution::AfterLatestDated
+        );
+        assert_eq!(
+            resolve(&entries, 110),
+            WallClockResolution::Matched(entries[2]),
+            "the greatest instant itself is in range, and resolves to the greatest version under it"
+        );
+        assert_eq!(
+            resolve(&entries, 106),
+            WallClockResolution::Matched(entries[0]),
+            "above V3's raw instant (105) but below the max: in range, and the \
+             running max still pins it to V1 — past-the-tip means above the MAX"
+        );
+    }
+
+    /// F3: "before the database existed" and "before the database had a clock"
+    /// are different facts, and a client must be able to tell them apart.
+    #[test]
+    fn wall_clock_before_the_dated_range_distinguishes_an_undated_prefix() {
+        let dated_only = [dated(1, 10, 100), dated(2, 20, 200)];
+        assert_eq!(
+            resolve(&dated_only, 99),
+            WallClockResolution::BeforeDatedHistory
+        );
+
+        let with_prefix = [entry(1, 10), entry(2, 20), dated(3, 30, 100)];
+        assert_eq!(
+            resolve(&with_prefix, 99),
+            WallClockResolution::BeforeDatedWithUndatedPrefix,
+            "history IS retained here — only its wall-clock position is unknown"
+        );
+    }
+
+    /// Undated commits are part of history at every in-range target: the
+    /// resolved boundary is a dated commit, and the undated prefix rides along
+    /// below it in version order.
+    #[test]
+    fn wall_clock_resolution_rides_over_an_undated_prefix() {
+        let entries = [
+            entry(1, 10),
+            entry(2, 20),
+            dated(3, 30, 100),
+            dated(4, 40, 200),
+        ];
+
+        assert_eq!(
+            resolve(&entries, 150),
+            WallClockResolution::Matched(entries[2]),
+            "resolves to the dated boundary; versions 1-2 are included below it"
+        );
+        assert_eq!(
+            resolve(&[entry(1, 10), entry(2, 20)], 150),
+            WallClockResolution::NoDatedHistory,
+            "a wholly undated branch cannot answer any wall-clock question"
+        );
+    }
+
+    /// Instants only ever arrive as a suffix. A dated entry followed by an
+    /// undated one means the index disagrees with itself — refuse rather than
+    /// resolve against a shape that should not exist.
+    #[test]
+    fn wall_clock_refuses_a_dated_entry_followed_by_an_undated_one() {
+        let entries = [dated(1, 10, 100), entry(2, 20), dated(3, 30, 300)];
+
+        assert_eq!(
+            resolve(&entries, 150),
+            WallClockResolution::InconsistentDating
+        );
+        assert_eq!(
+            resolve(&entries, 50),
+            WallClockResolution::InconsistentDating,
+            "the shape is refused before any target comparison"
+        );
+    }
+
+    /// Commits inside one microsecond are indistinguishable by instant, so the
+    /// greatest version at or before the target wins — the same rule the
+    /// temporal contract already fixes for duplicate logical timestamps
+    /// (decision 6). Wall-clock time addresses BOUNDARIES, not commits.
+    #[test]
+    fn wall_clock_duplicate_instants_resolve_to_the_greatest_version() {
+        let entries = [
+            dated(1, 10, 100),
+            dated(2, 20, 200),
+            dated(3, 30, 200),
+            dated(4, 40, 300),
+        ];
+
+        assert_eq!(
+            resolve(&entries, 200),
+            WallClockResolution::Matched(entries[2]),
+            "V2 and V3 share instant 200; the greatest wins"
+        );
+        assert_eq!(
+            resolve(&entries, 250),
+            WallClockResolution::Matched(entries[2]),
+            "and a target between the shared instant and the next commit agrees"
+        );
+    }
+
+    #[test]
+    fn wall_clock_resolution_on_an_empty_branch_reports_no_dated_history() {
+        assert_eq!(resolve(&[], 100), WallClockResolution::NoDatedHistory);
+    }
+
+    /// F1: an unproven index has NO fallback for wall-clock, because a scan
+    /// cannot supply `committed_at` at all. `None` here is the caller's signal
+    /// to refuse, not to scan.
+    #[test]
+    fn wall_clock_lookup_is_unproven_while_the_index_is_incomplete() {
+        let index = RetainedCommitTimeline::new();
+        index.observe(CommitVersion::new(1), Timestamp::from_micros(10));
+        index.observe_committed_at(CommitVersion::new(1), Timestamp::from_micros(100));
+
+        assert_eq!(
+            index.resolve_wall_clock(Timestamp::from_micros(100), None),
+            None,
+            "incomplete index cannot prove exactness"
+        );
+
+        index.seed_from_scan(&[entry(1, 10)]);
+        assert_eq!(
+            index.resolve_wall_clock(Timestamp::from_micros(100), None),
+            Some(WallClockResolution::Matched(dated(1, 10, 100))),
+            "seeding proves coverage and preserves the observed instant"
+        );
+    }
+
+    /// The version bound applies to wall-clock resolution exactly as it does to
+    /// every other lookup: a pinned view must not see past its own frontier.
+    #[test]
+    fn wall_clock_resolution_honors_the_version_bound() {
+        let index = RetainedCommitTimeline::new();
+        index.mark_complete_from_birth();
+        for (version, timestamp, instant) in [(1, 10, 100), (2, 20, 200), (3, 30, 300)] {
+            index.observe(
+                CommitVersion::new(version),
+                Timestamp::from_micros(timestamp),
+            );
+            index
+                .observe_committed_at(CommitVersion::new(version), Timestamp::from_micros(instant));
+        }
+
+        assert_eq!(
+            index.resolve_wall_clock(Timestamp::from_micros(300), None),
+            Some(WallClockResolution::Matched(dated(3, 30, 300)))
+        );
+        assert_eq!(
+            index.resolve_wall_clock(Timestamp::from_micros(300), Some(CommitVersion::new(2))),
+            Some(WallClockResolution::AfterLatestDated),
+            "past the bounded prefix's latest instant, so it raises rather than \
+             reaching a version the view cannot see"
+        );
+        assert_eq!(
+            index.resolve_wall_clock(Timestamp::from_micros(250), Some(CommitVersion::new(2))),
+            Some(WallClockResolution::AfterLatestDated),
+            "past-the-tip is relative to the BOUNDED prefix: 250 is in range \
+             unbounded, but past the tip a view pinned at version 2 can see"
+        );
+        assert_eq!(
+            index.resolve_wall_clock(Timestamp::from_micros(200), Some(CommitVersion::new(2))),
+            Some(WallClockResolution::Matched(dated(2, 20, 200))),
+            "the bounded prefix's own latest instant resolves normally"
+        );
     }
 
     fn seeded(entries: &[RetainedTimelineEntry]) -> Arc<RetainedCommitTimeline> {

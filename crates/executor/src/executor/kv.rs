@@ -34,13 +34,17 @@ impl Executor {
         space: Option<&str>,
         key: Bytes,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let key = kv_key(key)?;
+        // #3112 S3a: a wall-clock instant is resolved to a logical timestamp
+        // BEFORE the read, so both forms run the identical as-of path below.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.kv_service(branch, space)?;
         if let Some(as_of) = as_of {
             return Ok(Output::KvVersionedValue(Maybe::from_option(
                 service
-                    .get_versioned_at(&key, Timestamp::from_micros(as_of))?
+                    .get_versioned_at(&key, as_of)?
                     .as_ref()
                     .map(versioned_value),
             )));

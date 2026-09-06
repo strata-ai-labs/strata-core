@@ -1630,6 +1630,7 @@ fn kv_get_in(
             space: space.map(str::to_owned),
             key,
             as_of: None,
+            as_of_time: None,
         })
         .expect("kv get succeeds");
     let Output::KvVersionedValue(value) = output else {

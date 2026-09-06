@@ -40,6 +40,7 @@ fn get(
             space: space.map(str::to_owned),
             key: bytes(key),
             as_of: None,
+            as_of_time: None,
         })
         .expect("get succeeds")
     {
@@ -143,6 +144,7 @@ fn operation_on_missing_branch_is_rejected() {
             space: None,
             key: bytes("a"),
             as_of: None,
+            as_of_time: None,
         })
         .expect_err("read on a missing branch fails");
     assert_eq!(read_error.class(), ExecutorErrorClass::NotFound);

@@ -14,7 +14,7 @@ use strata_storage::api::{
     StorageBudgetSource, StorageCachePreheatPolicy, StorageCloseSummary, StorageDurabilityPolicy,
     StorageImmutableSource, StorageKey, StorageMemoryBudget, StorageOpenDisposition,
     StorageOpenOptions, StorageReadRow, StorageRuntime, StorageRuntimeState, StorageSpaceId,
-    StorageValue, TimelineBoundsRequest,
+    StorageValue, TimelineBoundsRequest, WallClockLookupRequest,
 };
 use strata_storage::api::{
     MaintenanceRequest, MaintenanceScope,
@@ -569,6 +569,27 @@ impl StoragePersistence {
             .timeline_bounds(TimelineBoundsRequest::new(branch_id))
             .map_err(map_storage_error)?;
         Ok((outcome.max_version(), outcome.max_timestamp()))
+    }
+
+    /// #3112 S3a: resolve a wall-clock instant to the LOGICAL commit timestamp
+    /// a time-travel read should run at.
+    ///
+    /// Returning the logical timestamp — rather than threading a wall-clock
+    /// bound down the read path — is what keeps `as_of_time` exactly
+    /// equivalent to an `as_of` at the resolved value. Every temporal rule
+    /// already locked (at-or-before, greatest-version-wins on ties, MVCC
+    /// visibility at the frontier, tombstone and TTL handling) is inherited
+    /// rather than restated, so the two forms cannot drift apart.
+    pub(crate) fn resolve_wall_clock(
+        &mut self,
+        branch_id: BranchId,
+        instant: Timestamp,
+    ) -> EngineResult<Timestamp> {
+        let outcome = self
+            .runtime
+            .resolve_wall_clock(WallClockLookupRequest::new(branch_id, instant))
+            .map_err(map_storage_error)?;
+        Ok(outcome.timestamp())
     }
 
     pub(crate) fn fork_branch_current(

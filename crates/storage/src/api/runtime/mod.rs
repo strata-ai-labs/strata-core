@@ -72,7 +72,7 @@ use super::{
     StorageOpenOutcome, StorageOpenSummary, StorageReadRow, StorageRuntimeState, StorageSpaceId,
     StorageValue, StorageWalGrowthPolicy, TimelineBoundsOutcome, TimelineBoundsRequest,
     TimestampLookupMiss, TimestampLookupOutcome, TimestampLookupRequest, VersionLookupOutcome,
-    VersionLookupRequest,
+    VersionLookupRequest, WallClockLookupOutcome, WallClockLookupRequest,
 };
 use crate::api::outcome::StorageCloseEffects;
 use parking_lot::{Mutex as ParkingMutex, MutexGuard as ParkingMutexGuard};
@@ -100,8 +100,8 @@ use data::{
     cap_bound_at_visible, flush_request_for_boundary, map_api_commit_batch, map_commit_summary,
     map_immutable_sources, map_scan_rows, map_storage_space, physical_key,
     point_read_row_from_storage_owned, read_row_from_storage, require_version_retained,
-    resolve_read_bound, row_is_expired_at_selected_frontier, timeline_view_or_index,
-    visible_tombstone_at_bound,
+    resolve_read_bound, row_is_expired_at_selected_frontier, timeline_resolve_wall_clock,
+    timeline_view_or_index, visible_tombstone_at_bound,
 };
 use diagnostics::{
     branch_for_diagnostics_scope, branch_generation_or_default, current_visible,
@@ -1496,6 +1496,18 @@ impl<'a> StorageRuntime<'a> {
             },
         )?;
         Ok(VersionLookupOutcome::new(request.version(), timestamp))
+    }
+
+    /// #3112 S3a: resolve a wall-clock instant to the commit boundary at or
+    /// before it. The caller then reads at the returned LOGICAL timestamp, so
+    /// `as_of_time` is by construction exactly an `as_of` at a resolved value
+    /// — the two forms of time travel cannot diverge.
+    pub fn resolve_wall_clock(
+        &self,
+        request: WallClockLookupRequest,
+    ) -> StorageApiResult<WallClockLookupOutcome> {
+        let view = self.read_view_for_branch(request.branch_id())?;
+        timeline_resolve_wall_clock(&view, request.instant())
     }
 
     pub fn timeline_bounds(
@@ -3124,6 +3136,42 @@ impl<'a> StorageRuntime<'a> {
                 reason: "timeline inspection requires an open runtime",
             }),
         }
+    }
+
+    /// #3112 S3a: drops the index back to unproven coverage — the state a
+    /// fork rebuilt from the catalog manifest and a corruption-guard poison
+    /// both produce. Wall-clock resolution has no scan fallback, so this is the
+    /// only way to exercise its refusal through the real API.
+    #[cfg(test)]
+    pub(crate) fn mark_retained_timeline_incomplete_for_test(
+        &self,
+        branch_id: BranchId,
+    ) -> StorageApiResult<()> {
+        let mark = |state: &crate::branch::state::BranchLocalState| {
+            state
+                .retained_timeline()
+                .mark_incomplete_for_fork_recovery();
+        };
+        match &self.inner {
+            StorageRuntimeInner::Cache(slot) => mark(
+                slot.lock()
+                    .branch_catalog()
+                    .branch_state(branch_id)
+                    .map_err(map_lifecycle_error)?,
+            ),
+            StorageRuntimeInner::DurableOwned(slot) => mark(
+                slot.lock()
+                    .branch_catalog()
+                    .branch_state(branch_id)
+                    .map_err(map_lifecycle_error)?,
+            ),
+            StorageRuntimeInner::Closed => {
+                return Err(StorageApiError::InvalidRuntimeState {
+                    reason: "timeline inspection requires an open runtime",
+                })
+            }
+        }
+        Ok(())
     }
 
     /// #3112 S2b: the wall-clock instant the retained-timeline index holds for
