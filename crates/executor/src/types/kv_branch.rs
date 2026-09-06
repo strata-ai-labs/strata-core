@@ -465,7 +465,14 @@ impl ScanItem {
 pub struct HistoryItem {
     value: Option<Bytes>,
     tombstone: bool,
+    /// The commit version this change was written at — the commit's identity,
+    /// distinct from its position in time.
     version: u64,
+    /// This change's position on the logical commit timeline: a monotonic
+    /// counter assigned per commit, so a fresh database starts small (near 1)
+    /// and it is never a calendar date. Pass it to `as_of` to read this exact
+    /// point; do not format it as a Unix/epoch timestamp. For when the change
+    /// actually happened, use `committed_at`.
     timestamp: u64,
     /// The commit's wall-clock instant in microseconds since the Unix epoch
     /// (UTC), or absent when unknown — a commit written before the database
