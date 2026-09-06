@@ -632,8 +632,14 @@ pub struct CommitReceipt {
     /// Commit's position on the logical commit timeline: a monotonic counter
     /// assigned per commit, so a fresh database starts small (near 1) and it is
     /// never a calendar date. Pass it to `--as-of` and match it against
-    /// `history`; do not format it as a Unix/epoch timestamp.
+    /// `history`; do not format it as a Unix/epoch timestamp. For the real
+    /// wall-clock time, use `committed_at`.
     timestamp: u64,
+    /// The wall-clock instant the commit was applied (UTC epoch microseconds) —
+    /// the value to format as a calendar date. `null` when unknown (a replayed
+    /// or imported commit). Distinct from the logical `timestamp` (#3112).
+    #[serde(default)]
+    committed_at: Option<u64>,
     durability: CommitDurability,
     put_count: u64,
     delete_count: u64,
@@ -651,15 +657,31 @@ impl CommitReceipt {
         Self {
             version,
             timestamp,
+            committed_at: None,
             durability,
             put_count,
             delete_count,
         }
     }
 
+    /// Attaches the wall-clock instant (UTC epoch micros) the commit was
+    /// applied. `None` leaves it unknown (#3112).
+    #[must_use]
+    pub const fn with_committed_at(mut self, committed_at: Option<u64>) -> Self {
+        self.committed_at = committed_at;
+        self
+    }
+
     /// Returns the commit version.
     pub const fn version(&self) -> u64 {
         self.version
+    }
+
+    /// Returns the wall-clock instant (UTC epoch micros) the commit was applied,
+    /// or `None` when unknown. This is the value to format as a date; the
+    /// logical `timestamp` is not (#3112).
+    pub const fn committed_at(&self) -> Option<u64> {
+        self.committed_at
     }
 
     /// Returns the commit's logical commit-timeline position (a monotonic

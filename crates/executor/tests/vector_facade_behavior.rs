@@ -6,26 +6,49 @@
 //! a mis-named field. So every method is checked against its explicit
 //! `Command` with `branch: None, space: None`: the same lifecycle runs on two
 //! fresh cache executors, one driven through the facade and one through raw
-//! commands, and the outputs must be identical at every step. Cache mode is
-//! deterministic, so two executors given the same operations produce equal
-//! `Output`s (which derive `PartialEq`).
+//! commands, and the outputs must be identical at every step — save the
+//! per-commit wall-clock `committed_at` (#3112), which two independent commits
+//! never share, so the comparison masks it and checks every other fact.
 
-use serde_json::json;
+use serde_json::{json, Value};
 use strata_executor::{
     BatchVectorEntry, Command, Executor, VectorDistanceMetric, VectorFilterCondition,
     VectorMetadataFilter,
 };
 
+/// Replaces every `committed_at` (a per-commit wall-clock instant that two
+/// independent commits never share, #3112) with null, so facade and explicit
+/// outputs compare on every other fact.
+fn mask_committed_at(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if key == "committed_at" {
+                    *child = Value::Null;
+                } else {
+                    mask_committed_at(child);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(mask_committed_at),
+        _ => {}
+    }
+}
+
 /// Runs a facade call and its equivalent explicit command on the two lockstep
-/// executors and asserts the outputs match.
+/// executors and asserts the outputs match (modulo `committed_at`).
 macro_rules! assert_facade_matches {
     ($direct:ident, $facade_call:expr, $command:expr) => {{
         let facade_output = $facade_call.expect("facade call succeeds");
         let direct_output = $direct
             .execute($command)
             .expect("explicit command succeeds");
+        let mut facade_json = serde_json::to_value(&facade_output).expect("facade serializes");
+        let mut direct_json = serde_json::to_value(&direct_output).expect("direct serializes");
+        mask_committed_at(&mut facade_json);
+        mask_committed_at(&mut direct_json);
         assert_eq!(
-            facade_output, direct_output,
+            facade_json, direct_json,
             "facade output must equal the explicit command output"
         );
     }};

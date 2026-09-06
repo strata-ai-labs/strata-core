@@ -99,10 +99,38 @@ fn omitted_and_explicit_defaults_produce_equal_output() {
             value: bytes("v"),
         })
         .expect("explicit put succeeds");
+    // `committed_at` is a per-commit wall-clock instant (#3112), so two separate
+    // commits differ there; every other fact must be identical whether the
+    // defaults are omitted or named. Compare modulo that one field.
+    let Output::WriteResult {
+        key: omitted_key,
+        effect: omitted_effect,
+        commit: omitted_commit,
+    } = &omitted_output
+    else {
+        panic!("unexpected omitted output: {omitted_output:?}");
+    };
+    let Output::WriteResult {
+        key: explicit_key,
+        effect: explicit_effect,
+        commit: explicit_commit,
+    } = &explicit_output
+    else {
+        panic!("unexpected explicit output: {explicit_output:?}");
+    };
+    assert_eq!(omitted_key, explicit_key);
+    assert_eq!(omitted_effect, explicit_effect);
+    assert_eq!(omitted_commit.version(), explicit_commit.version());
+    assert_eq!(omitted_commit.timestamp(), explicit_commit.timestamp());
+    assert_eq!(omitted_commit.durability(), explicit_commit.durability());
+    assert_eq!(omitted_commit.put_count(), explicit_commit.put_count());
     assert_eq!(
-        omitted_output, explicit_output,
-        "omitting branch/space must be identical to naming the defaults"
+        omitted_commit.delete_count(),
+        explicit_commit.delete_count()
     );
+    // Both carry a real wall-clock instant; only its value may differ.
+    assert!(omitted_commit.committed_at().is_some());
+    assert!(explicit_commit.committed_at().is_some());
 }
 
 #[test]

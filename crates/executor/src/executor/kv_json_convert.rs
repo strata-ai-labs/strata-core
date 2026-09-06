@@ -81,6 +81,7 @@ pub(super) fn commit_receipt(outcome: CommitOutcome) -> CommitReceipt {
         usize_to_u64(outcome.put_count()),
         usize_to_u64(outcome.delete_count()),
     )
+    .with_committed_at(outcome.committed_at().map(Timestamp::as_micros))
 }
 
 const fn commit_durability(durability: strata_engine::CommitDurability) -> CommitDurability {

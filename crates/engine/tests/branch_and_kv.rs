@@ -14,6 +14,34 @@ use common::{
 };
 
 #[test]
+fn cache_write_ack_carries_a_wall_clock_committed_at() {
+    // #3112: the engine stamps a real wall-clock `committed_at` (UTC epoch
+    // micros) onto every generated commit, distinct from the logical commit
+    // clock. 2020-01-01 in epoch micros: any real clock is far above it, and the
+    // logical per-commit counter (seeded near 1) far below.
+    const YEAR_2020_MICROS: u64 = 1_577_836_800_000_000;
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let mut kv = database
+        .kv(branch("default"), space("default"))
+        .expect("KV service opens");
+    let outcome = kv.put(key(b"k"), value(b"v")).expect("put succeeds");
+    let commit = outcome.commit();
+    let committed_at = commit
+        .committed_at()
+        .expect("write ack carries a committed_at")
+        .as_micros();
+    assert!(
+        committed_at > YEAR_2020_MICROS,
+        "committed_at {committed_at} is not a wall-clock instant"
+    );
+    assert!(
+        commit.timestamp().as_micros() < YEAR_2020_MICROS,
+        "logical timestamp {} should be a small counter, not wall-clock",
+        commit.timestamp().as_micros()
+    );
+}
+
+#[test]
 fn cache_database_supports_branch_and_kv_workflow() {
     let mut database = open_cache_database().expect("cache open succeeds");
 

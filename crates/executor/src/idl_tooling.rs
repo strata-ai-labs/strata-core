@@ -2447,7 +2447,10 @@ mod tests {
                 checked += 1;
             }
         }
-        assert!(checked > 0, "expected commit-clock `timestamp` fields to check");
+        assert!(
+            checked > 0,
+            "expected commit-clock `timestamp` fields to check"
+        );
     }
 
     #[test]

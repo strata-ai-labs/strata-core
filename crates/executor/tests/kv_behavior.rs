@@ -85,6 +85,43 @@ fn kv_write_outputs_report_commit_receipts_and_effects() {
 }
 
 #[test]
+fn write_ack_carries_a_wall_clock_committed_at_distinct_from_the_logical_clock() {
+    // #3112: a write ack's `committed_at` is a real wall-clock instant (UTC
+    // epoch micros), NOT the logical commit clock. On a fresh database the
+    // logical `timestamp` is a tiny per-commit counter, so a client must read
+    // `committed_at` to render a real date (a client that formatted `timestamp`
+    // as Unix micros showed 1969). Assert the field is populated with an actual
+    // recent time, and that the logical clock is not that.
+    // 2020-01-01T00:00:00Z in epoch micros: any real clock is far above it, and
+    // the logical commit counter (seeded near 1) is far below it.
+    const YEAR_2020_MICROS: u64 = 1_577_836_800_000_000;
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let output = executor
+        .execute(Command::KvPut {
+            branch: None,
+            space: None,
+            key: bytes("when-key"),
+            value: bytes("v"),
+        })
+        .expect("put succeeds");
+    let Output::WriteResult { commit, .. } = output else {
+        panic!("unexpected output: {output:?}");
+    };
+    let committed_at = commit
+        .committed_at()
+        .expect("write ack carries a committed_at");
+    assert!(
+        committed_at > YEAR_2020_MICROS,
+        "committed_at {committed_at} is not a wall-clock instant"
+    );
+    assert!(
+        commit.timestamp() < YEAR_2020_MICROS,
+        "logical timestamp {} should be a small counter, not wall-clock",
+        commit.timestamp()
+    );
+}
+
+#[test]
 fn kv_batch_write_outputs_report_per_item_commit_receipts_and_effects() {
     let mut executor = Executor::open_cache().expect("cache executor opens");
 

@@ -27,6 +27,7 @@ use crate::diagnostics::{
     CommitOutcomeStatus, EngineError, EngineErrorClass, EngineErrorStatus, EngineResult,
     ErrorClass, ErrorDetail, RetryPolicy,
 };
+use crate::time_compat::{SystemTime, UNIX_EPOCH};
 
 use super::fault::FaultOp;
 #[cfg(any(test, feature = "testkit"))]
@@ -117,6 +118,21 @@ impl PersistenceOpenSummary {
     pub(crate) const fn durable(self) -> bool {
         self.durable
     }
+}
+
+/// The host wall-clock instant to stamp on a commit as `committed_at` (UTC
+/// epoch micros), or `None` when the clock is before the Unix epoch or overflows
+/// `u64` micros (never in practice). Read through the wasm-safe `time_compat`
+/// shim. It is never the MVCC clock — `committed_at` never affects ordering or
+/// visibility (#3112). Determinism for the IDL tooling is handled downstream by
+/// masking `committed_at` (a genuinely volatile value); an injectable clock for
+/// replay determinism lands with the durable slice (S2/S3).
+fn sample_committed_at() -> Option<Timestamp> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| u64::try_from(elapsed.as_micros()).ok())
+        .map(Timestamp::from_micros)
 }
 
 pub(crate) struct StoragePersistence {
@@ -638,12 +654,6 @@ impl StoragePersistence {
         for mutation in plan.mutations() {
             mutations.push(to_storage_mutation(mutation)?);
         }
-        let mut options = CommitOptions::default();
-        if let Some(generation) = plan.expected_generation() {
-            options = options.with_expected_generation(StorageBranchGeneration::new(generation));
-        }
-        let batch =
-            CommitBatch::new(plan.branch_id(), mutations, options).map_err(map_storage_error)?;
         // A per-item replay timestamp (consumed once) wins; otherwise a held
         // structural timestamp (branch/space setup during import) keeps those
         // bookkeeping commits from advancing the floor past the content that
@@ -652,6 +662,21 @@ impl StoragePersistence {
             .replay_commit_timestamp
             .take()
             .or(self.replay_structural_timestamp);
+        let mut options = CommitOptions::default();
+        if let Some(generation) = plan.expected_generation() {
+            options = options.with_expected_generation(StorageBranchGeneration::new(generation));
+        }
+        // Stamp the wall-clock instant only on ordinary generated commits. A
+        // replayed/imported commit has no authentic wall-clock here (its
+        // original instant is recovered in S2), so it is left unknown rather
+        // than backdated to now (#3112).
+        if replay_timestamp.is_none() {
+            if let Some(committed_at) = sample_committed_at() {
+                options = options.with_committed_at(committed_at);
+            }
+        }
+        let batch =
+            CommitBatch::new(plan.branch_id(), mutations, options).map_err(map_storage_error)?;
         let summary = match replay_timestamp {
             Some(timestamp) => self
                 .runtime
@@ -665,7 +690,8 @@ impl StoragePersistence {
             summary.put_count(),
             summary.delete_count(),
             commit_durability(summary.durability()),
-        ))
+        )
+        .with_committed_at(summary.committed_at()))
     }
 
     pub(crate) fn read(

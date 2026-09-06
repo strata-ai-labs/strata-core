@@ -62,6 +62,9 @@ const VOLATILE_FIELDS: &[&str] = &[
     // Whether a model is present in the host's model cache — varies by machine
     // (a dev box has models downloaded; a fresh CI runner does not).
     "is_local",
+    // Wall-clock instant a commit was applied — a real time, so it varies every
+    // run (#3112). Distinct from the logical `timestamp`, which is stable.
+    "committed_at",
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

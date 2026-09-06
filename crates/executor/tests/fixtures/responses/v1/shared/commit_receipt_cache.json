@@ -1,6 +1,7 @@
 {
   "version": 8,
   "timestamp": 80,
+  "committed_at": null,
   "durability": "not_durable",
   "put_count": 1,
   "delete_count": 0

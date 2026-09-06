@@ -201,6 +201,26 @@ fn verify_error_case(
         })
 }
 
+/// Masks the non-deterministic wall-clock `committed_at` (#3112) to null wherever
+/// it appears in a serialized envelope, so fixtures pin the field's presence and
+/// shape without pinning its value. A genuinely-unknown `committed_at` is already
+/// null, so this is idempotent on those.
+fn mask_committed_at(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if key == "committed_at" {
+                    *child = Value::Null;
+                } else {
+                    mask_committed_at(child);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(mask_committed_at),
+        _ => {}
+    }
+}
+
 fn verify_case(
     repo_root: &Path,
     entry: &ResolvedCommand,
@@ -228,10 +248,14 @@ fn verify_case(
             entry.id, case.request
         ))
     })?;
-    let actual = serde_json::to_value(&output).map_err(|source| IdlError::Json {
+    let mut actual = serde_json::to_value(&output).map_err(|source| IdlError::Json {
         path: PathBuf::from(&case.request),
         source,
     })?;
+    // `committed_at` is a real wall-clock instant (#3112) — non-deterministic,
+    // so a fixture cannot pin its value. Mask it to a fixed sentinel here so the
+    // shape is still pinned while the replay stays reproducible.
+    mask_committed_at(&mut actual);
 
     let response_path = fixture_path(repo_root, &case.response);
     let expected: Value = match std::fs::read_to_string(&response_path) {
@@ -308,4 +332,40 @@ fn fixture_path(repo_root: &Path, relative: &str) -> PathBuf {
 
 fn compact(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "<unserializable>".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn mask_committed_at_nulls_the_field_at_any_depth_and_touches_nothing_else() {
+        // #3112: the fixture mask must null every `committed_at` (a volatile
+        // wall-clock instant) wherever it appears — nested in objects and inside
+        // arrays — and leave every other field untouched.
+        let mut value = json!({
+            "data": {
+                "commit": {"committed_at": 123, "version": 1, "timestamp": 3},
+                "items": [
+                    {"commit": {"committed_at": 9}, "index": 0},
+                    {"commit": {"committed_at": 10}, "index": 1},
+                ],
+            },
+        });
+        mask_committed_at(&mut value);
+        assert_eq!(value["data"]["commit"]["committed_at"], Value::Null);
+        assert_eq!(
+            value["data"]["items"][0]["commit"]["committed_at"],
+            Value::Null
+        );
+        assert_eq!(
+            value["data"]["items"][1]["commit"]["committed_at"],
+            Value::Null
+        );
+        // Everything else is preserved.
+        assert_eq!(value["data"]["commit"]["version"], json!(1));
+        assert_eq!(value["data"]["commit"]["timestamp"], json!(3));
+        assert_eq!(value["data"]["items"][0]["index"], json!(0));
+    }
 }

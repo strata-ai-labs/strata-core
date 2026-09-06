@@ -226,6 +226,16 @@
     "CommitReceipt": {
       "description": "Commit facts returned by mutating operations.",
       "properties": {
+        "committed_at": {
+          "default": null,
+          "description": "The wall-clock instant the commit was applied (UTC epoch microseconds) —\nthe value to format as a calendar date. `null` when unknown (a replayed\nor imported commit). Distinct from the logical `timestamp` (#3112).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "delete_count": {
           "format": "uint64",
           "minimum": 0,
@@ -240,7 +250,7 @@
           "type": "integer"
         },
         "timestamp": {
-          "description": "Commit's position on the logical commit timeline: a monotonic counter\nassigned per commit, so a fresh database starts small (near 1) and it is\nnever a calendar date. Pass it to `--as-of` and match it against\n`history`; do not format it as a Unix/epoch timestamp.",
+          "description": "Commit's position on the logical commit timeline: a monotonic counter\nassigned per commit, so a fresh database starts small (near 1) and it is\nnever a calendar date. Pass it to `--as-of` and match it against\n`history`; do not format it as a Unix/epoch timestamp. For the real\nwall-clock time, use `committed_at`.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"

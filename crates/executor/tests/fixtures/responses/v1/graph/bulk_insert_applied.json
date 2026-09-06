@@ -1,6 +1,7 @@
 {
   "data": {
     "commit": {
+      "committed_at": null,
       "delete_count": 0,
       "durability": "not_durable",
       "put_count": 2,
