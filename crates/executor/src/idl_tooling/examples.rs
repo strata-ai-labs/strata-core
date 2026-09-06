@@ -341,6 +341,90 @@ pub(super) fn verify_examples(
     Ok(())
 }
 
+/// One example step with its rendered CLI input and the wire output it produced
+/// when replayed against a scratch cache executor (#3059).
+pub struct CapturedStep {
+    /// Rendered CLI invocation (the `$ strata …` line).
+    pub cli_input: String,
+    /// The command's wire output envelope (serialized `Output`).
+    pub wire_output: Value,
+    /// Optional comment shown as `# …` after the CLI line, verbatim from the
+    /// example (the same text `verify_examples` renders).
+    pub note: Option<String>,
+}
+
+/// An example's captured input/output run, keyed by command id.
+pub struct CapturedExample {
+    /// Command id (`kv.put`).
+    pub command_id: String,
+    /// Steps in order.
+    pub steps: Vec<CapturedStep>,
+}
+
+/// Replays every hermetic example against a scratch cache executor and captures
+/// each step's rendered CLI input plus the wire output it produced, so the docs
+/// bundle can ship what each example prints (#3059). Reuses the same replay
+/// path as `verify_examples`; commands whose output is not hermetic are already
+/// excluded by the coverage allowlist, so every loaded example replays here.
+pub(super) fn capture_example_runs(
+    repo_root: &Path,
+    index: &CommandIndex,
+    schemas: &BTreeMap<String, Value>,
+    arg_spec: &CliArgSpec,
+) -> Result<Vec<CapturedExample>> {
+    let examples = load_examples(repo_root)?;
+    validate_examples(repo_root, index, schemas, &examples)?;
+    let by_id: BTreeMap<&str, &ResolvedCommand> = index
+        .commands
+        .iter()
+        .map(|command| (command.id.as_str(), command))
+        .collect();
+
+    let mut runs = Vec::new();
+    for (id, example) in &examples {
+        let tmpdir = tempfile::tempdir()
+            .map_err(|error| invalid(format!("example `{id}`: scratch dir failed: {error}")))?;
+        let tmpdir_path = tmpdir.path().to_string_lossy();
+        let mut executor = Executor::open_cache().map_err(|error| {
+            invalid(format!("example `{id}`: scratch executor failed: {error}"))
+        })?;
+        let bindings = resolve_example_bindings(example, schemas);
+        let mut steps = Vec::new();
+        for (position, step) in example.steps.iter().enumerate() {
+            let schema = schemas
+                .get(&step.call)
+                .ok_or_else(|| invalid(format!("example `{id}`: no schema for `{}`", step.call)))?;
+            let cli_input = render_cli(&by_id, schemas, step, &bindings, arg_spec);
+            let wire = step_wire_json(id, position, step, schema, &tmpdir_path, &bindings)?;
+            let command: Command =
+                serde_json::from_value(wire).map_err(|source| IdlError::Json {
+                    path: PathBuf::from(format!("examples/{id}.yaml")),
+                    source,
+                })?;
+            let output = executor.execute(command).map_err(|error| {
+                invalid(format!(
+                    "example `{id}` step {position} (`{}`) failed to execute: {error}",
+                    step.call
+                ))
+            })?;
+            let wire_output = serde_json::to_value(&output).map_err(|source| IdlError::Json {
+                path: PathBuf::from(format!("examples/{id}.yaml")),
+                source,
+            })?;
+            steps.push(CapturedStep {
+                cli_input,
+                wire_output,
+                note: step.note.clone(),
+            });
+        }
+        runs.push(CapturedExample {
+            command_id: id.clone(),
+            steps,
+        });
+    }
+    Ok(runs)
+}
+
 /// Whether a point-read output represents a miss. The canonical `Maybe`
 /// envelope serializes absence as `{found: false, value: null}` (absence never
 /// aliases a bare `null`), so `data.found == false` is the authoritative flag;
@@ -815,5 +899,31 @@ mod tests {
         assert!(matches!(miss.returns, Some(ExpectedResult::Miss)));
         let present: Holder = serde_yaml::from_str("returns: hello").expect("value");
         assert!(matches!(present.returns, Some(ExpectedResult::Present)));
+    }
+
+    #[test]
+    fn capture_examples_replays_examples_with_their_output() {
+        // End-to-end guard on the capture pipeline: a body that returns
+        // `Ok(vec![])` — the mutation gate's default substitution for both this
+        // function and its `capture_examples` wrapper — leaves the docs bundle
+        // with no example output, which asserting real captured content catches.
+        let runs = super::super::capture_examples(&super::super::default_repo_root())
+            .expect("capture examples against the real IDL tree");
+        assert!(!runs.is_empty(), "captured no example runs");
+        let kv_put = runs
+            .iter()
+            .find(|run| run.command_id == "kv.put")
+            .expect("kv.put example captured");
+        let first = kv_put.steps.first().expect("kv.put captured with no steps");
+        assert!(
+            first.cli_input.contains("kv put"),
+            "unexpected cli input: {}",
+            first.cli_input
+        );
+        assert!(
+            first.wire_output.is_object(),
+            "wire output is not an envelope: {}",
+            first.wire_output
+        );
     }
 }

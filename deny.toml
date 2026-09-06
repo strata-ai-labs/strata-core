@@ -27,6 +27,10 @@ allow = [
     "Unicode-DFS-2016",
     "Zlib",
     "0BSD",
+    # MIT No Attribution — permissive, OSI-approved, equivalent to 0BSD above.
+    # Enters via the idl-tooling toolchain (borrow-or-share, a build/tooling dep,
+    # reachable once a checked crate enables the `idl-tooling` feature).
+    "MIT-0",
     "CDLA-Permissive-2.0",
     "BSL-1.0",
 ]
