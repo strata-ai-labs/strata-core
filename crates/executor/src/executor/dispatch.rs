@@ -137,6 +137,7 @@ impl Executor {
                 cursor,
                 limit,
                 as_of,
+                as_of_time,
             } => self.execute_kv_list(
                 branch.as_deref(),
                 space.as_deref(),
@@ -144,6 +145,7 @@ impl Executor {
                 cursor,
                 limit,
                 as_of,
+                as_of_time,
             ),
             Command::KvScan {
                 branch,
@@ -182,7 +184,14 @@ impl Executor {
                 space,
                 prefix,
                 as_of,
-            } => self.execute_kv_count(branch.as_deref(), space.as_deref(), prefix, as_of),
+                as_of_time,
+            } => self.execute_kv_count(
+                branch.as_deref(),
+                space.as_deref(),
+                prefix,
+                as_of,
+                as_of_time,
+            ),
             Command::KvSample {
                 branch,
                 space,
@@ -202,7 +211,15 @@ impl Executor {
                 key,
                 path,
                 as_of,
-            } => self.execute_json_get(branch.as_deref(), space.as_deref(), &key, &path, as_of),
+                as_of_time,
+            } => self.execute_json_get(
+                branch.as_deref(),
+                space.as_deref(),
+                &key,
+                &path,
+                as_of,
+                as_of_time,
+            ),
             Command::JsonDelete {
                 branch,
                 space,
@@ -242,6 +259,7 @@ impl Executor {
                 cursor,
                 limit,
                 as_of,
+                as_of_time,
             } => self.execute_json_list(
                 branch.as_deref(),
                 space.as_deref(),
@@ -249,6 +267,7 @@ impl Executor {
                 cursor,
                 limit,
                 as_of,
+                as_of_time,
             ),
             Command::JsonScan {
                 branch,
@@ -261,7 +280,14 @@ impl Executor {
                 space,
                 prefix,
                 as_of,
-            } => self.execute_json_count(branch.as_deref(), space.as_deref(), prefix, as_of),
+                as_of_time,
+            } => self.execute_json_count(
+                branch.as_deref(),
+                space.as_deref(),
+                prefix,
+                as_of,
+                as_of_time,
+            ),
             Command::JsonSample {
                 branch,
                 space,
@@ -328,7 +354,14 @@ impl Executor {
                 space,
                 collection,
                 as_of,
-            } => self.execute_vector_count(branch.as_deref(), space.as_deref(), collection, as_of),
+                as_of_time,
+            } => self.execute_vector_count(
+                branch.as_deref(),
+                space.as_deref(),
+                collection,
+                as_of,
+                as_of_time,
+            ),
             Command::VectorSample {
                 branch,
                 space,
@@ -356,9 +389,15 @@ impl Executor {
                 collection,
                 key,
                 as_of,
-            } => {
-                self.execute_vector_get(branch.as_deref(), space.as_deref(), collection, key, as_of)
-            }
+                as_of_time,
+            } => self.execute_vector_get(
+                branch.as_deref(),
+                space.as_deref(),
+                collection,
+                key,
+                as_of,
+                as_of_time,
+            ),
             Command::VectorHistory {
                 branch,
                 space,
@@ -390,6 +429,7 @@ impl Executor {
                 cursor,
                 limit,
                 as_of,
+                as_of_time,
             } => self.execute_vector_list_keys(
                 branch.as_deref(),
                 space.as_deref(),
@@ -398,6 +438,7 @@ impl Executor {
                 cursor,
                 limit,
                 as_of,
+                as_of_time,
             ),
             Command::VectorScan {
                 branch,
@@ -455,6 +496,7 @@ impl Executor {
                 k,
                 filter,
                 as_of,
+                as_of_time,
             } => self.execute_vector_query(
                 branch.as_deref(),
                 space.as_deref(),
@@ -463,6 +505,7 @@ impl Executor {
                 k,
                 filter,
                 as_of,
+                as_of_time,
             ),
             Command::VectorIndexQuery {
                 branch,
@@ -472,6 +515,7 @@ impl Executor {
                 k,
                 filter,
                 as_of,
+                as_of_time,
             } => self.execute_vector_index_query(
                 branch.as_deref(),
                 space.as_deref(),
@@ -480,6 +524,7 @@ impl Executor {
                 k,
                 filter,
                 as_of,
+                as_of_time,
             ),
             Command::VectorBatchUpsert {
                 branch,
@@ -529,7 +574,14 @@ impl Executor {
                 space,
                 sequence,
                 as_of,
-            } => self.execute_event_get(branch.as_deref(), space.as_deref(), sequence, as_of),
+                as_of_time,
+            } => self.execute_event_get(
+                branch.as_deref(),
+                space.as_deref(),
+                sequence,
+                as_of,
+                as_of_time,
+            ),
             Command::EventExists {
                 branch,
                 space,
@@ -539,7 +591,8 @@ impl Executor {
                 branch,
                 space,
                 as_of,
-            } => self.execute_event_count(branch.as_deref(), space.as_deref(), as_of),
+                as_of_time,
+            } => self.execute_event_count(branch.as_deref(), space.as_deref(), as_of, as_of_time),
             Command::EventRange {
                 branch,
                 space,
@@ -578,7 +631,13 @@ impl Executor {
                 branch,
                 space,
                 as_of,
-            } => self.execute_event_list_types(branch.as_deref(), space.as_deref(), as_of),
+                as_of_time,
+            } => self.execute_event_list_types(
+                branch.as_deref(),
+                space.as_deref(),
+                as_of,
+                as_of_time,
+            ),
             Command::EventList {
                 branch,
                 space,
@@ -586,6 +645,7 @@ impl Executor {
                 limit,
                 after_sequence,
                 as_of,
+                as_of_time,
             } => self.execute_event_list(
                 branch.as_deref(),
                 space.as_deref(),
@@ -593,6 +653,7 @@ impl Executor {
                 limit,
                 after_sequence,
                 as_of,
+                as_of_time,
             ),
             Command::EventVerifyChain { branch, space } => {
                 self.execute_event_verify_chain(branch.as_deref(), space.as_deref())
@@ -613,13 +674,28 @@ impl Executor {
                 cursor,
                 limit,
                 as_of,
-            } => self.execute_graph_list(branch.as_deref(), space.as_deref(), cursor, limit, as_of),
+                as_of_time,
+            } => self.execute_graph_list(
+                branch.as_deref(),
+                space.as_deref(),
+                cursor,
+                limit,
+                as_of,
+                as_of_time,
+            ),
             Command::GraphGetMeta {
                 branch,
                 space,
                 graph,
                 as_of,
-            } => self.execute_graph_get_meta(branch.as_deref(), space.as_deref(), graph, as_of),
+                as_of_time,
+            } => self.execute_graph_get_meta(
+                branch.as_deref(),
+                space.as_deref(),
+                graph,
+                as_of,
+                as_of_time,
+            ),
             Command::GraphAddNode {
                 branch,
                 space,
@@ -643,12 +719,14 @@ impl Executor {
                 graph,
                 node_id,
                 as_of,
+                as_of_time,
             } => self.execute_graph_get_node(
                 branch.as_deref(),
                 space.as_deref(),
                 graph,
                 node_id,
                 as_of,
+                as_of_time,
             ),
             Command::GraphRemoveNode {
                 branch,
@@ -666,6 +744,7 @@ impl Executor {
                 cursor,
                 limit,
                 as_of,
+                as_of_time,
             } => self.execute_graph_list_nodes(
                 branch.as_deref(),
                 space.as_deref(),
@@ -674,6 +753,7 @@ impl Executor {
                 cursor,
                 limit,
                 as_of,
+                as_of_time,
             ),
             Command::GraphSample {
                 branch,
@@ -708,6 +788,7 @@ impl Executor {
                 edge_type,
                 dst,
                 as_of,
+                as_of_time,
             } => self.execute_graph_get_edge(
                 branch.as_deref(),
                 space.as_deref(),
@@ -716,6 +797,7 @@ impl Executor {
                 edge_type,
                 dst,
                 as_of,
+                as_of_time,
             ),
             Command::GraphRemoveEdge {
                 branch,
@@ -742,6 +824,7 @@ impl Executor {
                 cursor,
                 limit,
                 as_of,
+                as_of_time,
             } => self.execute_graph_neighbors(
                 branch.as_deref(),
                 space.as_deref(),
@@ -752,6 +835,7 @@ impl Executor {
                 cursor.as_deref(),
                 limit,
                 as_of,
+                as_of_time,
             ),
             Command::GraphBindingsForEntity {
                 branch,
@@ -760,6 +844,7 @@ impl Executor {
                 cursor,
                 limit,
                 as_of,
+                as_of_time,
             } => self.execute_graph_bindings_for_entity(
                 branch.as_deref(),
                 space.as_deref(),
@@ -767,6 +852,7 @@ impl Executor {
                 cursor.as_deref(),
                 limit,
                 as_of,
+                as_of_time,
             ),
             Command::GraphBatchWrite {
                 branch,
@@ -843,17 +929,26 @@ impl Executor {
                 space,
                 graph,
                 as_of,
-            } => self.execute_graph_get_ontology(branch.as_deref(), space.as_deref(), graph, as_of),
+                as_of_time,
+            } => self.execute_graph_get_ontology(
+                branch.as_deref(),
+                space.as_deref(),
+                graph,
+                as_of,
+                as_of_time,
+            ),
             Command::GraphOntologySummary {
                 branch,
                 space,
                 graph,
                 as_of,
+                as_of_time,
             } => self.execute_graph_ontology_summary(
                 branch.as_deref(),
                 space.as_deref(),
                 graph,
                 as_of,
+                as_of_time,
             ),
             Command::GraphNodesByType {
                 branch,
@@ -863,6 +958,7 @@ impl Executor {
                 cursor,
                 limit,
                 as_of,
+                as_of_time,
             } => self.execute_graph_nodes_by_type(
                 branch.as_deref(),
                 space.as_deref(),
@@ -871,6 +967,7 @@ impl Executor {
                 cursor,
                 limit,
                 as_of,
+                as_of_time,
             ),
             Command::GraphWcc {
                 branch,
@@ -878,14 +975,30 @@ impl Executor {
                 graph,
                 budget,
                 as_of,
-            } => self.execute_graph_wcc(branch.as_deref(), space.as_deref(), graph, budget, as_of),
+                as_of_time,
+            } => self.execute_graph_wcc(
+                branch.as_deref(),
+                space.as_deref(),
+                graph,
+                budget,
+                as_of,
+                as_of_time,
+            ),
             Command::GraphLcc {
                 branch,
                 space,
                 graph,
                 budget,
                 as_of,
-            } => self.execute_graph_lcc(branch.as_deref(), space.as_deref(), graph, budget, as_of),
+                as_of_time,
+            } => self.execute_graph_lcc(
+                branch.as_deref(),
+                space.as_deref(),
+                graph,
+                budget,
+                as_of,
+                as_of_time,
+            ),
             Command::GraphSssp {
                 branch,
                 space,
@@ -894,6 +1007,7 @@ impl Executor {
                 direction,
                 budget,
                 as_of,
+                as_of_time,
             } => self.execute_graph_sssp(
                 branch.as_deref(),
                 space.as_deref(),
@@ -902,6 +1016,7 @@ impl Executor {
                 direction,
                 budget,
                 as_of,
+                as_of_time,
             ),
             Command::GraphPagerank {
                 branch,
@@ -913,6 +1028,7 @@ impl Executor {
                 personalization,
                 budget,
                 as_of,
+                as_of_time,
             } => self.execute_graph_pagerank(
                 branch.as_deref(),
                 space.as_deref(),
@@ -923,6 +1039,7 @@ impl Executor {
                 personalization,
                 budget,
                 as_of,
+                as_of_time,
             ),
             Command::GraphCdlp {
                 branch,
@@ -932,6 +1049,7 @@ impl Executor {
                 direction,
                 budget,
                 as_of,
+                as_of_time,
             } => self.execute_graph_cdlp(
                 branch.as_deref(),
                 space.as_deref(),
@@ -940,6 +1058,7 @@ impl Executor {
                 direction,
                 budget,
                 as_of,
+                as_of_time,
             ),
             Command::GraphBfs {
                 branch,
@@ -952,6 +1071,7 @@ impl Executor {
                 direction,
                 budget,
                 as_of,
+                as_of_time,
             } => self.execute_graph_bfs(
                 branch.as_deref(),
                 space.as_deref(),
@@ -963,6 +1083,7 @@ impl Executor {
                 direction,
                 budget,
                 as_of,
+                as_of_time,
             ),
             Command::GraphBulkInsert {
                 branch,

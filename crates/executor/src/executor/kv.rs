@@ -6,7 +6,7 @@ use super::{
     kv_batch_get_result, kv_batch_result, kv_key, kv_value, optional_key, optional_limit,
     reject_duplicate_valid_keys, sample_output, scan_item, upsert_effect, usize_to_u64,
     versioned_value, write_output, BatchKvEntry, Bytes, Executor, ExecutorResult, Maybe, Output,
-    PageInfo, Timestamp,
+    PageInfo,
 };
 
 impl Executor {
@@ -79,16 +79,20 @@ impl Executor {
         cursor: Option<Bytes>,
         limit: Option<u64>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let prefix = optional_key(prefix)?;
         let cursor = optional_key(cursor)?;
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.kv_service(branch, space)?;
         // A bare list (no cursor, no limit) returns every key; any pagination
         // request routes through the engine's page methods so the executor
         // never materializes the whole keyset or does cursor math itself.
         if cursor.is_none() && limit.is_none() {
             let keys = match as_of {
-                Some(as_of) => service.list_at(prefix.as_ref(), Timestamp::from_micros(as_of))?,
+                Some(as_of) => service.list_at(prefix.as_ref(), as_of)?,
                 None => service.list(prefix.as_ref())?,
             };
             return Ok(Output::KeysPage {
@@ -98,12 +102,7 @@ impl Executor {
         }
         let limit = optional_limit(limit)?.unwrap_or(usize::MAX);
         let page = match as_of {
-            Some(as_of) => service.list_at_page(
-                prefix.as_ref(),
-                cursor.as_ref(),
-                limit,
-                Timestamp::from_micros(as_of),
-            )?,
+            Some(as_of) => service.list_at_page(prefix.as_ref(), cursor.as_ref(), limit, as_of)?,
             None => service.list_page(prefix.as_ref(), cursor.as_ref(), limit)?,
         };
         Ok(Output::KeysPage {
@@ -340,11 +339,15 @@ impl Executor {
         space: Option<&str>,
         prefix: Option<Bytes>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let prefix = optional_key(prefix)?;
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.kv_service(branch, space)?;
         let count = if let Some(as_of) = as_of {
-            service.count_at(prefix.as_ref(), Timestamp::from_micros(as_of))?
+            service.count_at(prefix.as_ref(), as_of)?
         } else {
             service.count(prefix.as_ref())?
         };

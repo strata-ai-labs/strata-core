@@ -104,6 +104,7 @@ fn read_back(executor: &mut Executor, key: &str) -> Value {
             key: key.to_owned(),
             path: "$".to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("an accepted document reads back")
     {

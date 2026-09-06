@@ -1027,6 +1027,7 @@ fn kv_command(command: KvCommand, scope: &Scope) -> Result<Command, CliError> {
             cursor: cursor.as_deref().map(cursor_argument).transpose()?,
             limit,
             as_of,
+            as_of_time: None,
         },
         KvCommand::Scan {
             start,
@@ -1058,6 +1059,7 @@ fn kv_command(command: KvCommand, scope: &Scope) -> Result<Command, CliError> {
             space: scope.space.clone(),
             prefix: prefix.map(bytes),
             as_of: None,
+            as_of_time: None,
         },
         KvCommand::Sample { prefix, count } => Command::KvSample {
             branch: scope.branch.clone(),
@@ -1068,6 +1070,8 @@ fn kv_command(command: KvCommand, scope: &Scope) -> Result<Command, CliError> {
     })
 }
 
+// A flat command-mapping table, like its vector/graph/inference siblings above.
+#[allow(clippy::too_many_lines)]
 fn json_command(command: JsonCommand, scope: &Scope) -> Result<Command, CliError> {
     Ok(match command {
         JsonCommand::Set {
@@ -1088,6 +1092,7 @@ fn json_command(command: JsonCommand, scope: &Scope) -> Result<Command, CliError
             key,
             path,
             as_of,
+            as_of_time: None,
         },
         JsonCommand::Delete { key, path } => Command::JsonDelete {
             branch: scope.branch.clone(),
@@ -1107,6 +1112,7 @@ fn json_command(command: JsonCommand, scope: &Scope) -> Result<Command, CliError
             cursor,
             limit,
             as_of,
+            as_of_time: None,
         },
         JsonCommand::Scan {
             start,
@@ -1135,6 +1141,7 @@ fn json_command(command: JsonCommand, scope: &Scope) -> Result<Command, CliError
             space: scope.space.clone(),
             prefix,
             as_of: None,
+            as_of_time: None,
         },
         JsonCommand::Sample { prefix, count } => Command::JsonSample {
             branch: scope.branch.clone(),
@@ -1205,6 +1212,7 @@ fn vector_command(command: VectorCommand, scope: &Scope) -> Result<Command, CliE
             collection,
             key,
             as_of,
+            as_of_time: None,
         },
         VectorCommand::History { collection, key } => Command::VectorHistory {
             branch: scope.branch.clone(),
@@ -1231,6 +1239,7 @@ fn vector_command(command: VectorCommand, scope: &Scope) -> Result<Command, CliE
             cursor,
             limit,
             as_of: None,
+            as_of_time: None,
         },
         VectorCommand::Scan {
             collection,
@@ -1300,6 +1309,7 @@ fn vector_command(command: VectorCommand, scope: &Scope) -> Result<Command, CliE
                     k,
                     filter: command_filter,
                     as_of,
+                    as_of_time: None,
                 }
             } else {
                 Command::VectorQuery {
@@ -1310,6 +1320,7 @@ fn vector_command(command: VectorCommand, scope: &Scope) -> Result<Command, CliE
                     k,
                     filter: command_filter,
                     as_of,
+                    as_of_time: None,
                 }
             }
         }
@@ -1318,6 +1329,7 @@ fn vector_command(command: VectorCommand, scope: &Scope) -> Result<Command, CliE
             space: scope.space.clone(),
             collection,
             as_of: None,
+            as_of_time: None,
         },
         VectorCommand::Sample { collection, count } => Command::VectorSample {
             branch: scope.branch.clone(),
@@ -1375,6 +1387,7 @@ fn event_command(command: EventCommand, scope: &Scope) -> Result<Command, CliErr
             space: scope.space.clone(),
             sequence,
             as_of,
+            as_of_time: None,
         },
         EventCommand::Exists { sequence } => Command::EventExists {
             branch: scope.branch.clone(),
@@ -1385,6 +1398,7 @@ fn event_command(command: EventCommand, scope: &Scope) -> Result<Command, CliErr
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             as_of,
+            as_of_time: None,
         },
         EventCommand::List {
             event_type,
@@ -1398,11 +1412,13 @@ fn event_command(command: EventCommand, scope: &Scope) -> Result<Command, CliErr
             limit,
             after_sequence,
             as_of,
+            as_of_time: None,
         },
         EventCommand::Types { as_of } => Command::EventListTypes {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             as_of,
+            as_of_time: None,
         },
         EventCommand::ByType {
             event_type,
@@ -1416,6 +1432,7 @@ fn event_command(command: EventCommand, scope: &Scope) -> Result<Command, CliErr
             limit,
             after_sequence,
             as_of,
+            as_of_time: None,
         },
         EventCommand::Range {
             start_seq,
@@ -1477,12 +1494,14 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             cursor,
             limit,
             as_of,
+            as_of_time: None,
         },
         GraphCommand::Meta { graph, as_of } => Command::GraphGetMeta {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             graph,
             as_of,
+            as_of_time: None,
         },
         GraphCommand::AddNode {
             graph,
@@ -1513,6 +1532,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             graph,
             node_id,
             as_of,
+            as_of_time: None,
         },
         GraphCommand::RemoveNode { graph, node_id } => Command::GraphRemoveNode {
             branch: scope.branch.clone(),
@@ -1534,6 +1554,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             cursor,
             limit,
             as_of,
+            as_of_time: None,
         },
         GraphCommand::Sample { graph, count } => Command::GraphSample {
             branch: scope.branch.clone(),
@@ -1577,6 +1598,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             edge_type,
             dst,
             as_of,
+            as_of_time: None,
         },
         GraphCommand::RemoveEdge {
             graph,
@@ -1609,6 +1631,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             cursor,
             limit,
             as_of,
+            as_of_time: None,
         },
         GraphCommand::NodesByType {
             graph,
@@ -1624,6 +1647,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             cursor,
             limit,
             as_of,
+            as_of_time: None,
         },
         GraphCommand::Ontology(args) => graph_ontology_command(args.command, scope)?,
         GraphCommand::Wcc { graph, as_of } => Command::GraphWcc {
@@ -1632,6 +1656,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             graph,
             budget: None,
             as_of,
+            as_of_time: None,
         },
         GraphCommand::Lcc { graph, as_of } => Command::GraphLcc {
             branch: scope.branch.clone(),
@@ -1639,6 +1664,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             graph,
             budget: None,
             as_of,
+            as_of_time: None,
         },
         GraphCommand::Sssp {
             graph,
@@ -1653,6 +1679,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             direction: Some(direction.into()),
             budget: None,
             as_of,
+            as_of_time: None,
         },
         GraphCommand::Pagerank {
             graph,
@@ -1674,6 +1701,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
                 .transpose()?,
             budget: None,
             as_of,
+            as_of_time: None,
         },
         GraphCommand::Cdlp {
             graph,
@@ -1688,6 +1716,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             direction: Some(direction.into()),
             budget: None,
             as_of,
+            as_of_time: None,
         },
         GraphCommand::BulkInsert {
             graph,
@@ -1734,6 +1763,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             direction: Some(direction.into()),
             budget: None,
             as_of,
+            as_of_time: None,
         },
     })
 }
@@ -1811,12 +1841,14 @@ fn graph_ontology_command(
             space: scope.space.clone(),
             graph,
             as_of,
+            as_of_time: None,
         },
         GraphOntologyCommand::Summary { graph, as_of } => Command::GraphOntologySummary {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             graph,
             as_of,
+            as_of_time: None,
         },
     })
 }

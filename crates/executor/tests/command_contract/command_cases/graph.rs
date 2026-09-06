@@ -19,12 +19,14 @@ pub(super) fn graph_commands() -> Vec<Command> {
             cursor: Some("deps".to_owned()),
             limit: Some(5),
             as_of: None,
+            as_of_time: None,
         },
         Command::GraphGetMeta {
             branch: None,
             space: None,
             graph: "deps".to_owned(),
             as_of: None,
+            as_of_time: None,
         },
         Command::GraphAddNode {
             object_type: None,
@@ -41,6 +43,7 @@ pub(super) fn graph_commands() -> Vec<Command> {
             graph: "deps".to_owned(),
             node_id: "node-a".to_owned(),
             as_of: None,
+            as_of_time: None,
         },
         Command::GraphRemoveNode {
             branch: None,
@@ -56,6 +59,7 @@ pub(super) fn graph_commands() -> Vec<Command> {
             cursor: Some("node-a".to_owned()),
             limit: Some(5),
             as_of: None,
+            as_of_time: None,
         },
         Command::GraphAddEdge {
             branch: None,
@@ -75,6 +79,7 @@ pub(super) fn graph_commands() -> Vec<Command> {
             edge_type: "depends_on".to_owned(),
             dst: "node-b".to_owned(),
             as_of: None,
+            as_of_time: None,
         },
         Command::GraphRemoveEdge {
             branch: None,
@@ -94,6 +99,7 @@ pub(super) fn graph_commands() -> Vec<Command> {
             cursor: None,
             limit: Some(5),
             as_of: None,
+            as_of_time: None,
         },
         Command::GraphBindingsForEntity {
             branch: None,
@@ -102,6 +108,7 @@ pub(super) fn graph_commands() -> Vec<Command> {
             cursor: None,
             limit: Some(5),
             as_of: None,
+            as_of_time: None,
         },
         Command::GraphBatchWrite {
             branch: None,
@@ -153,12 +160,14 @@ pub(super) fn graph_commands() -> Vec<Command> {
             space: None,
             graph: "deps".to_owned(),
             as_of: Some(9),
+            as_of_time: None,
         },
         Command::GraphOntologySummary {
             branch: None,
             space: None,
             graph: "deps".to_owned(),
             as_of: None,
+            as_of_time: None,
         },
         Command::GraphNodesByType {
             branch: None,
@@ -168,6 +177,7 @@ pub(super) fn graph_commands() -> Vec<Command> {
             cursor: Some("node-a".to_owned()),
             limit: Some(5),
             as_of: None,
+            as_of_time: None,
         },
         Command::GraphWcc {
             branch: None,
@@ -175,6 +185,7 @@ pub(super) fn graph_commands() -> Vec<Command> {
             graph: "deps".to_owned(),
             budget: None,
             as_of: None,
+            as_of_time: None,
         },
         Command::GraphLcc {
             branch: None,
@@ -182,6 +193,7 @@ pub(super) fn graph_commands() -> Vec<Command> {
             graph: "deps".to_owned(),
             budget: None,
             as_of: Some(9),
+            as_of_time: None,
         },
         Command::GraphSssp {
             branch: None,
@@ -191,6 +203,7 @@ pub(super) fn graph_commands() -> Vec<Command> {
             direction: Some(GraphDirection::Both),
             budget: None,
             as_of: None,
+            as_of_time: None,
         },
         Command::GraphPagerank {
             branch: None,
@@ -202,6 +215,7 @@ pub(super) fn graph_commands() -> Vec<Command> {
             personalization: None,
             budget: None,
             as_of: None,
+            as_of_time: None,
         },
         Command::GraphCdlp {
             branch: None,
@@ -211,6 +225,7 @@ pub(super) fn graph_commands() -> Vec<Command> {
             direction: None,
             budget: None,
             as_of: None,
+            as_of_time: None,
         },
         Command::GraphBfs {
             branch: None,
@@ -223,6 +238,7 @@ pub(super) fn graph_commands() -> Vec<Command> {
             direction: None,
             budget: None,
             as_of: None,
+            as_of_time: None,
         },
         Command::GraphApplyDeletePolicy {
             branch: None,
@@ -289,6 +305,7 @@ pub(super) fn graph_round_trip_edge_commands() -> Vec<Command> {
             cursor: Some("cursor".to_owned()),
             limit: Some(0),
             as_of: None,
+            as_of_time: None,
         },
         Command::GraphNeighbors {
             branch: Some("feature".to_owned()),
@@ -300,6 +317,7 @@ pub(super) fn graph_round_trip_edge_commands() -> Vec<Command> {
             cursor: None,
             limit: Some(1),
             as_of: None,
+            as_of_time: None,
         },
         Command::GraphBatchWrite {
             branch: Some("feature".to_owned()),
@@ -340,6 +358,7 @@ pub(super) fn graph_round_trip_edge_commands() -> Vec<Command> {
             ),
             budget: Some(GraphAnalyticsBudget::new(Some(1_000), Some(10_000))),
             as_of: Some(77),
+            as_of_time: None,
         },
         Command::GraphBfs {
             branch: Some("feature".to_owned()),
@@ -352,6 +371,7 @@ pub(super) fn graph_round_trip_edge_commands() -> Vec<Command> {
             direction: Some(GraphDirection::Both),
             budget: Some(GraphAnalyticsBudget::new(None, Some(500))),
             as_of: None,
+            as_of_time: None,
         },
         Command::GraphWcc {
             branch: Some("feature".to_owned()),
@@ -359,6 +379,7 @@ pub(super) fn graph_round_trip_edge_commands() -> Vec<Command> {
             graph: "wide".to_owned(),
             budget: Some(GraphAnalyticsBudget::new(Some(10), None)),
             as_of: Some(31),
+            as_of_time: None,
         },
     ]
 }
@@ -385,6 +406,7 @@ pub(super) fn graph_binding_target_round_trip_commands() -> Vec<Command> {
         cursor: Some(format!("cursor-{index}")),
         limit: Some(10),
         as_of: None,
+        as_of_time: None,
     })
     .collect()
 }

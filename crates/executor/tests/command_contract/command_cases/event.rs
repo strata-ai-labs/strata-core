@@ -18,6 +18,7 @@ pub(super) fn event_commands() -> Vec<Command> {
             space: None,
             sequence: 0,
             as_of: Some(99),
+            as_of_time: None,
         },
         Command::EventExists {
             branch: None,
@@ -28,6 +29,7 @@ pub(super) fn event_commands() -> Vec<Command> {
             branch: None,
             space: None,
             as_of: Some(99),
+            as_of_time: None,
         },
         Command::EventRange {
             branch: None,
@@ -51,6 +53,7 @@ pub(super) fn event_commands() -> Vec<Command> {
             branch: None,
             space: None,
             as_of: Some(99),
+            as_of_time: None,
         },
         Command::EventList {
             branch: None,
@@ -59,6 +62,7 @@ pub(super) fn event_commands() -> Vec<Command> {
             limit: Some(5),
             after_sequence: Some(1),
             as_of: Some(99),
+            as_of_time: None,
         },
         Command::EventVerifyChain {
             branch: None,
@@ -124,6 +128,7 @@ pub(super) fn event_round_trip_edge_commands() -> Vec<Command> {
             limit: Some(0),
             after_sequence: None,
             as_of: None,
+            as_of_time: None,
         },
     ]
 }

@@ -84,6 +84,7 @@ fn run_case(executor: &mut Executor, key: &str, input: &str) -> Option<String> {
             key: key.to_owned(),
             path: "$".to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("an accepted document reads back")
     {

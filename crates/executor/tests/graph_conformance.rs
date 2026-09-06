@@ -179,6 +179,7 @@ fn bfs_matches_the_ldbc_reference() {
                 direction: Some(direction),
                 budget: None,
                 as_of: None,
+                as_of_time: None,
             })
             .expect("bfs runs")
         else {
@@ -218,6 +219,7 @@ fn wcc_matches_the_ldbc_reference() {
                 graph,
                 budget: None,
                 as_of: None,
+                as_of_time: None,
             })
             .expect("wcc runs")
         else {
@@ -277,6 +279,7 @@ fn sssp_matches_the_ldbc_reference() {
                 direction: Some(direction),
                 budget: None,
                 as_of: None,
+                as_of_time: None,
             })
             .expect("sssp runs")
         else {
@@ -326,6 +329,7 @@ fn pagerank_matches_the_ldbc_reference() {
                 personalization: None,
                 budget: None,
                 as_of: None,
+                as_of_time: None,
             })
             .expect("pagerank runs")
         else {
@@ -369,6 +373,7 @@ fn cdlp_matches_the_ldbc_reference() {
                 direction: Some(direction),
                 budget: None,
                 as_of: None,
+                as_of_time: None,
             })
             .expect("cdlp runs")
         else {
@@ -398,6 +403,7 @@ fn lcc_matches_the_ldbc_reference_on_the_undirected_graph() {
             graph: "lcc-undir".to_owned(),
             budget: None,
             as_of: None,
+            as_of_time: None,
         })
         .expect("lcc runs")
     else {
@@ -425,6 +431,7 @@ fn lcc_directed_reference_uses_a_different_definition() {
             graph: "lcc-dir".to_owned(),
             budget: None,
             as_of: None,
+            as_of_time: None,
         })
         .expect("lcc runs")
     else {

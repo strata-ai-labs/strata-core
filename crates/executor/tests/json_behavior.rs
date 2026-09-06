@@ -52,6 +52,7 @@ fn wire_command_guard_rejects_integers_beyond_i64_u64_range() {
             key: "k".to_owned(),
             path: "$".to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("get succeeds")
     {
@@ -429,6 +430,7 @@ fn json_executor_inherits_configured_database_default_branch() {
             key: "shared".to_owned(),
             path: "$".to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect_err("literal default branch is absent");
     assert_eq!(error.class(), ExecutorErrorClass::NotFound);
@@ -531,6 +533,7 @@ fn json_mapping_commands() -> Vec<Command> {
             key: "map-a".to_owned(),
             path: "$.name".to_owned(),
             as_of: None,
+            as_of_time: None,
         },
         Command::JsonDelete {
             branch: None,
@@ -582,12 +585,14 @@ fn json_mapping_commands() -> Vec<Command> {
             cursor: None,
             limit: Some(2),
             as_of: None,
+            as_of_time: None,
         },
         Command::JsonCount {
             branch: None,
             space: None,
             prefix: Some("map-".to_owned()),
             as_of: None,
+            as_of_time: None,
         },
         Command::JsonSample {
             branch: None,
@@ -1186,6 +1191,7 @@ fn invalid_input_json_commands() -> Vec<Command> {
             key: String::new(),
             path: "$".to_owned(),
             as_of: None,
+            as_of_time: None,
         },
         Command::JsonGet {
             branch: None,
@@ -1193,6 +1199,7 @@ fn invalid_input_json_commands() -> Vec<Command> {
             key: "bad-path".to_owned(),
             path: "$[".to_owned(),
             as_of: None,
+            as_of_time: None,
         },
         Command::JsonSet {
             branch: None,
@@ -1246,6 +1253,7 @@ fn missing_branch_json_commands() -> Vec<Command> {
             key: "doc".to_owned(),
             path: "$".to_owned(),
             as_of: None,
+            as_of_time: None,
         },
         Command::JsonList {
             branch: Some("missing".to_owned()),
@@ -1254,12 +1262,14 @@ fn missing_branch_json_commands() -> Vec<Command> {
             cursor: None,
             limit: Some(1),
             as_of: None,
+            as_of_time: None,
         },
         Command::JsonCount {
             branch: Some("missing".to_owned()),
             space: None,
             prefix: None,
             as_of: None,
+            as_of_time: None,
         },
         Command::JsonSample {
             branch: Some("missing".to_owned()),
@@ -1335,6 +1345,7 @@ fn closed_handle_json_commands() -> Vec<Command> {
             key: "doc".to_owned(),
             path: "$".to_owned(),
             as_of: None,
+            as_of_time: None,
         },
         Command::JsonDelete {
             branch: None,
@@ -1374,12 +1385,14 @@ fn closed_handle_json_commands() -> Vec<Command> {
             cursor: None,
             limit: None,
             as_of: None,
+            as_of_time: None,
         },
         Command::JsonCount {
             branch: None,
             space: None,
             prefix: None,
             as_of: None,
+            as_of_time: None,
         },
         Command::JsonSample {
             branch: None,
@@ -1733,6 +1746,7 @@ fn execute_json_get_versioned(
             key: key.to_owned(),
             path: path.to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("JSON get succeeds")
     {
@@ -1760,6 +1774,7 @@ fn execute_json_get_value_in(
             key: key.to_owned(),
             path: path.to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("JSON get succeeds")
     {
@@ -1781,6 +1796,7 @@ fn execute_json_get_as_of(
             key: key.to_owned(),
             path: path.to_owned(),
             as_of: Some(as_of),
+            as_of_time: None,
         })
         .expect("historical JSON get succeeds")
     {
@@ -1863,6 +1879,7 @@ fn execute_json_list(
             cursor: cursor.map(str::to_owned),
             limit: Some(limit),
             as_of: None,
+            as_of_time: None,
         })
         .expect("JSON list succeeds")
     {
@@ -1884,6 +1901,7 @@ fn execute_json_list_as_of(
             cursor: None,
             limit: Some(100),
             as_of: Some(as_of),
+            as_of_time: None,
         })
         .expect("historical JSON list succeeds")
     {
@@ -1903,6 +1921,7 @@ fn execute_json_count_as_of(executor: &mut Executor, prefix: Option<&str>, as_of
             space: None,
             prefix: prefix.map(str::to_owned),
             as_of: Some(as_of),
+            as_of_time: None,
         })
         .expect("JSON count as_of succeeds")
     {
@@ -1937,6 +1956,7 @@ fn execute_json_count_in(
             space: space.map(str::to_owned),
             prefix: prefix.map(str::to_owned),
             as_of: None,
+            as_of_time: None,
         })
         .expect("JSON count succeeds")
     {
@@ -2164,6 +2184,7 @@ fn json_list_page(
             cursor,
             limit,
             as_of,
+            as_of_time: None,
         })
         .expect("json list succeeds");
     let Output::JsonListResult { items, page } = output else {

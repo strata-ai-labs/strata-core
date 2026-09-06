@@ -27,6 +27,7 @@ pub(super) fn kv_commands() -> Vec<Command> {
             cursor: Some(bytes("alpha")),
             limit: Some(2),
             as_of: Some(99),
+            as_of_time: None,
         },
         Command::KvScan {
             branch: None,
@@ -69,6 +70,7 @@ pub(super) fn kv_commands() -> Vec<Command> {
             space: None,
             prefix: Some(bytes("a")),
             as_of: None,
+            as_of_time: None,
         },
         Command::KvSample {
             branch: None,

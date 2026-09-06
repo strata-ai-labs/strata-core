@@ -161,6 +161,7 @@ fn export_kv(
             cursor,
             limit: Some(page_limit),
             as_of: None,
+            as_of_time: None,
         })?;
         let (keys, has_more, next_cursor) = match output {
             Output::KeysPage { items: keys, page } => {
@@ -250,6 +251,7 @@ fn export_json(
             cursor,
             limit: Some(page_limit),
             as_of: None,
+            as_of_time: None,
         })?;
         let Output::JsonListResult { items: keys, page } = output else {
             return Err(unexpected_output("json_list"));
@@ -269,6 +271,7 @@ fn export_json(
                 key: key.clone(),
                 path: "$".to_owned(),
                 as_of: None,
+                as_of_time: None,
             })?;
             let Output::JsonVersionedValue(value) = output else {
                 return Err(unexpected_output("json_get"));
@@ -414,6 +417,7 @@ fn export_vector(
             cursor,
             limit: Some(page_limit),
             as_of: None,
+            as_of_time: None,
         })?;
         let Output::VectorKeyPage { items: keys, page } = output else {
             return Err(unexpected_output("vector_list_keys"));
@@ -514,6 +518,7 @@ fn export_graph_nodes(
             cursor,
             limit: Some(page_limit),
             as_of: None,
+            as_of_time: None,
         })?;
         let Output::GraphNodePage { items: nodes, page } = output else {
             return Err(unexpected_output("graph_list_nodes"));
@@ -601,6 +606,7 @@ fn export_graph_edges(
                 cursor,
                 limit: Some(page_limit),
                 as_of: None,
+                as_of_time: None,
             })?;
             let Output::GraphNeighborPage {
                 items: neighbors,
@@ -705,6 +711,7 @@ fn graph_node_ids(
             cursor,
             limit: Some(PAGE_LIMIT),
             as_of: None,
+            as_of_time: None,
         })?;
         let Output::GraphNodePage { items: nodes, page } = output else {
             return Err(unexpected_output("graph_list_nodes"));

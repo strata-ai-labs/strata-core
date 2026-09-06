@@ -225,6 +225,7 @@ fn event_executor_inherits_configured_database_default_branch() {
             space: None,
             sequence: 0,
             as_of: None,
+            as_of_time: None,
         })
         .expect_err("literal default branch is absent");
     assert_eq!(error.class(), ExecutorErrorClass::NotFound);
@@ -455,6 +456,7 @@ fn run_event_error_contract(executor: &mut Executor) {
             branch: None,
             space: None,
             as_of: None,
+            as_of_time: None,
         })
         .expect_err("closed command fails");
     assert_eq!(closed.class(), ExecutorErrorClass::ClosedHandle);
@@ -860,6 +862,7 @@ fn event_mapping_commands() -> Vec<Command> {
             space: None,
             sequence: 0,
             as_of: None,
+            as_of_time: None,
         },
         Command::EventExists {
             branch: None,
@@ -873,11 +876,13 @@ fn event_mapping_commands() -> Vec<Command> {
             limit: None,
             after_sequence: None,
             as_of: None,
+            as_of_time: None,
         },
         Command::EventCount {
             branch: None,
             space: None,
             as_of: None,
+            as_of_time: None,
         },
         Command::EventRange {
             branch: None,
@@ -901,6 +906,7 @@ fn event_mapping_commands() -> Vec<Command> {
             branch: None,
             space: None,
             as_of: None,
+            as_of_time: None,
         },
         Command::EventList {
             branch: None,
@@ -909,6 +915,7 @@ fn event_mapping_commands() -> Vec<Command> {
             limit: Some(1),
             after_sequence: None,
             as_of: None,
+            as_of_time: None,
         },
         Command::EventVerifyChain {
             branch: None,
@@ -963,6 +970,7 @@ fn invalid_input_event_commands() -> Vec<Command> {
             limit: None,
             after_sequence: None,
             as_of: None,
+            as_of_time: None,
         },
         Command::EventList {
             branch: None,
@@ -971,6 +979,7 @@ fn invalid_input_event_commands() -> Vec<Command> {
             limit: None,
             after_sequence: None,
             as_of: None,
+            as_of_time: None,
         },
         Command::EventRange {
             branch: None,
@@ -1069,6 +1078,7 @@ fn get_event(
             space: space.map(str::to_owned),
             sequence,
             as_of,
+            as_of_time: None,
         })
         .expect("get succeeds")
     {
@@ -1111,6 +1121,7 @@ fn event_records_by_type(
             limit,
             after_sequence,
             as_of,
+            as_of_time: None,
         })
         .expect("type read succeeds")
     {
@@ -1130,6 +1141,7 @@ fn event_count(
             branch: branch.map(str::to_owned),
             space: space.map(str::to_owned),
             as_of,
+            as_of_time: None,
         })
         .expect("len succeeds")
     {
@@ -1235,6 +1247,7 @@ fn event_types(
             branch: branch.map(str::to_owned),
             space: space.map(str::to_owned),
             as_of,
+            as_of_time: None,
         })
         .expect("type list succeeds")
     {
@@ -1267,6 +1280,7 @@ fn event_list_page(
             limit,
             after_sequence,
             as_of,
+            as_of_time: None,
         })
         .expect("list succeeds")
     {

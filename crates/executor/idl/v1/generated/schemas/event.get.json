@@ -97,6 +97,15 @@
           "null"
         ]
       },
+      "as_of_time": {
+        "description": "Optional read-as-of wall-clock instant, in microseconds since the\nUnix epoch (UTC): the `committed_at` from a write ack. Resolves to\nthe commit at or before that instant. Mutually exclusive with\n`as_of`.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
       "branch": {
         "description": "Target branch. Defaults to the executor handle branch.",
         "type": [

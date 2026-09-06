@@ -36,6 +36,7 @@ $ strata graph nodes-by-type g person
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `as_of` | `integer` | no | Optional read-as-of commit timestamp: the `timestamp` from `history` output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant. |
+| `as_of_time` | `integer` | no | Optional read-as-of wall-clock instant, in microseconds since the Unix epoch (UTC): the `committed_at` from a write ack. Resolves to the commit at or before that instant. Mutually exclusive with `as_of`. |
 | `cursor` | `string` | no | Optional exclusive node id cursor. |
 | `graph` | `string` | yes | Graph name. |
 | `limit` | `integer` | no | Optional item limit. Defaults to 100. |

@@ -62,6 +62,7 @@ fn vector_upsert_rejects_a_subnormal_embedding_instead_of_storing_zeros() {
             space: None,
             collection: "docs".to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("count succeeds")
     else {
@@ -111,6 +112,7 @@ fn vector_upsert_rejects_non_object_metadata_instead_of_storing_it_unfilterable(
             space: None,
             collection: "docs".to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("count succeeds")
     else {
@@ -297,6 +299,7 @@ fn durable_executor_reopens_vector_collections_rows_and_history() {
             collection: "docs".to_owned(),
             key: "doc-a".to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("vector get succeeds")
     else {
@@ -336,6 +339,7 @@ fn vector_index_query_returns_matches_and_planner_diagnostics() {
             k: 10,
             filter: Some(kind_filter("doc")),
             as_of: None,
+            as_of_time: None,
         })
         .expect("vector index query succeeds")
     else {
@@ -456,6 +460,7 @@ fn vector_executor_inherits_configured_database_default_branch() {
             collection: "docs".to_owned(),
             key: "doc".to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect_err("literal default branch is absent");
     assert_eq!(error.class(), ExecutorErrorClass::NotFound);
@@ -556,6 +561,7 @@ fn vector_mapping_collection_commands() -> Vec<Command> {
             space: None,
             collection: "map".to_owned(),
             as_of: None,
+            as_of_time: None,
         },
     ]
 }
@@ -576,6 +582,7 @@ fn vector_mapping_row_commands() -> Vec<Command> {
             collection: "map".to_owned(),
             key: "map-a".to_owned(),
             as_of: None,
+            as_of_time: None,
         },
         Command::VectorHistory {
             branch: None,
@@ -603,6 +610,7 @@ fn vector_mapping_row_commands() -> Vec<Command> {
             cursor: None,
             limit: Some(2),
             as_of: None,
+            as_of_time: None,
         },
         Command::VectorUpdateMetadata {
             branch: None,
@@ -641,6 +649,7 @@ fn vector_mapping_bulk_commands() -> Vec<Command> {
             k: 10,
             filter: None,
             as_of: None,
+            as_of_time: None,
         },
         Command::VectorIndexQuery {
             branch: None,
@@ -650,6 +659,7 @@ fn vector_mapping_bulk_commands() -> Vec<Command> {
             k: 10,
             filter: None,
             as_of: None,
+            as_of_time: None,
         },
         Command::VectorBatchUpsert {
             branch: None,
@@ -768,6 +778,7 @@ fn invalid_input_vector_commands() -> Vec<Command> {
             k: 10,
             filter: None,
             as_of: None,
+            as_of_time: None,
         },
         Command::VectorQuery {
             branch: None,
@@ -780,6 +791,7 @@ fn invalid_input_vector_commands() -> Vec<Command> {
                 "doc",
             )])),
             as_of: None,
+            as_of_time: None,
         },
         Command::VectorIndexQuery {
             branch: None,
@@ -789,6 +801,7 @@ fn invalid_input_vector_commands() -> Vec<Command> {
             k: 10,
             filter: None,
             as_of: None,
+            as_of_time: None,
         },
     ]
 }
@@ -817,6 +830,7 @@ fn not_found_vector_commands() -> Vec<Command> {
             space: None,
             collection: "missing".to_owned(),
             as_of: None,
+            as_of_time: None,
         },
         Command::VectorGet {
             branch: Some("missing".to_owned()),
@@ -824,6 +838,7 @@ fn not_found_vector_commands() -> Vec<Command> {
             collection: "docs".to_owned(),
             key: "doc".to_owned(),
             as_of: None,
+            as_of_time: None,
         },
         Command::VectorBatchUpsert {
             branch: Some("missing".to_owned()),
@@ -864,6 +879,7 @@ fn closed_handle_vector_commands() -> Vec<Command> {
             k: 1,
             filter: None,
             as_of: None,
+            as_of_time: None,
         },
     ]
 }
@@ -1657,6 +1673,7 @@ fn assert_vector_current_and_historical_reads(executor: &mut Executor, first_tim
             collection: "docs".to_owned(),
             key: "doc-a".to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("get succeeds")
     else {
@@ -1673,6 +1690,7 @@ fn assert_vector_current_and_historical_reads(executor: &mut Executor, first_tim
             collection: "docs".to_owned(),
             key: "doc-a".to_owned(),
             as_of: Some(first_timestamp),
+            as_of_time: None,
         })
         .expect("historical get succeeds")
     else {
@@ -1692,6 +1710,7 @@ fn assert_vector_listing_metadata_and_query(executor: &mut Executor) {
             cursor: None,
             limit: Some(1),
             as_of: None,
+            as_of_time: None,
         })
         .expect("key list succeeds")
     else {
@@ -1732,6 +1751,7 @@ fn assert_vector_listing_metadata_and_query(executor: &mut Executor) {
             k: 10,
             filter: Some(kind_filter("doc")),
             as_of: None,
+            as_of_time: None,
         })
         .expect("query succeeds")
     else {
@@ -2020,6 +2040,7 @@ fn get_vector_value(
             collection: collection.to_owned(),
             key: key.to_owned(),
             as_of,
+            as_of_time: None,
         })
         .expect("get succeeds")
     else {
@@ -2137,6 +2158,7 @@ fn vector_count_in(
             space: space.map(str::to_owned),
             collection: collection.to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("count succeeds")
     else {
@@ -2152,6 +2174,7 @@ fn vector_count_as_of(executor: &mut Executor, collection: &str, as_of: u64) -> 
             space: None,
             collection: collection.to_owned(),
             as_of: Some(as_of),
+            as_of_time: None,
         })
         .expect("count as_of succeeds")
     else {
@@ -2170,6 +2193,7 @@ fn list_vector_keys_as_of(executor: &mut Executor, collection: &str, as_of: u64)
             cursor: None,
             limit: Some(100),
             as_of: Some(as_of),
+            as_of_time: None,
         })
         .expect("list keys as_of succeeds")
     else {
@@ -2232,6 +2256,7 @@ fn list_vector_keys(
             cursor: cursor.map(str::to_owned),
             limit,
             as_of: None,
+            as_of_time: None,
         })
         .expect("list keys succeeds")
     else {
@@ -2302,6 +2327,7 @@ fn query_vector_keys_with_options(
             k,
             filter,
             as_of,
+            as_of_time: None,
         })
         .expect("query succeeds")
     else {
@@ -2375,6 +2401,7 @@ fn get_vector_where(
             collection: collection.to_owned(),
             key: key.to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("get succeeds")
     else {

@@ -10,7 +10,7 @@ use super::{
     presence_exists_item, presence_exists_result, reject_duplicate_json_targets, upsert_effect,
     usize_to_u64, BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, Executor,
     ExecutorResult, JsonIndexType, JsonSetEntry, MaybeJsonValue, MaybeJsonVersionedValue, Output,
-    PageInfo, Timestamp, DEFAULT_JSON_LIST_LIMIT,
+    PageInfo, DEFAULT_JSON_LIST_LIMIT,
 };
 
 impl Executor {
@@ -41,12 +41,16 @@ impl Executor {
         key: &str,
         path: &str,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let id = json_document_id(key)?;
         let path = json_path(path)?;
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.json_service(branch, space)?;
         if let Some(as_of) = as_of {
-            let value = service.get_at(&id, &path, Timestamp::from_micros(as_of))?;
+            let value = service.get_at(&id, &path, as_of)?;
             return Ok(Output::JsonValue(MaybeJsonValue::from_option(
                 value.map(json_value_output),
             )));
@@ -292,18 +296,17 @@ impl Executor {
         cursor: Option<String>,
         limit: Option<u64>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let prefix = optional_json_prefix(prefix)?;
         let cursor = optional_json_document_id(cursor)?;
         let limit = optional_limit(limit)?.unwrap_or(DEFAULT_JSON_LIST_LIMIT);
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.json_service(branch, space)?;
         let page = if let Some(as_of) = as_of {
-            service.list_at(
-                prefix.as_ref(),
-                cursor.as_ref(),
-                limit,
-                Timestamp::from_micros(as_of),
-            )?
+            service.list_at(prefix.as_ref(), cursor.as_ref(), limit, as_of)?
         } else {
             service.list(prefix.as_ref(), cursor.as_ref(), limit)?
         };
@@ -344,11 +347,15 @@ impl Executor {
         space: Option<&str>,
         prefix: Option<String>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let prefix = optional_json_prefix(prefix)?;
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.json_service(branch, space)?;
         let count = if let Some(as_of) = as_of {
-            service.count_at(prefix.as_ref(), Timestamp::from_micros(as_of))?
+            service.count_at(prefix.as_ref(), as_of)?
         } else {
             service.count(prefix.as_ref())?
         };

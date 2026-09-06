@@ -1066,6 +1066,53 @@ fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// #3112 S3b: every command that can time-travel must offer BOTH clocks.
+///
+/// `as_of` (logical) and `as_of_time` (wall clock) ask the same question in
+/// different units, so a command carrying one without the other is a gap a
+/// caller discovers only at runtime — and the gap appears silently, just by
+/// someone adding a new temporal command modelled on an old one. The pair is
+/// checked against the generated schemas rather than the Rust source, because
+/// the schemas ARE the wire contract clients program against.
+#[test]
+fn every_command_accepting_as_of_also_accepts_as_of_time() {
+    let schemas = workspace_root().join("crates/executor/idl/v1/generated/schemas");
+    let mut checked = 0;
+    let mut missing = Vec::new();
+    for entry in fs::read_dir(&schemas).expect("generated schemas directory exists") {
+        let path = entry.expect("readable schema entry").path();
+        if path.extension().is_none_or(|ext| ext != "json") {
+            continue;
+        }
+        let schema: Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("schema file is readable"))
+                .expect("schema file is valid JSON");
+        let Some(properties) = schema.pointer("/request/properties") else {
+            continue;
+        };
+        if properties.get("as_of").is_none() {
+            continue;
+        }
+        checked += 1;
+        if properties.get("as_of_time").is_none() {
+            missing.push(
+                path.file_stem()
+                    .expect("schema file has a stem")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+    assert!(
+        checked > 0,
+        "guard found no temporal commands at all — the schema shape it reads must have moved"
+    );
+    assert!(
+        missing.is_empty(),
+        "commands accept as_of without as_of_time: {missing:?}"
+    );
+}
+
 fn workspace_root() -> PathBuf {
     crate_root()
         .parent()

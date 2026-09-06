@@ -51,11 +51,15 @@ impl Executor {
         space: Option<&str>,
         sequence: u64,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let sequence = event_sequence(sequence);
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.event_service(branch, space)?;
         let record = if let Some(as_of) = as_of {
-            service.get_at(sequence, Timestamp::from_micros(as_of))?
+            service.get_at(sequence, as_of)?
         } else {
             service.get(sequence)?
         };
@@ -80,10 +84,14 @@ impl Executor {
         branch: Option<&str>,
         space: Option<&str>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.event_service(branch, space)?;
         let count = if let Some(as_of) = as_of {
-            service.len_at(Timestamp::from_micros(as_of))?.count()
+            service.len_at(as_of)?.count()
         } else {
             service.len()?.count()
         };
@@ -147,10 +155,14 @@ impl Executor {
         branch: Option<&str>,
         space: Option<&str>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.event_service(branch, space)?;
         let types = if let Some(as_of) = as_of {
-            service.list_types_at(Timestamp::from_micros(as_of))?
+            service.list_types_at(as_of)?
         } else {
             service.list_types()?
         };
@@ -172,11 +184,14 @@ impl Executor {
         limit: Option<u64>,
         after_sequence: Option<u64>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let event_type = optional_engine_event_type(event_type)?;
         let limit = optional_limit(limit)?;
         let after_sequence = after_sequence.map(event_sequence);
-        let as_of = as_of.map(Timestamp::from_micros);
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.event_service(branch, space)?;
         let page = service.list_page(event_type.as_ref(), after_sequence, limit, as_of)?;
         Ok(Output::EventRecords {

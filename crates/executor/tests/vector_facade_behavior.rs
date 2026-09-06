@@ -115,6 +115,7 @@ fn vector_facade_matches_explicit_commands() {
             collection: "docs".to_owned(),
             key: "a".to_owned(),
             as_of: None,
+            as_of_time: None,
         }
     );
     assert_facade_matches!(
@@ -135,6 +136,7 @@ fn vector_facade_matches_explicit_commands() {
             space: None,
             collection: "docs".to_owned(),
             as_of: None,
+            as_of_time: None,
         }
     );
     assert_facade_matches!(
@@ -148,6 +150,7 @@ fn vector_facade_matches_explicit_commands() {
             cursor: None,
             limit: None,
             as_of: None,
+            as_of_time: None,
         }
     );
     assert_facade_matches!(
@@ -161,6 +164,7 @@ fn vector_facade_matches_explicit_commands() {
             k: 5,
             filter: None,
             as_of: None,
+            as_of_time: None,
         }
     );
     assert_facade_matches!(
@@ -174,6 +178,7 @@ fn vector_facade_matches_explicit_commands() {
             k: 5,
             filter: None,
             as_of: None,
+            as_of_time: None,
         }
     );
     assert_facade_matches!(

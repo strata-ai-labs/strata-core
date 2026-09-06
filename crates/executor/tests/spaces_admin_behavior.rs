@@ -558,6 +558,7 @@ fn kv_count_in(executor: &mut Executor, branch: Option<&str>, space: Option<&str
             space: space.map(str::to_owned),
             prefix: None,
             as_of: None,
+            as_of_time: None,
         })
         .expect("kv count succeeds")
     else {
@@ -573,6 +574,7 @@ fn json_count(executor: &mut Executor, space: Option<&str>) -> u64 {
             space: space.map(str::to_owned),
             prefix: None,
             as_of: None,
+            as_of_time: None,
         })
         .expect("json count succeeds")
     else {
@@ -587,6 +589,7 @@ fn event_count(executor: &mut Executor, space: Option<&str>) -> u64 {
             branch: None,
             space: space.map(str::to_owned),
             as_of: None,
+            as_of_time: None,
         })
         .expect("event len succeeds")
     else {
@@ -621,6 +624,7 @@ fn graph_list(executor: &mut Executor, space: Option<&str>) -> Vec<String> {
             cursor: None,
             limit: None,
             as_of: None,
+            as_of_time: None,
         })
         .expect("graph list succeeds")
     else {

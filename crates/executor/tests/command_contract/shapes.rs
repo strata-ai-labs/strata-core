@@ -257,6 +257,7 @@ fn graph_command_json_uses_stable_tags_and_field_shape() {
         cursor: Some("cursor".to_owned()),
         limit: Some(5),
         as_of: None,
+        as_of_time: None,
     };
     let explicit_json = serde_json::to_value(&explicit).expect("command serializes");
     assert_eq!(explicit_json["type"], "graph_neighbors");
@@ -433,6 +434,7 @@ fn vector_index_query_json_uses_stable_tags_and_field_shape() {
             "kind", "doc",
         )])),
         as_of: None,
+        as_of_time: None,
     };
     let encoded = serde_json::to_value(&command).expect("command serializes");
     assert_eq!(encoded["type"], "vector_index_query");

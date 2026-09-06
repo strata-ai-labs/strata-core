@@ -10,7 +10,7 @@ use super::{
     vector_filter, vector_history_result, vector_index_diagnostics, vector_key,
     vector_key_page_output, vector_match, vector_metadata_patch, vector_upsert_entry,
     vector_versioned_data, vector_write_output, BatchVectorEntry, EngineVectorConfig, Executor,
-    ExecutorError, ExecutorResult, Maybe, Output, PageInfo, Timestamp, VectorDistanceMetric,
+    ExecutorError, ExecutorResult, Maybe, Output, PageInfo, VectorDistanceMetric,
     VectorIndexQueryResult, VectorMetadataFilter, DEFAULT_VECTOR_LIST_LIMIT,
 };
 
@@ -94,11 +94,15 @@ impl Executor {
         space: Option<&str>,
         collection: String,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let collection = vector_collection(collection)?;
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.vector_service(branch, space)?;
         let count = if let Some(as_of) = as_of {
-            service.count_at(&collection, Timestamp::from_micros(as_of))?
+            service.count_at(&collection, as_of)?
         } else {
             service.count(&collection)?
         };
@@ -155,12 +159,16 @@ impl Executor {
         collection: String,
         key: String,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let collection = vector_collection(collection)?;
         let key = vector_key(key)?;
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.vector_service(branch, space)?;
         let value = if let Some(as_of) = as_of {
-            service.get_at(&collection, &key, Timestamp::from_micros(as_of))?
+            service.get_at(&collection, &key, as_of)?
         } else {
             service.get_versioned(&collection, &key)?
         };
@@ -251,20 +259,18 @@ impl Executor {
         cursor: Option<String>,
         limit: Option<u64>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let collection = vector_collection(collection)?;
         let prefix = optional_vector_key(prefix)?;
         let cursor = optional_vector_key(cursor)?;
         let limit = optional_limit(limit)?.unwrap_or(DEFAULT_VECTOR_LIST_LIMIT);
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.vector_service(branch, space)?;
         let page = if let Some(as_of) = as_of {
-            service.list_keys_at(
-                &collection,
-                prefix.as_ref(),
-                cursor.as_ref(),
-                limit,
-                Timestamp::from_micros(as_of),
-            )?
+            service.list_keys_at(&collection, prefix.as_ref(), cursor.as_ref(), limit, as_of)?
         } else {
             service.list_keys(&collection, prefix.as_ref(), cursor.as_ref(), limit)?
         };
@@ -384,6 +390,7 @@ impl Executor {
         k: u64,
         filter: Option<VectorMetadataFilter>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let collection = vector_collection(collection)?;
         let query = query_embedding(query)?;
@@ -393,15 +400,12 @@ impl Executor {
             "vector match limit does not fit this platform",
         )?;
         let filter = filter.map(vector_filter).transpose()?;
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.vector_service(branch, space)?;
         let result = if let Some(as_of) = as_of {
-            service.query_at(
-                &collection,
-                &query,
-                k,
-                filter.as_ref(),
-                Timestamp::from_micros(as_of),
-            )?
+            service.query_at(&collection, &query, k, filter.as_ref(), as_of)?
         } else {
             service.query(&collection, &query, k, filter.as_ref())?
         };
@@ -420,6 +424,7 @@ impl Executor {
         k: u64,
         filter: Option<VectorMetadataFilter>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let collection = vector_collection(collection)?;
         let query = query_embedding(query)?;
@@ -429,6 +434,9 @@ impl Executor {
             "vector match limit does not fit this platform",
         )?;
         let filter = filter.map(vector_filter).transpose()?;
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.vector_service(branch, space)?;
         let (result, diagnostics) = if let Some(as_of) = as_of {
             service.query_at_with_index_diagnostics(
@@ -436,7 +444,7 @@ impl Executor {
                 &query,
                 k,
                 filter.as_ref(),
-                Timestamp::from_micros(as_of),
+                as_of,
             )?
         } else {
             service.query_with_index_diagnostics(&collection, &query, k, filter.as_ref())?

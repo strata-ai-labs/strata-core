@@ -112,6 +112,7 @@ fn run_metric(
                 k: K as u64,
                 filter: None,
                 as_of: None,
+                as_of_time: None,
             })
             .expect("query succeeds")
         else {
