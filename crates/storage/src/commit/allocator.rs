@@ -230,7 +230,8 @@ impl<S: CommitTimestampSource> CommitFactAllocator<S> {
                 let (timestamp, timestamp_source) =
                     self.resolve_timestamp(batch.batch().options().timestamp_policy())?;
                 let version = self.versions.allocate_next()?;
-                let stamp = CommitStamp::new(batch.batch().branch_id(), version, timestamp)?;
+                let stamp = CommitStamp::new(batch.batch().branch_id(), version, timestamp)?
+                    .with_committed_at(batch.batch().options().committed_at());
                 self.timestamps.record_allocated(timestamp);
                 Ok(CommitFactAllocation::Mutating {
                     stamp,

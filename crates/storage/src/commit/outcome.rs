@@ -37,6 +37,7 @@ pub(crate) struct CommitOutcome {
     durability: CommitDurabilityClass,
     commit_version: Option<CommitVersion>,
     commit_timestamp: Option<Timestamp>,
+    committed_at: Option<Timestamp>,
     mutation_counts: CommitMutationCounts,
     visibility_facts: CommitVisibilityFacts,
     read_snapshot: Option<CommitReadSnapshot>,
@@ -182,6 +183,7 @@ impl CommitOutcome {
             durability,
             commit_version: commit_stamp.map(CommitStamp::commit_version),
             commit_timestamp: commit_stamp.map(CommitStamp::commit_timestamp),
+            committed_at: commit_stamp.and_then(CommitStamp::committed_at),
             mutation_counts,
             visibility_facts,
             read_snapshot,
@@ -263,6 +265,10 @@ impl CommitOutcome {
 
     pub(crate) const fn commit_timestamp(&self) -> Option<Timestamp> {
         self.commit_timestamp
+    }
+
+    pub(crate) const fn committed_at(&self) -> Option<Timestamp> {
+        self.committed_at
     }
 
     pub(crate) const fn mutation_counts(&self) -> CommitMutationCounts {

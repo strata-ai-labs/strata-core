@@ -629,6 +629,10 @@ pub enum CommitDurability {
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct CommitReceipt {
     version: u64,
+    /// Commit's position on the logical commit timeline: a monotonic counter
+    /// assigned per commit, so a fresh database starts small (near 1) and it is
+    /// never a calendar date. Pass it to `--as-of` and match it against
+    /// `history`; do not format it as a Unix/epoch timestamp.
     timestamp: u64,
     durability: CommitDurability,
     put_count: u64,
@@ -658,7 +662,8 @@ impl CommitReceipt {
         self.version
     }
 
-    /// Returns the commit timestamp in microseconds.
+    /// Returns the commit's logical commit-timeline position (a monotonic
+    /// per-commit counter), not a wall-clock time. See the `timestamp` field.
     pub const fn timestamp(&self) -> u64 {
         self.timestamp
     }

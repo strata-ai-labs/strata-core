@@ -40,6 +40,7 @@ pub(super) fn map_commit_summary(
         counts.timeline_rows(),
         matches!(outcome.kind(), crate::commit::CommitOutcomeKind::Visible),
     )
+    .with_committed_at(outcome.committed_at())
     .with_admission_summary(map_commit_admission_summary(admission)))
 }
 
@@ -605,7 +606,8 @@ pub(super) fn map_api_commit_batch(
         crate::commit::CommitDuplicateKeyPolicy::Reject,
         timestamp_policy,
         crate::commit::CommitOrigin::StorageRuntime,
-    );
+    )
+    .with_committed_at(batch.options().committed_at());
     Ok(crate::commit::CommitBatch::mutating(
         batch.branch_id(),
         mutations,

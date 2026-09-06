@@ -364,6 +364,7 @@ pub struct CommitSummary {
     branch_id: BranchId,
     commit_version: CommitVersion,
     commit_timestamp: Timestamp,
+    committed_at: Option<Timestamp>,
     durability: crate::api::CommitDurabilitySummary,
     admission: CommitAdmissionSummary,
     put_count: usize,
@@ -493,6 +494,7 @@ impl CommitSummary {
             branch_id,
             commit_version,
             commit_timestamp,
+            committed_at: None,
             durability: crate::api::CommitDurabilitySummary::NotDurable,
             admission: CommitAdmissionSummary::accepted_clean(
                 CommitAdmissionPressureSeverity::None,
@@ -525,6 +527,7 @@ impl CommitSummary {
             branch_id,
             commit_version,
             commit_timestamp,
+            committed_at: None,
             durability,
             admission: CommitAdmissionSummary::accepted_clean(
                 CommitAdmissionPressureSeverity::None,
@@ -547,6 +550,14 @@ impl CommitSummary {
         self
     }
 
+    /// Carries the commit's wall-clock instant (UTC epoch micros) from the
+    /// stamp out to the engine. `None` when the caller supplied none (#3112).
+    #[must_use]
+    pub(crate) const fn with_committed_at(mut self, committed_at: Option<Timestamp>) -> Self {
+        self.committed_at = committed_at;
+        self
+    }
+
     #[must_use]
     pub const fn branch_id(self) -> BranchId {
         self.branch_id
@@ -560,6 +571,11 @@ impl CommitSummary {
     #[must_use]
     pub const fn commit_timestamp(self) -> Timestamp {
         self.commit_timestamp
+    }
+
+    #[must_use]
+    pub const fn committed_at(self) -> Option<Timestamp> {
+        self.committed_at
     }
 
     #[must_use]

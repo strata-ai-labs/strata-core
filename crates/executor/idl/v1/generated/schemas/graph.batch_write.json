@@ -189,6 +189,7 @@
           "type": "integer"
         },
         "timestamp": {
+          "description": "Commit's position on the logical commit timeline: a monotonic counter\nassigned per commit, so a fresh database starts small (near 1) and it is\nnever a calendar date. Pass it to `--as-of` and match it against\n`history`; do not format it as a Unix/epoch timestamp.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
