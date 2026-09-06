@@ -262,8 +262,20 @@ jobs:
           # NAME — never by line number (line ranges rot and can swallow real
           # code). Its real behavior is covered by arrow_disabled_behavior.rs in
           # the no-arrow feature-matrix leg.
+          # verify_case (idl_tooling::verify): the fixture-verifier orchestrator
+          # — it reads every response fixture, replays it against a scratch
+          # executor, and diffs. Its strength mechanism is the `verify-fixtures`
+          # CI gate (which runs the REAL verify_case over the whole corpus and
+          # fails on any mismatch), not a cargo test — cargo-mutants runs cargo
+          # tests, which by construction never drive this file-reading/executing
+          # orchestrator, so a body-stub survives vacuously (same doctrine as the
+          # REPL/serve/IPC glue above). #3112 masks the wall-clock committed_at
+          # inside it, which pulled its whole-body mutant into the diff. Excluded
+          # by NAME (unique; verify_error_case is a distinct name); the pure
+          # helper it calls (mask_committed_at) stays mutated.
           cargo mutants --no-config --in-diff pr.diff --package strata-executor \
             --features idl-tooling,inference,testkit \
+            --exclude-re 'verify_case' \
             --exclude-re 'serialize_failure_envelope|internal_panic_error|static_wire_request_error' \
             --exclude-re 'in (listener_loop|handle_connection)' \
             --exclude-re 'delete ! in IpcServer::stop' \

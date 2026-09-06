@@ -31,6 +31,12 @@ pub(crate) const CORPUS_FORMAT_VERSION: u64 = 1;
 pub(crate) fn canonicalize(value: &mut Value) {
     match value {
         Value::Object(map) => {
+            // `committed_at` (#3112) is a wall-clock instant that did not exist
+            // when these corpora were recorded (their oracles need external
+            // services to re-record). Drop the key entirely rather than zero it,
+            // so a current replay compares byte-identically against records that
+            // never carried it.
+            map.remove("committed_at");
             for (key, child) in map.iter_mut() {
                 if VOLATILE_FIELDS.contains(&key.as_str()) {
                     *child = json!(0);

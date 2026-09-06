@@ -1,5 +1,19 @@
 {
   "data": {
+    "commit": {
+      "committed_at": null,
+      "delete_count": 0,
+      "durability": "not_durable",
+      "put_count": 1,
+      "timestamp": 3,
+      "version": 3
+    },
+    "effect": {
+      "affected_count": 1,
+      "applied": true,
+      "kind": "created",
+      "matched": false
+    },
     "info": {
       "created_timestamp": 3,
       "created_version": 3,
@@ -8,19 +22,6 @@
       "node_count": 0,
       "updated_timestamp": 3,
       "updated_version": 3
-    },
-    "effect": {
-      "applied": true,
-      "kind": "created",
-      "matched": false,
-      "affected_count": 1
-    },
-    "commit": {
-      "version": 3,
-      "timestamp": 3,
-      "durability": "not_durable",
-      "put_count": 1,
-      "delete_count": 0
     }
   },
   "type": "graph_create_result"

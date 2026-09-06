@@ -59,6 +59,7 @@ pub(crate) struct CommitBatchOptions {
     duplicate_policy: CommitDuplicateKeyPolicy,
     timestamp_policy: CommitTimestampPolicy,
     origin: CommitOrigin,
+    committed_at: Option<Timestamp>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -126,6 +127,11 @@ pub(crate) struct CommitStamp {
     branch_id: BranchId,
     commit_version: CommitVersion,
     commit_timestamp: Timestamp,
+    /// Wall-clock instant the commit was applied (UTC epoch micros), supplied
+    /// from above (the engine owns the time source). `None` when unset — a
+    /// reconstructed stamp or a caller that did not provide one. Distinct from
+    /// `commit_timestamp`, which is the logical commit-timeline clock (#3112).
+    committed_at: Option<Timestamp>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -312,7 +318,19 @@ impl CommitBatchOptions {
             duplicate_policy,
             timestamp_policy,
             origin,
+            committed_at: None,
         }
+    }
+
+    /// Attaches the wall-clock instant the engine sampled for this commit. Kept
+    /// as a builder so the `new` signature (and its call sites) stay put (#3112).
+    pub(crate) const fn with_committed_at(mut self, committed_at: Option<Timestamp>) -> Self {
+        self.committed_at = committed_at;
+        self
+    }
+
+    pub(crate) const fn committed_at(self) -> Option<Timestamp> {
+        self.committed_at
     }
 
     pub(crate) const fn durability(self) -> CommitDurabilityMode {
@@ -344,6 +362,7 @@ impl Default for CommitBatchOptions {
             duplicate_policy: CommitDuplicateKeyPolicy::Reject,
             timestamp_policy: CommitTimestampPolicy::RuntimeGenerated,
             origin: CommitOrigin::StorageRuntime,
+            committed_at: None,
         }
     }
 }
@@ -433,7 +452,15 @@ impl CommitStamp {
             branch_id,
             commit_version,
             commit_timestamp,
+            committed_at: None,
         })
+    }
+
+    /// Attaches the wall-clock instant the commit was applied. The engine
+    /// supplies it (it owns the wasm-safe time source); storage only carries it.
+    pub(crate) const fn with_committed_at(mut self, committed_at: Option<Timestamp>) -> Self {
+        self.committed_at = committed_at;
+        self
     }
 
     pub(crate) const fn branch_id(self) -> BranchId {
@@ -446,6 +473,10 @@ impl CommitStamp {
 
     pub(crate) const fn commit_timestamp(self) -> Timestamp {
         self.commit_timestamp
+    }
+
+    pub(crate) const fn committed_at(self) -> Option<Timestamp> {
+        self.committed_at
     }
 }
 

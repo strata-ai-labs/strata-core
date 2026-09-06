@@ -10,6 +10,7 @@ fn commit_receipt_serializes_all_required_fields() {
         json!({
             "version": 7,
             "timestamp": 70,
+            "committed_at": null,
             "durability": "standard",
             "put_count": 2,
             "delete_count": 1,
@@ -539,6 +540,7 @@ fn write_outputs_use_commit_receipt_and_mutation_effect() {
                 "commit": {
                     "version": 7,
                     "timestamp": 70,
+                    "committed_at": null,
                     "durability": "standard",
                     "put_count": 1,
                     "delete_count": 0,

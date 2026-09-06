@@ -121,6 +121,37 @@ fn read_value(row: &StorageReadRow) -> &[u8] {
 }
 
 #[test]
+fn commit_summary_carries_the_committed_at_from_the_batch_options() {
+    // #3112: a wall-clock `committed_at` supplied on the batch options must ride
+    // the whole commit path — options -> stamp -> outcome -> summary — out to the
+    // caller unchanged, and stay separate from the logical commit timestamp.
+    let mut runtime = open_runtime();
+    let committed_at = Timestamp::from_micros(1_788_000_000_000_000);
+    let batch = CommitBatch::new(
+        branch(),
+        vec![CommitMutation::Put {
+            storage_space: engine_space(),
+            key: api_key(b"k"),
+            value: StorageValue::new(b"v".to_vec()),
+            ttl: None,
+        }],
+        CommitOptions::default()
+            .require_conflict_check(false)
+            .with_committed_at(committed_at),
+    )
+    .expect("valid put batch");
+    let summary = runtime
+        .commit_for_test(&batch, Timestamp::from_micros(10))
+        .expect("commit succeeds");
+    assert_eq!(summary.committed_at(), Some(committed_at));
+    assert_eq!(summary.commit_timestamp(), Timestamp::from_micros(10));
+
+    // Direction control: a batch that supplies no committed_at leaves it unset.
+    let bare_summary = commit_put(&mut runtime, b"k2", b"v2", 20);
+    assert_eq!(bare_summary.committed_at(), None);
+}
+
+#[test]
 fn read_latest_returns_newest_visible_value() {
     let mut runtime = open_runtime();
     commit_put(&mut runtime, b"alpha", b"old", 10);

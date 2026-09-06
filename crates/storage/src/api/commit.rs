@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use strata_core::{BranchId, CommitVersion};
+use strata_core::{BranchId, CommitVersion, Timestamp};
 
 use super::{
     BranchGeneration, StorageApiError, StorageApiResult, StorageKey, StorageSpaceId, StorageValue,
@@ -128,6 +128,7 @@ pub struct CommitOptions {
     require_conflict_check: bool,
     durability: CommitDurability,
     expected_generation: Option<BranchGeneration>,
+    committed_at: Option<Timestamp>,
 }
 
 impl CommitOptions {
@@ -149,6 +150,16 @@ impl CommitOptions {
         self
     }
 
+    /// Records the wall-clock instant (UTC epoch micros) the caller applied this
+    /// commit. The engine owns the time source and supplies it; storage carries
+    /// it onto the commit stamp and back out in the summary (#3112). It is never
+    /// the MVCC clock and never affects ordering.
+    #[must_use]
+    pub const fn with_committed_at(mut self, committed_at: Timestamp) -> Self {
+        self.committed_at = Some(committed_at);
+        self
+    }
+
     #[must_use]
     pub const fn conflict_check_required(self) -> bool {
         self.require_conflict_check
@@ -162,6 +173,11 @@ impl CommitOptions {
     #[must_use]
     pub const fn expected_generation(self) -> Option<BranchGeneration> {
         self.expected_generation
+    }
+
+    #[must_use]
+    pub const fn committed_at(self) -> Option<Timestamp> {
+        self.committed_at
     }
 }
 

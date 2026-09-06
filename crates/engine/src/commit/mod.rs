@@ -29,6 +29,7 @@ pub enum CommitDurability {
 pub struct CommitOutcome {
     version: CommitVersion,
     timestamp: Timestamp,
+    committed_at: Option<Timestamp>,
     put_count: usize,
     delete_count: usize,
     durability: CommitDurability,
@@ -45,16 +46,26 @@ impl CommitOutcome {
         Self {
             version,
             timestamp,
+            committed_at: None,
             put_count,
             delete_count,
             durability,
         }
     }
 
+    /// Attaches the commit's wall-clock instant (UTC epoch micros). Distinct
+    /// from `timestamp`, the logical commit-timeline clock. `None` when unknown
+    /// (a replayed/imported commit, or a caller that supplied none) (#3112).
+    pub(crate) const fn with_committed_at(mut self, committed_at: Option<Timestamp>) -> Self {
+        self.committed_at = committed_at;
+        self
+    }
+
     pub(crate) const fn with_counts(self, put_count: usize, delete_count: usize) -> Self {
         Self {
             version: self.version,
             timestamp: self.timestamp,
+            committed_at: self.committed_at,
             put_count,
             delete_count,
             durability: self.durability,
@@ -68,9 +79,17 @@ impl CommitOutcome {
     }
 
     #[must_use]
-    /// Returns the commit timestamp.
+    /// Returns the commit's logical commit-timeline position. Not a wall-clock
+    /// time — see [`committed_at`](Self::committed_at) for that.
     pub const fn timestamp(self) -> Timestamp {
         self.timestamp
+    }
+
+    #[must_use]
+    /// Returns the commit's wall-clock instant (UTC epoch micros), or `None`
+    /// when unknown. Distinct from the logical `timestamp` (#3112).
+    pub const fn committed_at(self) -> Option<Timestamp> {
+        self.committed_at
     }
 
     #[must_use]

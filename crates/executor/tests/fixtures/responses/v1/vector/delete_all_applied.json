@@ -2,6 +2,7 @@
   "data": {
     "collection": "docs",
     "commit": {
+      "committed_at": null,
       "delete_count": 2,
       "durability": "not_durable",
       "put_count": 0,

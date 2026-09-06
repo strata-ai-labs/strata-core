@@ -12,6 +12,7 @@
     "commit": {
       "version": 2,
       "timestamp": 20,
+      "committed_at": null,
       "durability": "standard",
       "put_count": 2,
       "delete_count": 0

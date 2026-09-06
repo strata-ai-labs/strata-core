@@ -337,7 +337,7 @@
     "event.batch_append": [
       {
         "in": "strata command run --command-json '{\"entries\":[{\"event_type\":\"user.created\",\"payload\":{\"id\":1}},{\"event_type\":\"user.updated\",\"payload\":{\"id\":2}}],\"type\":\"event_batch_append\"}'",
-        "out": "{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":5,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"event_type\":\"user.created\",\"sequence\":0},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":5,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"event_type\":\"user.updated\",\"sequence\":1},\"status\":\"ok\"}",
+        "out": "{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":5,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"event_type\":\"user.created\",\"sequence\":0},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":5,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"event_type\":\"user.updated\",\"sequence\":1},\"status\":\"ok\"}",
         "reproducible": false
       },
       {
@@ -730,7 +730,7 @@
       },
       {
         "in": "strata command run --command-json '{\"graph\":\"g\",\"operations\":[{\"data\":{\"object_type\":\"person\"},\"node_id\":\"a\",\"type\":\"upsert_node\"},{\"data\":{\"object_type\":\"person\"},\"node_id\":\"b\",\"type\":\"upsert_node\"},{\"data\":{},\"dst\":\"b\",\"edge_type\":\"knows\",\"src\":\"a\",\"type\":\"upsert_edge\"}],\"type\":\"graph_batch_write\"}'",
-        "out": "{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":3,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"created\":true,\"operation\":\"upsert_node\",\"operation_index\":0},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":3,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"created\":true,\"operation\":\"upsert_node\",\"operation_index\":1},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":3,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":2,\"result\":{\"created\":true,\"operation\":\"upsert_edge\",\"operation_index\":2},\"status\":\"ok\"}",
+        "out": "{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":3,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"created\":true,\"operation\":\"upsert_node\",\"operation_index\":0},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":3,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"created\":true,\"operation\":\"upsert_node\",\"operation_index\":1},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":3,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":2,\"result\":{\"created\":true,\"operation\":\"upsert_edge\",\"operation_index\":2},\"status\":\"ok\"}",
         "reproducible": false,
         "note": "All operations land in one engine commit, or none do."
       },
@@ -766,7 +766,7 @@
       },
       {
         "in": "strata command run --command-json '{\"edges\":[{\"dst\":\"b\",\"edge_type\":\"knows\",\"src\":\"a\"}],\"graph\":\"g\",\"nodes\":[{\"node_id\":\"a\",\"object_type\":\"person\"},{\"node_id\":\"b\",\"object_type\":\"person\"}],\"type\":\"graph_bulk_insert\"}'",
-        "out": "{\n  \"commit\": {\n    \"delete_count\": 0,\n    \"durability\": \"not_durable\",\n    \"put_count\": 1,\n    \"timestamp\": 0,\n    \"version\": 0\n  },\n  \"commits\": 2,\n  \"edges_inserted\": 1,\n  \"graph\": \"g\",\n  \"nodes_inserted\": 2\n}",
+        "out": "{\n  \"commit\": {\n    \"committed_at\": 0,\n    \"delete_count\": 0,\n    \"durability\": \"not_durable\",\n    \"put_count\": 1,\n    \"timestamp\": 0,\n    \"version\": 0\n  },\n  \"commits\": 2,\n  \"edges_inserted\": 1,\n  \"graph\": \"g\",\n  \"nodes_inserted\": 2\n}",
         "reproducible": false
       },
       {
@@ -1162,7 +1162,7 @@
       },
       {
         "in": "strata graph ontology freeze g",
-        "out": "{\n  \"commit\": {\n    \"delete_count\": 0,\n    \"durability\": \"not_durable\",\n    \"put_count\": 1,\n    \"timestamp\": 0,\n    \"version\": 0\n  },\n  \"graph\": \"g\",\n  \"link_types\": 0,\n  \"object_types\": 1\n}",
+        "out": "{\n  \"commit\": {\n    \"committed_at\": 0,\n    \"delete_count\": 0,\n    \"durability\": \"not_durable\",\n    \"put_count\": 1,\n    \"timestamp\": 0,\n    \"version\": 0\n  },\n  \"graph\": \"g\",\n  \"link_types\": 0,\n  \"object_types\": 1\n}",
         "reproducible": false
       },
       {
@@ -1259,12 +1259,12 @@
     "json.batch_delete": [
       {
         "in": "strata command run --command-json '{\"entries\":[{\"key\":\"a\",\"path\":\"$\",\"value\":{\"v\":1}}],\"type\":\"json_batch_set\"}'",
-        "out": "{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":1,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"document_version\":0},\"status\":\"ok\"}",
+        "out": "{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":1,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"document_version\":0},\"status\":\"ok\"}",
         "reproducible": false
       },
       {
         "in": "strata command run --command-json '{\"entries\":[{\"key\":\"a\",\"path\":\"$\"}],\"type\":\"json_batch_delete\"}'",
-        "out": "{\"applied\":true,\"commit\":{\"delete_count\":1,\"durability\":\"not_durable\",\"put_count\":0,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"deleted\",\"matched\":true},\"error\":null,\"index\":0,\"result\":{\"document_version\":null},\"status\":\"ok\"}",
+        "out": "{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":1,\"durability\":\"not_durable\",\"put_count\":0,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"deleted\",\"matched\":true},\"error\":null,\"index\":0,\"result\":{\"document_version\":null},\"status\":\"ok\"}",
         "reproducible": false
       },
       {
@@ -1276,7 +1276,7 @@
     "json.batch_exists": [
       {
         "in": "strata command run --command-json '{\"entries\":[{\"key\":\"a\",\"path\":\"$\",\"value\":{\"v\":1}}],\"type\":\"json_batch_set\"}'",
-        "out": "{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":1,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"document_version\":0},\"status\":\"ok\"}",
+        "out": "{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":1,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"document_version\":0},\"status\":\"ok\"}",
         "reproducible": false
       },
       {
@@ -1288,7 +1288,7 @@
     "json.batch_get": [
       {
         "in": "strata command run --command-json '{\"entries\":[{\"key\":\"a\",\"path\":\"$\",\"value\":{\"v\":1}},{\"key\":\"b\",\"path\":\"$\",\"value\":{\"v\":2}}],\"type\":\"json_batch_set\"}'",
-        "out": "{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"document_version\":0},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"document_version\":0},\"status\":\"ok\"}",
+        "out": "{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"document_version\":0},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"document_version\":0},\"status\":\"ok\"}",
         "reproducible": false
       },
       {
@@ -1300,7 +1300,7 @@
     "json.batch_set": [
       {
         "in": "strata command run --command-json '{\"entries\":[{\"key\":\"a\",\"path\":\"$\",\"value\":{\"v\":1}},{\"key\":\"b\",\"path\":\"$\",\"value\":{\"v\":2}}],\"type\":\"json_batch_set\"}'",
-        "out": "{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"document_version\":0},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"document_version\":0},\"status\":\"ok\"}",
+        "out": "{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"document_version\":0},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"document_version\":0},\"status\":\"ok\"}",
         "reproducible": false
       },
       {
@@ -1506,12 +1506,12 @@
     "kv.batch_delete": [
       {
         "in": "strata command run --command-json '{\"entries\":[{\"key\":\"YQ==\",\"value\":\"MQ==\"},{\"key\":\"Yg==\",\"value\":\"Mg==\"}],\"type\":\"kv_batch_put\"}'",
-        "out": "{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"key\":\"YQ==\"},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"key\":\"Yg==\"},\"status\":\"ok\"}",
+        "out": "{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"key\":\"YQ==\"},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"key\":\"Yg==\"},\"status\":\"ok\"}",
         "reproducible": false
       },
       {
         "in": "strata command run --command-json '{\"keys\":[\"YQ==\",\"Yg==\"],\"type\":\"kv_batch_delete\"}'",
-        "out": "{\"applied\":true,\"commit\":{\"delete_count\":2,\"durability\":\"not_durable\",\"put_count\":0,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"deleted\",\"matched\":true},\"error\":null,\"index\":0,\"result\":{\"key\":\"YQ==\"},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"delete_count\":2,\"durability\":\"not_durable\",\"put_count\":0,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"deleted\",\"matched\":true},\"error\":null,\"index\":1,\"result\":{\"key\":\"Yg==\"},\"status\":\"ok\"}",
+        "out": "{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":2,\"durability\":\"not_durable\",\"put_count\":0,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"deleted\",\"matched\":true},\"error\":null,\"index\":0,\"result\":{\"key\":\"YQ==\"},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":2,\"durability\":\"not_durable\",\"put_count\":0,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"deleted\",\"matched\":true},\"error\":null,\"index\":1,\"result\":{\"key\":\"Yg==\"},\"status\":\"ok\"}",
         "reproducible": false
       },
       {
@@ -1523,7 +1523,7 @@
     "kv.batch_exists": [
       {
         "in": "strata command run --command-json '{\"entries\":[{\"key\":\"YQ==\",\"value\":\"MQ==\"}],\"type\":\"kv_batch_put\"}'",
-        "out": "{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":1,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"key\":\"YQ==\"},\"status\":\"ok\"}",
+        "out": "{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":1,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"key\":\"YQ==\"},\"status\":\"ok\"}",
         "reproducible": false
       },
       {
@@ -1535,7 +1535,7 @@
     "kv.batch_get": [
       {
         "in": "strata command run --command-json '{\"entries\":[{\"key\":\"YQ==\",\"value\":\"MQ==\"},{\"key\":\"Yg==\",\"value\":\"Mg==\"}],\"type\":\"kv_batch_put\"}'",
-        "out": "{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"key\":\"YQ==\"},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"key\":\"Yg==\"},\"status\":\"ok\"}",
+        "out": "{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"key\":\"YQ==\"},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"key\":\"Yg==\"},\"status\":\"ok\"}",
         "reproducible": false
       },
       {
@@ -1547,7 +1547,7 @@
     "kv.batch_put": [
       {
         "in": "strata command run --command-json '{\"entries\":[{\"key\":\"YQ==\",\"value\":\"MQ==\"},{\"key\":\"Yg==\",\"value\":\"Mg==\"}],\"type\":\"kv_batch_put\"}'",
-        "out": "{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"key\":\"YQ==\"},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"key\":\"Yg==\"},\"status\":\"ok\"}",
+        "out": "{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"key\":\"YQ==\"},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"key\":\"Yg==\"},\"status\":\"ok\"}",
         "reproducible": false
       },
       {
@@ -1776,12 +1776,12 @@
       },
       {
         "in": "strata command run --command-json '{\"collection\":\"docs\",\"entries\":[{\"key\":\"a\",\"vector\":[1.0,0.0,0.0]},{\"key\":\"b\",\"vector\":[0.0,1.0,0.0]}],\"type\":\"vector_batch_upsert\"}'",
-        "out": "{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"vector_revision\":1},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"vector_revision\":1},\"status\":\"ok\"}",
+        "out": "{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"vector_revision\":1},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"vector_revision\":1},\"status\":\"ok\"}",
         "reproducible": false
       },
       {
         "in": "strata command run --command-json '{\"collection\":\"docs\",\"keys\":[\"a\",\"b\"],\"type\":\"vector_batch_delete\"}'",
-        "out": "{\"applied\":true,\"commit\":{\"delete_count\":2,\"durability\":\"not_durable\",\"put_count\":0,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"deleted\",\"matched\":true},\"error\":null,\"index\":0,\"result\":{\"vector_revision\":null},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"delete_count\":2,\"durability\":\"not_durable\",\"put_count\":0,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"deleted\",\"matched\":true},\"error\":null,\"index\":1,\"result\":{\"vector_revision\":null},\"status\":\"ok\"}",
+        "out": "{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":2,\"durability\":\"not_durable\",\"put_count\":0,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"deleted\",\"matched\":true},\"error\":null,\"index\":0,\"result\":{\"vector_revision\":null},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":2,\"durability\":\"not_durable\",\"put_count\":0,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"deleted\",\"matched\":true},\"error\":null,\"index\":1,\"result\":{\"vector_revision\":null},\"status\":\"ok\"}",
         "reproducible": false
       },
       {
@@ -1798,7 +1798,7 @@
       },
       {
         "in": "strata command run --command-json '{\"collection\":\"docs\",\"entries\":[{\"key\":\"a\",\"vector\":[1.0,0.0,0.0]}],\"type\":\"vector_batch_upsert\"}'",
-        "out": "{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":1,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"vector_revision\":1},\"status\":\"ok\"}",
+        "out": "{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":1,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"vector_revision\":1},\"status\":\"ok\"}",
         "reproducible": false
       },
       {
@@ -1815,7 +1815,7 @@
       },
       {
         "in": "strata command run --command-json '{\"collection\":\"docs\",\"entries\":[{\"key\":\"a\",\"vector\":[1.0,0.0,0.0]},{\"key\":\"b\",\"vector\":[0.0,1.0,0.0]}],\"type\":\"vector_batch_upsert\"}'",
-        "out": "{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"vector_revision\":1},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"vector_revision\":1},\"status\":\"ok\"}",
+        "out": "{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"vector_revision\":1},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"vector_revision\":1},\"status\":\"ok\"}",
         "reproducible": false
       },
       {
@@ -1832,7 +1832,7 @@
       },
       {
         "in": "strata command run --command-json '{\"collection\":\"docs\",\"entries\":[{\"key\":\"a\",\"vector\":[1.0,0.0,0.0]},{\"key\":\"b\",\"vector\":[0.0,1.0,0.0]}],\"type\":\"vector_batch_upsert\"}'",
-        "out": "{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"vector_revision\":1},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"vector_revision\":1},\"status\":\"ok\"}",
+        "out": "{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":0,\"result\":{\"vector_revision\":1},\"status\":\"ok\"}\n{\"applied\":true,\"commit\":{\"committed_at\":0,\"delete_count\":0,\"durability\":\"not_durable\",\"put_count\":2,\"timestamp\":0,\"version\":0},\"effect\":{\"affected_count\":1,\"applied\":true,\"kind\":\"created\",\"matched\":false},\"error\":null,\"index\":1,\"result\":{\"vector_revision\":1},\"status\":\"ok\"}",
         "reproducible": false
       },
       {

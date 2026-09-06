@@ -2389,6 +2389,71 @@ mod tests {
     }
 
     #[test]
+    fn commit_clock_timestamp_outputs_are_not_labeled_wall_clock() {
+        // #3112: the `timestamp` on write acks (`CommitReceipt`) and read
+        // envelopes (`VersionedValue`, `ScanItem`, `JsonVersionedValue`,
+        // `VectorVersionedData`) is a logical commit-timeline position, not a
+        // wall-clock/epoch time. Its schema description must say so — a silent
+        // or "microseconds" description lets a client render `timestamp: 3` as
+        // 1970 (the VS Code bug). Events are excluded: their timestamp really is
+        // epoch micros.
+        const CLOCK_DEFS: &[&str] = &[
+            "CommitReceipt",
+            "VersionedValue",
+            "ScanItem",
+            "JsonVersionedValue",
+            "VectorVersionedData",
+        ];
+        let schemas_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("idl/v1/generated/schemas");
+        let mut checked = 0usize;
+        for entry in std::fs::read_dir(&schemas_dir)
+            .expect("read schemas dir")
+            .flatten()
+        {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let doc: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("read schema"))
+                    .expect("parse schema");
+            let Some(defs) = doc.get("$defs").and_then(serde_json::Value::as_object) else {
+                continue;
+            };
+            for def_name in CLOCK_DEFS {
+                let Some(timestamp) = defs
+                    .get(*def_name)
+                    .and_then(|def| def.get("properties"))
+                    .and_then(|properties| properties.get("timestamp"))
+                else {
+                    continue;
+                };
+                let description = timestamp
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_lowercase();
+                // The positive signal proves the field is documented as the
+                // logical commit clock. It fails on both an empty description
+                // (today) and a bare "microseconds" label (the old mislabel),
+                // while still allowing a description that negates those terms.
+                assert!(
+                    description.contains("commit")
+                        && (description.contains("timeline") || description.contains("logical")),
+                    "{}: `{def_name}.timestamp` must document the commit-timeline clock, not a wall-clock time: {description:?}",
+                    path.display(),
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked > 0,
+            "expected commit-clock `timestamp` fields to check"
+        );
+    }
+
+    #[test]
     fn cli_info_advertises_a_path_only_for_verb_surface() {
         // #3058: a real clap verb advertises its runnable path; a `wire`
         // (escape-hatch) command omits it so consumers never render an

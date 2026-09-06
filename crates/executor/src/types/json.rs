@@ -19,6 +19,10 @@ pub enum JsonIndexType {
 pub struct JsonVersionedValue {
     value: Value,
     version: u64,
+    /// Logical commit-timeline position of the commit that wrote this value: a
+    /// monotonic per-commit counter (a fresh database starts small, near 1),
+    /// never a calendar date. Pass it to `--as-of` and match it against
+    /// `history`; do not format it as a Unix/epoch timestamp.
     timestamp: u64,
     document_version: u64,
 }

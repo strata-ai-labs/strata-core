@@ -12,6 +12,7 @@
           "$ref": "#/$defs/Bytes"
         },
         "timestamp": {
+          "description": "Logical commit-timeline position of the commit that wrote this value: a\nmonotonic per-commit counter (a fresh database starts small, near 1),\nnever a calendar date. Pass it to `--as-of` and match it against\n`history`; do not format it as a Unix/epoch timestamp.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
