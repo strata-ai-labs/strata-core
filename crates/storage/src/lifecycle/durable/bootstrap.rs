@@ -1856,7 +1856,22 @@ impl DurableGroupApplyWork {
         } = pending;
         let result = {
             let mut budgeted = BudgetedCommitBranch::new(&mut state, &budget);
-            CommitBranchApplyTarget::append_committed_rows_atomically(&mut budgeted, rows)
+            let applied =
+                CommitBranchApplyTarget::append_committed_rows_atomically(&mut budgeted, rows);
+            // #3112 S2b: the row-driven apply funnel cannot see the
+            // commit-scoped `committed_at`, so upgrade the entry it just
+            // created — only on success, matching the funnel's rule that a
+            // rolled-back batch leaves no timeline trace.
+            if applied.is_ok() {
+                if let Some(instant) = stamp.committed_at() {
+                    CommitBranchApplyTarget::observe_commit_instant(
+                        &mut budgeted,
+                        stamp.commit_version(),
+                        instant,
+                    );
+                }
+            }
+            applied
         };
         DurableGroupApplyDone {
             state,
@@ -2344,7 +2359,20 @@ where
                 .branch_catalog
                 .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
             let mut budgeted = BudgetedCommitBranch::new(branch, &self.budget);
-            CommitBranchApplyTarget::append_committed_rows_atomically(&mut budgeted, rows)
+            let applied =
+                CommitBranchApplyTarget::append_committed_rows_atomically(&mut budgeted, rows);
+            // #3112 S2b: see `apply_deferred_group_branch` — the funnel is
+            // row-driven and cannot carry the commit-scoped instant.
+            if applied.is_ok() {
+                if let Some(instant) = stamp.committed_at() {
+                    CommitBranchApplyTarget::observe_commit_instant(
+                        &mut budgeted,
+                        stamp.commit_version(),
+                        instant,
+                    );
+                }
+            }
+            applied
         };
         if let Err(source) = apply_result {
             let reason = "branch state rejected durable commit rows after WAL append";

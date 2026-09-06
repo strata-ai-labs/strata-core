@@ -865,6 +865,16 @@ impl CommitBranchApplyTarget for BudgetedCommitBranch<'_> {
         })
     }
 
+    fn observe_commit_instant(
+        &mut self,
+        commit_version: CommitVersion,
+        instant: strata_core::Timestamp,
+    ) {
+        self.branch
+            .retained_timeline()
+            .observe_committed_at(commit_version, instant);
+    }
+
     fn append_committed_rows_atomically(
         &mut self,
         rows: Vec<crate::row::StorageRow>,

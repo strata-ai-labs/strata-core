@@ -987,6 +987,89 @@ fn timeline_lookup_survives_flush_and_compaction() {
     assert_eq!(after_reverse.timestamp(), second.commit_timestamp());
 }
 
+/// Commits `key`/`value` at logical timestamp `ts` with an explicit wall-clock
+/// instant attached (#3112 S2b).
+fn commit_put_with_committed_at(
+    runtime: &mut StorageRuntime<'static>,
+    key: &[u8],
+    value: &[u8],
+    ts: u64,
+    committed_at: Timestamp,
+) -> CommitSummary {
+    let batch = CommitBatch::new(
+        branch(),
+        vec![CommitMutation::Put {
+            storage_space: engine_space(),
+            key: api_key(key),
+            value: StorageValue::new(value.to_vec()),
+            ttl: None,
+        }],
+        CommitOptions::default()
+            .require_conflict_check(false)
+            .with_committed_at(committed_at),
+    )
+    .expect("valid put batch");
+    runtime
+        .commit_for_test(&batch, Timestamp::from_micros(ts))
+        .expect("commit put with committed_at")
+}
+
+/// #3112 S2b: the wall-clock instant reaches the retained-timeline index on a
+/// LIVE commit. The apply funnel is row-driven and rows never carry the
+/// instant, so this proves the commit runtime's post-apply upgrade actually
+/// runs — without it the entry would exist with the instant silently unknown.
+#[test]
+fn committed_at_reaches_the_timeline_index_on_a_live_commit() {
+    let mut runtime = open_runtime();
+    let committed_at = Timestamp::from_micros(1_788_000_000_000_000);
+    let summary = commit_put_with_committed_at(&mut runtime, b"k", b"v", 10, committed_at);
+
+    assert_eq!(summary.committed_at(), Some(committed_at));
+    assert_eq!(
+        runtime
+            .retained_committed_at_for_test(branch(), summary.commit_version())
+            .expect("inspect index"),
+        Some(committed_at),
+    );
+
+    // Direction control: a commit that supplies no instant leaves the entry
+    // unknown rather than inventing one.
+    let bare = commit_put(&mut runtime, b"k2", b"v2", 20);
+    assert_eq!(
+        runtime
+            .retained_committed_at_for_test(branch(), bare.commit_version())
+            .expect("inspect index"),
+        None,
+    );
+}
+
+/// #3112 S2b: the instant survives a durable reopen that replays the WAL tail.
+/// S2a made it durable in the record; replay must restore it onto the rebuilt
+/// timeline entry instead of silently downgrading every recovered commit to
+/// unknown. No checkpoint here on purpose — this is the replay path.
+#[cfg(feature = "localfs")]
+#[test]
+fn committed_at_survives_a_durable_reopen_through_wal_replay() {
+    let root = temp_dir_for_api_test("read-committed-at-wal-replay");
+    let committed_at = Timestamp::from_micros(1_788_000_000_000_000);
+    let version = {
+        let mut runtime = open_durable_runtime(root.clone());
+        let summary = commit_put_with_committed_at(&mut runtime, b"k", b"v", 10, committed_at);
+        assert_eq!(summary.committed_at(), Some(committed_at));
+        runtime.close().expect("close durable runtime");
+        summary.commit_version()
+    };
+
+    let runtime = open_durable_runtime(root);
+    assert_eq!(
+        runtime
+            .retained_committed_at_for_test(branch(), version)
+            .expect("inspect post-reopen"),
+        Some(committed_at),
+        "WAL replay must restore the recorded wall-clock instant"
+    );
+}
+
 /// W3.1b oracle: a durable reopen restores the retained-timeline index
 /// COMPLETE from the checkpoint section, before any read runs a seeding
 /// scan — and the restored index answers exactly. The pre-close `as_of`

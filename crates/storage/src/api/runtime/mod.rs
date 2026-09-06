@@ -3126,6 +3126,44 @@ impl<'a> StorageRuntime<'a> {
         }
     }
 
+    /// #3112 S2b: the wall-clock instant the retained-timeline index holds for
+    /// one commit, or `None` when unknown. Lets a reopen test prove the instant
+    /// survived the WAL round-trip rather than silently degrading to unknown.
+    #[cfg(test)]
+    pub(crate) fn retained_committed_at_for_test(
+        &self,
+        branch_id: BranchId,
+        commit_version: CommitVersion,
+    ) -> StorageApiResult<Option<Timestamp>> {
+        let entries = match &self.inner {
+            StorageRuntimeInner::Cache(slot) => slot
+                .lock()
+                .branch_catalog()
+                .branch_state(branch_id)
+                .map_err(map_lifecycle_error)?
+                .retained_timeline()
+                .materialized_entries(None),
+            StorageRuntimeInner::DurableOwned(slot) => slot
+                .lock()
+                .branch_catalog()
+                .branch_state(branch_id)
+                .map_err(map_lifecycle_error)?
+                .retained_timeline()
+                .materialized_entries(None),
+            StorageRuntimeInner::Closed => {
+                return Err(StorageApiError::InvalidRuntimeState {
+                    reason: "timeline inspection requires an open runtime",
+                })
+            }
+        };
+        Ok(entries.and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry.commit_version() == commit_version)
+                .and_then(|entry| entry.committed_at())
+        }))
+    }
+
     #[cfg(test)]
     pub(crate) fn set_timestamp_coverage_for_test(
         &mut self,
