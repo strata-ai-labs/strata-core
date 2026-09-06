@@ -148,6 +148,8 @@ assert!(kv.get(&KvKey::new("greeting")?)?.is_some());
 
 Durable databases open the same way with `Database::open_local(path, DurableLocalOpenOptions::new())`. The browser build (`crates/wasm`) exposes the cache-mode engine to JavaScript via WebAssembly.
 
+See the compiled [`stratadb` examples](crates/stratadb/examples) for branch and time-travel reads, event append, and durable database setup.
+
 ## Install
 
 **Install script** (macOS, Linux — checksum-verified):
