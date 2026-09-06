@@ -8,6 +8,15 @@
     "HistoryItem": {
       "description": "Version-history item.",
       "properties": {
+        "committed_at": {
+          "description": "The commit's wall-clock instant in microseconds since the Unix epoch\n(UTC), or absent when unknown — a commit written before the database\nrecorded instants, or one whose date the branch cannot vouch for.\nDistinct from `timestamp`, which is a commit-timeline position, not a\ndate.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "timestamp": {
           "format": "uint64",
           "minimum": 0,
