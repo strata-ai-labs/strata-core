@@ -121,6 +121,158 @@ fn write_ack_carries_a_wall_clock_committed_at_distinct_from_the_logical_clock()
     );
 }
 
+/// #3112 S3a: the defining contract of wall-clock time travel — `as_of_time`
+/// is EXACTLY an `as_of` at the instant's resolved commit. Reading at a
+/// commit's own `committed_at` must return precisely what reading at that
+/// commit's logical `timestamp` returns, for every commit in the history.
+///
+/// This is the property that keeps the two clocks from drifting: wall-clock
+/// as-of inherits at-or-before, MVCC visibility, and tombstone handling from
+/// the logical path rather than reimplementing them.
+#[test]
+fn as_of_time_at_each_commit_matches_as_of_at_that_commits_logical_timestamp() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    // A history with an overwrite and a delete, so visibility is genuinely
+    // exercised rather than every read returning the same row.
+    let mut stamps = Vec::new();
+    for value in ["one", "two"] {
+        stamps.push(spaced(|e| put_stamp(e, "drift-key", value), &mut executor));
+    }
+    stamps.push(spaced(|e| delete_stamp(e, "drift-key"), &mut executor));
+    stamps.push(spaced(
+        |e| put_stamp(e, "drift-key", "three"),
+        &mut executor,
+    ));
+    assert_distinct_instants(&stamps);
+
+    for (index, (timestamp, committed_at)) in stamps.iter().copied().enumerate() {
+        let by_logical = kv_get_at(&mut executor, "drift-key", Some(timestamp), None)
+            .expect("logical as_of read succeeds");
+        let by_wall_clock = kv_get_at(&mut executor, "drift-key", None, Some(committed_at))
+            .expect("wall-clock as_of read succeeds");
+        assert_eq!(
+            by_logical, by_wall_clock,
+            "commit {index}: as_of_time({committed_at}) diverged from as_of({timestamp})"
+        );
+    }
+
+    // And the reads are actually distinguishing commits, not all returning the
+    // same thing — otherwise the equality above would be vacuous.
+    let first =
+        kv_get_at(&mut executor, "drift-key", None, Some(stamps[0].1)).expect("first commit reads");
+    let last =
+        kv_get_at(&mut executor, "drift-key", None, Some(stamps[3].1)).expect("last commit reads");
+    assert_ne!(
+        first, last,
+        "the history must be observably different across commits"
+    );
+}
+
+/// A target between two commits resolves to the earlier one — the at-or-before
+/// rule, in wall-clock terms.
+#[test]
+fn as_of_time_between_commits_resolves_to_the_earlier_commit() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let first = spaced(|e| put_stamp(e, "between-key", "one"), &mut executor);
+    let second = spaced(|e| put_stamp(e, "between-key", "two"), &mut executor);
+    assert_distinct_instants(&[first, second]);
+    let (_, first_instant) = first;
+    let (second_timestamp, second_instant) = second;
+
+    let between = first_instant + (second_instant - first_instant) / 2;
+    assert!(between > first_instant && between < second_instant);
+    assert_eq!(
+        kv_get_at(&mut executor, "between-key", None, Some(between)).expect("resolves"),
+        kv_get_at(&mut executor, "between-key", None, Some(first_instant)).expect("resolves"),
+        "a target between commits must resolve to the earlier boundary"
+    );
+    assert_ne!(
+        kv_get_at(&mut executor, "between-key", None, Some(between)).expect("resolves"),
+        kv_get_at(&mut executor, "between-key", Some(second_timestamp), None).expect("resolves"),
+        "and must NOT reach the later commit"
+    );
+}
+
+/// D3: past the tip raises rather than clamping to current state, matching the
+/// locked temporal contract's logical form.
+#[test]
+fn as_of_time_past_the_latest_commit_raises_instead_of_clamping() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let (_, instant) = put_stamp(&mut executor, "tip-key", "one");
+
+    let error = kv_get_at(&mut executor, "tip-key", None, Some(instant + 60_000_000))
+        .expect_err("a target past the tip must raise");
+    assert_eq!(error.class(), ExecutorErrorClass::NotFound);
+    assert_eq!(
+        error.code(),
+        "history_unavailable.engine.persistence_history"
+    );
+}
+
+/// F3: "before the database existed" is a real answer, and distinct from a
+/// successful read of empty history.
+#[test]
+fn as_of_time_before_the_first_commit_raises() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let (_, instant) = put_stamp(&mut executor, "floor-key", "one");
+
+    let error = kv_get_at(&mut executor, "floor-key", None, Some(instant - 60_000_000))
+        .expect_err("a target before the first dated commit must raise");
+    assert_eq!(error.class(), ExecutorErrorClass::NotFound);
+    assert_eq!(
+        error.code(),
+        "history_unavailable.engine.persistence_history"
+    );
+}
+
+/// A designed safety property: instants are epoch MICROS, and every other
+/// plausible unit for the same moment lands outside the dated range in one
+/// direction or the other. No unit confusion can quietly resolve to a wrong
+/// commit — a class of bug that would otherwise be invisible.
+#[test]
+fn as_of_time_in_the_wrong_time_unit_always_raises() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let (_, micros) = put_stamp(&mut executor, "unit-key", "one");
+
+    for (unit, instant) in [
+        ("seconds", micros / 1_000_000),
+        ("millis", micros / 1_000),
+        ("nanos", micros.saturating_mul(1_000)),
+    ] {
+        let Err(error) = kv_get_at(&mut executor, "unit-key", None, Some(instant)) else {
+            panic!("{unit} must not silently resolve to a commit");
+        };
+        assert_eq!(
+            error.code(),
+            "history_unavailable.engine.persistence_history",
+            "{unit} landed outside the dated range, as intended"
+        );
+    }
+}
+
+/// Both clocks at once is ambiguous, so it is refused rather than given a
+/// silent precedence rule.
+#[test]
+fn as_of_and_as_of_time_together_are_rejected() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let (timestamp, committed_at) = put_stamp(&mut executor, "both-key", "one");
+
+    let error = kv_get_at(
+        &mut executor,
+        "both-key",
+        Some(timestamp),
+        Some(committed_at),
+    )
+    .expect_err("supplying both clocks must be refused");
+    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+    assert_eq!(error.code(), "invalid_argument.executor.as_of_conflict");
+
+    // The refusal is about the pair, not about either field: each alone works.
+    kv_get_at(&mut executor, "both-key", Some(timestamp), None).expect("as_of alone works");
+    kv_get_at(&mut executor, "both-key", None, Some(committed_at)).expect("as_of_time alone works");
+}
+
 #[test]
 fn kv_batch_write_outputs_report_per_item_commit_receipts_and_effects() {
     let mut executor = Executor::open_cache().expect("cache executor opens");
@@ -288,6 +440,7 @@ fn executor_inherits_configured_database_default_branch() {
             space: None,
             key: bytes("shared"),
             as_of: None,
+            as_of_time: None,
         })
         .expect_err("literal default branch is absent");
     assert_eq!(error.class(), ExecutorErrorClass::NotFound);
@@ -392,6 +545,7 @@ fn command_to_output_mapping_is_explicit_for_every_variant() {
             space: None,
             key: bytes("map-a"),
             as_of: None,
+            as_of_time: None,
         },
         Command::KvDelete {
             branch: None,
@@ -798,6 +952,7 @@ fn execute_get(executor: &mut Executor, key: &str) -> Option<Bytes> {
             space: None,
             key: bytes(key),
             as_of: None,
+            as_of_time: None,
         })
         .expect("get succeeds")
     {
@@ -818,6 +973,7 @@ fn execute_get_in(
             space: space.map(str::to_owned),
             key: bytes(key),
             as_of: None,
+            as_of_time: None,
         })
         .expect("get succeeds")
     {
@@ -833,6 +989,7 @@ fn execute_get_as_of(executor: &mut Executor, key: &str, as_of: u64) -> Option<V
             space: None,
             key: bytes(key),
             as_of: Some(as_of),
+            as_of_time: None,
         })
         .expect("historical get succeeds")
     {
@@ -1198,6 +1355,94 @@ fn bytes(value: &str) -> Bytes {
     Bytes::from(value)
 }
 
+/// #3112 S3a: separates commits in WALL-CLOCK time before committing.
+///
+/// Wall-clock resolution addresses commit BOUNDARIES, so two commits inside one
+/// microsecond are deliberately indistinguishable by instant — the greatest
+/// version at or before the target wins, matching the temporal contract's rule
+/// for duplicate timestamps. A fixture that wants to address each commit
+/// separately must therefore give each its own microsecond.
+///
+/// The wait happens BEFORE the commit on purpose. Retrying a commit until the
+/// clock ticks would leave the rejected attempts sitting at instants the test
+/// then reads at, and those extra commits — not the recorded one — would be
+/// what a target resolved to.
+fn spaced<T>(commit: impl FnOnce(&mut Executor) -> T, executor: &mut Executor) -> T {
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    commit(executor)
+}
+
+/// Fails loudly if the platform clock was too coarse to separate the commits,
+/// rather than letting the surrounding assertions flake.
+fn assert_distinct_instants(stamps: &[(u64, u64)]) {
+    for pair in stamps.windows(2) {
+        assert!(
+            pair[1].1 > pair[0].1,
+            "fixture needs strictly increasing wall-clock instants, got {} then {}",
+            pair[0].1,
+            pair[1].1
+        );
+    }
+}
+
+/// #3112 S3a: both of a commit's clocks — `(logical timestamp, committed_at)`.
+/// The pair is what lets a test ask the same temporal question twice, once in
+/// each clock, and demand the same answer.
+fn put_stamp(executor: &mut Executor, key: &str, value: &str) -> (u64, u64) {
+    let output = executor
+        .execute(Command::KvPut {
+            branch: None,
+            space: None,
+            key: bytes(key),
+            value: bytes(value),
+        })
+        .expect("put succeeds");
+    commit_stamp(&output)
+}
+
+fn delete_stamp(executor: &mut Executor, key: &str) -> (u64, u64) {
+    let output = executor
+        .execute(Command::KvDelete {
+            branch: None,
+            space: None,
+            key: bytes(key),
+        })
+        .expect("delete succeeds");
+    commit_stamp(&output)
+}
+
+fn commit_stamp(output: &Output) -> (u64, u64) {
+    let commit = match output {
+        Output::WriteResult { commit, .. } => commit,
+        Output::DeleteResult { commit, .. } => commit
+            .as_ref()
+            .expect("a delete that applied carries a commit receipt"),
+        other => panic!("unexpected write output: {other:?}"),
+    };
+    (
+        commit.timestamp(),
+        commit
+            .committed_at()
+            .expect("a live commit records a wall-clock instant"),
+    )
+}
+
+#[allow(clippy::result_large_err)] // ExecutorResult mirrors the wire error type
+fn kv_get_at(
+    executor: &mut Executor,
+    key: &str,
+    as_of: Option<u64>,
+    as_of_time: Option<u64>,
+) -> Result<Output, strata_executor::ExecutorError> {
+    executor.execute(Command::KvGet {
+        branch: None,
+        space: None,
+        key: bytes(key),
+        as_of,
+        as_of_time,
+    })
+}
+
 /// Pins the `KvPut` contract: each put is one atomic commit with a strictly
 /// increasing version, and an acknowledged write is immediately visible to
 /// subsequent reads from the same database — never transiently invisible.
@@ -1232,6 +1477,7 @@ fn kv_put_is_atomic_with_read_after_write_visibility() {
                 space: None,
                 key: bytes("raw-key"),
                 as_of: None,
+                as_of_time: None,
             })
             .expect("get succeeds")
         {

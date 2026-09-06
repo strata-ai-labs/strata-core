@@ -22,6 +22,8 @@ use crate::persistence::{
     StorageFaultKind,
 };
 
+use strata_core::Timestamp;
+
 use super::{
     AdminService, BranchName, CacheOpenOptions, CachePreheat, ControlDiagnostics,
     DurableLocalOpenOptions, SpaceService,
@@ -301,6 +303,37 @@ impl Database {
             branch,
             space,
         ))
+    }
+
+    /// Resolves a wall-clock instant to the logical commit timestamp a
+    /// time-travel read on `branch` should run at (#3112 S3a).
+    ///
+    /// The instant is UTC epoch micros. Resolution selects the commit boundary
+    /// at or before it, so the caller then performs an ordinary `as_of` read at
+    /// the returned value — `as_of_time` is defined to be exactly that, which
+    /// is why the two forms of time travel cannot diverge.
+    ///
+    /// Refuses rather than guessing when the instant falls outside the branch's
+    /// dated range, when the branch predates wall-clock recording, or when the
+    /// branch cannot prove its wall-clock coverage. Wall-clock history has no
+    /// scan fallback — commit instants live only in the retained-timeline
+    /// index, never in rows — so an unprovable branch makes this question
+    /// unanswerable rather than merely slow.
+    pub fn resolve_wall_clock(
+        &mut self,
+        branch: &BranchName,
+        instant: Timestamp,
+    ) -> EngineResult<Timestamp> {
+        self.require_open()?;
+        self.control.require_healthy()?;
+        let record = self.control.lookup_branch(branch).cloned().ok_or_else(|| {
+            EngineError::not_found(
+                "not_found.engine.branch",
+                format!("branch `{branch}` does not exist"),
+            )
+        })?;
+        self.persistence
+            .resolve_wall_clock(record.storage_branch_id(), instant)
     }
 
     /// Returns a JSON document service for the selected branch and space.

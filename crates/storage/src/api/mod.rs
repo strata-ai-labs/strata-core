@@ -88,7 +88,8 @@ pub use read::{
     ImmutableSourceScanReadRequest, PointReadOutcome, PointReadRequest, PrefixScanReadRequest,
     ReadBound, ScanReadOutcome, ScanReadRequest, StorageImmutableSource, StorageReadRow,
     TimelineBoundsOutcome, TimelineBoundsRequest, TimestampLookupMiss, TimestampLookupOutcome,
-    TimestampLookupRequest, VersionLookupOutcome, VersionLookupRequest,
+    TimestampLookupRequest, VersionLookupOutcome, VersionLookupRequest, WallClockLookupOutcome,
+    WallClockLookupRequest,
 };
 pub use result::StorageApiResult;
 #[cfg(any(test, feature = "testkit"))]

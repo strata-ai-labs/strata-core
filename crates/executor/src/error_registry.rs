@@ -107,6 +107,15 @@ const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
         EXECUTOR_SCHEMA,
     ),
     entry(
+        "invalid_argument.executor.as_of_conflict",
+        ErrorClass::InvalidArgument,
+        RetryPolicy::Never,
+        CommitOutcomeStatus::NotStarted,
+        "Both as_of and as_of_time were supplied.",
+        "Pass a commit timestamp (as_of) or a wall-clock instant (as_of_time), not both.",
+        EXECUTOR_SCHEMA,
+    ),
+    entry(
         "invalid_argument.executor.arrow_base64",
         ErrorClass::InvalidArgument,
         RetryPolicy::Never,

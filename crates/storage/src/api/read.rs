@@ -631,6 +631,76 @@ impl TimestampLookupOutcome {
     }
 }
 
+/// #3112 S3a: resolve a wall-clock instant to a commit boundary on a branch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WallClockLookupRequest {
+    branch_id: BranchId,
+    instant: Timestamp,
+}
+
+impl WallClockLookupRequest {
+    #[must_use]
+    pub const fn new(branch_id: BranchId, instant: Timestamp) -> Self {
+        Self { branch_id, instant }
+    }
+
+    #[must_use]
+    pub const fn branch_id(self) -> BranchId {
+        self.branch_id
+    }
+
+    /// The wall-clock instant being resolved (UTC epoch micros).
+    #[must_use]
+    pub const fn instant(self) -> Timestamp {
+        self.instant
+    }
+}
+
+/// #3112 S3a: the commit boundary a wall-clock instant resolved to.
+///
+/// `timestamp` is the LOGICAL commit timestamp — the whole point of resolving
+/// up front is that the read then runs as an ordinary `as_of` at this value, so
+/// wall-clock and logical time travel cannot drift apart.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WallClockLookupOutcome {
+    version: CommitVersion,
+    timestamp: Timestamp,
+    committed_at: Timestamp,
+}
+
+impl WallClockLookupOutcome {
+    #[must_use]
+    pub const fn new(
+        version: CommitVersion,
+        timestamp: Timestamp,
+        committed_at: Timestamp,
+    ) -> Self {
+        Self {
+            version,
+            timestamp,
+            committed_at,
+        }
+    }
+
+    #[must_use]
+    pub const fn version(self) -> CommitVersion {
+        self.version
+    }
+
+    /// The logical `as_of` the resolved read runs at.
+    #[must_use]
+    pub const fn timestamp(self) -> Timestamp {
+        self.timestamp
+    }
+
+    /// The resolved commit's own wall-clock instant — at or before the
+    /// requested one, never after.
+    #[must_use]
+    pub const fn committed_at(self) -> Timestamp {
+        self.committed_at
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VersionLookupOutcome {
     version: CommitVersion,

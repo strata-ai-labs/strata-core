@@ -125,7 +125,8 @@ impl Executor {
                 space,
                 key,
                 as_of,
-            } => self.execute_kv_get(branch.as_deref(), space.as_deref(), key, as_of),
+                as_of_time,
+            } => self.execute_kv_get(branch.as_deref(), space.as_deref(), key, as_of, as_of_time),
             Command::KvDelete { branch, space, key } => {
                 self.execute_kv_delete(branch.as_deref(), space.as_deref(), key)
             }

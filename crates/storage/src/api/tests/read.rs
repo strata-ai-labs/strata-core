@@ -1118,6 +1118,132 @@ fn committed_at_survives_a_durable_reopen_through_the_checkpoint_section() {
     );
 }
 
+/// #3112 S3a: the shape every database created before this epic has — an
+/// undated prefix followed by dated commits. Resolution must work over the
+/// dated part while refusing, DISTINGUISHABLY, for a target that falls before
+/// it. Reporting "before retained history" there would be a lie: that history
+/// is retained and readable, only its wall-clock position is unknown.
+#[cfg(feature = "localfs")]
+#[test]
+fn wall_clock_resolution_rides_over_an_undated_prefix() {
+    let root = temp_dir_for_api_test("read-wall-clock-undated-prefix");
+    let mut runtime = open_durable_runtime(root);
+    let dated_instant = Timestamp::from_micros(1_788_000_000_000_000);
+
+    // Two commits with no instant (the pre-epic shape), then a dated one.
+    commit_put(&mut runtime, b"k", b"v1", 10);
+    commit_put(&mut runtime, b"k", b"v2", 20);
+    let dated = commit_put_with_committed_at(&mut runtime, b"k", b"v3", 30, dated_instant);
+
+    // Prove the index is complete, so a refusal below is about DATING rather
+    // than about unproven coverage.
+    runtime
+        .read_point(&point_request(
+            b"k",
+            ReadBound::AtTimestamp(Timestamp::from_micros(10)),
+        ))
+        .expect("seeding read");
+    assert!(runtime
+        .retained_timeline_complete_for_test(branch())
+        .expect("index is complete"));
+
+    let resolved = runtime
+        .resolve_wall_clock(WallClockLookupRequest::new(branch(), dated_instant))
+        .expect("the dated commit resolves");
+    assert_eq!(resolved.version(), dated.commit_version());
+    assert_eq!(
+        resolved.timestamp(),
+        Timestamp::from_micros(30),
+        "resolution yields the LOGICAL timestamp the read then runs at"
+    );
+    assert_eq!(resolved.committed_at(), dated_instant);
+
+    let error = runtime
+        .resolve_wall_clock(WallClockLookupRequest::new(
+            branch(),
+            Timestamp::from_micros(dated_instant.as_micros() - 1),
+        ))
+        .expect_err("a target before the dated range must refuse");
+    let StorageApiError::TimestampHistoryUnavailable { reason, .. } = error else {
+        panic!("unexpected error: {error:?}");
+    };
+    assert!(
+        reason.contains("undated"),
+        "the refusal must name the undated prefix, not claim history is missing: {reason}"
+    );
+
+    // The undated commits are still perfectly readable by logical as_of — the
+    // point of the distinct reason is that only their DATE is unknown.
+    assert!(runtime
+        .read_point(&point_request(
+            b"k",
+            ReadBound::AtTimestamp(Timestamp::from_micros(10)),
+        ))
+        .expect("undated history is still readable")
+        .row()
+        .is_some());
+}
+
+/// #3112 S3a / F1: wall-clock history has NO scan fallback, because
+/// `committed_at` is commit-scoped and never written to timeline rows
+/// (storage-format spec §10 req 13). A scan cannot supply it even where the
+/// scan itself succeeds — on legacy pre-elision rows or a testkit view — so an
+/// index that cannot prove coverage makes the question unanswerable rather than
+/// merely slow.
+///
+/// The failure mode pinned here is the dangerous one: silently answering with
+/// logical semantics, or with a boundary the index cannot actually vouch for.
+#[cfg(feature = "localfs")]
+#[test]
+fn wall_clock_resolution_refuses_while_the_index_is_unproven() {
+    let root = temp_dir_for_api_test("read-wall-clock-unproven");
+    let mut runtime = open_durable_runtime(root);
+    let instant = Timestamp::from_micros(1_788_000_000_000_000);
+    let committed = commit_put_with_committed_at(&mut runtime, b"k", b"v", 10, instant);
+    let logical = committed.commit_timestamp();
+
+    // Drop to unproven coverage: the state a fork restored from the catalog
+    // manifest and a corruption-guard poison both leave behind.
+    runtime
+        .mark_retained_timeline_incomplete_for_test(branch())
+        .expect("mark unproven");
+    assert!(!runtime
+        .retained_timeline_complete_for_test(branch())
+        .expect("index is unproven"));
+
+    let error = runtime
+        .resolve_wall_clock(WallClockLookupRequest::new(branch(), instant))
+        .expect_err("an unproven index cannot answer a wall-clock question");
+    let StorageApiError::TimestampHistoryUnavailable { reason, .. } = error else {
+        panic!("unexpected error: {error:?}");
+    };
+    assert!(
+        reason.contains("unavailable"),
+        "unproven coverage must report unavailability: {reason}"
+    );
+
+    // A timeline lookup re-seeds the index from a scan on its way through, so
+    // coverage becomes provable again and the same question now answers. The
+    // refusal above is a statement about coverage, not a permanent verdict.
+    //
+    // The read's own outcome is deliberately ignored: what it returns depends
+    // on whether this database still has timeline rows to scan (W3.1c retired
+    // them), while the re-seed it performs on the way happens either way — and
+    // the re-seed is the whole point here.
+    let _ = runtime.read_point(&point_request(b"k", ReadBound::AtTimestamp(logical)));
+    assert!(runtime
+        .retained_timeline_complete_for_test(branch())
+        .expect("the lookup re-seeded coverage"));
+    assert_eq!(
+        runtime
+            .resolve_wall_clock(WallClockLookupRequest::new(branch(), instant))
+            .expect("resolves once coverage is proven")
+            .committed_at(),
+        instant,
+        "and the instant survived the re-seed rather than degrading to unknown"
+    );
+}
+
 /// W3.1b oracle: a durable reopen restores the retained-timeline index
 /// COMPLETE from the checkpoint section, before any read runs a seeding
 /// scan — and the restored index answers exactly. The pre-close `as_of`

@@ -39,6 +39,7 @@ fn get(executor: &mut Executor, branch: Option<&str>, key: &str) -> Option<Bytes
             space: None,
             key: bytes(key),
             as_of: None,
+            as_of_time: None,
         })
         .expect("get succeeds")
     {

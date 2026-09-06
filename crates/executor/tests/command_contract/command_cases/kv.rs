@@ -13,6 +13,7 @@ pub(super) fn kv_commands() -> Vec<Command> {
             space: Some("space-a".to_owned()),
             key: bytes("alpha"),
             as_of: Some(42),
+            as_of_time: None,
         },
         Command::KvDelete {
             branch: Some("feature".to_owned()),

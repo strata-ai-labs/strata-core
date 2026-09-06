@@ -21,6 +21,7 @@ fn executor_errors_have_stable_public_shape() {
             space: None,
             key: Bytes::new(Vec::new()),
             as_of: None,
+            as_of_time: None,
         })
         .expect_err("empty key fails");
     assert_eq!(invalid_key.class(), ExecutorErrorClass::InvalidInput);

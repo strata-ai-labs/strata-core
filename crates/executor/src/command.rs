@@ -309,6 +309,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Deletes one KV entry.
     KvDelete {
