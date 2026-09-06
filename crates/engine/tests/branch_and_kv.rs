@@ -42,6 +42,26 @@ fn cache_write_ack_carries_a_wall_clock_committed_at() {
 }
 
 #[test]
+fn single_put_reports_create_then_update() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let mut kv = database
+        .kv(branch("default"), space("default"))
+        .expect("KV service opens");
+
+    let created = kv
+        .put(key(b"single"), value(b"first"))
+        .expect("first put succeeds");
+    let updated = kv
+        .put(key(b"single"), value(b"second"))
+        .expect("second put succeeds");
+
+    assert!(created.created());
+    assert!(!updated.created());
+    assert_eq!(created.commit().put_count(), 1);
+    assert_eq!(updated.commit().put_count(), 1);
+}
+
+#[test]
 fn cache_database_supports_branch_and_kv_workflow() {
     let mut database = open_cache_database().expect("cache open succeeds");
 

@@ -50,9 +50,20 @@ impl<'a> KvService<'a> {
     /// The returned outcome carries the create-vs-update fact computed by the
     /// engine, so callers never need a separate existence probe (rule 7).
     pub fn put(&mut self, key: KvKey, value: KvValue) -> EngineResult<KvWriteOutcome> {
-        let outcome = self.put_batch([(key, value)])?;
-        let created = outcome.created().first().copied().unwrap_or(false);
-        Ok(KvWriteOutcome::new(outcome.commit(), created))
+        let record = self.branch_record()?;
+        let key_bytes = key.into_bytes();
+        let address = RowAddress::new(
+            record.storage_branch_id(),
+            RowClass::Kv,
+            encode_kv_key_bytes(&self.space, &key_bytes),
+        );
+        let created = self
+            .persistence
+            .read_row(address.clone(), ReadSelector::Latest)?
+            .is_none_or(|row| row.is_tombstone());
+        let commit =
+            self.commit_batch(&record, vec![RowMutation::put(address, value.into_bytes())])?;
+        Ok(KvWriteOutcome::new(commit, created))
     }
 
     /// Writes multiple KV values in one commit.
