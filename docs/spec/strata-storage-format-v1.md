@@ -456,27 +456,40 @@ V1 inner WAL record format:
 
 ```text
 record_len             u32 LE, number of bytes after this field
-format_version         u8, MUST be 1
+format_version         u8, MUST be 3 (current) or 1 (legacy, readable)
 record_len_crc32       u32 LE, CRC32 over record_len bytes
 commit_version         u64 LE
 branch_id              16 bytes
 timestamp_micros       u64 LE
+committed_at_micros    u64 LE, version 3 ONLY; 0 means unknown
 commit_payload         V1 WAL commit payload bytes
 payload_crc32          u32 LE
 ```
+
+`committed_at_micros` is the wall-clock instant the commit was applied (UTC
+epoch microseconds). It is NOT the MVCC clock: it takes no part in ordering,
+visibility, or as-of resolution, and it may regress between commits (clock
+skew). `0` means unknown, following the format's `optional_nonzero` convention
+for optional `u64`s; a real instant is always past the epoch, so nothing
+legitimate collides with the sentinel. Version 1 records predate the field and
+decode with `committed_at` unknown.
 
 `payload_crc32` covers:
 
 ```text
 format_version || record_len_crc32 || commit_version || branch_id ||
-timestamp_micros || commit_payload
+timestamp_micros || [committed_at_micros, version 3 only] || commit_payload
 ```
 
-V1 WAL record constants:
+WAL record constants:
 
 ```text
-WAL_RECORD_FORMAT_VERSION          1
-WAL_RECORD_MIN_LEN_AFTER_PREFIX    116 bytes
+WAL_RECORD_FORMAT_VERSION          3
+WAL_RECORD_FORMAT_VERSION_V1       1   (legacy, decode-only)
+WAL_RECORD_MIN_LEN_AFTER_PREFIX    116 bytes (the version-1 floor; the length
+                                    guard runs before the version is known, so
+                                    it MUST admit the smallest legal record of
+                                    any supported version)
 WAL_RECORD_ENVELOPE_HEADER_SIZE    8 bytes
 ```
 
@@ -495,12 +508,22 @@ Requirements:
 8. The inner record decoder MUST verify `payload_crc32` before decoding the
    commit payload.
 9. Inner record version `0` and pre-launch development version `2` are pre-V1
-   formats rejected by the normal V1 decoder. Versions greater than `1` other
-   than known pre-V1 development versions are future formats.
+   formats rejected by the normal V1 decoder. Versions greater than `3` other
+   than known pre-V1 development versions are future formats. The current
+   version is `3`; version `2` MUST NOT be reused for a future revision,
+   because it already marks a pre-V1 record and reusing it would alias a
+   pre-V1 record into a current one instead of failing closed.
 10. The codec-aware outer envelope is WAL segment framing. The logical WAL
     record begins after the segment frame payload has been decoded.
 11. Every decoded payload row MUST carry the same commit version, branch id,
     and commit timestamp as the outer WAL record.
+12. Version `1` records MUST remain decodable: they predate
+    `committed_at_micros` and decode with that field unknown, every other fact
+    intact. Writers always emit the current version. This is within-V1 format
+    evolution, distinct from the pre-V1 rejection in requirement 9.
+13. `committed_at_micros` is an outer-record fact only. Unlike requirement 11's
+    per-row facts, it is NOT mirrored on payload rows and MUST NOT be validated
+    against them.
 
 ## 11. Commit Payload Format
 

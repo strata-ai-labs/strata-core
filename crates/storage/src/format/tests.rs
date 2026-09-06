@@ -100,6 +100,11 @@ const WAL_COMMIT_PAYLOAD_ONE_PUT: &str =
     include_str!("../../testdata/goldens/storage-format-v1/wal-commit-payload-one-put.hex");
 const WAL_COMMIT_PAYLOAD_PUT_TOMBSTONE: &str =
     include_str!("../../testdata/goldens/storage-format-v1/wal-commit-payload-put-tombstone.hex");
+/// The pre-`committed_at` v1 record, kept verbatim as the backward-compat pin
+/// (#3112 S2). Never re-blessed: its whole job is to prove the current decoder
+/// still reads a 1.2.x WAL.
+const WAL_RECORD_PAYLOAD_V1: &str =
+    include_str!("../../testdata/goldens/storage-format-v1/wal-record-payload-v1.hex");
 const WAL_RECORD_PAYLOAD: &str =
     include_str!("../../testdata/goldens/storage-format-v1/wal-record-payload.hex");
 const WAL_RECORD_ENVELOPE: &str =
@@ -515,6 +520,47 @@ fn wal_record_payload_matches_golden_vector() {
 }
 
 #[test]
+fn wal_record_v1_bytes_still_decode_with_an_unknown_committed_at() {
+    // #3112 S2: a 1.2.x database's WAL holds version-1 records, written before
+    // `committed_at` existed. They MUST stay readable across the upgrade — the
+    // field decodes as unknown and every other fact survives intact. This
+    // golden pins the OLD bytes and is never re-blessed to v3.
+    let golden = parse_hex(WAL_RECORD_PAYLOAD_V1);
+    let (record, consumed) = decode_wal_record(&golden).expect("v1 WAL record decodes");
+
+    assert_eq!(consumed, golden.len());
+    assert_eq!(record.committed_at(), None, "v1 predates committed_at");
+    assert_eq!(record.commit_version(), CommitVersion::new(42));
+    assert_eq!(record.branch_id(), ordinary_branch_id());
+    assert_eq!(
+        record.commit_timestamp(),
+        Timestamp::from_micros(1_700_000_000_123_456)
+    );
+    assert_eq!(record.commit_payload(), &wal_commit_payload_one_put());
+}
+
+#[test]
+fn wal_record_round_trips_an_unknown_committed_at_through_the_zero_sentinel() {
+    // Absence is written as 0 (the format's `optional_nonzero` convention) and
+    // must come back as None, not as an epoch-0 instant (#3112 S2).
+    let record = WalRecord::new(
+        CommitVersion::new(42),
+        ordinary_branch_id(),
+        Timestamp::from_micros(1_700_000_000_123_456),
+        wal_commit_payload_one_put(),
+    )
+    .expect("WAL record");
+    assert_eq!(record.committed_at(), None);
+
+    let bytes = encode_wal_record(&record).expect("encode WAL record");
+    let (decoded, consumed) = decode_wal_record(&bytes).expect("decode WAL record");
+
+    assert_eq!(consumed, bytes.len());
+    assert_eq!(decoded.committed_at(), None);
+    assert_eq!(decoded, record);
+}
+
+#[test]
 fn wal_record_envelope_matches_golden_vector() {
     let record_bytes = encode_wal_record(&payload_wal_record()).expect("encode WAL record");
     let envelope = WalRecordEnvelope::new(record_bytes).expect("envelope");
@@ -594,6 +640,38 @@ fn payload_wal_record() -> WalRecord {
         wal_commit_payload_one_put(),
     )
     .expect("WAL record")
+    // v3 carries the wall-clock instant; the golden pins a real (non-zero)
+    // value so the field's bytes are covered, not just its absence (#3112 S2).
+    .with_committed_at(Some(Timestamp::from_micros(1_788_000_000_654_321)))
+}
+
+#[test]
+#[ignore = "prints the v3 WAL golden bytes; run explicitly when regenerating"]
+fn dump_wal_record_v3_golden_bytes() {
+    let record_bytes = encode_wal_record(&payload_wal_record()).expect("encode WAL record");
+    eprintln!("PAYLOAD_LEN {}", record_bytes.len());
+    eprintln!("PAYLOAD {}", to_hex_lines(&record_bytes));
+    let envelope = WalRecordEnvelope::new(record_bytes).expect("envelope");
+    let envelope_bytes = encode_wal_record_envelope(&envelope).expect("encode WAL envelope");
+    eprintln!("ENVELOPE_LEN {}", envelope_bytes.len());
+    eprintln!("ENVELOPE {}", to_hex_lines(&envelope_bytes));
+}
+
+/// Formats bytes as the 16-per-line hex body the golden `.hex` files carry.
+/// The goldens have no automatic bless path, and their CRCs cannot be computed
+/// by hand, so the ignored dump test above is the regeneration procedure.
+fn to_hex_lines(bytes: &[u8]) -> String {
+    bytes
+        .chunks(16)
+        .map(|chunk| {
+            chunk
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[test]

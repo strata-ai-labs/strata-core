@@ -791,6 +791,9 @@ fn build_wal_record(
         stamp.commit_timestamp(),
         payload,
     )
+    // The commit's wall-clock instant rides the record so a reopen recovers it
+    // instead of reporting the commit as undated (#3112 S2).
+    .map(|record| record.with_committed_at(stamp.committed_at()))
     .map_err(|source| {
         CommitRuntimeError::lower_layer_with(
             CommitLowerLayer::WalFormat,

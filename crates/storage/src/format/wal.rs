@@ -1,7 +1,7 @@
 use super::{
     ByteReader, FormatError, WAL_RECORD_ENVELOPE_HEADER_SIZE, WAL_RECORD_FORMAT_VERSION,
-    WAL_RECORD_MIN_LEN_AFTER_PREFIX, WAL_SEGMENT_BASE_HEADER_SIZE, WAL_SEGMENT_FORMAT_VERSION,
-    WAL_SEGMENT_HEADER_SIZE,
+    WAL_RECORD_FORMAT_VERSION_V1, WAL_RECORD_MIN_LEN_AFTER_PREFIX, WAL_SEGMENT_BASE_HEADER_SIZE,
+    WAL_SEGMENT_FORMAT_VERSION, WAL_SEGMENT_HEADER_SIZE,
 };
 use strata_core::{BranchId, CommitVersion, Timestamp};
 
@@ -137,6 +137,10 @@ pub(crate) struct WalRecord {
     commit_version: CommitVersion,
     branch_id: BranchId,
     commit_timestamp: Timestamp,
+    /// Wall-clock instant the commit was applied (#3112). `None` on a v1 record
+    /// (written before the field existed) and on any commit whose instant is
+    /// unknown. Never the MVCC clock — it takes no part in ordering.
+    committed_at: Option<Timestamp>,
     commit_payload: WalCommitPayload,
 }
 
@@ -152,8 +156,21 @@ impl WalRecord {
             commit_version,
             branch_id,
             commit_timestamp,
+            committed_at: None,
             commit_payload,
         })
+    }
+
+    /// Attaches the commit's wall-clock instant. Kept as a builder so `new`'s
+    /// signature — and its call sites — stay put (#3112 S2).
+    #[must_use]
+    pub(crate) fn with_committed_at(mut self, committed_at: Option<Timestamp>) -> Self {
+        self.committed_at = committed_at;
+        self
+    }
+
+    pub(crate) const fn committed_at(&self) -> Option<Timestamp> {
+        self.committed_at
     }
 
     pub(crate) const fn commit_version(&self) -> CommitVersion {
@@ -208,6 +225,8 @@ pub(crate) fn encode_wal_record_into_reusing(
         .and_then(|len| len.checked_add(8))
         .and_then(|len| len.checked_add(BranchId::BYTE_LEN))
         .and_then(|len| len.checked_add(8))
+        // committed_at (#3112 S2)
+        .and_then(|len| len.checked_add(8))
         .and_then(|len| len.checked_add(payload_bytes.len()))
         .ok_or(FormatError::InvalidLength {
             field: WAL_RECORD_FORMAT,
@@ -236,6 +255,16 @@ pub(crate) fn encode_wal_record_into_reusing(
     bytes.extend_from_slice(&record.commit_version().as_u64().to_le_bytes());
     bytes.extend_from_slice(record.branch_id().as_bytes());
     bytes.extend_from_slice(&record.commit_timestamp().as_micros().to_le_bytes());
+    // `committed_at`: 0 means unknown, following the format's existing
+    // `optional_nonzero` convention for optional u64s (#3112 S2). A real
+    // wall-clock instant is always past the epoch, so nothing legitimate
+    // collides with the sentinel.
+    bytes.extend_from_slice(
+        &record
+            .committed_at()
+            .map_or(0, Timestamp::as_micros)
+            .to_le_bytes(),
+    );
     bytes.extend_from_slice(payload_bytes);
 
     let len_crc = crc32fast::hash(&record_len_bytes);
@@ -300,7 +329,9 @@ fn validate_wal_record_len(record_len: usize) -> Result<(), FormatError> {
 
 fn validate_wal_record_version(version: u8) -> Result<(), FormatError> {
     match version {
-        WAL_RECORD_FORMAT_VERSION => Ok(()),
+        // v1 predates `committed_at` and stays readable (#3112 S2); v3 is
+        // current. 2 is deliberately skipped — it marks a pre-V1 record below.
+        WAL_RECORD_FORMAT_VERSION | WAL_RECORD_FORMAT_VERSION_V1 => Ok(()),
         0 | 2 => Err(FormatError::PreV1Format {
             format: WAL_RECORD_FORMAT,
             version: u32::from(version),
@@ -382,9 +413,32 @@ fn decode_wal_record_payload(payload: &[u8]) -> Result<WalRecord, FormatError> {
                 field: "commit_timestamp",
             },
         )?));
-    let commit_payload = decode_wal_commit_payload(&payload[37..])?;
+    // v1 records end the fixed header at 37; v3 carries `committed_at` there
+    // and starts the commit payload at 45 (#3112 S2). The version byte was
+    // validated by `validate_wal_record_version` before this call.
+    let (committed_at, payload_start) = if payload[0] == WAL_RECORD_FORMAT_VERSION {
+        let raw = payload
+            .get(37..45)
+            .ok_or(FormatError::InvalidLength {
+                field: "committed_at",
+            })?
+            .try_into()
+            .map_err(|_| FormatError::InvalidLength {
+                field: "committed_at",
+            })?;
+        // 0 means unknown, matching the format's `optional_nonzero` convention.
+        let micros = u64::from_le_bytes(raw);
+        let committed_at = (micros != 0).then(|| Timestamp::from_micros(micros));
+        (committed_at, 45)
+    } else {
+        (None, 37)
+    };
+    let commit_payload = decode_wal_commit_payload(&payload[payload_start..])?;
 
-    WalRecord::new(commit_version, branch_id, commit_timestamp, commit_payload)
+    Ok(
+        WalRecord::new(commit_version, branch_id, commit_timestamp, commit_payload)?
+            .with_committed_at(committed_at),
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -612,7 +666,9 @@ mod tests {
     }
 
     fn first_commit_payload_row_start(bytes: &[u8]) -> usize {
-        let commit_payload_start = 4 + 1 + 4 + 8 + BranchId::BYTE_LEN + 8;
+        // len prefix + version + len_crc + commit_version + branch_id
+        // + commit_timestamp + committed_at (the v3 field, #3112 S2).
+        let commit_payload_start = 4 + 1 + 4 + 8 + BranchId::BYTE_LEN + 8 + 8;
         let row_len_offset = commit_payload_start + 4 + 4 + 4;
         let row_len = u32::from_le_bytes(
             bytes[row_len_offset..row_len_offset + 4]
