@@ -44,6 +44,7 @@ impl Executor {
             cursor: None,
             limit: None,
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -118,6 +119,7 @@ impl Executor {
             space: None,
             prefix,
             as_of: None,
+            as_of_time: None,
         })
     }
 

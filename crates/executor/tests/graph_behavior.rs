@@ -176,6 +176,7 @@ fn assert_graph_executor_inherits_configured_database_default_branch(executor: &
             graph: "deps".to_owned(),
             node_id: "node-a".to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect_err("literal default branch is absent");
     assert_eq!(error.class(), strata_executor::ExecutorErrorClass::NotFound);
@@ -553,6 +554,7 @@ fn assert_graph_node_crud_and_list_edges(executor: &mut Executor) {
             cursor: None,
             limit: Some(10),
             as_of: None,
+            as_of_time: None,
         })
         .expect_err("missing graph list fails");
     assert_eq!(missing_graph.class(), ExecutorErrorClass::NotFound);
@@ -1035,6 +1037,7 @@ fn assert_graph_error_mapping(executor: &mut Executor) {
             graph: "errors".to_owned(),
             node_id: String::new(),
             as_of: None,
+            as_of_time: None,
         })
         .expect_err("invalid node id fails");
     assert_eq!(invalid_node.class(), ExecutorErrorClass::InvalidInput);
@@ -1048,6 +1051,7 @@ fn assert_graph_error_mapping(executor: &mut Executor) {
             edge_type: String::new(),
             dst: "b".to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect_err("invalid edge type fails");
     assert_eq!(invalid_edge_type.class(), ExecutorErrorClass::InvalidInput);
@@ -1128,6 +1132,7 @@ fn assert_graph_error_mapping(executor: &mut Executor) {
             graph: "missing".to_owned(),
             node_id: "a".to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect_err("missing graph read fails");
     assert_eq!(missing_read.class(), ExecutorErrorClass::NotFound);
@@ -1137,6 +1142,7 @@ fn assert_graph_error_mapping(executor: &mut Executor) {
             space: None,
             graph: "missing".to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect_err("graph meta on a missing graph errors like its siblings");
     assert_eq!(missing_meta.class(), ExecutorErrorClass::NotFound);
@@ -1414,6 +1420,7 @@ fn graph_name_page(
             cursor,
             limit,
             as_of: None,
+            as_of_time: None,
         })
         .expect("graph list succeeds")
     {
@@ -1470,6 +1477,7 @@ fn graph_names(executor: &mut Executor, cursor: Option<String>, limit: Option<u6
             cursor,
             limit,
             as_of: None,
+            as_of_time: None,
         })
         .expect("graph list succeeds")
     {
@@ -1485,6 +1493,7 @@ fn assert_meta_absent(executor: &mut Executor, graph: &str) {
             space: None,
             graph: graph.to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect_err("graph meta on a missing graph errors like its siblings");
     assert_eq!(error.class(), ExecutorErrorClass::NotFound);
@@ -1498,6 +1507,7 @@ fn get_meta(executor: &mut Executor, graph: &str) -> Option<strata_executor::Gra
             space: None,
             graph: graph.to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("graph metadata succeeds")
     {
@@ -1680,6 +1690,7 @@ fn get_node_as_of(
             graph: graph.to_owned(),
             node_id: node_id.to_owned(),
             as_of: Some(as_of),
+            as_of_time: None,
         })
         .expect("graph node get succeeds")
     {
@@ -1700,6 +1711,7 @@ fn get_node(
             graph: graph.to_owned(),
             node_id: node_id.to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("graph node get succeeds")
     {
@@ -1722,6 +1734,7 @@ fn graph_get_node_in(
             graph: graph.to_owned(),
             node_id: node_id.to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("graph node get succeeds")
     {
@@ -1782,6 +1795,7 @@ fn node_ids(
             cursor,
             limit,
             as_of: None,
+            as_of_time: None,
         })
         .expect("graph node list succeeds")
     {
@@ -1808,6 +1822,7 @@ fn node_page(
             cursor,
             limit,
             as_of: None,
+            as_of_time: None,
         })
         .expect("graph node list succeeds")
     {
@@ -1835,6 +1850,7 @@ fn graph_node_ids_in(
             cursor: None,
             limit: Some(10),
             as_of: None,
+            as_of_time: None,
         })
         .expect("graph node list succeeds")
     {
@@ -1957,6 +1973,7 @@ fn get_edge(
             edge_type: edge_type.to_owned(),
             dst: dst.to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("graph edge get succeeds")
     {
@@ -1984,6 +2001,7 @@ fn graph_get_edge_in(
             edge_type: edge_type.to_owned(),
             dst: dst.to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("graph edge get succeeds")
     {
@@ -2031,6 +2049,7 @@ fn neighbor_node_ids_in(
             cursor: None,
             limit: Some(10),
             as_of: None,
+            as_of_time: None,
         })
         .expect("graph neighbors succeeds")
     {
@@ -2064,6 +2083,7 @@ fn neighbor_page(
             cursor,
             limit,
             as_of: None,
+            as_of_time: None,
         })
         .expect("graph neighbors succeeds")
     {
@@ -2124,6 +2144,7 @@ fn binding_page(
             cursor,
             limit,
             as_of: None,
+            as_of_time: None,
         })
         .expect("graph binding lookup succeeds")
     {
@@ -2161,6 +2182,7 @@ fn neighbor_nodes(
             cursor: None,
             limit: Some(10),
             as_of: None,
+            as_of_time: None,
         })
         .expect("graph neighbors succeeds")
     {
@@ -2183,6 +2205,7 @@ fn binding_nodes(executor: &mut Executor, target: GraphBindingTarget) -> Vec<Str
             cursor: None,
             limit: Some(10),
             as_of: None,
+            as_of_time: None,
         })
         .expect("graph binding lookup succeeds")
     {
@@ -2210,6 +2233,7 @@ fn binding_nodes_in(
             cursor: None,
             limit: Some(10),
             as_of: None,
+            as_of_time: None,
         })
         .expect("graph binding lookup succeeds")
     {

@@ -11,7 +11,7 @@ use super::{
     optional_limit, EngineGraphBatchWrite, EngineGraphLinkTypeDef, EngineGraphObjectTypeDef,
     Executor, ExecutorError, ExecutorResult, GraphBatchOperation, GraphBindingTarget,
     GraphDirection, GraphEdgeData, GraphEntityBinding, GraphNodeData, GraphPropertyDef, Maybe,
-    Output, PageInfo, Timestamp, DEFAULT_GRAPH_LIST_LIMIT,
+    Output, PageInfo, DEFAULT_GRAPH_LIST_LIMIT,
 };
 
 impl Executor {
@@ -51,12 +51,16 @@ impl Executor {
         cursor: Option<String>,
         limit: Option<u64>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let cursor = optional_graph_name(cursor)?;
         let limit = optional_limit(limit)?.unwrap_or(DEFAULT_GRAPH_LIST_LIMIT);
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.graph_service(branch, space)?;
         let page = if let Some(as_of) = as_of {
-            service.list_graphs_at(cursor.as_ref(), limit, Timestamp::from_micros(as_of))?
+            service.list_graphs_at(cursor.as_ref(), limit, as_of)?
         } else {
             service.list_graphs(cursor.as_ref(), limit)?
         };
@@ -69,11 +73,15 @@ impl Executor {
         space: Option<&str>,
         graph: String,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.graph_service(branch, space)?;
         let info = if let Some(as_of) = as_of {
-            service.graph_info_at(&graph, Timestamp::from_micros(as_of))?
+            service.graph_info_at(&graph, as_of)?
         } else {
             service.graph_info(&graph)?
         };
@@ -118,12 +126,16 @@ impl Executor {
         graph: String,
         node_id: String,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
         let node_id = graph_node_id(node_id)?;
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.graph_service(branch, space)?;
         let node = if let Some(as_of) = as_of {
-            service.get_node_at(&graph, &node_id, Timestamp::from_micros(as_of))?
+            service.get_node_at(&graph, &node_id, as_of)?
         } else {
             service.get_node(&graph, &node_id)?
         };
@@ -179,20 +191,18 @@ impl Executor {
         cursor: Option<String>,
         limit: Option<u64>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
         let prefix = optional_graph_node_id(prefix)?;
         let cursor = optional_graph_node_id(cursor)?;
         let limit = optional_limit(limit)?.unwrap_or(DEFAULT_GRAPH_LIST_LIMIT);
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.graph_service(branch, space)?;
         let page = if let Some(as_of) = as_of {
-            service.list_nodes_at(
-                &graph,
-                prefix.as_ref(),
-                cursor.as_ref(),
-                limit,
-                Timestamp::from_micros(as_of),
-            )?
+            service.list_nodes_at(&graph, prefix.as_ref(), cursor.as_ref(), limit, as_of)?
         } else {
             service.list_nodes(&graph, prefix.as_ref(), cursor.as_ref(), limit)?
         };
@@ -232,20 +242,18 @@ impl Executor {
         edge_type: String,
         dst: String,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
         let src = graph_node_id(src)?;
         let edge_type = graph_edge_type(edge_type)?;
         let dst = graph_node_id(dst)?;
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.graph_service(branch, space)?;
         let edge = if let Some(as_of) = as_of {
-            service.get_edge_at(
-                &graph,
-                &src,
-                &edge_type,
-                &dst,
-                Timestamp::from_micros(as_of),
-            )?
+            service.get_edge_at(&graph, &src, &edge_type, &dst, as_of)?
         } else {
             service.get_edge(&graph, &src, &edge_type, &dst)?
         };
@@ -290,12 +298,16 @@ impl Executor {
         cursor: Option<&str>,
         limit: Option<u64>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
         let node_id = graph_node_id(node_id)?;
         let direction = engine_graph_direction(direction);
         let edge_type = optional_graph_edge_type(edge_type)?;
         let limit = optional_limit(limit)?.unwrap_or(DEFAULT_GRAPH_LIST_LIMIT);
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.graph_service(branch, space)?;
         let page = if let Some(as_of) = as_of {
             service.neighbors_at(
@@ -305,7 +317,7 @@ impl Executor {
                 edge_type.as_ref(),
                 cursor,
                 limit,
-                Timestamp::from_micros(as_of),
+                as_of,
             )?
         } else {
             service.neighbors(
@@ -329,12 +341,16 @@ impl Executor {
         cursor: Option<&str>,
         limit: Option<u64>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let target = engine_graph_binding_target(target)?;
         let limit = optional_limit(limit)?.unwrap_or(DEFAULT_GRAPH_LIST_LIMIT);
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.graph_service(branch, space)?;
         let page = if let Some(as_of) = as_of {
-            service.bindings_for_entity_at(&target, cursor, limit, Timestamp::from_micros(as_of))?
+            service.bindings_for_entity_at(&target, cursor, limit, as_of)?
         } else {
             service.bindings_for_entity(&target, cursor, limit)?
         };
@@ -465,11 +481,15 @@ impl Executor {
         space: Option<&str>,
         graph: String,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.graph_service(branch, space)?;
         let ontology = if let Some(as_of) = as_of {
-            service.ontology_at(&graph, Timestamp::from_micros(as_of))?
+            service.ontology_at(&graph, as_of)?
         } else {
             service.ontology(&graph)?
         };
@@ -484,11 +504,15 @@ impl Executor {
         space: Option<&str>,
         graph: String,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.graph_service(branch, space)?;
         let summary = if let Some(as_of) = as_of {
-            service.ontology_summary_at(&graph, Timestamp::from_micros(as_of))?
+            service.ontology_summary_at(&graph, as_of)?
         } else {
             service.ontology_summary(&graph)?
         };
@@ -507,20 +531,18 @@ impl Executor {
         cursor: Option<String>,
         limit: Option<u64>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
         let object_type = graph_type_name(object_type)?;
         let cursor = optional_graph_node_id(cursor)?;
         let limit = optional_limit(limit)?.unwrap_or(DEFAULT_GRAPH_LIST_LIMIT);
+        // #3112 S3b: resolve any wall-clock instant to a logical timestamp
+        // BEFORE the service borrow, so both forms run the identical as-of path.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.graph_service(branch, space)?;
         let page = if let Some(as_of) = as_of {
-            service.nodes_by_type_at(
-                &graph,
-                &object_type,
-                cursor.as_ref(),
-                limit,
-                Timestamp::from_micros(as_of),
-            )?
+            service.nodes_by_type_at(&graph, &object_type, cursor.as_ref(), limit, as_of)?
         } else {
             service.nodes_by_type(&graph, &object_type, cursor.as_ref(), limit)?
         };
@@ -547,11 +569,15 @@ impl Executor {
         graph: &EngineGraphName,
         budget: Option<GraphAnalyticsBudget>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<EngineGraphAdjacencyIndex> {
         let budget = engine_graph_budget(budget)?;
+        // #3112 S3b: the analytics family shares one resolution point — every
+        // `graph <algorithm>` command reaches its snapshot through here.
+        let as_of = self.resolve_as_of(branch, as_of, as_of_time)?;
         let mut service = self.graph_service(branch, space)?;
         Ok(if let Some(as_of) = as_of {
-            service.adjacency_index_at(graph, &budget, Timestamp::from_micros(as_of))?
+            service.adjacency_index_at(graph, &budget, as_of)?
         } else {
             service.adjacency_index(graph, &budget)?
         })
@@ -564,9 +590,10 @@ impl Executor {
         graph: String,
         budget: Option<GraphAnalyticsBudget>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
-        let index = self.graph_analytics_index(branch, space, &graph, budget, as_of)?;
+        let index = self.graph_analytics_index(branch, space, &graph, budget, as_of, as_of_time)?;
         Ok(graph_wcc_output(&index, &index.wcc()))
     }
 
@@ -577,9 +604,10 @@ impl Executor {
         graph: String,
         budget: Option<GraphAnalyticsBudget>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
-        let index = self.graph_analytics_index(branch, space, &graph, budget, as_of)?;
+        let index = self.graph_analytics_index(branch, space, &graph, budget, as_of, as_of_time)?;
         Ok(graph_lcc_output(&index, &index.lcc()))
     }
 
@@ -592,11 +620,12 @@ impl Executor {
         direction: Option<GraphDirection>,
         budget: Option<GraphAnalyticsBudget>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
         let source = graph_node_id(source)?;
         let direction = direction.unwrap_or(GraphDirection::Outgoing);
-        let index = self.graph_analytics_index(branch, space, &graph, budget, as_of)?;
+        let index = self.graph_analytics_index(branch, space, &graph, budget, as_of, as_of_time)?;
         let result = index.sssp(&source, engine_graph_direction(direction))?;
         Ok(graph_sssp_output(&index, direction, &result))
     }
@@ -613,10 +642,11 @@ impl Executor {
         personalization: Option<std::collections::BTreeMap<String, f64>>,
         budget: Option<GraphAnalyticsBudget>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
         let options = engine_graph_pagerank_options(damping, max_iterations, tolerance)?;
-        let index = self.graph_analytics_index(branch, space, &graph, budget, as_of)?;
+        let index = self.graph_analytics_index(branch, space, &graph, budget, as_of, as_of_time)?;
         let (result, personalized) = if let Some(personalization) = personalization {
             let seeds = engine_graph_personalization(personalization)?;
             (index.personalized_pagerank(&options, &seeds)?, true)
@@ -635,10 +665,11 @@ impl Executor {
         direction: Option<GraphDirection>,
         budget: Option<GraphAnalyticsBudget>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
         let options = engine_graph_cdlp_options(max_iterations, direction)?;
-        let index = self.graph_analytics_index(branch, space, &graph, budget, as_of)?;
+        let index = self.graph_analytics_index(branch, space, &graph, budget, as_of, as_of_time)?;
         Ok(graph_cdlp_output(&index, &index.cdlp(&options)))
     }
 
@@ -655,11 +686,12 @@ impl Executor {
         direction: Option<GraphDirection>,
         budget: Option<GraphAnalyticsBudget>,
         as_of: Option<u64>,
+        as_of_time: Option<u64>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
         let start = graph_node_id(start)?;
         let options = engine_graph_bfs_options(max_depth, max_nodes, edge_types, direction)?;
-        let index = self.graph_analytics_index(branch, space, &graph, budget, as_of)?;
+        let index = self.graph_analytics_index(branch, space, &graph, budget, as_of, as_of_time)?;
         let result = index.bfs(&start, &options)?;
         Ok(graph_bfs_output(&index, &start, &result))
     }

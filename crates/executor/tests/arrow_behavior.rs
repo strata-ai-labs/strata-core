@@ -1610,6 +1610,7 @@ fn kv_keys(executor: &mut Executor) -> Vec<Bytes> {
             cursor: None,
             limit: None,
             as_of: None,
+            as_of_time: None,
         })
         .expect("kv list succeeds");
     match output {
@@ -1658,6 +1659,7 @@ fn json_get_in(
             key: key.to_owned(),
             path: "$".to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("json get succeeds");
     let Output::JsonVersionedValue(value) = output else {
@@ -1673,6 +1675,7 @@ fn vector_count(executor: &mut Executor, collection: &str) -> u64 {
             space: None,
             collection: collection.to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("vector count succeeds");
     let Output::Uint(count) = output else {
@@ -1687,6 +1690,7 @@ fn event_count(executor: &mut Executor) -> u64 {
             branch: None,
             space: None,
             as_of: None,
+            as_of_time: None,
         })
         .expect("event len succeeds");
     let Output::EventCount { count } = output else {
@@ -1703,6 +1707,7 @@ fn vector_get_metadata(executor: &mut Executor, collection: &str, key: &str) -> 
             collection: collection.to_owned(),
             key: key.to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("vector get succeeds");
     let Output::VectorData(value) = output else {
@@ -1733,6 +1738,7 @@ fn graph_node_properties(
                 cursor,
                 limit: Some(100),
                 as_of: None,
+                as_of_time: None,
             })
             .expect("graph list nodes succeeds");
         let Output::GraphNodePage { items, page } = output else {
@@ -1770,6 +1776,7 @@ fn graph_outgoing_edges(
                 cursor,
                 limit: Some(100),
                 as_of: None,
+                as_of_time: None,
             })
             .expect("graph neighbors succeeds");
         let Output::GraphNeighborPage { items, page } = output else {

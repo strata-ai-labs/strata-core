@@ -33,6 +33,7 @@ impl Executor {
             space: None,
             sequence,
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -60,6 +61,7 @@ impl Executor {
             limit,
             after_sequence,
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -69,6 +71,7 @@ impl Executor {
             branch: None,
             space: None,
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -118,6 +121,7 @@ impl Executor {
             branch: None,
             space: None,
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -134,6 +138,7 @@ impl Executor {
             limit,
             after_sequence: None,
             as_of: None,
+            as_of_time: None,
         })
     }
 

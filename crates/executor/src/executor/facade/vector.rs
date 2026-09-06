@@ -59,6 +59,7 @@ impl Executor {
             space: None,
             collection: collection.into(),
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -92,6 +93,7 @@ impl Executor {
             collection: collection.into(),
             key: key.into(),
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -139,6 +141,7 @@ impl Executor {
             cursor,
             limit,
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -211,6 +214,7 @@ impl Executor {
             k,
             filter,
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -230,6 +234,7 @@ impl Executor {
             k,
             filter,
             as_of: None,
+            as_of_time: None,
         })
     }
 

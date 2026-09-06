@@ -94,6 +94,7 @@ fn read_back(executor: &mut Executor, collection: &str, key: &str) -> (Vec<f32>,
             collection: collection.to_owned(),
             key: key.to_owned(),
             as_of: None,
+            as_of_time: None,
         })
         .expect("vector get succeeds");
     let Output::VectorData(value) = output else {

@@ -32,6 +32,7 @@ impl Executor {
             key: key.into(),
             path: path.into(),
             as_of: None,
+            as_of_time: None,
         })
     }
 

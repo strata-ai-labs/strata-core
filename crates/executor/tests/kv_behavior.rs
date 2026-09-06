@@ -559,6 +559,7 @@ fn command_to_output_mapping_is_explicit_for_every_variant() {
             cursor: None,
             limit: None,
             as_of: None,
+            as_of_time: None,
         },
         Command::KvScan {
             branch: None,
@@ -601,6 +602,7 @@ fn command_to_output_mapping_is_explicit_for_every_variant() {
             space: None,
             prefix: Some(bytes("map-")),
             as_of: None,
+            as_of_time: None,
         },
         Command::KvSample {
             branch: None,
@@ -1021,6 +1023,7 @@ fn execute_list(executor: &mut Executor, prefix: Option<&str>) -> Vec<Bytes> {
             cursor: None,
             limit: None,
             as_of: None,
+            as_of_time: None,
         })
         .expect("list succeeds")
     {
@@ -1043,6 +1046,7 @@ fn execute_list_page(
             cursor: cursor.map(bytes),
             limit: Some(limit),
             as_of: None,
+            as_of_time: None,
         })
         .expect("list page succeeds")
     {
@@ -1060,6 +1064,7 @@ fn execute_list_as_of(executor: &mut Executor, prefix: Option<&str>, as_of: u64)
             cursor: None,
             limit: None,
             as_of: Some(as_of),
+            as_of_time: None,
         })
         .expect("historical list succeeds")
     {
@@ -1136,6 +1141,7 @@ fn kv_list_as_of_paginates_in_the_engine() {
                 cursor: cursor.clone(),
                 limit: Some(2),
                 as_of: Some(historical),
+                as_of_time: None,
             })
             .expect("historical page succeeds")
         else {
@@ -1274,6 +1280,7 @@ fn execute_count(executor: &mut Executor, prefix: Option<&str>) -> u64 {
             space: None,
             prefix: prefix.map(bytes),
             as_of: None,
+            as_of_time: None,
         })
         .expect("count succeeds")
     {
@@ -1289,6 +1296,7 @@ fn execute_count_as_of(executor: &mut Executor, prefix: Option<&str>, as_of: u64
             space: None,
             prefix: prefix.map(bytes),
             as_of: Some(as_of),
+            as_of_time: None,
         })
         .expect("count as_of succeeds")
     {

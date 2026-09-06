@@ -34,6 +34,7 @@ impl Executor {
             cursor,
             limit,
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -44,6 +45,7 @@ impl Executor {
             space: None,
             graph: graph.into(),
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -166,6 +168,7 @@ impl Executor {
             space: None,
             graph: graph.into(),
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -176,6 +179,7 @@ impl Executor {
             space: None,
             graph: graph.into(),
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -195,6 +199,7 @@ impl Executor {
             cursor,
             limit,
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -210,6 +215,7 @@ impl Executor {
             graph: graph.into(),
             node_id: node_id.into(),
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -243,6 +249,7 @@ impl Executor {
             cursor,
             limit,
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -285,6 +292,7 @@ impl Executor {
             edge_type: edge_type.into(),
             dst: dst.into(),
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -326,6 +334,7 @@ impl Executor {
             cursor,
             limit,
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -343,6 +352,7 @@ impl Executor {
             cursor,
             limit,
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -368,6 +378,7 @@ impl Executor {
             graph: graph.into(),
             budget: None,
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -379,6 +390,7 @@ impl Executor {
             graph: graph.into(),
             budget: None,
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -397,6 +409,7 @@ impl Executor {
             direction,
             budget: None,
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -417,6 +430,7 @@ impl Executor {
             personalization,
             budget: None,
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -430,6 +444,7 @@ impl Executor {
             direction: None,
             budget: None,
             as_of: None,
+            as_of_time: None,
         })
     }
 
@@ -451,6 +466,7 @@ impl Executor {
             direction,
             budget: None,
             as_of: None,
+            as_of_time: None,
         })
     }
 

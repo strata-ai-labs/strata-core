@@ -34,6 +34,7 @@ $ strata json count
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `as_of` | `integer` | no | Optional read-as-of commit timestamp: the `timestamp` from `history` output (a commit-timeline position, not the `version`). |
+| `as_of_time` | `integer` | no | Optional read-as-of wall-clock instant, in microseconds since the Unix epoch (UTC): the `committed_at` from a write ack. Resolves to the commit at or before that instant. Mutually exclusive with `as_of`. |
 | `prefix` | `string` | no | Optional document key prefix. |
 
 Plus the optional scope: `branch` and `space` (default to the session branch and the `"default"` space).

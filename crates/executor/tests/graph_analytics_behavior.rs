@@ -137,6 +137,7 @@ fn exercise_analytics_commands(executor: &mut Executor) {
             direction: None,
             budget: None,
             as_of: None,
+            as_of_time: None,
         })
         .expect("capped bfs runs")
     else {
@@ -179,6 +180,7 @@ fn exercise_time_travel(executor: &mut Executor) {
             graph: "web".to_owned(),
             budget: None,
             as_of: Some(seeded_at),
+            as_of_time: None,
         })
         .expect("historical wcc runs")
     else {
@@ -198,6 +200,7 @@ fn exercise_time_travel(executor: &mut Executor) {
             direction: None,
             budget: None,
             as_of: Some(seeded_at),
+            as_of_time: None,
         })
         .expect("historical bfs runs")
     else {
@@ -236,6 +239,7 @@ fn exercise_refusals(executor: &mut Executor) {
             graph: "web".to_owned(),
             budget: Some(strata_executor::GraphAnalyticsBudget::new(Some(2), None)),
             as_of: None,
+            as_of_time: None,
         })
         .expect_err("budget refusal");
     assert_eq!(
@@ -255,6 +259,7 @@ fn exercise_refusals(executor: &mut Executor) {
             personalization: None,
             budget: None,
             as_of: None,
+            as_of_time: None,
         })
         .expect_err("bad damping");
     assert_eq!(

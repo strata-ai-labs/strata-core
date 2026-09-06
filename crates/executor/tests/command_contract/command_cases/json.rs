@@ -15,6 +15,7 @@ pub(super) fn json_commands() -> Vec<Command> {
             key: "doc-a".to_owned(),
             path: "$.name".to_owned(),
             as_of: Some(42),
+            as_of_time: None,
         },
         Command::JsonDelete {
             branch: None,
@@ -59,6 +60,7 @@ pub(super) fn json_commands() -> Vec<Command> {
             cursor: Some("doc-a".to_owned()),
             limit: Some(2),
             as_of: Some(99),
+            as_of_time: None,
         },
         Command::JsonScan {
             branch: None,
@@ -71,6 +73,7 @@ pub(super) fn json_commands() -> Vec<Command> {
             space: None,
             prefix: Some("doc-".to_owned()),
             as_of: None,
+            as_of_time: None,
         },
         Command::JsonSample {
             branch: None,

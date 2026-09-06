@@ -35,6 +35,7 @@ pub(super) fn vector_collection_commands() -> Vec<Command> {
             space: None,
             collection: "docs".to_owned(),
             as_of: None,
+            as_of_time: None,
         },
     ]
 }
@@ -55,6 +56,7 @@ pub(super) fn vector_row_commands() -> Vec<Command> {
             collection: "docs".to_owned(),
             key: "doc-a".to_owned(),
             as_of: Some(42),
+            as_of_time: None,
         },
         Command::VectorHistory {
             branch: None,
@@ -82,6 +84,7 @@ pub(super) fn vector_row_commands() -> Vec<Command> {
             cursor: Some("doc-a".to_owned()),
             limit: Some(2),
             as_of: None,
+            as_of_time: None,
         },
         Command::VectorScan {
             branch: None,
@@ -133,6 +136,7 @@ pub(super) fn vector_bulk_commands() -> Vec<Command> {
                 "kind", "doc",
             )])),
             as_of: Some(99),
+            as_of_time: None,
         },
         Command::VectorIndexQuery {
             branch: None,
@@ -144,6 +148,7 @@ pub(super) fn vector_bulk_commands() -> Vec<Command> {
                 "kind", "doc",
             )])),
             as_of: Some(99),
+            as_of_time: None,
         },
         Command::VectorBatchUpsert {
             branch: None,
@@ -170,6 +175,8 @@ pub(super) fn vector_bulk_commands() -> Vec<Command> {
     ]
 }
 
+// A flat list of command fixtures, like its event/graph siblings.
+#[allow(clippy::too_many_lines)]
 pub(super) fn vector_round_trip_edge_commands() -> Vec<Command> {
     vec![
         Command::VectorCreateCollection {
@@ -209,6 +216,7 @@ pub(super) fn vector_round_trip_edge_commands() -> Vec<Command> {
             cursor: Some("doc-001".to_owned()),
             limit: Some(25),
             as_of: None,
+            as_of_time: None,
         },
         Command::VectorUpdateMetadata {
             branch: Some("feature".to_owned()),
@@ -238,6 +246,7 @@ pub(super) fn vector_round_trip_edge_commands() -> Vec<Command> {
                 "tag", "doc",
             )])),
             as_of: Some(123),
+            as_of_time: None,
         },
         Command::VectorIndexQuery {
             branch: Some("feature".to_owned()),
@@ -249,6 +258,7 @@ pub(super) fn vector_round_trip_edge_commands() -> Vec<Command> {
                 "tag", "doc",
             )])),
             as_of: Some(123),
+            as_of_time: None,
         },
         Command::VectorBatchUpsert {
             branch: Some("feature".to_owned()),

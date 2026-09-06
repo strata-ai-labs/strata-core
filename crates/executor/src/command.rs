@@ -348,6 +348,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Scans KV rows.
     KvScan {
@@ -445,6 +451,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Samples keys and values.
     KvSample {
@@ -492,6 +504,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Deletes a whole JSON document or one JSON path.
     JsonDelete {
@@ -610,6 +628,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Scans JSON documents.
     JsonScan {
@@ -641,6 +665,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Samples JSON documents.
     JsonSample {
@@ -752,6 +782,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Samples vectors.
     VectorSample {
@@ -802,6 +838,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Reads full vector history.
     VectorHistory {
@@ -865,6 +907,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Scans vectors.
     VectorScan {
@@ -957,6 +1005,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Runs vector search and returns index planner diagnostics.
     VectorIndexQuery {
@@ -980,6 +1034,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Upserts multiple vectors.
     VectorBatchUpsert {
@@ -1058,6 +1118,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Checks whether one event sequence exists.
     EventExists {
@@ -1082,6 +1148,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Reads an event sequence range.
     EventRange {
@@ -1140,6 +1212,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Lists events.
     EventList {
@@ -1162,6 +1240,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Verifies visible event density and hash linkage.
     EventVerifyChain {
@@ -1212,6 +1296,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Reads graph metadata.
     GraphGetMeta {
@@ -1227,6 +1317,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Adds or replaces a graph node.
     GraphAddNode {
@@ -1266,6 +1362,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Deletes a graph node and incident edges.
     GraphRemoveNode {
@@ -1303,6 +1405,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Samples graph nodes.
     GraphSample {
@@ -1361,6 +1469,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Deletes a graph edge.
     GraphRemoveEdge {
@@ -1406,6 +1520,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Lists graph nodes bound to one entity target.
     GraphBindingsForEntity {
@@ -1427,6 +1547,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Applies graph mutations in one engine commit.
     GraphBatchWrite {
@@ -1532,6 +1658,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Reads the ontology with per-type node and edge usage counts.
     GraphOntologySummary {
@@ -1547,6 +1679,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Lists nodes declaring an object type (node-id ordered).
     GraphNodesByType {
@@ -1570,6 +1708,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Computes weakly connected components over a graph snapshot.
     GraphWcc {
@@ -1588,6 +1732,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Computes local clustering coefficients over a graph snapshot.
     GraphLcc {
@@ -1606,6 +1756,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Computes shortest-path distances from a source node.
     GraphSssp {
@@ -1629,6 +1785,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Computes `PageRank` scores, optionally personalized by seed weights.
     GraphPagerank {
@@ -1660,6 +1822,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Detects communities via label propagation.
     GraphCdlp {
@@ -1684,6 +1852,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Runs a bounded breadth-first traversal from a start node.
     GraphBfs {
@@ -1716,6 +1890,12 @@ pub enum Command {
         /// output (a commit-timeline position, not the `version`). Reads the graph state visible at that instant.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
+        /// Optional read-as-of wall-clock instant, in microseconds since the
+        /// Unix epoch (UTC): the `committed_at` from a write ack. Resolves to
+        /// the commit at or before that instant. Mutually exclusive with
+        /// `as_of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of_time: Option<u64>,
     },
     /// Ingests nodes and edges in chunked commits.
     GraphBulkInsert {

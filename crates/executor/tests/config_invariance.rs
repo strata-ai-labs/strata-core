@@ -367,6 +367,7 @@ fn read_sweep() -> Vec<(String, Command)> {
             cursor: None,
             limit: Some(100),
             as_of: None,
+            as_of_time: None,
         },
     ));
     sweep.push((
@@ -376,6 +377,7 @@ fn read_sweep() -> Vec<(String, Command)> {
             space: None,
             prefix: None,
             as_of: None,
+            as_of_time: None,
         },
     ));
     for key in ["bk17", "bk255", "bk1023", "bk4095"] {
@@ -399,6 +401,7 @@ fn read_sweep() -> Vec<(String, Command)> {
                 key: (*doc).to_owned(),
                 path: "$".to_owned(),
                 as_of: None,
+                as_of_time: None,
             },
         ));
     }
@@ -408,6 +411,7 @@ fn read_sweep() -> Vec<(String, Command)> {
             branch: None,
             space: None,
             as_of: None,
+            as_of_time: None,
         },
     ));
     for doc in 0..6 {
@@ -419,6 +423,7 @@ fn read_sweep() -> Vec<(String, Command)> {
                 key: format!("d{doc}"),
                 path: "$".to_owned(),
                 as_of: None,
+                as_of_time: None,
             },
         ));
     }
@@ -451,6 +456,7 @@ fn vector_and_graph_sweep() -> Vec<(String, Command)> {
                 collection: "vecs".to_owned(),
                 key: format!("v{key}"),
                 as_of: None,
+                as_of_time: None,
             },
         ));
     }
@@ -464,6 +470,7 @@ fn vector_and_graph_sweep() -> Vec<(String, Command)> {
             k: 4,
             filter: None,
             as_of: None,
+            as_of_time: None,
         },
     ));
     for node in 0..6 {
@@ -479,6 +486,7 @@ fn vector_and_graph_sweep() -> Vec<(String, Command)> {
                 cursor: None,
                 limit: Some(50),
                 as_of: None,
+                as_of_time: None,
             },
         ));
     }
@@ -490,6 +498,7 @@ fn vector_and_graph_sweep() -> Vec<(String, Command)> {
             graph: "net".to_owned(),
             budget: None,
             as_of: None,
+            as_of_time: None,
         },
     ));
     sweep.push((
@@ -504,6 +513,7 @@ fn vector_and_graph_sweep() -> Vec<(String, Command)> {
             personalization: None,
             budget: None,
             as_of: None,
+            as_of_time: None,
         },
     ));
     sweep
