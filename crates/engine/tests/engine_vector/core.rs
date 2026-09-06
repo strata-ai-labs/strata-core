@@ -352,6 +352,22 @@ fn vector_durable_reopen_preserves_collections_entries_and_history() {
     assert_eq!(history.rows().len(), 2);
     assert_eq!(history.rows()[0].vector_revision(), Some(2));
     assert_eq!(history.rows()[1].vector_revision(), Some(1));
+    // #3112 S4: every history row carries its commit's wall-clock instant,
+    // newest-first like the rows themselves. Asserted here, in the engine
+    // crate, because that is where the join lives and where its mutants are.
+    let instants: Vec<_> = history
+        .rows()
+        .iter()
+        .map(strata_engine::VectorHistoryRow::committed_at)
+        .collect();
+    assert!(
+        instants.iter().all(Option::is_some),
+        "live commits record instants: {instants:?}"
+    );
+    assert!(
+        instants[0] > instants[1],
+        "the newer row must carry the later instant: {instants:?}"
+    );
     assert_eq!(
         vectors
             .query_at(

@@ -13,6 +13,68 @@ use common::{
     branch, key, open_cache_database, open_durable_database, space, value,
 };
 
+/// #3112 S4: history rows carry their own commit's wall-clock instant.
+///
+/// Lives in the ENGINE crate on purpose. The join that attaches instants to
+/// rows is engine code, and the mutation gate runs each mutated crate's own
+/// tests — an end-to-end test over in the executor crate proves the behavior
+/// but kills none of these mutants.
+#[test]
+fn kv_history_rows_carry_their_commits_wall_clock_instant() {
+    const YEAR_2020_MICROS: u64 = 1_577_836_800_000_000;
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let mut kv = database
+        .kv(branch("default"), space("default"))
+        .expect("KV service opens");
+
+    // Two commits, separated in wall-clock time so each row's instant is
+    // individually identifiable — a join that shifted rows would be visible.
+    let first = kv
+        .put(key(b"k"), value(b"one"))
+        .expect("first put succeeds")
+        .commit()
+        .committed_at()
+        .expect("write ack carries an instant");
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let second = kv
+        .put(key(b"k"), value(b"two"))
+        .expect("second put succeeds")
+        .commit()
+        .committed_at()
+        .expect("write ack carries an instant");
+    assert!(second > first, "commits must land at distinct instants");
+
+    let history = kv
+        .get_versions(&key(b"k"))
+        .expect("history read succeeds")
+        .expect("the key has history");
+    let rows = history.rows();
+    assert_eq!(rows.len(), 2);
+
+    // Newest-first, each row carrying the instant its own write ack reported.
+    assert_eq!(
+        rows[0].committed_at(),
+        Some(second),
+        "the newest row must carry the second commit's instant"
+    );
+    assert_eq!(
+        rows[1].committed_at(),
+        Some(first),
+        "the oldest row must carry the first commit's instant"
+    );
+
+    // And these are real dates, not the logical counter — the distinction the
+    // whole epic exists to make.
+    assert!(
+        rows[0]
+            .committed_at()
+            .expect("newest row is dated")
+            .as_micros()
+            > YEAR_2020_MICROS
+    );
+    assert!(rows[0].timestamp().as_micros() < YEAR_2020_MICROS);
+}
+
 #[test]
 fn cache_write_ack_carries_a_wall_clock_committed_at() {
     // #3112: the engine stamps a real wall-clock `committed_at` (UTC epoch
